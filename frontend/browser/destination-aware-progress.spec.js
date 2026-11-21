@@ -127,15 +127,16 @@ test('the reconstruction is a distinct quantified lane that visibly moves', asyn
 // RED 2C: the lane never outlives the execution that reported it.
 test('the lane clears when the reconstruction stops for any reason', async ({ page }) => {
   await isolateExternalFonts(page);
-  await downloads(page, [item(9713, 95, 40), item(9714, 95, 40), item(9715, 95, 40)]);
+  await downloads(page, [item(9713, 95, 40), item(9714, 95, 40), item(9715, 95, 40), item(9716, 95, 40)]);
   // The backend's one read reports no active execution once the attempt is
   // retired (failure, cancellation, failover, executor replacement).
   await event(page, [{id: 9713, status: 'downloading', progress: 95, active_execution_progress: null, status_changed: false}]);
   await expect(await lane(cell(page, 9713))).toHaveCount(0);
   await expect(cell(page, 9713).locator('[data-role="execution-progress"]')).toHaveCount(0);
   await expect(cell(page, 9713).locator('.prog-pct')).toHaveText('95%');
-  // A row no longer downloading never shows a stale lane even if a value lingers.
-  for (const [id, status] of [[9714, 'error'], [9715, 'paused']]) {
+  // A row that stopped never shows a stale lane even if a value lingers. A
+  // paused writer has not stopped: it keeps its figure (1.0.14), still.
+  for (const [id, status] of [[9714, 'error'], [9715, 'cancelled'], [9716, 'paused']]) {
     Object.assign(served.find(entry => entry.id === id), {status, presentation_status: status,
       presentation_badge_status: status, active_execution_progress: 40});
   }
@@ -145,6 +146,9 @@ test('the lane clears when the reconstruction stops for any reason', async ({ pa
     await expect(await lane(cell(page, id))).toHaveCount(0);
     await expect(cell(page, id).locator('[data-role="execution-progress"]')).toHaveCount(0);
   }
+  await expect(await lane(cell(page, 9716))).toHaveCount(1);
+  await expect(cell(page, 9716).locator('[data-role="execution-progress"]')).toHaveCount(1);
+  await expect(cell(page, 9716).locator('.prog-fill.is-indeterminate')).toHaveCount(0);
 });
 
 // RED 2D: verified completion is 100% exactly once, with no lane.
@@ -232,14 +236,22 @@ test('a non-running row never promotes or shows a stale execution value', async 
     presentation_badge_status: status});
   await downloads(page, [stale(9725, 'paused', 31), stale(9726, 'error', 31), stale(9727, 'cancelled', 31),
                          stale(9728, 'paused', null), stale(9729, 'queued', null)]);
-  for (const id of [9725, 9726, 9727, 9728, 9729]) {
+  for (const id of [9726, 9727, 9729]) {
     const row = cell(page, id);
     await expect(row).not.toContainText('in progress');
     await expect(row.locator('[data-role="execution-unverified"], [data-role="execution-progress"]')).toHaveCount(0);
     await expect(primary(row)).not.toHaveAttribute('data-progress-basis', /.*/);
   }
-  for (const id of [9725, 9726, 9727]) await expect(cell(page, id).locator('.prog-pct')).toHaveText('31%');
-  for (const id of [9728, 9729]) await expect(cell(page, id).locator('.prog-pct')).toHaveText('—');
+  for (const id of [9726, 9727]) await expect(cell(page, id).locator('.prog-pct')).toHaveText('31%');
+  await expect(cell(page, 9729).locator('.prog-pct')).toHaveText('—');
+  // A paused writer is not stale (1.0.14): it keeps its figure -- beside
+  // verified material as its own lane, or, with nothing verified, as the
+  // primary figure worded as not yet verified -- and never moves a stripe.
+  await expect(cell(page, 9725).locator('[data-role="execution-progress"]')).toHaveCount(1);
+  await expect(cell(page, 9725).locator('.prog-pct')).toContainText('31%');
+  await expect(primary(cell(page, 9728))).toHaveAttribute('data-progress-basis', 'execution');
+  await expect(cell(page, 9728).locator('.prog-pct')).toContainText('67');
+  for (const id of [9725, 9728]) await expect(cell(page, id).locator('.prog-fill.is-indeterminate')).toHaveCount(0);
 });
 
 // A8: a replaced execution may move the dominant bar backward -- only

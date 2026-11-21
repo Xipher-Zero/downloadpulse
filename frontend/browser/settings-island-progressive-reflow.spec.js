@@ -131,11 +131,15 @@ test('Delete Archives After Extraction keeps its title through the spacing step 
   const states = new Set();
   let lastLines = 0;
   // Narrowing through the whole stacked range one pixel at a time: the title
-  // goes from one line to two once, and never back.
-  for (let width = 587; width >= 316; width -= 1) {
+  // goes from one line to two once, and never back. The range begins where
+  // the island stacks, which its own words decide (a longer hint keeps the
+  // row a few pixels longer), so the row widths above it are not counted:
+  // stacking itself gives the title the island's width.
+  for (let width = 600; width >= 316; width -= 1) {
     await page.setViewportSize({width, height: 900});
     await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
     const now = await read(page, '.dp-settings-extraction-behavior');
+    if (!now.state.endsWith('/stacked') && !states.size) continue;
     states.add(now.state);
     const lines = now.fields[0].titleLines;
     expect(lines, `@${width}px (${now.state}): Delete Archives title unwrapped`).toBeGreaterThanOrEqual(lastLines);

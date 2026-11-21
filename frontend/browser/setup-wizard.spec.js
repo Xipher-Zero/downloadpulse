@@ -709,8 +709,13 @@ test('W16: an optional page is completed by its Next alone; a provider view chan
   await load(page);
   await openRerun(page);
   const deployment = await page.evaluate(() => window.downloadPulseAuth.authority.deployment_type);
-  for (let i = 0; i < (deployment === 'standalone' ? 2 : 3); i += 1) await next(page);
-  await expect(wizard(page).locator('.dp-setup-premium')).toBeVisible();
+  // Each Next is taken once the wizard is on its page: a click while the
+  // previous Next is still moving on would be lost.
+  for (const reached of deployment === 'standalone' ? ['.dp-setup-directory', '.dp-setup-premium']
+    : ['.dp-setup-directory', '.dp-setup-administrator', '.dp-setup-premium']) {
+    await next(page);
+    await expect(wizard(page).locator(reached)).toBeVisible();
+  }
   const atPremium = await bubbles(page);
   const premium = atPremium.findIndex(item => item.current);
   await wizard(page).locator('[data-service="realdebrid"]').click();
