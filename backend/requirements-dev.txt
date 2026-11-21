@@ -6,7 +6,7 @@
 #
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.14.4
+aiohttp==3.14.5
     # via -r requirements.in
 aiosignal==1.4.0
     # via aiohttp
@@ -18,6 +18,7 @@ annotated-types==0.7.0
     # via pydantic
 anyio==4.14.2
     # via
+    #   fastapi
     #   httpx
     #   starlette
 apprise==1.12.0
@@ -26,11 +27,11 @@ argon2-cffi==25.1.0
     # via -r requirements.in
 argon2-cffi-bindings==26.1.0
     # via argon2-cffi
-asyncssh==2.24.0
+asyncssh==2.24.1
     # via -r requirements.in
 attrs==26.1.0
     # via aiohttp
-authlib==1.9.1
+authlib==1.9.9
     # via -r requirements.in
 babelfish==0.6.1
     # via
@@ -38,7 +39,7 @@ babelfish==0.6.1
     #   guessit
 bcrypt==5.0.0
     # via -r requirements.in
-bencode2==0.3.33
+bencode2==0.3.38
     # via -r requirements.in
 certifi==2026.10.19
     # via
@@ -75,27 +76,29 @@ ct3==3.4.0.post5
     # via -r requirements.in
 deno==2.9.8
     # via -r requirements.in
-fastapi==0.141.1
+fastapi==0.163.2
     # via -r requirements.in
-feedparser==6.0.12
+feedparser==6.0.14
     # via -r requirements.in
+feedparser-sgmllib==2.1.0
+    # via feedparser
 frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
 google-re2==1.1.20251105
     # via -r requirements.in
-guessit==4.1.0
+guessit==4.4.0
     # via -r requirements.in
 h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
-hachoir==3.3.0
+hachoir==3.4.0
     # via -r requirements.in
 httpcore==1.0.9
     # via httpx
-httptools==0.8.0
+httptools==0.9.0
     # via -r requirements.in
 httpx==0.28.1
     # via -r requirements.in
@@ -109,14 +112,16 @@ iniconfig==2.3.0
     # via pytest
 jaraco-classes==3.4.0
     # via -r requirements.in
-jaraco-collections==5.0.0
+jaraco-collections==5.2.1
     # via
     #   -r requirements.in
     #   cherrypy
+    #   tempora
 jaraco-context==4.3.0
     # via
     #   -r requirements.in
     #   jaraco-text
+    #   tempora
 jaraco-functools==4.6.0
     # via
     #   -r requirements.in
@@ -127,13 +132,13 @@ jaraco-text==3.8.1
     # via
     #   -r requirements.in
     #   jaraco-collections
-joserfc==1.7.6
+joserfc==1.8.0
     # via
     #   -r requirements.in
     #   authlib
 markdown==3.10.3
     # via apprise
-more-itertools==11.1.0
+more-itertools==11.2.1
     # via
     #   -r requirements.in
     #   cheroot
@@ -146,7 +151,9 @@ multidict==6.9.1
     #   yarl
 oauthlib==4.0.1
     # via requests-oauthlib
-orjson==3.11.9
+opentelemetry-api==1.45.2
+    # via fastapi
+orjson==3.13.0
     # via -r requirements.in
 packaging==26.2
     # via pytest
@@ -164,26 +171,26 @@ propcache==0.5.2
     # via
     #   aiohttp
     #   yarl
-puremagic==2.2.0
+puremagic==2.3.0
     # via -r requirements.in
 pycparser==3.0
     # via cffi
-pydantic==2.13.4
+pydantic==2.14.3
     # via
     #   -r requirements.in
     #   fastapi
-pydantic-core==2.46.4
+pydantic-core==2.50.4
     # via pydantic
 pygments==2.20.0
     # via pytest
 pysocks==1.7.1
     # via -r requirements.in
-pytest==9.1.1
+pytest==9.2.0
     # via
     #   -r requirements-dev.in
     #   pytest-asyncio
     #   pytest-cov
-pytest-asyncio==1.4.0
+pytest-asyncio==1.5.0
     # via -r requirements-dev.in
 pytest-cov==7.1.0
     # via -r requirements-dev.in
@@ -191,17 +198,17 @@ python-dateutil==2.9.0.post0
     # via
     #   guessit
     #   tempora
-python-multipart==0.0.32
+python-multipart==0.0.34
     # via -r requirements.in
-pytz==2026.2
+pytz==2026.6
     # via -r requirements.in
 pyyaml==6.0.3
     # via
     #   -r requirements.in
     #   apprise
-rarfile==4.3
+rarfile==4.5
     # via -r requirements.in
-rebulk==6.0.1
+rebulk==6.0.2
     # via
     #   -r requirements.in
     #   guessit
@@ -214,18 +221,16 @@ requests-oauthlib==2.0.0
 sabctools==9.6.3
     # via -r requirements.in
 sgmllib3k==1.0.0
-    # via
-    #   -r requirements.in
-    #   feedparser
+    # via -r requirements.in
 six==1.17.0
     # via python-dateutil
 starlette==1.3.1
     # via fastapi
-tempora==5.8.1
+tempora==5.13.0
     # via
     #   -r requirements.in
     #   portend
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   aiohttp
     #   aiosignal
@@ -233,12 +238,14 @@ typing-extensions==4.15.0
     #   asyncssh
     #   bencode2
     #   fastapi
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   pytest-asyncio
     #   starlette
+    #   tempora
     #   typing-inspection
-typing-inspection==0.4.2
+typing-inspection==0.4.5
     # via
     #   fastapi
     #   pydantic
@@ -246,21 +253,17 @@ ujson==5.13.0
     # via -r requirements.in
 urllib3==2.8.0
     # via requests
-uvicorn==0.52.4
+uvicorn==0.54.0
     # via -r requirements.in
-uvloop==0.22.1 ; sys_platform != "win32"
+uvloop==0.23.0 ; sys_platform != "win32"
     # via -r requirements.in
 yarl==1.25.1
     # via aiohttp
-yt-dlp==2026.10.21
+yt-dlp==2026.10.26
     # via -r requirements.in
 yt-dlp-ejs==0.8.0
     # via -r requirements.in
-zc-lockfile==4.0
+zc-lockfile==4.1
     # via
     #   -r requirements.in
     #   cherrypy
-
-# The following packages are considered to be unsafe in a requirements file:
-setuptools==84.1.0
-    # via zc-lockfile

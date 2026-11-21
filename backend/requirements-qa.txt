@@ -74,7 +74,7 @@ rich==15.0.0
     # via
     #   bandit
     #   pip-audit
-ruff==0.16.6
+ruff==0.17.5
     # via -r requirements-qa.in
 sortedcontainers==2.4.0
     # via cyclonedx-python-lib
@@ -84,7 +84,7 @@ tomli==2.4.1
     # via pip-audit
 tomli-w==1.2.0
     # via pip-audit
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   -c requirements-dev.txt
     #   cyclonedx-python-lib

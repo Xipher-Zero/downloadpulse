@@ -1,22 +1,22 @@
-fastapi==0.141.1
-uvicorn==0.52.4
-uvloop==0.22.1; sys_platform != "win32"
-httptools==0.8.0
-aiohttp==3.14.4
+fastapi==0.163.2
+uvicorn==0.54.0
+uvloop==0.23.0; sys_platform != "win32"
+httptools==0.9.0
+aiohttp==3.14.5
 aiosqlite==0.22.1
-pydantic==2.13.4
-bencode2==0.3.33
+pydantic==2.14.3
+bencode2==0.3.38
 google-re2==1.1.20251105
-python-multipart==0.0.32
+python-multipart==0.0.34
 prometheus-client==0.26.0
 argon2-cffi==25.1.0
-asyncssh==2.24.0
+asyncssh==2.24.1
 # asyncssh's backend for passphrase-encrypted OpenSSH-format private keys (bcrypt
 # KDF), the default format of ssh-keygen; required by username_private_key.
 bcrypt==5.0.0
-authlib==1.9.1
+authlib==1.9.9
 httpx==0.28.1
-joserfc==1.7.6
+joserfc==1.8.0
 # Safe YAML loading for a submitted link list (transfers/requests.py); already
 # shipped with apprise, declared here because DownloadPulse imports it itself.
 pyyaml==6.0.3
@@ -26,7 +26,7 @@ pyyaml==6.0.3
 # runs in its sandboxed worker. No extras: requests/urllib3/certifi are already
 # locked below, websockets and curl_cffi are deliberately absent (no websocket
 # or impersonated transport is in scope), and the image never updates any of it.
-yt-dlp==2026.10.21
+yt-dlp==2026.10.26
 # yt-dlp's JavaScript challenge-solver scripts, read from this package so no
 # remote component is ever fetched at run time.
 yt-dlp-ejs==0.8.0
@@ -52,30 +52,30 @@ deno==2.9.8
 apprise==1.12.0
 sabctools==9.6.3
 CT3==3.4.0.post5
-feedparser==6.0.12
+feedparser==6.0.14
 configobj==5.0.9
 cheroot==11.1.2
 cherrypy==18.10.0
 jaraco.functools==4.6.0
-jaraco.collections==5.0.0
+jaraco.collections==5.2.1
 jaraco.text==3.8.1  # Newer version introduces irrelevant extra dependencies
 jaraco.classes==3.4.0
 jaraco.context==4.3.0
-more-itertools==11.1.0
-zc.lockfile==4.0
-tempora==5.8.1
-pytz==2026.2
+more-itertools==11.2.1
+zc.lockfile==4.1
+tempora==5.13.0
+pytz==2026.6
 sgmllib3k==1.0.0
 portend==3.2.1
 PySocks==1.7.1
-puremagic==2.2.0
-rarfile==4.3
-guessit==4.1.0
+puremagic==2.3.0
+rarfile==4.5
+guessit==4.4.0
 babelfish==0.6.1
-rebulk==6.0.1
-hachoir==3.3.0
+rebulk==6.0.2
+hachoir==3.4.0
 ujson==5.13.0
-orjson==3.11.9
+orjson==3.13.0
 # Deliberately NOT carried over: notify2 (the service's Linux desktop-notification
 # helper). The bundled service is headless and private, there is no desktop
 # session to notify, DownloadPulse owns notifications, and the service imports it
