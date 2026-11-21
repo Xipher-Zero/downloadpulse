@@ -72,3 +72,17 @@ def test_log_values_never_carry_a_line_break():
     assert "\n" not in sanitize_log_value(forged) and "\r" not in sanitize_log_value(forged)
     assert sanitize_log_value(forged) == "name\\r\\n2026-11-21 ERROR forged record"
     assert "\n" not in sanitize_exception(RuntimeError(forged))
+
+
+def test_log_redaction_is_linear_on_hostile_values():
+    import time
+
+    from core.logging_utils import sanitize_log_value
+
+    started = time.monotonic()
+    for hostile in ("a" * 200_000, "a://!:!" * 30_000, "x://" + "y:" * 50_000):
+        sanitize_log_value(hostile)
+    assert time.monotonic() - started < 2
+    # Redaction is unchanged, and still runs before the value is shortened.
+    assert sanitize_log_value("see https://user:secret@host/p") == "see https://user:<redacted>@host/p"
+    assert "secret" not in sanitize_log_value("x" * 5000 + " https://u:secret@h/", max_length=6000)

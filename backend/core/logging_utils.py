@@ -21,7 +21,12 @@ _SENSITIVE_QUERY_RE = re.compile(
     r"(?i)([?&](?:api[_-]?key|apikey|token|secret|password|pass|key)=)([^&\s\"']+)"
 )
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*[:=]\s*(?:bearer|token|basic)\s+)[^\s,\"']+")
-_CREDENTIAL_URL_RE = re.compile(r"([a-z][a-z0-9+.-]*://[^:\s/@]+:)([^@\s]+)(@)", re.IGNORECASE)
+# A scheme starts only where a scheme run starts, and the user and password are
+# bounded: linear on any input, never a rescan from every position.
+_CREDENTIAL_URL_RE = re.compile(r"(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}://[^:\s/@]{1,256}:)([^@\s]{1,1024})(@)", re.IGNORECASE)
+# The most of a value the patterns read: what is logged is far shorter
+# (max_length), and redaction still runs before that truncation.
+_SCAN_LIMIT = 4096
 
 
 def _short_hash(value: str) -> str:
@@ -39,7 +44,8 @@ def sanitize_log_value(value: Any, max_length: int = 300) -> str:
     """Return a short, log-safe string with secrets and long URLs redacted."""
     if value is None:
         return ""
-    msg = str(value)
+    # A margin past what is kept: a credential that straddles the cut is never kept half-redacted.
+    msg = str(value)[:max(_SCAN_LIMIT, max_length + 2048)]
     msg = _CREDENTIAL_URL_RE.sub(r"\1<redacted>\3", msg)
     msg = _AUTH_HEADER_RE.sub(r"\1<redacted>", msg)
     msg = _WEBHOOK_URL_RE.sub("<webhook-url>", msg)
