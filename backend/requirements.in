@@ -49,7 +49,7 @@ deno==2.9.8
 #     pycparser, certifi, idna, urllib3, charset_normalizer, six,
 #     python-dateutil, cryptography and the requests/apprise sub-dependencies),
 #     which would otherwise downgrade packages DownloadPulse already ships.
-apprise==1.12.0
+apprise==2.2.0
 sabctools==9.6.3
 CT3==3.4.0.post5
 feedparser==6.0.12

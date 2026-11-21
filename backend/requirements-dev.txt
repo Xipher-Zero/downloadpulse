@@ -20,7 +20,7 @@ anyio==4.14.2
     # via
     #   httpx
     #   starlette
-apprise==1.12.0
+apprise==2.2.0
     # via -r requirements.in
 argon2-cffi==25.1.0
     # via -r requirements.in
@@ -245,7 +245,9 @@ typing-inspection==0.4.2
 ujson==5.13.0
     # via -r requirements.in
 urllib3==2.8.0
-    # via requests
+    # via
+    #   apprise
+    #   requests
 uvicorn==0.52.4
     # via -r requirements.in
 uvloop==0.22.1 ; sys_platform != "win32"
