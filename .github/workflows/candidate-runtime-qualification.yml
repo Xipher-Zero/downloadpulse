@@ -123,7 +123,7 @@ jobs:
       CHILD_DIGEST: ${{ matrix.arch == 'amd64' && needs.identity.outputs.amd64_digest || needs.identity.outputs.arm64_digest }}
     steps:
       - name: Set up QEMU for cross-platform execution
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
 
       - name: Log in to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
