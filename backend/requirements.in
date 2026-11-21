@@ -74,7 +74,7 @@ guessit==4.1.0
 babelfish==0.6.1
 rebulk==6.0.1
 hachoir==3.3.0
-ujson==5.13.0
+ujson==6.1.0
 orjson==3.11.9
 # Deliberately NOT carried over: notify2 (the service's Linux desktop-notification
 # helper). The bundled service is headless and private, there is no desktop
