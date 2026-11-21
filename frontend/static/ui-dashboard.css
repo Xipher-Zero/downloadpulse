@@ -1,0 +1,2087 @@
+/* DownloadPulse v1.0.11 Dashboard presentation. */
+
+#content.dashboard-active {
+  overflow-y: hidden;
+}
+
+#view-dashboard:is(.active, [data-dp-motion-outgoing]) {
+  display: flex !important;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Primary dashboard metrics ─────────────────────────────────────────── */
+#view-dashboard .dash-hero {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--dp-card-gap);
+  margin: 0 0 var(--dp-section-gap);
+  flex: 0 0 auto;
+}
+
+#view-dashboard .dash-hero-stat {
+  --c: var(--dp-accent-purple-bright);
+  min-width: 0;
+  min-height: var(--dp-metric-card-min-height);
+  padding: 17px 18px 15px;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-lg);
+  background:
+    radial-gradient(circle at 10% 12%, color-mix(in srgb, var(--c) 7%, transparent), transparent 45%),
+    linear-gradient(155deg, var(--dp-surface-2), var(--dp-surface-1));
+  box-shadow: var(--dp-shadow-card);
+  transition: border-color .14s ease, transform .14s ease, box-shadow .14s ease;
+}
+
+#view-dashboard .dash-hero-stat::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--c);
+  opacity: .92;
+}
+
+#view-dashboard .dash-hero-stat[data-c="orange"] { --c: var(--dp-accent-purple-bright); }
+#view-dashboard .dash-hero-stat[data-c="green"] { --c: var(--dp-state-success); }
+#view-dashboard .dash-hero-stat[data-c="blue"] { --c: var(--dp-state-active); }
+#view-dashboard .dash-hero-stat[data-c="yellow"] { --c: var(--dp-state-processing); }
+#view-dashboard .dash-hero-stat[data-c="red"] { --c: var(--dp-state-error); }
+#view-dashboard .dash-hero-stat[data-c="purple"] { --c: var(--dp-accent-blue-bright); }
+
+#view-dashboard .dash-hero-stat:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--c) 32%, var(--dp-border-default));
+  box-shadow: var(--dp-shadow-card), 0 0 22px color-mix(in srgb, var(--c) 7%, transparent);
+}
+
+#view-dashboard .dhs-icon {
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  opacity: 1;
+  line-height: 1;
+  font-size: 0;
+}
+#view-dashboard .dhs-icon .dp-icon {
+  width: 48px;
+  height: 48px;
+}
+
+#view-dashboard .dhs-val {
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: var(--dp-type-metric-value-size);
+  line-height: var(--dp-type-metric-value-line);
+  font-weight: var(--dp-type-metric-value-weight);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.025em;
+}
+#view-dashboard .dhs-val--sm { font-size: 20px; }
+#view-dashboard .dhs-label {
+  margin-top: 6px;
+  color: var(--dp-text-secondary);
+  font-size: var(--dp-type-metric-label-size);
+  line-height: var(--dp-type-metric-label-line);
+  font-weight: var(--dp-type-metric-label-weight);
+  letter-spacing: var(--dp-type-metric-label-tracking);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+#view-dashboard .dhs-sub {
+  margin-top: 3px;
+  color: var(--dp-text-muted);
+  font-family: var(--dp-font-mono);
+  font-size: 9.5px;
+  line-height: 1.25;
+}
+
+
+/* ── Shared Dashboard action axis (Correction 3) ─────────────────────────
+   One canonical track width for the three right-side Dashboard action
+   controls -- Recover All, Quick Add's Add button, and each Recent Activity
+   row's Pause/Resume button -- so their centers align on a single vertical
+   line. Sized from Recover All's own natural rendered width (the widest of
+   the three: measured 114px at the "btn btn-warn btn-sm" dimensions above),
+   plus a couple of px of breathing room -- never from a screenshot pixel
+   measurement. Each consumer wraps its (unresized) button in this track and
+   centers it; the track itself is always right-anchored flush with its
+   row's own existing right inset, so identical track width + identical
+   right anchor = identical center, without any transform/position hack. */
+#view-dashboard {
+  --dp-dashboard-action-track: 116px;
+  /* The accepted right inset that keeps the action track's right edge (and
+     therefore its center) flush with Quick Add's own right inset -- see the
+     wide Recent Activity column-geometry block below, which is now the sole
+     consumer and owns where that inset is actually applied. */
+  --dp-dashboard-action-inset: 17px;
+}
+#view-dashboard .dp-dashboard-action-track {
+  display: flex;
+  justify-content: center;
+  width: var(--dp-dashboard-action-track);
+  flex: 0 0 auto;
+}
+
+/* ── Quick Add ─────────────────────────────────────────────────────────── */
+#view-dashboard .dp-dashboard-quick-add {
+  flex: 0 0 auto;
+  margin: 0 0 var(--dp-section-gap) !important;
+  overflow: visible;
+  border-color: color-mix(in srgb, var(--dp-accent-purple) 22%, var(--dp-border-default));
+  background:
+    radial-gradient(circle at 4% 0%, rgba(var(--dp-accent-rgb), .065), transparent 30%),
+    linear-gradient(180deg, var(--dp-surface-2), var(--dp-surface-1));
+}
+
+#view-dashboard .dp-dashboard-quick-add .card-header,
+#view-dashboard .dp-dashboard-activity .card-header {
+  min-height: 50px;
+  padding: 0 var(--dp-card-padding);
+  border-bottom: 1px solid var(--dp-border-subtle);
+}
+
+#view-dashboard .dp-dashboard-quick-add .card-title,
+#view-dashboard .dp-dashboard-activity .card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: var(--dp-type-card-title-size);
+  font-weight: 600;
+}
+
+#view-dashboard .dp-dashboard-quick-add .card-title > .dp-icon,
+#view-dashboard .dp-dashboard-activity .card-title > .dp-icon {
+  width: 28px;
+  height: 28px;
+}
+
+#view-dashboard .dp-dashboard-quick-add > div:last-child {
+  padding: 14px 16px 16px !important;
+}
+
+/* Quick Add's entry is one field holding its action (.dp-action-field,
+   ui-universal-language.css): that field's border, surface, hover and focus
+   ring hold the bare textarea and, inside them at the right, Add -- centred
+   on the field however tall the text makes it, at every width. */
+#view-dashboard .direct-link-entry {
+  gap: 8px;
+  padding-inline: 0 10px;
+}
+#view-dashboard .direct-link-input {
+  min-height: var(--dp-input-height);
+  width: 100%;
+  padding: 10px 13px;
+  font-family: var(--dp-font-mono);
+  font-size: 12px;
+  line-height: 18px;
+}
+#view-dashboard .direct-link-input::placeholder { color: var(--dp-text-muted); }
+#view-dashboard #btn-add-transfer {
+  height: var(--dp-input-height);
+  min-width: 92px;
+  padding: 0 20px !important;
+  justify-content: center;
+  border-radius: var(--dp-radius-sm);
+  background: var(--dp-gradient-primary);
+  color: var(--dp-text-inverse);
+  box-shadow: 0 7px 18px rgba(var(--dp-accent-rgb), .16);
+}
+#view-dashboard #btn-add-transfer:hover {
+  background: var(--dp-gradient-primary-hover);
+  box-shadow: 0 8px 22px rgba(var(--dp-accent-rgb), .24);
+}
+#view-dashboard #btn-recover-all .dp-icon { width: 15px; height: 15px; }
+
+/* ── Recent Activity ───────────────────────────────────────────────────── */
+#view-dashboard .dp-dashboard-activity {
+  flex: 1 1 auto;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--dp-surface-2), var(--dp-surface-1));
+}
+
+#view-dashboard .dash-activity-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+#view-dashboard .t-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--dp-type-table-body-size);
+}
+/* Below the 1390px desktop boundary the table keeps auto layout (no forced
+   nth-child track), so the Action column still needs its own shrink-to-fit
+   hint -- the same behavior the removed inline width:1% used to provide. */
+#view-dashboard .dp-dashboard-action-column {
+  width: 1%;
+  white-space: nowrap;
+  text-align: center;
+}
+#view-dashboard .dp-dashboard-activity .t-table td:last-child {
+  text-align: center;
+}
+/* .actions is a shared global class (also used on the Downloads page); this
+   override is scoped to the Dashboard Recent Activity table only, so the
+   Downloads page's own row actions are untouched. inline-flex lets the
+   parent td's text-align: center actually center this variable-width,
+   intrinsically-sized control instead of stretching it. */
+#view-dashboard .dp-dashboard-activity .t-table td:last-child .actions {
+  display: inline-flex;
+}
+#view-dashboard .t-table thead th {
+  height: var(--dp-table-head-height);
+  padding: 0 14px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid var(--dp-border-default);
+  background: color-mix(in srgb, var(--dp-surface-2) 94%, transparent);
+  color: var(--dp-text-muted);
+  font-size: var(--dp-type-table-head-size);
+  font-weight: var(--dp-type-table-head-weight);
+  letter-spacing: var(--dp-type-table-head-tracking);
+  text-transform: uppercase;
+}
+#view-dashboard .t-table tbody tr {
+  min-height: var(--dp-table-row-height);
+  border-bottom: 1px solid var(--dp-border-subtle);
+  transition: background .12s ease;
+}
+#view-dashboard .t-table tbody tr:hover { background: rgba(var(--dp-accent-rgb), .035); }
+#view-dashboard .t-table td {
+  height: var(--dp-table-row-height);
+  padding: 8px 14px;
+  color: var(--dp-text-secondary);
+}
+#view-dashboard .t-table tbody tr:last-child { border-bottom: 0; }
+
+/* ── Light-theme adjustments ───────────────────────────────────────────── */
+body.light #view-dashboard .dash-hero-stat,
+body.light #view-dashboard .dp-dashboard-quick-add,
+body.light #view-dashboard .dp-dashboard-activity {
+  background: linear-gradient(180deg, #ffffff, var(--dp-surface-2));
+  box-shadow: var(--dp-shadow-card);
+}
+body.light #view-dashboard .t-table thead th { background: #f7f9fd; }
+
+/* ── Responsive dashboard ──────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  #view-dashboard .dash-hero { gap: 10px; }
+  #view-dashboard .dash-hero-stat { padding-inline: 14px; gap: 10px; }
+  #view-dashboard .dhs-icon,
+  #view-dashboard .dhs-icon .dp-icon { width: 42px; min-width: 42px; height: 42px; }
+  #view-dashboard .dhs-val { font-size: 24px; }
+  #view-dashboard .dhs-val--sm { font-size: 17px; }
+}
+
+@media (max-width: 1179px) {
+  #content.dashboard-active { overflow-y: auto; }
+  #view-dashboard:is(.active, [data-dp-motion-outgoing]) { height: auto; overflow: visible; }
+  #view-dashboard .dash-hero { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 899px) {
+  #view-dashboard .dash-hero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #view-dashboard .dash-hero-stat,
+  #view-dashboard .t-table tbody tr { transition: none; }
+  #view-dashboard .dash-hero-stat:hover { transform: none; }
+}
+
+/* Canonical Dashboard structural calibration. The rules below previously lived
+   in an adjacent migration stylesheet. They remain in the same source order. */
+
+#content.dashboard-active { overflow-y: auto; }
+#view-dashboard:is(.active, [data-dp-motion-outgoing]) {
+  display: flex !important;
+  flex-direction: column;
+  height: auto;
+  overflow: visible;
+}
+/* At least the window's workspace from 780px; on a handheld, at least the
+   content box #content leaves above the dock (the handheld block below). */
+@media (min-width: 780px) {
+  #view-dashboard:is(.active, [data-dp-motion-outgoing]) { min-height: calc(100vh - var(--dp-shell-header) - 24px); }
+}
+
+#view-dashboard .dash-hero {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+  margin: 0 0 15px;
+}
+/* From 780px each card is its icon at the left and, beside it, its text:
+   the title over the value (and, under the value, any secondary line). The
+   icon spans the card's rows (the last takes what is left), so the title and
+   value keep their own spacing; the tallest heartbeat on the line below (and
+   its glow) stays clear of the text. Below 780px the handheld block below
+   composes the title over the icon and value instead. */
+#view-dashboard .dash-hero-stat {
+  min-height: 130px;
+  padding: 20px 17px 30px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: 5px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(105, 119, 181, .23);
+  background:
+    radial-gradient(circle at 92% 10%, color-mix(in srgb, var(--c) 8%, transparent), transparent 44%),
+    linear-gradient(145deg, rgba(17, 22, 51, .96), rgba(9, 14, 35, .98));
+  box-shadow: inset 0 1px rgba(255,255,255,.02), 0 10px 27px rgba(0,0,12,.11);
+}
+#view-dashboard .dash-hero-stat::before {
+  height: 3px;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--c) 24%, transparent);
+}
+#view-dashboard .dhs-icon {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  margin-top: 1px;
+  width: 51px;
+  min-width: 51px;
+  height: 51px;
+}
+#view-dashboard .dhs-icon .dp-icon {
+  width: 51px;
+  height: 51px;
+}
+#view-dashboard .dhs-body {
+  grid-column: 2;
+  grid-row: 2;
+  /* Never narrower than its value: what fitDashboardKpiValues (app.js)
+     measures on a handheld is what is drawn. */
+  min-width: auto;
+  position: relative;
+  z-index: 2;
+}
+#view-dashboard .dhs-val {
+  font-size: 27px;
+  line-height: 1;
+  font-weight: 750;
+  color: var(--dp-chrome-kpi-value);
+}
+#view-dashboard .dhs-val--sm { font-size: 23px; }
+#view-dashboard .dhs-label {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  z-index: 2;
+  margin-top: 2px;
+  color: var(--dp-chrome-kpi-label);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .045em;
+}
+#view-dashboard .dhs-sub {
+  margin-top: 4px;
+  white-space: nowrap;
+  font-size: 8px;
+  opacity: .66;
+}
+
+.dp-card-spark {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 7px;
+  width: calc(100% - 20px);
+  height: 38px;                     /* 31 px of line art (24 units) over a 7 px raised floor */
+  color: var(--c);
+  --dp-card-spark-rest: .4;
+  opacity: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+/* The line is one calligraphic brush stroke, the page title's: a filled outline
+   around the signal, its width a broad nib's (app.js dashboardBrushOutline),
+   painted by its signal gradient (the path's fill). At rest it is the flat
+   ribbon of the baseline (index.html). */
+.dp-card-spark .dp-card-spark-line {
+  stroke: none;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+/* The line is the signal: its stroke gradient (app.js) is the dim resting
+   baseline everywhere except where a heartbeat deforms it -- the leading P-QRS
+   at its most intense, then fading through the tail back into the baseline.
+   The heartbeat is the card's own accent at full strength: more chroma at the
+   same hue, a little lighter on the dark theme and a little deeper on the
+   light one, never mixed toward white, grey or black. */
+.dp-card-spark .dp-card-spark-rest { stop-color: currentColor; stop-opacity: var(--dp-card-spark-rest); }
+.dp-card-spark .dp-card-spark-lead {
+  stop-color: currentColor;
+  stop-color: oklch(from currentColor calc(l + .03) calc(c * 1.1) h);
+  stop-opacity: 1;
+}
+.dp-card-spark .dp-card-spark-body { stop-color: currentColor; stop-opacity: .9; }
+.dp-card-spark .dp-card-spark-tail { stop-color: currentColor; stop-opacity: .6; }
+body.light .dp-card-spark .dp-card-spark-lead { stop-color: oklch(from currentColor calc(l - .05) calc(c * 1.1) h); }
+/* The glow beneath the line (app.js): the card's accent fading from the
+   baseline toward the card's floor, masked by the line's own stroke gradient,
+   so its intensity at every point is the signal's. */
+.dp-card-spark .dp-card-spark-glow-top { stop-color: var(--c); stop-opacity: .55; }
+.dp-card-spark .dp-card-spark-glow-bottom { stop-color: var(--c); stop-opacity: .12; }
+body.light .dp-card-spark .dp-card-spark-glow-top { stop-opacity: .5; }
+body.light .dp-card-spark .dp-card-spark-glow-bottom { stop-opacity: .1; }
+/* Global Pause All, once the strip has drained (app.js): every line is the
+   same flat, saturated red, breathing in step -- still under reduced motion.
+   Only the lines change; the cards keep their own colours. */
+#view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark { color: #ff1f35; --dp-card-spark-flatline-dim: .38; }
+body.light #view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark { color: #e0001f; --dp-card-spark-flatline-dim: .55; }
+#view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark .dp-card-spark-rest { stop-opacity: 1; }
+#view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark-line { animation: dp-card-spark-flatline 2.5s ease-in-out infinite; }
+/* The glow keeps the card's accent at its resting level, still. */
+#view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark-fill { mask: none; opacity: var(--dp-card-spark-rest); }
+@keyframes dp-card-spark-flatline {
+  0%, 100% { opacity: var(--dp-card-spark-flatline-dim); }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark-line { animation: none; }
+}
+
+
+#view-dashboard .dp-dashboard-quick-add,
+#view-dashboard .dp-dashboard-activity {
+  border: 1px solid rgba(105, 119, 181, .22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(14, 19, 44, .94), rgba(8, 13, 31, .98));
+  box-shadow: inset 0 1px rgba(255,255,255,.018), 0 10px 28px rgba(0,0,10,.08);
+}
+#view-dashboard .dp-dashboard-quick-add { margin: 0 0 14px !important; }
+#view-dashboard .dp-dashboard-quick-add .card-header {
+  min-height: 78px;
+  padding: 0 17px;
+}
+#view-dashboard .dp-dashboard-quick-add .card-title,
+#view-dashboard .dp-dashboard-activity .card-title {
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--dp-chrome-card-title);
+}
+#view-dashboard .dp-dashboard-quick-add .card-title > .dp-icon,
+#view-dashboard .dp-dashboard-activity .card-title > .dp-icon {
+  width: 38px;
+  height: 38px;
+}
+.dp-card-heading-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.dp-card-subtitle {
+  color: var(--dp-chrome-card-subtitle);
+  font-size: 11.5px;
+  line-height: 1.25;
+  font-weight: 400;
+}
+.dp-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+#view-dashboard #btn-recover-all,
+#view-dashboard .dp-dashboard-activity .btn {
+  min-height: 36px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(111, 126, 187, .22);
+  background: rgba(11, 16, 38, .72);
+  color: #d7d9eb;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+#view-dashboard #btn-recover-all {
+  border-color: rgba(245, 178, 45, .35);
+  color: #f5c144;
+}
+#view-dashboard .dp-dashboard-quick-add > div:last-child {
+  padding: 13px 16px 15px !important;
+  border-top: 1px solid var(--dp-chrome-card-divider);
+}
+#view-dashboard .direct-link-input {
+  min-height: 59px;
+  max-height: 112px;
+  padding: 12px 13px;
+  resize: none;
+  font-size: 11.5px;
+  line-height: 18px;
+}
+#view-dashboard #btn-add-transfer {
+  align-self: stretch;
+  height: auto;
+  min-height: 59px;
+  min-width: 96px;
+  border-radius: 8px;
+  border: 1px solid rgba(164, 92, 255, .42);
+  background: linear-gradient(135deg, #8b2ee8 0%, #6840f1 52%, #3477f5 100%);
+  box-shadow: 0 8px 22px rgba(94, 55, 235, .20), inset 0 1px rgba(255,255,255,.12);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+#view-dashboard .dp-dashboard-activity {
+  flex: 1 0 auto;
+  overflow: hidden;
+}
+@media (min-width: 780px) {
+  #view-dashboard .dp-dashboard-activity { min-height: 315px; }
+}
+#view-dashboard .dp-dashboard-activity .card-header {
+  min-height: 70px;
+  padding: 0 17px;
+  border-bottom: 1px solid rgba(105, 119, 181, .15);
+}
+#view-dashboard #dash-activity-count {
+  display: block !important;
+  color: var(--dp-chrome-card-subtitle) !important;
+  font-size: 10.5px !important;
+}
+#view-dashboard .dash-activity-table-wrap { overflow: hidden auto; }
+/* The desktop table's floor; below 780px it is the Transfer Summary and
+   Action, as wide as the card. */
+@media (min-width: 780px) {
+  #view-dashboard .t-table { min-width: 760px !important; }
+}
+#view-dashboard .t-table thead th {
+  height: 33px;
+  padding: 0 14px;
+  background: rgba(16, 21, 48, .88);
+  border-bottom: 1px solid rgba(105, 119, 181, .14);
+  color: var(--dp-chrome-table-head-text);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .05em;
+}
+#view-dashboard .t-table tbody tr { border-bottom: 1px solid var(--dp-chrome-table-row-edge); }
+#view-dashboard .t-table td {
+  height: 57px;
+  padding: 8px 14px;
+  color: var(--dp-chrome-table-text);
+  font-size: 11.5px;
+}
+#view-dashboard .t-table tbody tr:hover { background: var(--dp-chrome-table-row-hover); }
+#view-dashboard .badge {
+  min-height: 25px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+#view-dashboard .prog-bg,
+#view-dashboard .progress-track {
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(112, 125, 177, .13);
+}
+/* DP 1.0.12 UI Finishing, Correction 9 anti-layering audit: the
+   #view-dashboard-scoped .prog-fill/.progress-fill block that used to live
+   here was removed. .progress-fill does not exist anywhere in current
+   markup, and every real .prog-fill element lives inside #dash-tbody/
+   #t-tbody (app.js's shared progress() renderer), which the ordinary
+   progress-glow owner below always shadows via !important -- this block was
+   already fully superseded dead weight, not a second live glow owner. */
+
+body.light #view-dashboard .dash-hero-stat,
+body.light #view-dashboard .dp-dashboard-quick-add,
+body.light #view-dashboard .dp-dashboard-activity {
+  background: linear-gradient(180deg, #ffffff, #f8f9fd);
+  border-color: #dce1ef;
+  box-shadow: 0 8px 22px rgba(62, 71, 106, .07);
+}
+body.light #view-dashboard .dhs-val,
+body.light #view-dashboard .dp-dashboard-quick-add .card-title,
+body.light #view-dashboard .dp-dashboard-activity .card-title { color: var(--dp-chrome-card-title); }
+body.light #view-dashboard .dhs-label { color: var(--dp-chrome-kpi-label); }
+body.light .dp-card-subtitle,
+body.light #view-dashboard #dash-activity-count { color: var(--dp-chrome-card-subtitle) !important; }
+body.light #view-dashboard .t-table thead th { background: #f5f7fc; color: var(--dp-chrome-table-head-text); }
+body.light #view-dashboard .t-table td { color: var(--dp-chrome-table-text); }
+
+/* The six cards keep one row through the whole desktop: with the full
+   sidebar (from 1560px) and on the compact rail down to 1390px, where the
+   widest label, "Total Downloaded", still keeps the clearance it has at the
+   full sidebar's minimum (measured; it meets its card edge near 1365px).
+   Below the desktop the strip keeps three of them -- Total Downloads,
+   Completed and Total Downloaded, in that order -- on one row down to 780px:
+   Active Now, Processing and Errors leave the layout (each named by its own
+   value), still filled with every update and shown again from 1390px. On a
+   handheld (779px and below) the strip is two cards, Total Downloads then
+   Completed: Total Downloaded leaves the layout too, in the same way, and is
+   shown again from 780px. The two always share one row at equal widths, each
+   its title centred across the top, over its icon and value centred together
+   beneath it (the title wrapping only between its words where the card is
+   too narrow for one line); each
+   card shows its exact count beside its icon wherever that fits, else its
+   compact form (fitDashboardKpiValues, app.js, measured on the card itself). */
+@media (max-width: 1389px) {
+  #view-dashboard .dash-hero { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #view-dashboard .dash-hero-stat:has(#s-active, #s-processing, #s-error) { display: none; }
+}
+/* Quick Add on a handheld keeps the desktop's rows. The header is one row:
+   the icon and the title over its one-line subtitle on the left, contracting,
+   and Recover All at the right inset (the processing-paused notice, when
+   shown, is the row below it). Where the row is short, fitQuickAddHeader
+   (app.js) gives way in one order, measured on the rendered subtitle: Recover
+   All first keeps only its glyph (its label stays its accessible name), then
+   the subtitle shows its shorter wording (data-short; the full sentence stays
+   its accessible text). Recover All's track, which lines it up with the
+   desktop's row actions, is only as wide as it here, so it reaches the
+   header's right inset. */
+@media (max-width: 779px) {
+  #view-dashboard .dash-hero { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  #view-dashboard .dash-hero-stat {
+    padding-top: 10px;
+    grid-template-columns: minmax(0, 1fr) auto auto minmax(0, 1fr);
+    grid-template-rows: none;
+    align-content: start;
+    align-items: center;
+    gap: 7px 0;
+  }
+  #view-dashboard .dhs-label { grid-column: 1 / -1; grid-row: 1; justify-self: center; margin-top: 0; text-align: center; }
+  #view-dashboard .dhs-icon { grid-column: 2; grid-row: 2; margin-top: 0; }
+  #view-dashboard .dhs-body { grid-column: 3; grid-row: 2; margin-left: 8px; }
+  #view-dashboard .dhs-val { white-space: nowrap; font-size: 22px; }
+  /* A count too wide to stand beside its icon is drawn in compact notation
+     (data-compact, chosen by fitDashboardKpiValues in app.js) at the value's
+     own size and spacing; the element's text stays the exact count. */
+  #view-dashboard .dhs-val[data-compact] { font-size: 0; }
+  #view-dashboard .dhs-val[data-compact]::before { content: attr(data-compact) / ""; font-size: 22px; letter-spacing: -.025em; }
+  #view-dashboard .dhs-label { white-space: normal; }
+  #view-dashboard .dash-hero-stat:has(#s-size) { display: none; }
+  /* The Dashboard fills the content box #content leaves above the dock (its
+     10px inset, safe area included: ui-shell-mobile.css), and may grow past
+     it only where its sections cannot fit; Download Activity, last, takes
+     what the KPI strip and Quick Add leave, down to that inset (no card
+     margin of its own), and holds the whole rows that room shows
+     (dashboardRecentHandheldLimit, app.js). */
+  #view-dashboard:is(.active, [data-dp-motion-outgoing]) { min-height: 100%; }
+  #view-dashboard #dash-activity-card { margin-bottom: 0 !important; }
+  #view-dashboard .dp-dashboard-action-track { width: auto; }
+  #view-dashboard .dp-dashboard-quick-add .card-title { flex: 1 1 0; min-width: 0; }
+  #view-dashboard .dp-dashboard-quick-add .dp-card-subtitle { white-space: nowrap; }
+  /* Recover All is 44px tall here, and glyph only a 44px square (its 18px
+     glyph, 12px each side and the edge); Add, inside the field, 44px tall. */
+  #view-dashboard #btn-recover-all { --dp-utility-control-block: 44px; }
+  #view-dashboard .dp-dashboard-quick-add > .card-header[data-dp-fit~="icon"] #btn-recover-all { --dp-utility-control-inline: 12px; }
+  #view-dashboard #btn-add-transfer { --dp-quick-add-action-height: 44px; }
+  #view-dashboard .dp-dashboard-quick-add > .card-header[data-dp-fit~="icon"] #btn-recover-all [data-dp-icon-label] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  #view-dashboard .dp-dashboard-quick-add > .card-header[data-dp-fit~="short"] .dp-card-subtitle { font-size: 0; }
+  #view-dashboard .dp-dashboard-quick-add > .card-header[data-dp-fit~="short"] .dp-card-subtitle::before {
+    content: attr(data-short) / "";
+    font-size: 11.5px;
+  }
+}
+
+/* Canonical Dashboard geometry retained from the accepted second review. */
+#view-dashboard .dash-hero-stat {
+  overflow: hidden;
+}
+#view-dashboard .dp-card-spark {
+  left: -1px !important;
+  right: -1px !important;
+  width: calc(100% + 2px) !important;
+  bottom: -1px !important;
+}
+#view-dashboard .dhs-icon,
+#view-dashboard .dhs-icon .dp-icon,
+#view-dashboard .dp-dashboard-quick-add .card-title > .dp-icon,
+#view-dashboard .dp-dashboard-activity .card-title > .dp-icon {
+  width: 51px !important;
+  min-width: 51px !important;
+  height: 51px !important;
+  flex: 0 0 51px !important;
+}
+#view-dashboard .dp-dashboard-activity .card-title > .dp-icon {
+  object-fit: contain;
+  padding: 1px;
+}
+
+/* Canonical Dashboard card framing retained from the accepted review state.
+   Later final layers may tune controls without owning this base framing. */
+#view-dashboard .dash-hero-stat,
+#view-dashboard .dp-dashboard-quick-add,
+#view-dashboard .dp-dashboard-activity {
+  position: relative;
+  border-color: transparent !important;
+}
+#view-dashboard .dash-hero-stat::after,
+#view-dashboard .dp-dashboard-quick-add::after,
+#view-dashboard .dp-dashboard-activity::after {
+  content: '';
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border: 1px solid var(--dp-panel-frame);
+  border-bottom: 0;
+  border-radius: inherit;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 58%, rgba(0,0,0,.72) 69%, transparent 80%);
+  mask-image: linear-gradient(180deg, #000 0%, #000 58%, rgba(0,0,0,.72) 69%, transparent 80%);
+  pointer-events: none;
+}
+body.light #view-dashboard .dash-hero-stat::after,
+body.light #view-dashboard .dp-dashboard-quick-add::after,
+body.light #view-dashboard .dp-dashboard-activity::after {
+  border-color: var(--dp-panel-frame);
+}
+#view-dashboard .dash-hero-stat,
+#view-dashboard .dp-dashboard-quick-add,
+#view-dashboard .dp-dashboard-activity {
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.024),
+    -6px 8px 14px -8px rgba(0,0,0,.66),
+    0 5px 11px -8px rgba(0,0,0,.46) !important;
+}
+body.light #view-dashboard .dash-hero-stat,
+body.light #view-dashboard .dp-dashboard-quick-add,
+body.light #view-dashboard .dp-dashboard-activity {
+  box-shadow: var(--dp-panel-shadow) !important;
+}
+#view-dashboard .dp-dashboard-quick-add .card-header,
+#view-dashboard .dp-dashboard-activity .card-header {
+  background: var(--dp-panel-header-surface) !important;
+  border-bottom-color: var(--dp-panel-header-border) !important;
+}
+body.light #view-dashboard .dp-dashboard-quick-add .card-header,
+body.light #view-dashboard .dp-dashboard-activity .card-header {
+  background: var(--dp-panel-header-surface) !important;
+  border-bottom-color: var(--dp-panel-header-border) !important;
+}
+
+/* Empty Recent Activity is one continuous quiet surface. */
+#view-dashboard #dash-tbody tr:not([data-torrent-id]),
+#view-dashboard #dash-tbody tr:not([data-torrent-id]):hover {
+  background: transparent !important;
+  border-bottom: 0 !important;
+}
+#view-dashboard #dash-tbody tr:not([data-torrent-id]) td {
+  border-bottom: 0 !important;
+}
+#view-dashboard #dash-tbody tr:not([data-torrent-id]) .empty {
+  background: transparent !important;
+}
+
+/* Canonical Dashboard surface calibration retained from the accepted review. */
+#view-dashboard .dash-hero-stat::before {
+  display: block !important;
+  content: '';
+  position: absolute !important;
+  z-index: 6 !important;
+  left: -1px !important;
+  top: -1px !important;
+  width: calc(100% - 13px) !important;
+  height: 10px !important;
+  border: 0 !important;
+  border-top: 3px solid var(--c) !important;
+  border-left: 1.5px solid color-mix(in srgb, var(--c) 72%, transparent) !important;
+  border-top-left-radius: 12px !important;
+  background: transparent !important;
+  box-shadow: 0 -1px 8px color-mix(in srgb, var(--c) 24%, transparent) !important;
+  -webkit-mask-image: linear-gradient(90deg,
+    #000 0%,
+    #000 74%,
+    rgba(0,0,0,.94) 81%,
+    rgba(0,0,0,.78) 87%,
+    rgba(0,0,0,.57) 92%,
+    rgba(0,0,0,.31) 96.5%,
+    transparent 100%) !important;
+  mask-image: linear-gradient(90deg,
+    #000 0%,
+    #000 74%,
+    rgba(0,0,0,.94) 81%,
+    rgba(0,0,0,.78) 87%,
+    rgba(0,0,0,.57) 92%,
+    rgba(0,0,0,.31) 96.5%,
+    transparent 100%) !important;
+  pointer-events: none;
+}
+
+#view-dashboard .dash-hero-stat {
+  background:
+    radial-gradient(ellipse 105% 88% at 1% -8%,
+      color-mix(in srgb, var(--c) 19%, transparent) 0%,
+      color-mix(in srgb, var(--c) 13%, transparent) 24%,
+      color-mix(in srgb, var(--c) 7%, transparent) 46%,
+      color-mix(in srgb, var(--c) 2.5%, transparent) 64%,
+      transparent 76%),
+    linear-gradient(155deg, var(--dp-surface-2), var(--dp-surface-1)) !important;
+}
+body.light #view-dashboard .dash-hero-stat {
+  background:
+    radial-gradient(ellipse 105% 88% at 1% -8%,
+      color-mix(in srgb, var(--c) 15%, transparent) 0%,
+      color-mix(in srgb, var(--c) 10%, transparent) 25%,
+      color-mix(in srgb, var(--c) 5.5%, transparent) 48%,
+      color-mix(in srgb, var(--c) 2%, transparent) 65%,
+      transparent 77%),
+    linear-gradient(180deg, var(--dp-surface-1), var(--dp-surface-2)) !important;
+}
+
+#view-dashboard .dp-dashboard-quick-add,
+#view-dashboard .dp-dashboard-activity {
+  overflow: hidden !important;
+}
+#view-dashboard .dp-dashboard-quick-add .card-header,
+#view-dashboard .dp-dashboard-activity .card-header {
+  border-radius: var(--dp-radius-lg) var(--dp-radius-lg) 0 0 !important;
+  background-clip: padding-box !important;
+}
+
+#view-dashboard .dash-hero-stat::after,
+#view-dashboard .dp-dashboard-quick-add::after,
+#view-dashboard .dp-dashboard-activity::after {
+  -webkit-mask-image: linear-gradient(180deg,
+    #000 0%,
+    #000 42%,
+    rgba(0,0,0,.94) 53%,
+    rgba(0,0,0,.80) 65%,
+    rgba(0,0,0,.61) 76%,
+    rgba(0,0,0,.39) 85%,
+    rgba(0,0,0,.18) 93%,
+    transparent 98%) !important;
+  mask-image: linear-gradient(180deg,
+    #000 0%,
+    #000 42%,
+    rgba(0,0,0,.94) 53%,
+    rgba(0,0,0,.80) 65%,
+    rgba(0,0,0,.61) 76%,
+    rgba(0,0,0,.39) 85%,
+    rgba(0,0,0,.18) 93%,
+    transparent 98%) !important;
+}
+
+#view-dashboard .t-table thead th {
+  background: var(--dp-table-head-surface) !important;
+  border-bottom-color: var(--dp-table-head-border) !important;
+}
+body.light #view-dashboard .t-table thead th {
+  background: var(--dp-table-head-surface) !important;
+  border-bottom-color: var(--dp-table-head-border) !important;
+}
+
+#view-dashboard .dp-dashboard-activity .empty-icon {
+  width: 38px !important;
+  height: 38px !important;
+  margin: 0 auto 8px !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  background: url('/icons/dp/card-download.svg?v=11') center / contain no-repeat !important;
+  opacity: .78;
+  filter: saturate(.92) drop-shadow(0 3px 7px rgba(116, 56, 196, .18));
+}
+body.light #view-dashboard .dp-dashboard-activity .empty-icon {
+  opacity: .72;
+  filter: saturate(.88) drop-shadow(0 3px 7px rgba(107, 62, 171, .14));
+}
+
+/* Canonical Dashboard continuation: accepted v1.0.11 calibration folded in source order. */
+
+/* Consolidated from ui-dashboard-batch5.css. */
+/* DownloadPulse v1.0.11 live-review refinement batch.
+   This is a presentation-only correction layer. It intentionally does not
+   advance the application version or the existing v=18 cache generation. */
+
+/* Provider Status: keep the crown centered on the same left anchor as the
+   connected dot, but reserve actual horizontal room for it. The resulting
+   text measure intentionally breaks before the complete "(NNN days)" phrase. */
+#premium-row {
+  display: block !important;
+  position: relative !important;
+  min-height: 44px !important;
+  padding: 2px 0 10px 28px !important;
+}
+#premium-row::before {
+  position: absolute !important;
+  left: 4px !important;
+  top: 19px !important;
+  transform: translate(-50%, -50%) !important;
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  margin: 0 !important;
+  background-size: 36px 36px !important;
+}
+#lbl-premium {
+  display: block !important;
+  width: 100% !important;
+  max-width: 164px !important;
+  margin: 0 auto !important;
+  white-space: normal !important;
+  overflow-wrap: normal !important;
+  word-break: normal !important;
+  text-align: center !important;
+  font-size: 10px !important;
+  line-height: 1.45 !important;
+  letter-spacing: -.018em !important;
+}
+
+/* Selected sidebar endpoint: one uninterrupted radial spotlight. The old
+   circular box-shadow was the remaining visible halo/ring in the light theme. */
+.nav-item.active::after,
+body.light .nav-item.active::after {
+  background-color: transparent !important;
+  background: radial-gradient(circle at 50% 50%,
+    rgba(255,255,255,.99) 0 1px,
+    rgba(235,205,255,.88) 1.4px,
+    rgba(184,91,255,.78) 3px,
+    rgba(161,72,247,.61) 18%,
+    rgba(143,63,231,.42) 39%,
+    rgba(127,62,218,.19) 62%,
+    rgba(120,68,204,.055) 80%,
+    transparent 100%) !important;
+  box-shadow: none !important;
+}
+
+/* Transfer-status grammar. A status badge draws its glyph with the canonical
+   Lucide runtime (ui-transfer-contract.css); no table injects a text glyph.
+   These colour only the badges themselves: a handheld row's status glyph
+   (DPIcons.statusGlyph) carries the same tone class for its tone token and
+   takes its colour from that alone, the same in both tables. */
+#dash-tbody .badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+:is(#t-tbody, .dp-downloads-styled-tbody) .badge {
+  font-variant-emoji: text;
+  font-family: var(--dp-font-sans), 'Segoe UI Symbol', 'Noto Sans Symbols 2', sans-serif;
+}
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"] .badge-downloading:where(.badge) {
+  color: var(--dp-op-ink, var(--dp-state-success)) !important;
+}
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"] .badge-partial:where(.badge),
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="paused"] .badge-paused:where(.badge) {
+  color: var(--dp-op-ink, #f2bd3f) !important;
+}
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="completed"] .badge-completed:where(.badge) {
+  color: var(--dp-op-ink, var(--dp-state-success)) !important;
+}
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="error"] .badge-error:where(.badge) {
+  color: var(--dp-op-ink, #ff676f) !important;
+}
+
+/* Active transfer progress must read as live work rather than a hairline. */
+#dash-tbody .prog,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog {
+  height: var(--dp-row-progress-track, 6px) !important;
+  border-radius: var(--dp-row-progress-radius, 999px) !important;
+  background: var(--dp-chrome-progress-track) !important;
+  overflow: visible !important;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.10) !important;
+}
+body.light #dash-tbody .prog,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) .prog {
+  background: var(--dp-chrome-progress-track) !important;
+  box-shadow: inset 0 1px 2px rgba(58, 66, 94, .10) !important;
+}
+#dash-tbody .prog-fill,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog-fill {
+  height: var(--dp-row-progress-fill, 6px) !important;
+  border-radius: var(--dp-row-progress-radius, 999px) !important;
+}
+/* DP 1.0.12 UI Finishing (Correction 9): the two data-status="downloading"-
+   scoped background/box-shadow blocks that used to live here were removed.
+   They were higher-specificity duplicates of the SAME background gradients
+   the general #dash-tbody/#t-tbody .prog-fill and tr:has(.badge-partial)
+   .prog-fill rules below already set, differing only in glow alpha -- an
+   accidental byproduct of an earlier pass that scoped the glow by
+   data-status without removing the prior unscoped rule, so a downloading
+   row's real ordinary glow silently diverged from every other active
+   status's glow purely by CSS specificity, never by design. Consolidated so
+   there is exactly one effective ordinary/partial progress-glow owner for
+   Dashboard + Downloads, applying uniformly regardless of transfer status. */
+
+/* Percentage is a primary live-transfer datum, not subordinate metadata. */
+#dash-tbody tr[data-status="downloading"] .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"] .prog-pct {
+  display: inline-block !important;
+  margin-top: 5px !important;
+  font-size: 15px !important;
+  line-height: 1 !important;
+  font-weight: 760 !important;
+  letter-spacing: -.02em !important;
+}
+#dash-tbody tr[data-status="downloading"]:not(:has(.badge-partial)) .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"]:not(:has(.badge-partial)) .prog-pct {
+  color: var(--dp-state-success) !important;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--dp-state-success-fill) 30%, transparent);
+}
+#dash-tbody tr[data-status="downloading"]:has(.badge-partial) .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"]:has(.badge-partial) .prog-pct {
+  color: #f2bd3f !important;
+  text-shadow: 0 0 8px rgba(242, 189, 63, .28);
+}
+body.light #dash-tbody tr[data-status="downloading"]:not(:has(.badge-partial)) .prog-pct,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"]:not(:has(.badge-partial)) .prog-pct {
+  color: var(--dp-state-success) !important;
+}
+body.light #dash-tbody tr[data-status="downloading"]:has(.badge-partial) .prog-pct,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading"]:has(.badge-partial) .prog-pct {
+  color: #b37b0d !important;
+}
+
+/* Operational control grammar: green means resume/go; amber means pause.
+   Red remains reserved for failures and destructive actions. */
+#btn-pause-all,
+button[onclick*="pauseT("] {
+  background: linear-gradient(135deg,
+    rgba(125, 91, 30, .91) 0%,
+    rgba(90, 69, 31, .94) 52%,
+    rgba(57, 49, 39, .97) 100%) !important;
+  border-color: rgba(242, 189, 63, .64) !important;
+  color: #ffd35b !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.06), 0 5px 15px rgba(113, 79, 20, .15) !important;
+}
+body.light #btn-pause-all,
+body.light button[onclick*="pauseT("] {
+  background: linear-gradient(135deg, #fff3cf 0%, #f8dfa2 52%, #edca76 100%) !important;
+  border-color: #d5a63e !important;
+  color: #8b620b !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.78), 0 5px 14px rgba(154, 111, 24, .13) !important;
+}
+#btn-resume-all,
+#btn-resume-paused,
+button[onclick*="resumeT("] {
+  background: linear-gradient(135deg,
+    rgba(25, 117, 78, .84) 0%,
+    rgba(20, 86, 66, .91) 50%,
+    rgba(16, 54, 49, .95) 100%) !important;
+  border-color: rgba(73, 224, 145, .42) !important;
+  color: #9af0bf !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.05), 0 6px 18px rgba(16, 78, 53, .16) !important;
+}
+body.light #btn-resume-all,
+body.light #btn-resume-paused,
+body.light button[onclick*="resumeT("] {
+  background: linear-gradient(135deg, #e4faec 0%, #c9f2da 52%, #afe7c7 100%) !important;
+  border-color: #83d3aa !important;
+  color: #176d46 !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.78), 0 5px 16px rgba(30, 121, 78, .10) !important;
+}
+
+/* Recover is a violet application/recovery action, not an amber pause/caution
+   action. Keep it below the primary Add action in saturation and emphasis. */
+#view-dashboard #btn-recover-all {
+  background:
+    linear-gradient(135deg, rgba(162,95,244,.16), rgba(132,82,210,.05) 48%, transparent 76%),
+    linear-gradient(135deg, #625a75 0%, #504a63 52%, #423d55 100%) !important;
+  border-color: rgba(170, 111, 232, .68) !important;
+  color: #e3c5ff !important;
+  text-shadow: 0 0 8px rgba(169, 104, 234, .18);
+  box-shadow: inset 0 1px rgba(255,255,255,.07), 0 5px 14px rgba(89, 52, 127, .15) !important;
+}
+body.light #view-dashboard #btn-recover-all {
+  background:
+    linear-gradient(135deg, rgba(159,96,228,.13), rgba(137,93,205,.035) 48%, transparent 76%),
+    linear-gradient(135deg, #81788f 0%, #716a83 52%, #625d74 100%) !important;
+  border-color: #a47acb !important;
+  color: #f0ddff !important;
+  text-shadow: 0 0 7px rgba(137, 76, 198, .14);
+  box-shadow: inset 0 1px rgba(255,255,255,.12), 0 5px 14px rgba(78, 58, 102, .14) !important;
+}
+
+/* Primary Add: DP violet first, with layered depth rather than a flat blue
+   rectangle. A tiny cool tail remains only for dimensional separation. */
+#view-dashboard #btn-add-transfer {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,.035) 30%, transparent 48%),
+    linear-gradient(135deg, #973cf4 0%, #7a38ee 48%, #6846e9 78%, #6054df 100%) !important;
+  border-color: rgba(181, 102, 255, .82) !important;
+  color: #ffffff !important;
+  text-shadow: 0 1px 2px rgba(46, 17, 85, .34);
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.24),
+    inset 0 -2px rgba(62,31,126,.18),
+    -3px 7px 14px -6px rgba(105, 45, 190, .48),
+    0 0 18px rgba(130, 62, 232, .18) !important;
+}
+body.light #view-dashboard #btn-add-transfer {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.22) 0%, rgba(255,255,255,.055) 30%, transparent 48%),
+    linear-gradient(135deg, #9440ee 0%, #7b3be8 50%, #6b48e4 80%, #6550dc 100%) !important;
+  border-color: #a85cf2 !important;
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.34),
+    inset 0 -2px rgba(72,38,142,.16),
+    -4px 8px 15px -7px rgba(91, 56, 150, .40),
+    0 0 18px rgba(130, 69, 213, .16) !important;
+}
+#view-dashboard #btn-add-transfer:hover {
+  filter: brightness(1.045) saturate(1.04);
+  transform: translateY(-1px);
+}
+
+/* Consolidated from ui-dashboard-polish.css. */
+/* DownloadPulse v1.0.11 final live-review polish.
+   Presentation-only refinements. Do not advance the application version or
+   the existing v=18 visual cache generation. */
+
+/* ── Topbar operational controls: semantic color + card-consistent depth ── */
+#topbar-actions #btn-pause-all.btn {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.075) 0%, transparent 34%),
+    linear-gradient(135deg, rgba(126,91,31,.94) 0%, rgba(91,68,29,.96) 54%, rgba(57,48,35,.98) 100%) !important;
+  border-color: rgba(242,189,63,.68) !important;
+  color: #ffd45d !important;
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.10),
+    inset 0 -1px rgba(56,42,16,.34),
+    -5px 7px 14px -8px rgba(113,79,20,.42),
+    0 5px 11px -8px rgba(79,56,18,.32) !important;
+}
+body.light #topbar-actions #btn-pause-all.btn {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.78) 0%, rgba(255,255,255,.10) 34%, transparent 44%),
+    linear-gradient(135deg, #fff2cc 0%, #f7dda0 54%, #edc974 100%) !important;
+  border-color: #d5a63e !important;
+  color: #875f0a !important;
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.92),
+    inset 0 -1px rgba(157,111,18,.16),
+    -5px 7px 14px -8px rgba(154,111,24,.42),
+    0 5px 11px -8px rgba(113,82,22,.24) !important;
+}
+
+#topbar-actions #btn-resume-all.btn,
+#topbar-actions #btn-resume-paused.btn {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07) 0%, transparent 34%),
+    linear-gradient(135deg, rgba(27,121,81,.91) 0%, rgba(20,88,66,.95) 54%, rgba(15,55,49,.98) 100%) !important;
+  border-color: rgba(73,224,145,.48) !important;
+  color: #9af0bf !important;
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.09),
+    inset 0 -1px rgba(6,43,29,.30),
+    -5px 7px 14px -8px rgba(16,91,57,.42),
+    0 5px 11px -8px rgba(12,63,42,.28) !important;
+}
+body.light #topbar-actions #btn-resume-all.btn,
+body.light #topbar-actions #btn-resume-paused.btn {
+  --dp-op-hue: var(--dp-state-success);
+  background: var(--dp-op-surface) !important;
+  border-color: var(--dp-op-edge) !important;
+  color: var(--dp-op-ink) !important;
+  text-shadow: none !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.55), var(--dp-op-glow) !important;
+}
+
+#runtime-speed-badge {
+  background: var(--dp-chrome-badge-surface) !important;
+  border-color: var(--dp-chrome-control-edge) !important;
+  box-shadow: var(--dp-chrome-badge-shadow) !important;
+}
+body.light #runtime-speed-badge {
+  background: var(--dp-chrome-badge-surface) !important;
+  border-color: var(--dp-chrome-control-edge) !important;
+  box-shadow: var(--dp-chrome-badge-shadow) !important;
+}
+
+.theme-toggle {
+  background: var(--dp-chrome-toggle-surface) !important;
+  border-color: var(--dp-chrome-control-edge) !important;
+  box-shadow: var(--dp-chrome-toggle-shadow) !important;
+}
+body.light .theme-toggle {
+  background: var(--dp-chrome-toggle-surface) !important;
+  border-color: var(--dp-chrome-control-edge) !important;
+  box-shadow: var(--dp-chrome-toggle-shadow) !important;
+}
+
+/* Speed cap hover is deliberately text-only. No surface, border, or color
+   transformation is permitted in either theme. */
+#runtime-cap-toggle,
+#runtime-cap-toggle:hover,
+#runtime-cap-toggle[aria-expanded="true"] {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+  filter: none !important;
+  transform: none !important;
+}
+#runtime-cap-toggle:hover,
+#runtime-cap-toggle[aria-expanded="true"] {
+  font-weight: 800 !important;
+}
+
+/* ── Provider Status ───────────────────────────────────────────────────── */
+/* Raise the crown only a smidge; the premium text measure is already correct. */
+#premium-row::before {
+  top: 17px !important;
+}
+
+/* Connected means green. Never let inherited currentColor create a warm halo. */
+#dot-api.ok {
+  color: var(--dp-state-success-mark) !important;
+  background: var(--dp-state-success-mark) !important;
+  box-shadow:
+    0 0 6px color-mix(in srgb, var(--dp-state-success-fill) 78%, transparent),
+    0 0 13px color-mix(in srgb, var(--dp-state-success-fill) 34%, transparent) !important;
+}
+body.light #dot-api.ok {
+  box-shadow:
+    0 0 6px color-mix(in srgb, var(--dp-state-success-fill) 66%, transparent),
+    0 0 12px color-mix(in srgb, var(--dp-state-success-fill) 28%, transparent) !important;
+}
+
+/* ── Sidebar selected endpoint + download-count badge ─────────────────── */
+/* The endpoint is light spilling through the sidebar edge, not a circular
+   object attached to it. Put the bloom source just outside the edge, broaden
+   it horizontally, and let it die much faster vertically. */
+.nav-item.active::after,
+body.light .nav-item.active::after {
+  right: -34px !important;
+  top: 50% !important;
+  width: 62px !important;
+  height: 38px !important;
+  transform: translateY(-50%) !important;
+  border: 0 !important;
+  outline: 0 !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  background:
+    radial-gradient(ellipse 8% 16% at 45% 50%,
+      rgba(255,255,255,.98) 0%,
+      rgba(238,213,255,.84) 32%,
+      rgba(199,132,255,.42) 58%,
+      transparent 100%),
+    radial-gradient(ellipse 78% 46% at 52% 50%,
+      rgba(180,86,252,.82) 0%,
+      rgba(164,73,241,.70) 14%,
+      rgba(146,64,229,.52) 31%,
+      rgba(132,61,216,.31) 50%,
+      rgba(123,63,201,.13) 69%,
+      rgba(118,68,190,.035) 86%,
+      transparent 100%) !important;
+  box-shadow: none !important;
+  pointer-events: none !important;
+}
+body.light .nav-item.active::after {
+  background:
+    radial-gradient(ellipse 8% 16% at 45% 50%,
+      rgba(255,255,255,.98) 0%,
+      rgba(239,215,255,.82) 32%,
+      rgba(191,116,249,.38) 58%,
+      transparent 100%),
+    radial-gradient(ellipse 78% 46% at 52% 50%,
+      rgba(170,72,244,.72) 0%,
+      rgba(155,65,233,.60) 14%,
+      rgba(140,61,220,.43) 31%,
+      rgba(127,62,205,.25) 50%,
+      rgba(121,67,192,.10) 69%,
+      rgba(118,72,183,.025) 86%,
+      transparent 100%) !important;
+}
+
+#nb-active.nav-badge {
+  min-width: 22px !important;
+  height: 22px !important;
+  padding: 0 6px !important;
+  background: var(--dp-chrome-count-surface) !important;
+  border: 1px solid var(--dp-chrome-count-edge) !important;
+  color: var(--dp-chrome-count-text) !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  box-shadow: var(--dp-chrome-count-shadow) !important;
+}
+body.light #nb-active.nav-badge {
+  background: var(--dp-chrome-count-surface) !important;
+  border-color: var(--dp-chrome-count-edge) !important;
+  color: var(--dp-chrome-count-text) !important;
+  box-shadow: var(--dp-chrome-count-shadow) !important;
+}
+
+/* ── Primary Add action ───────────────────────────────────────────────── */
+/* Still the primary CTA, but made from the same material language as the
+   surrounding raised cards instead of being the page's largest saturated slab. */
+#view-dashboard #btn-add-transfer {
+  background: var(--dp-primary-surface) !important;
+  border-color: var(--dp-primary-border) !important;
+  color: var(--dp-accent-contrast) !important;
+  text-shadow: 0 1px 2px rgba(41,20,71,.34) !important;
+  box-shadow: var(--dp-primary-shadow) !important;
+}
+body.light #view-dashboard #btn-add-transfer {
+  background: var(--dp-primary-surface) !important;
+  border-color: var(--dp-primary-border) !important;
+  box-shadow: var(--dp-primary-shadow) !important;
+}
+#view-dashboard #btn-add-transfer:hover {
+  filter: brightness(1.04) !important;
+  transform: translateY(-1px);
+}
+
+/* ── Transfer progress emphasis ───────────────────────────────────────── */
+/* Progress remains green as completion/progress information even when the
+   transfer itself is paused; degraded downloads alone switch to amber. */
+#dash-tbody .prog,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog {
+  height: var(--dp-row-progress-track, 7px) !important;
+  overflow: visible !important;
+}
+#dash-tbody .prog-fill,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog-fill {
+  height: var(--dp-row-progress-fill, 7px) !important;
+  background: linear-gradient(90deg, var(--dp-state-success-deep), var(--dp-state-success-fill)) !important;
+  /* DP 1.0.12 UI Finishing (Correction 9): ordinary progress glow reduced by
+     a relative 15% (alpha * 0.85) from the prior .78/.34 -- blur radii,
+     color, and dimensions unchanged. This is the sole effective ordinary
+     progress-glow declaration for Dashboard + Downloads (see the removed
+     data-status-scoped duplicates above). */
+  box-shadow:
+    0 0 6px color-mix(in srgb, var(--dp-state-success-fill) 66.3%, transparent),
+    0 0 13px color-mix(in srgb, var(--dp-state-success-fill) 28.9%, transparent) !important;
+}
+#dash-tbody tr:has(.badge-partial) .prog-fill,
+:is(#t-tbody, .dp-downloads-styled-tbody) tr:has(.badge-partial) .prog-fill {
+  background: linear-gradient(90deg, #e7ab29, #f2c84d) !important;
+  /* Correction 9: same relative 15% reduction (alpha * 0.85) applied to the
+     partial-progress amber glow, from the prior .76/.32. */
+  box-shadow:
+    0 0 6px rgba(242,189,63,.646),
+    0 0 13px rgba(242,189,63,.272) !important;
+}
+#dash-tbody .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog-pct {
+  display: inline-block !important;
+  margin-top: 6px !important;
+  color: var(--dp-state-success) !important;
+  font-size: 16px !important;
+  line-height: 1 !important;
+  font-weight: 800 !important;
+  letter-spacing: -.025em !important;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--dp-state-success-fill) 30%, transparent) !important;
+}
+body.light #dash-tbody .prog-pct,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) .prog-pct {
+  color: var(--dp-state-success) !important;
+  text-shadow: 0 0 7px color-mix(in srgb, var(--dp-state-success-fill) 18%, transparent) !important;
+}
+#dash-tbody tr:has(.badge-partial) .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) tr:has(.badge-partial) .prog-pct {
+  color: #f2bd3f !important;
+  text-shadow: 0 0 8px rgba(242,189,63,.28) !important;
+}
+body.light #dash-tbody tr:has(.badge-partial) .prog-pct,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) tr:has(.badge-partial) .prog-pct {
+  color: #ad770d !important;
+}
+
+/* ── Recent Activity body ambient depth ───────────────────────────────── */
+/* Sparse lists leave a large canvas. Give that canvas environmental light,
+   not another decorative object, so the treatment still works with many rows. */
+#view-dashboard .dp-dashboard-activity .dash-activity-table-wrap {
+  background: var(--dp-chrome-table-ambient) !important;
+  box-shadow: inset 0 10px 18px -18px rgba(0,0,12,.54) !important;
+}
+body.light #view-dashboard .dp-dashboard-activity .dash-activity-table-wrap {
+  background: var(--dp-chrome-table-ambient) !important;
+  box-shadow: inset 0 10px 18px -18px rgba(72,65,99,.36) !important;
+}
+#view-dashboard .dp-dashboard-activity .t-table,
+#view-dashboard .dp-dashboard-activity .t-table tbody,
+#view-dashboard .dp-dashboard-activity .t-table tbody tr {
+  background-color: transparent;
+}
+
+/* Consolidated from ui-dashboard-polish-final.css. */
+/* Final cascade guard for the v1.0.11 polish pass.
+   Keep legacy indeterminate/striped progress rendering intact while the new
+   semantic glow applies to ordinary determinate progress bars. The image
+   alone is pinned, so the indeterminate hatching can still move. */
+#dash-tbody .prog-fill[style*="repeating-linear-gradient"],
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog-fill[style*="repeating-linear-gradient"] {
+  background-color: transparent !important;
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0,
+    var(--accent) 8px,
+    transparent 8px,
+    transparent 16px
+  ) !important;
+  box-shadow: none !important;
+  opacity: .35 !important;
+}
+
+/* ── Selected sidebar endpoint ────────────────────────────────────────── */
+/* Treat the right-edge accent as a tiny spark throwing diffuse purple light,
+   not a circle/ellipse/pill attached to the selected row. The radial mask
+   guarantees that none of the pseudo-element's rectangular bounds can read. */
+.nav-item.active::after,
+body.light .nav-item.active::after {
+  right: -2px !important;
+  top: 50% !important;
+  width: 76px !important;
+  height: 54px !important;
+  transform: translateY(-50%) !important;
+  border: 0 !important;
+  outline: 0 !important;
+  border-radius: 0 !important;
+  background-color: transparent !important;
+  background: var(--dp-chrome-nav-bloom) !important;
+  -webkit-mask-image: radial-gradient(ellipse 100% 86% at 98% 50%,
+    #000 0%, #000 24%, rgba(0,0,0,.82) 43%, rgba(0,0,0,.38) 62%, transparent 82%) !important;
+  mask-image: radial-gradient(ellipse 100% 86% at 98% 50%,
+    #000 0%, #000 24%, rgba(0,0,0,.82) 43%, rgba(0,0,0,.38) 62%, transparent 82%) !important;
+  box-shadow: none !important;
+  filter: none !important;
+  pointer-events: none !important;
+}
+body.light .nav-item.active::after {
+  opacity: .92;
+}
+
+/* ── Provider crown ───────────────────────────────────────────────────── */
+/* Nudge the statement icon slightly higher again and make it emit the same DP
+   purple energy used elsewhere, without touching the already-approved text. */
+#premium-row::before {
+  top: 15px !important;
+  filter:
+    drop-shadow(0 0 4px rgba(183,83,255,.76))
+    drop-shadow(0 0 11px rgba(153,65,239,.42)) !important;
+}
+body.light #premium-row::before {
+  filter:
+    drop-shadow(0 0 4px rgba(171,67,244,.72))
+    drop-shadow(0 0 12px rgba(145,58,226,.38)) !important;
+}
+
+/* ── Metric icon light sources ────────────────────────────────────────── */
+/* Each semantic icon is now the perceived source of the card's directional
+   illumination. Keep the glow omnidirectional; light mode can carry a broader
+   bloom while dark mode stays tighter. */
+#view-dashboard .dash-hero-stat .dhs-icon .dp-icon {
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, var(--c) 62%, transparent))
+    drop-shadow(0 0 11px color-mix(in srgb, var(--c) 27%, transparent)) !important;
+}
+body.light #view-dashboard .dash-hero-stat .dhs-icon .dp-icon {
+  filter:
+    drop-shadow(0 0 6px color-mix(in srgb, var(--c) 70%, transparent))
+    drop-shadow(0 0 15px color-mix(in srgb, var(--c) 32%, transparent)) !important;
+}
+
+/* ── Progress percentage restraint ────────────────────────────────────── */
+/* The bar owns semantic color/glow. The percentage returns to its original
+   geometry and mono type, gaining emphasis only through darker neutral text. */
+#dash-tbody .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog-pct,
+#dash-tbody tr:has(.badge-partial) .prog-pct,
+:is(#t-tbody, .dp-downloads-styled-tbody) tr:has(.badge-partial) .prog-pct {
+  display: block !important;
+  margin-top: 3px !important;
+  font-family: var(--mono) !important;
+  font-size: 10px !important;
+  line-height: normal !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  color: #c8ccdc !important;
+  text-shadow: none !important;
+}
+body.light #dash-tbody .prog-pct,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) .prog-pct,
+body.light #dash-tbody tr:has(.badge-partial) .prog-pct,
+body.light :is(#t-tbody, .dp-downloads-styled-tbody) tr:has(.badge-partial) .prog-pct {
+  color: #3e465f !important;
+  text-shadow: none !important;
+}
+
+/* ── Progress line: percentage and estimated time remaining ─────────── */
+/* Where a surface passes the estimate (Downloads and Download Activity),
+   app.js progress() gives one line beneath the primary bar: the percentage
+   and its words left, the estimate right. Each surface's column rules give
+   Progress the width for that line and decide where its words fit; if a
+   column is ever narrower, the estimate moves to the next line,
+   right-aligned, rather than overlapping or being cut. The estimate's width
+   is reserved for "ETA 999:59:59" (13ch), so "—", "ETA ∞" and any estimate
+   under 1000 hours take the same room and a changing value never moves the row;
+   tabular figures. The secondary text token keeps it legible in both themes,
+   and every figure -- held, best-effort or measured -- has the same type. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .prog-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .prog-eta {
+  margin: 3px 0 0 auto;
+  min-width: 13ch;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--dp-text-secondary);
+}
+
+/* Download Activity decides where its own columns have the room: from 1600px
+   its Progress column holds the widest line with the words; narrower, the
+   line is the percentage and the estimate, and the words stay in the
+   label's accessible name and tooltip. On mobile (779px and below) this
+   table sizes its columns to their content, so there the line keeps the
+   percentage and estimate together and the column takes their room. */
+@media (width < 1600px) {
+  #view-dashboard #dash-tbody .prog-line .prog-words {
+    display: none;
+  }
+}
+/* Below 780px Download Activity is its Transfer Summary (the Name cell;
+   ui-dashboard-transfer-presentation.css) and, where the caller may operate,
+   Action: Status, Progress, Size and Date step aside. */
+@media (max-width: 779px) {
+  #view-dashboard .dp-dashboard-activity .t-table :is(th, td):is(:nth-child(2), :nth-child(3), :nth-child(4), :nth-child(5)) {
+    display: none;
+  }
+  /* Summary | Action: 4px each side of the boundary (an 8px gutter from the
+     Summary's text to the 36px button); the outer edges keep their 14px. The
+     Action column is its glyph-only button and those insets (a fixed track:
+     its one-word heading runs on into the 14px right inset rather than
+     widening it), and the Summary takes every other pixel of the table --
+     a plain length against the table's container (cqw), as the desktop's
+     tracks are, over the heading's inline 40%. */
+  #view-dashboard .dp-dashboard-activity .t-table { table-layout: fixed; --dp-dashboard-handheld-action-track: calc(4px + 36px + 14px); }
+  #view-dashboard .dp-dashboard-activity .t-table :is(th, td):first-child:not(:last-child) { padding-right: 4px; }
+  #view-dashboard .dp-dashboard-activity .t-table :is(th, td):last-child:not(:first-child) { padding-left: 4px; }
+  #view-dashboard .dp-dashboard-activity .t-table th:first-child:not(:last-child) { width: calc(100cqw - var(--dp-dashboard-handheld-action-track)) !important; }
+  #view-dashboard .dp-dashboard-activity .t-table .dp-dashboard-action-column { width: var(--dp-dashboard-handheld-action-track); }
+}
+
+/* ── Recent Activity header simplification ────────────────────────────── */
+/* Downloads already owns full-list navigation in the sidebar. Remove the
+   redundant/vague View All shortcut and let the Activity header breathe. */
+#view-dashboard .dp-dashboard-activity .card-header
+  button[onclick*="data-view=torrents"] {
+  display: none !important;
+}
+
+/* ── Live review micro-refinements ────────────────────────────────────── */
+/* Keep the selected-row starburst, but bound its vertical footprint inside
+   the selection so the rays never cross the row's top/bottom edges. */
+.nav-item.active::after,
+body.light .nav-item.active::after {
+  height: calc(100% - 12px) !important;
+  max-height: 38px !important;
+  -webkit-mask-image: radial-gradient(ellipse 100% 74% at 98% 50%,
+    #000 0%, #000 22%, rgba(0,0,0,.80) 41%, rgba(0,0,0,.34) 61%, transparent 80%) !important;
+  mask-image: radial-gradient(ellipse 100% 74% at 98% 50%,
+    #000 0%, #000 22%, rgba(0,0,0,.80) 41%, rgba(0,0,0,.34) 61%, transparent 80%) !important;
+}
+
+/* The live speed remains semantically green, but light-mode contrast needs to
+   be substantially stronger than the generic success green on white. */
+body.light #runtime-badge-speed {
+  color: var(--dp-state-success) !important;
+  font-weight: 700 !important;
+}
+
+/* Metric cards are information surfaces, not buttons. Remove the hover motion
+   that implied a press/click affordance while preserving their static lighting. */
+#view-dashboard .dash-hero-stat,
+#view-dashboard .dash-hero-stat:hover {
+  transform: none !important;
+  transition: none !important;
+}
+
+/* The primary CTA sits inside Quick Add's field at its right, as wide as its
+   label and centred on the field instead of stretching with it as the input
+   expands: 40px tall (44px on a handheld), so at the field's two-line rest it
+   keeps an inset like the one at its right. */
+#view-dashboard #btn-add-transfer {
+  align-self: center !important;
+  min-width: 0 !important;
+  width: auto !important;
+  min-height: var(--dp-quick-add-action-height, 40px) !important;
+  height: var(--dp-quick-add-action-height, 40px) !important;
+}
+
+
+/* ── Dark-card red + progress/table/sidebar balance refinements ───────── */
+/* Errors needs to read as a real failure state in the dark theme rather than
+   receding into burgundy/pink. One semantic source drives the card wash,
+   top edge, sparkline, and icon glow. */
+#view-dashboard #dash-error-card {
+  --c: #ff4854 !important;
+}
+body.light #view-dashboard #dash-error-card {
+  --c: #e93f4d !important;
+}
+/* No errors: the card recedes -- its content, edges and resting baseline, as
+   the whole card at 60% did -- but not the heartbeat crossing it. */
+#view-dashboard #dash-error-card.dash-hero-stat--quiet > :not(.dp-card-spark),
+#view-dashboard #dash-error-card.dash-hero-stat--quiet::after { opacity: .6; }
+#view-dashboard #dash-error-card.dash-hero-stat--quiet::before { opacity: .552; }
+#view-dashboard #dash-error-card.dash-hero-stat--quiet .dp-card-spark { --dp-card-spark-rest: .24; }
+/* ... and its surface, under its content: the page showing 40% through it. */
+#view-dashboard #dash-error-card.dash-hero-stat--quiet {
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.014),
+    inset 0 0 0 100vmax color-mix(in srgb, var(--dp-bg-app) 40%, transparent),
+    -6px 8px 14px -8px rgba(0,0,0,.4),
+    0 5px 11px -8px rgba(0,0,0,.28) !important;
+}
+body.light #view-dashboard #dash-error-card.dash-hero-stat--quiet {
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.47),
+    inset 0 0 0 100vmax color-mix(in srgb, var(--dp-bg-app) 40%, transparent),
+    -6px 8px 14px -8px rgba(35, 41, 66, .24),
+    0 5px 11px -8px rgba(41, 47, 72, .15) !important;
+}
+#view-dashboard #dash-error-card .dhs-icon .dp-icon {
+  filter:
+    saturate(1.28)
+    brightness(1.10)
+    drop-shadow(0 0 5px color-mix(in srgb, var(--c) 68%, transparent))
+    drop-shadow(0 0 12px color-mix(in srgb, var(--c) 32%, transparent)) !important;
+}
+
+/* Preserve the approved semantic glow and reduce only the physical core line
+   so completed/error-state progress reads lighter without losing scanability. */
+#dash-tbody .prog,
+:is(#t-tbody, .dp-downloads-styled-tbody) .prog {
+  height: var(--dp-row-progress-track, 4.5px) !important;
+}
+
+/* On wide Dashboard layouts, Status had far more horizontal allocation than
+   its content needed. Reclaim that slack for Progress while keeping Name and
+   the trailing metadata/action columns balanced. This composition holds the
+   desktop and the tablet (from 780px): it is the table's own geometry, not
+   the Dashboard's six- or three-card composition, so it carries on through
+   1390/1389px unchanged, and only on mobile does the table size its columns
+   to their content. Its narrowest desktop table is about 1256px wide (the
+   compact rail at 1390px and the full sidebar at 1560px alike); how far
+   below that the tablet's narrower tables still fit is measured, not
+   assumed here.
+
+   The wrapper is the table's size query container at every width (the
+   declaration below): its condition decides the compact Status badges and
+   row actions (ui-transfer-contract.css) wherever the table is narrow --
+   on a handheld too, where the Action column is its 36px glyph-only
+   buttons. Its track variables are read only by this block's widths. */
+#view-dashboard .dp-dashboard-activity .dash-activity-table-wrap {
+  container: dp-recent-activity / inline-size;
+}
+@media (min-width: 780px) {
+  /* Correction 3 (DP 1.0.12 UI Finishing, row-extent follow-up): the table
+     wrapper previously carried a padding-right equal to the accepted
+     Quick-Add-matching inset (--dp-dashboard-action-inset), so the
+     width:100% table -- and therefore its header/row/hover painting --
+     stopped that same amount short of the card's real right content edge,
+     leaving a dead strip. The wrapper now owns the full available width
+     again; the inset is instead folded into the Action column's own
+     geometry below (width + right padding), which is where an axis-aligning
+     inset that must not move any other column belongs.
+
+     Making the wrapper a size query container (inline-size) is required by
+     the fix below, not decorative: table fixed-layout column sizing only
+     resolves a th/td `width` that is a plain <percentage> or a plain
+     <length> -- a calc() that mixes the two (e.g. calc(40% - 6.8px), which
+     is what preserving the pre-existing column boundaries against a wider
+     table algebraically requires) is left unresolved by the column-sizing
+     pass and silently falls back to auto, letting the browser divide the
+     leftover space evenly across those columns instead. `cqw` resolves to a
+     definite absolute length against this same container before that pass
+     runs, so calc(Ncqw - Xpx) is (length - length) -- a single homogeneous
+     type the column-sizing pass does understand -- while still tracking
+     1cqw = 1% of this wrapper's content width, exactly as the replaced `%`
+     did. The wrapper's own width is already fixed by its flex-item cross
+     axis, not by its content, so containment changes nothing about its own
+     size (the container is declared above this block). */
+  /* Status and Date Added keep their proportional tracks, but never less
+     than their content: Status the widest badge ("Awaiting confirmation")
+     and Date Added the widest date the one formatter writes ("Dec 28, 2025
+     10:54 PM") with its heading and trigger, each on one line. Below about
+     1400px (Status) and 1320px (Date Added) of table the proportion would
+     cut them, so the floor holds and Name, the one column that truncates,
+     gives up exactly that much. max() of two cqw/px lengths is still one
+     plain length, so the fixed layout resolves it like the tracks below. */
+  #view-dashboard .dp-dashboard-activity .t-table {
+    table-layout: fixed !important;
+    --dp-dashboard-status-track: max(13cqw - 2.21px, 180px);
+    --dp-dashboard-date-track: max(21cqw - var(--dp-dashboard-action-track) - 3.57px, 158px);
+    /* The row-action column's own track: the shared action track, until the
+       compact controls below narrow it. */
+    --dp-dashboard-row-action-track: var(--dp-dashboard-action-track);
+    /* Progress keeps its proportional track, and Date Added its share of the
+       row, until the compact controls below change both. */
+    --dp-dashboard-progress-track: calc(21cqw - 3.57px);
+    --dp-dashboard-date-column: var(--dp-dashboard-date-track);
+    /* Size keeps its proportion, but never less than its widest value on one
+       line: fmtSize never writes four integer digits, so its longest size is
+       eight characters ("999.9 MB"), 56px in the 11.5px mono face, with the
+       cell's 14px each side. */
+    --dp-dashboard-size-track: max(84px, 9cqw - 1.53px);
+  }
+  /* Columns 1-4 and Added (5) are re-expressed against the now-wider table
+     (W = old table width T + the inset I) so their absolute pixel widths --
+     and every column boundary through Action's left edge -- stay exactly
+     where they were: each Npct of T equals (Ncqw of W) - (Npct of I), and
+     Npct of I is a flat px figure since I is a constant 17px, not a
+     percentage. Name is the complement of the other five, which is exactly
+     36cqw - 6.12px while neither floor above holds -- but never narrower
+     than 280px, the Name/Status boundary the operator marked on the live
+     tablet table (a 1206px window). It reaches that floor near a 1200px
+     window; narrower, the tracks together are wider than the card, and that
+     overflow is left to show where the next column must give way. */
+  #view-dashboard .dp-dashboard-activity .t-table th:nth-child(1),
+  #view-dashboard .dp-dashboard-activity .t-table td:nth-child(1) {
+    width: max(280px, 100cqw - var(--dp-dashboard-status-track) - var(--dp-dashboard-progress-track) - var(--dp-dashboard-size-track)
+      - var(--dp-dashboard-date-column) - var(--dp-dashboard-row-action-track) - var(--dp-dashboard-action-inset)) !important;
+  }
+  /* Status's heading and each badge (a chip, centred as a unit) share the
+     column's centre line. */
+  #view-dashboard .dp-dashboard-activity .t-table th:nth-child(2),
+  #view-dashboard .dp-dashboard-activity .t-table td:nth-child(2) {
+    width: var(--dp-dashboard-status-track) !important;
+    text-align: center;
+  }
+  #view-dashboard .dp-dashboard-activity .t-table th:nth-child(3),
+  #view-dashboard .dp-dashboard-activity .t-table td:nth-child(3) {
+    width: var(--dp-dashboard-progress-track) !important;
+  }
+  #view-dashboard .dp-dashboard-activity .t-table th:nth-child(4),
+  #view-dashboard .dp-dashboard-activity .t-table td:nth-child(4) {
+    width: var(--dp-dashboard-size-track) !important;
+  }
+  /* Correction 3: Date Added's proportion is whatever the fixed action track
+     (below) does not use of its 21%, rather than its own independent
+     percentage. With Name the complement of the other five (above), every
+     column's declared width sums to exactly 100% of the table's width
+     algebraically, at any width -- not just at one coincidental width --
+     so the action track never gets rescaled by the browser's
+     fixed-table-layout column-width reconciliation the way a plain "8%"
+     alongside a fixed px column previously could. The trailing
+     "- 3.57px" is 21% of the recovered inset. Its 21% (four points taken
+     from Name) is what lets the Date Added heading carry its label and the
+     date-presentation trigger side by side; its floor (above) keeps that
+     true on the narrowest desktop table. */
+  #view-dashboard .dp-dashboard-activity .t-table th:nth-child(5),
+  #view-dashboard .dp-dashboard-activity .t-table td:nth-child(5) {
+    width: var(--dp-dashboard-date-track) !important;
+  }
+  /* The Action column keeps the same shared action track as Recover All and
+     Add, but now also carries the recovered inset -- entirely as extra
+     right padding, not extra width around the centered content -- so the
+     cell/row/table painting reaches the card's real right edge while the
+     centered content (the Pause/Resume button) keeps the exact left/width
+     footprint, and therefore center, it had before. */
+  #view-dashboard .dp-dashboard-activity .t-table th:nth-child(6),
+  #view-dashboard .dp-dashboard-activity .t-table td:nth-child(6) {
+    width: calc(var(--dp-dashboard-row-action-track) + var(--dp-dashboard-action-inset)) !important;
+    padding-right: calc(14px + var(--dp-dashboard-action-inset)) !important;
+    text-align: center;
+  }
+}
+
+/* Compact row controls (Recent Activity's geometry). Where the table itself
+   is 987px or narrower -- the table the operator marked on the live
+   Dashboard, at a 1105px window -- its Status badges and row actions show
+   their glyph alone (ui-transfer-contract.css, under this same container
+   condition), and their tracks narrow to that content: Status to its icon
+   chip (9 + 15 + 9px and its border: 35px, with the cell's 14px each side:
+   63px), the actions to a 36px square (with the cell's 14px each side: 64px,
+   the inset unchanged). Date Added steps aside entirely (its heading, cells
+   and track), and Progress becomes the column that flexes: it takes all the
+   room Name's 280px, Status, Size (at least 84px) and the actions leave, so Name, the
+   complement, rests at its 280px floor. The table's own width decides this,
+   not the window's layout width. Here the table's legacy 760px minimum (the
+   shared Dashboard table rule above) yields: these tracks are the table's
+   width, so a narrower card no longer spreads a forced 760px across them. */
+@container dp-recent-activity (width <= 987px) {
+  #view-dashboard .dp-dashboard-activity .t-table {
+    min-width: 0 !important;
+    --dp-dashboard-status-track: 63px;
+    --dp-dashboard-row-action-track: 64px;
+    --dp-dashboard-date-column: 0px;
+    --dp-dashboard-progress-track: calc(100cqw - 280px - var(--dp-dashboard-status-track) - var(--dp-dashboard-size-track)
+      - var(--dp-dashboard-row-action-track) - var(--dp-dashboard-action-inset));
+  }
+  #view-dashboard .dp-dashboard-activity .t-table :is(th, td):nth-child(5) {
+    display: none;
+  }
+}
+
+/* Size beside its name. Where the table itself is 756px or narrower -- the
+   table the operator marked on the live Dashboard, at about an 874px window
+   -- Size leaves its own column (heading, cells and track) and the same
+   formatted value closes the name's metadata row, at its right end, in the
+   name's own type; Progress, the column that flexes, takes the room. Wider,
+   that value is not shown and Size keeps its column. */
+#dash-tbody .dp-recent-size {
+  display: none;
+}
+@container dp-recent-activity (width <= 756px) {
+  #view-dashboard .dp-dashboard-activity .t-table {
+    --dp-dashboard-size-track: 0px;
+  }
+  #view-dashboard .dp-dashboard-activity .t-table :is(th, td):nth-child(4) {
+    display: none;
+  }
+  #dash-tbody .dp-recent-size {
+    display: block;
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+}
+
+/* Sidebar hover now uses the same directional material language as the rest
+   of the shell. It remains intentionally much quieter than the active row. */
+.nav-item:not(.active):hover {
+  background: var(--dp-chrome-nav-hover-surface) !important;
+}
+body.light .nav-item:not(.active):hover {
+  background: var(--dp-chrome-nav-hover-surface) !important;
+}
+
+/* ── Quick Add secondary utility controls ─────────────────────────────── */
+/* Recover All is a helper, not a primary or semantic state action.
+   Keep them clearly clickable, but let Add and Pause own the visual hierarchy. */
+#view-dashboard #btn-recover-all {
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 0 12px !important;
+  border-radius: 8px !important;
+  font-weight: 650 !important;
+  transform: none;
+  transition: filter .14s ease, border-color .14s ease, box-shadow .14s ease, transform .14s ease !important;
+}
+
+#view-dashboard #btn-recover-all {
+  background:
+    radial-gradient(ellipse 112% 100% at 16% -8%, rgba(165,95,225,.13) 0%, transparent 56%),
+    linear-gradient(145deg, rgba(64,50,77,.82) 0%, rgba(48,39,59,.82) 56%, rgba(37,31,47,.86) 100%) !important;
+  border-color: rgba(177,119,224,.54) !important;
+  color: #dfc3f5 !important;
+  text-shadow: none !important;
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.085),
+    -4px 6px 12px -9px rgba(46,24,66,.38),
+    0 4px 9px -8px rgba(36,23,51,.30) !important;
+}
+#view-dashboard #btn-recover-all .dp-icon {
+  filter:
+    hue-rotate(215deg)
+    saturate(1.28)
+    brightness(1.08)
+    drop-shadow(0 0 4px rgba(166,92,224,.24)) !important;
+}
+
+body.light #view-dashboard #btn-recover-all {
+  background:
+    radial-gradient(ellipse 112% 100% at 16% -8%, rgba(155,94,211,.11) 0%, transparent 56%),
+    linear-gradient(145deg, #fcf9ff 0%, #f3edf8 56%, #ebe2f2 100%) !important;
+  border-color: #bb9ad4 !important;
+  color: #744993 !important;
+  text-shadow: none !important;
+  box-shadow:
+    inset 0 1px rgba(255,255,255,1),
+    -4px 6px 12px -9px rgba(91,65,111,.25),
+    0 4px 9px -8px rgba(94,70,113,.18) !important;
+}
+body.light #view-dashboard #btn-recover-all .dp-icon {
+  filter:
+    hue-rotate(215deg)
+    saturate(1.24)
+    brightness(.93)
+    drop-shadow(0 0 4px rgba(144,74,194,.20)) !important;
+}
+
+#view-dashboard #btn-recover-all:hover {
+  filter: brightness(1.025) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* Consolidated from ui-dashboard-final.css. */
+/* DownloadPulse v1.0.11 final Dashboard overrides.
+ *
+ * These rules remove stale Dashboard calibration divergences from the shared
+ * language while retaining only genuine Dashboard-specific geometry here.
+ */
+
+/* Recent Activity and Downloads use the same 76px empty-download artwork.
+   This selector intentionally outranks the older batch-4 38px calibration. */
+#view-dashboard #dash-activity-card.dp-dashboard-activity .empty-icon {
+  width: 76px !important;
+  height: 76px !important;
+  margin: 0 auto 12px !important;
+}
+
+/* DP 1.0.12 UI Finishing (Correction 3): the Added/Action column-width
+   override that used to be re-declared here (a later "final geometry
+   correction" layered on top of the block above at the same media query,
+   same selector, same specificity -- differing only by source order) is
+   consolidated into the single canonical block above instead of appended
+   again. Do not re-add a second nth-child(5)/(6) override for this media
+   query; adjust the one above. */
+
+/* ── Recent Activity card sizing (DP 1.0.12 canonical flattening: migrated
+   from the retired ui-legacy-foundation.css) ────────────────────────────── */
+#dash-activity-card {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dash-activity-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 779px) {
+  .dash-activity-table-wrap { overflow-x: auto; }
+}
+
+/* Hero stat row — 6 large cards in a horizontal strip */
+.dash-hero {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0,1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.dash-hero-stat {
+  padding: 16px 14px 14px;
+  transition: box-shadow .2s, border-color .2s;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dash-hero-stat::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 3px;
+  background: var(--c);
+}
+.dash-hero-stat[data-c="orange"] { --c: var(--status-total); }
+.dash-hero-stat[data-c="green"]  { --c: var(--green);  }
+.dash-hero-stat[data-c="blue"]   { --c: var(--blue);   }
+.dash-hero-stat[data-c="yellow"] { --c: var(--yellow);  }
+.dash-hero-stat[data-c="red"]    { --c: var(--red);     }
+.dash-hero-stat[data-c="purple"] { --c: var(--purple);  }
+.dash-hero-stat:hover { box-shadow: 0 4px 20px rgba(0,0,0,.25); border-color: var(--border2); }
+.dhs-icon {
+  font-size: 22px;
+  opacity: .6;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.dhs-body { min-width: 0; }
+.dhs-val {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--c);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.dhs-val--sm { font-size: 18px; }
+.dhs-label { font-size: 10px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .08em; margin-top: 4px; }
+.dhs-sub { font-size: 10px; color: var(--text3); margin-top: 2px; font-family: var(--mono); }
+@media (max-width: 779px) {
+  .dhs-icon { font-size: 18px !important; }
+}
+
+/* KPI strip — horizontal metrics bar */
+.dash-kpi-strip {
+  display: flex;
+  align-items: stretch;
+  background: linear-gradient(180deg, var(--surface2), var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.dash-kpi {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 10px;
+  text-align: center;
+}
+.dash-kpi-val {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.dash-kpi-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-top: 4px;
+}
+.dash-kpi-sub {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+body.light .dash-hero-stat:hover {
+  box-shadow: 0 8px 20px rgba(28,44,70,.10);
+}
+@media (max-width: 779px) {
+  .dash-kpi-strip { flex-wrap: wrap; }
+  .dash-kpi { flex: 0 0 calc(50% - 1px); border-bottom: 1px solid var(--border); }
+  .dash-kpi:last-child, .dash-kpi:nth-last-child(2) { border-bottom: none; }
+}
+
+/* Drag & Drop reordering */
+.drag-over { background: rgba(var(--accent-rgb),.12) !important; outline: 2px dashed var(--accent); }
+tr[draggable="true"] { cursor: grab; }
+tr[draggable="true"]:active { cursor: grabbing; }
+
+/* Dashboard row mini progress bar */
+.dash-row-bar { height: 2px; background: var(--border); border-radius: 1px; margin-top: 4px; overflow: hidden; }
+.dash-row-bar-fill { height: 100%; border-radius: 1px; transition: width .4s ease; }
+
+/* Dashboard quick-add transfer entry (DP 1.0.12 canonical flattening:
+   migrated from the retired ui-legacy-foundation.css); the entry itself is a
+   .dp-action-field (see Quick Add above). */
+.direct-link-input {
+  /* The textarea takes the field's width beside Add, down to none of its own
+     minimum, so a narrow field shrinks the text area and never wraps Add. */
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  min-height: 38px;
+  max-height: 110px;
+  /* It wraps (pre-wrap, break-word), so it never scrolls sideways: at a
+     fractional zoom an engine can count its content a pixel -- or, empty, far
+     more -- wider than the field, and WebKitGTK then draws a horizontal
+     scrollbar across its last line. */
+  overflow-x: hidden;
+  overflow-y: hidden;
+  line-height: 18px;
+  font-family: 'JetBrains Mono', monospace;
+}

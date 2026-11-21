@@ -1,0 +1,906 @@
+const { test, expect } = require('@playwright/test');
+
+/* DP 1.0.13 Notifications normalization -- proven against the RENDERED page and
+ * the REAL backend rather than against selectors.
+ *
+ * Notifications joins Services, Downloads, Extraction and Authentication: every
+ * control commits at its own boundary through the canonical persistence owner,
+ * so the tab has no page-level save responsibility of any kind and no generic
+ * Apply can replay a stale Notifications value from the page.
+ *
+ * The surfaces with real risk get real proof:
+ *   - a stored webhook is a SECRET, so its field is blank and blanking it must
+ *     write nothing: erasing one is a separate explicit confirmed act;
+ *   - clearing one destination must not touch another, and must never move
+ *     either section's Enable participation;
+ *   - Statistics Reporting's status follows the EFFECTIVE destination, so
+ *     clearing its dedicated webhook can leave it configured by fallback;
+ *   - an action settles pending field writes first, so Test exercises the value
+ *     the operator just entered rather than stale stored configuration;
+ *   - a rejected write converges the control back onto canonical truth.
+ *
+ * Every case restores what it changed, so the shared backend is left as found.
+ */
+
+const PRIMARY = 'https://discord.com/api/webhooks/1000/browser-primary';
+const REPORT = 'https://discord.com/api/webhooks/2000/browser-report';
+const ADDED = 'https://discord.com/api/webhooks/3000/browser-added';
+
+async function openSettings(page, tab) {
+  await page.locator('#sidebar .nav-item[data-view="settings"]').click();
+  await expect(page.locator('#view-settings')).toHaveClass(/\bactive\b/);
+  await page.locator(`#view-settings [data-tab="${tab}"]:not(.dp-motion-still *)`).click();
+  await expect(page.locator(`.dp-settings-panel[data-panel="${tab}"]`)).toBeVisible();
+}
+
+const field = (page, key) => page.locator(`#dp-settings-field-${key.replaceAll('_', '-')}`);
+const clearFor = (page, key) =>
+  page.locator(`#view-settings [data-action="clear-webhook"][data-webhook="${key}"]`);
+const status = (page, card) =>
+  page.locator(`#view-settings .${card} .dp-settings-provider-config-status`);
+
+/** Canonical settings, straight from the configuration boundary. */
+async function canonical(page) {
+  const response = await page.request.get('/api/settings');
+  expect(response.ok()).toBeTruthy();
+  return response.json();
+}
+
+/** Commit a text/number field the way an operator does: type, then leave it.
+ *  The value must differ from what is stored -- an unchanged field crosses no
+ *  boundary and writes nothing, which is itself part of the contract. */
+async function commit(page, key, value) {
+  const written = page.waitForResponse(
+    r => r.url().includes('/api/settings') && r.request().method() === 'PUT', {timeout: 15000});
+  await field(page, key).fill(String(value));
+  await field(page, key).blur();
+  // What the server ACCEPTED. The suite shares one backend and its files run
+  // concurrently, and the whole-settings surface has no partial write, so
+  // every file's restore is a read-modify-write of the WHOLE document: one
+  // that began its read a millisecond before this commit will faithfully put
+  // the older value back. A readback cannot tell that apart from a
+  // persistence defect; the acceptance can.
+  return (await written).json();
+}
+
+/** Accept a destructive confirmation and wait for the mutation it authorised. */
+async function confirmDialog(page, label) {
+  await expect(page.locator('.dp-modal-overlay')).toBeVisible();
+  const written = page.waitForResponse(
+    r => r.url().includes('/api/settings') && r.request().method() === 'PUT');
+  await page.locator('.dp-modal-overlay').getByRole('button', {name: label}).click();
+  await expect(page.locator('.dp-modal-overlay')).toHaveCount(0);
+  await written;
+}
+
+/** Choose a select option the way an operator does: through the projected
+ *  listbox the application renders over the native control. */
+async function choose(page, key, label) {
+  const shell = field(page, key).locator('xpath=following-sibling::span[1]');
+  const written = page.waitForResponse(
+    r => r.url().includes('/api/settings') && r.request().method() === 'PUT', {timeout: 15000});
+  await shell.locator('.dp-dropdown__trigger').click();
+  await page.locator('#dp-dropdown-layer .dp-dropdown__option', {hasText: label}).first().click();
+  return (await written).json();
+}
+
+/* Every Notifications value this suite touches, and ONLY those.
+ *
+ * The suite shares one backend and its files run concurrently, so a restore
+ * must be a read-modify-write against FRESHLY read canonical truth naming the
+ * keys this file owns -- the same discipline the application's own
+ * single-field write follows. Putting back a whole snapshot captured at the
+ * start of a case overwrites whatever another file committed since, and then
+ * reports the failure against innocent code. */
+const NOTIFICATION_KEYS = [
+  'discord_notifications_enabled', 'discord_username', 'discord_avatar_url',
+  'discord_notify_added', 'discord_notify_finished', 'discord_notify_error',
+  'discord_notify_extract', 'discord_notify_update', 'update_check_interval_hours',
+  'stats_reporting_enabled', 'stats_report_interval_hours', 'stats_report_window_hours',
+];
+
+async function restoreNotifications(page, before, {clears, ...overrides} = {}) {
+  const current = await canonical(page);
+  await page.request.put('/api/settings', {data: {
+    ...current,
+    integrations: undefined, integration_groups: undefined,
+    transfer_policy: undefined, execution_runtime_limits: undefined,
+    compatibility_fields: undefined,
+    ...Object.fromEntries(NOTIFICATION_KEYS.map(key => [key, before[key]])),
+    clear_secrets: clears,
+    ...overrides,
+  }});
+}
+
+async function restore(page, before) {
+  await restoreNotifications(page, before, {
+    clears: ['discord_webhook_url', 'discord_webhook_added', 'stats_report_webhook_url'],
+    discord_webhook_url: '', discord_webhook_added: '', stats_report_webhook_url: '',
+  });
+}
+
+test.beforeEach(async ({page}) => {
+  await page.goto('/');
+});
+
+test('Notifications carries no Apply contract at all', async ({page}) => {
+  await openSettings(page, 'notifications');
+
+  await expect(page.locator('#view-settings [data-action="save"]')).toHaveCount(0);
+  await expect(page.locator('#view-settings .dp-settings-save-hint')).toHaveCount(0);
+  await expect(page.locator('#view-settings .dp-settings-master-footer')).toHaveCount(0);
+
+  // The deferred clear-on-save checkboxes are gone entirely, not hidden.
+  await expect(page.locator('#view-settings [data-clear-secret]')).toHaveCount(0);
+  // ... and so is the footer's page-specific action region.
+  await expect(page.locator('#view-settings [data-context-action]')).toHaveCount(0);
+
+  // Every control on the tab is enrolled with the canonical persistence owner.
+  const unmanaged = await page.locator('.dp-settings-panel[data-panel="notifications"]')
+    .evaluate(panel => [...panel.querySelectorAll('[data-setting]')]
+      .filter(node => !node.dataset.commitKey).map(node => node.dataset.setting));
+  expect(unmanaged).toEqual([]);
+});
+
+test('both cards render the shared rail: status, then Test, then Enable', async ({page}) => {
+  await openSettings(page, 'notifications');
+
+  for (const card of ['dp-settings-discord-card', 'dp-settings-statistics-reporting-card']) {
+    const rail = page.locator(`#view-settings .${card} .dp-settings-card-header-controls`);
+    await expect(rail).toHaveCount(1);
+    // The rail's drawn items, read through a boxless wrapper (Test and its
+    // toggle share one header Test group, which draws no box from 780px).
+    const order = await rail.evaluate(el => {
+      const drawn = node => [...node.children].flatMap(child => getComputedStyle(child).display === 'contents'
+        ? drawn(child) : (child.getClientRects().length ? [child] : []));
+      return drawn(el).map(node => {
+        if (node.classList.contains('dp-settings-provider-config-status')) return 'status';
+        if (node.classList.contains('dp-settings-header-action')) return 'test';
+        if (node.classList.contains('dp-settings-help-chip')) return 'help';
+        return node.querySelector('input[type=checkbox]') || node.matches('input[type=checkbox]') ? 'enable' : node.className;
+      });
+    });
+    // Status, then the card's help, then its own controls in their order.
+    expect(order).toEqual(['status', 'help', 'test', 'enable']);
+    await expect(rail.locator('.dp-settings-provider-test')).toHaveText('Test');
+  }
+
+  // The relocated footer actions have no surviving duplicate anywhere.
+  await expect(page.getByRole('button', {name: 'Test Discord'})).toHaveCount(0);
+  await expect(page.getByRole('button', {name: 'Send Report Now'})).toHaveCount(0);
+});
+
+test('text, number, select and toggle all persist at their own boundary', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  // Each value is derived from what is stored, so every one of them is a real
+  // change however the shared backend was left by an earlier case.
+  const name = `${before.discord_username} probe`;
+  const interval = (Number(before.stats_report_interval_hours) || 0) + 7;
+  const [window, windowLabel] = before.stats_report_window_hours === 168
+    ? [720, '30 days'] : [168, '7 days'];
+
+  try {
+    // Each boundary is proven by what the SERVER ACCEPTED for it. Reading the
+    // document back at the end instead would make the case depend on no other
+    // spec file's whole-document restore landing in between -- an artefact of
+    // the shared fixture that a readback cannot distinguish from a real
+    // persistence defect.
+    const named = await commit(page, 'discord_username', name);
+    expect(named.discord_username).toBe(name);
+
+    const timed = await commit(page, 'stats_report_interval_hours', interval);
+    expect(timed.stats_report_interval_hours).toBe(interval);
+
+    // A select commits on choosing, with no blur an operator could perform.
+    const chosen = await choose(page, 'stats_report_window_hours', windowLabel);
+    expect(chosen.stats_report_window_hours).toBe(window);
+
+    // A boolean's change IS its boundary. The event toggles live inside the
+    // disclosure, so the operator opens it first.
+    await page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection .dp-settings-disclosure').click();
+    await expect(page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection-body')).toBeVisible();
+    const toggled = page.waitForResponse(
+      r => r.url().includes('/api/settings') && r.request().method() === 'PUT', {timeout: 15000});
+    await page.locator('label[for="dp-settings-field-discord-notify-error"] .ttrack').click();
+    expect((await (await toggled).json()).discord_notify_error).toBe(!before.discord_notify_error);
+
+    // Nothing was applied: each control shows exactly what it committed.
+    await expect(field(page, 'discord_username')).toHaveValue(name);
+    await expect(field(page, 'stats_report_interval_hours')).toHaveValue(String(interval));
+    await expect(field(page, 'stats_report_window_hours')).toHaveValue(String(window));
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('the update-check interval moved into the disclosure and persists there', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  try {
+    const disclosure = page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection .dp-settings-disclosure');
+    await expect(page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection-title'))
+      .toHaveText('Notification Events & Delivery Options');
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+
+    // Opening it must not disturb the destination row above it.
+    const geometry = () => page.locator('#view-settings .dp-settings-notifications-delivery-row')
+      .evaluate(row => {
+        const base = row.getBoundingClientRect();
+        return [...row.querySelectorAll('.input, button')].map(node => {
+          const box = node.getBoundingClientRect();
+          return `${Math.round(box.x - base.x)}:${Math.round(box.width)}`;
+        }).join('|') + `|row:${Math.round(base.width)}`;
+      });
+    const collapsed = await geometry();
+    await disclosure.click();
+    await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(await geometry()).toBe(collapsed);
+
+    // The interval is inside it, labelled exactly, with its unit in the field.
+    const cell = page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection .dp-settings-field')
+      .filter({has: field(page, 'update_check_interval_hours')});
+    await expect(cell.locator('.form-label')).toHaveText('Update Check Interval');
+    await expect(cell.locator('.dp-settings-field-unit')).toHaveText('hours');
+
+    // Derived from what is stored, like every other probe in this file: an
+    // unchanged field crosses no boundary and writes nothing, so a hard-coded
+    // value silently stops testing anything the moment the shared backend
+    // already holds it.
+    const probe = Number(before.update_check_interval_hours) === 6 ? 7 : 6;
+    const accepted = await commit(page, 'update_check_interval_hours', probe);
+    expect(accepted.update_check_interval_hours).toBe(probe);
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('a blank webhook field writes nothing; erasing one is its own act', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  try {
+    await commit(page, 'discord_webhook_url', PRIMARY);
+
+    // A stored secret's accepted presentation is blank, and the field says so.
+    await expect(field(page, 'discord_webhook_url')).toHaveValue('');
+    await expect(field(page, 'discord_webhook_url'))
+      .toHaveAttribute('placeholder', /configured/);
+    await expect(clearFor(page, 'discord_webhook_url')).toBeEnabled();
+    await expect(status(page, 'dp-settings-discord-card')).toHaveText('Configured');
+
+    // Leaving that blank field is not a clear: it writes nothing at all.
+    const writes = [];
+    page.on('request', request => {
+      if (request.url().includes('/api/settings') && request.method() === 'PUT') {
+        writes.push(request.postDataJSON());
+      }
+    });
+    await field(page, 'discord_webhook_url').click();
+    await field(page, 'discord_webhook_url').blur();
+    await page.waitForTimeout(600);
+    expect(writes).toEqual([]);
+    expect((await canonical(page)).discord_webhook_url_configured).toBe(true);
+
+    // Declining the explicit act mutates nothing either.
+    await clearFor(page, 'discord_webhook_url').click();
+    await expect(page.locator('.dp-modal-overlay')).toBeVisible();
+    await page.locator('.dp-modal-overlay').getByRole('button', {name: 'Cancel'}).click();
+    await expect(page.locator('.dp-modal-overlay')).toHaveCount(0);
+    expect((await canonical(page)).discord_webhook_url_configured).toBe(true);
+
+    // Accepting it clears exactly that one destination.
+    await clearFor(page, 'discord_webhook_url').click();
+    await confirmDialog(page, 'Clear Webhook');
+    await expect(clearFor(page, 'discord_webhook_url')).toBeDisabled();
+    await expect(status(page, 'dp-settings-discord-card')).toHaveText('Unconfigured');
+    expect((await canonical(page)).discord_webhook_url_configured).toBe(false);
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('clearing one destination never touches another or either Enable', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  try {
+    await commit(page, 'discord_webhook_url', PRIMARY);
+    await commit(page, 'discord_webhook_added', ADDED);
+    await commit(page, 'stats_report_webhook_url', REPORT);
+    await expect(status(page, 'dp-settings-statistics-reporting-card')).toHaveText('Configured');
+
+    // The dedicated reporting override goes; reporting stays configured because
+    // the primary Discord webhook is still a valid effective destination.
+    await clearFor(page, 'stats_report_webhook_url').click();
+    await confirmDialog(page, 'Clear Webhook');
+    let now = await canonical(page);
+    expect(now.stats_report_webhook_url_configured).toBe(false);
+    expect(now.discord_webhook_url_configured).toBe(true);
+    expect(now.discord_webhook_added_configured).toBe(true);
+    expect(now.stats_reporting_configured).toBe(true);
+    await expect(status(page, 'dp-settings-statistics-reporting-card')).toHaveText('Configured');
+
+    // The Download Added override goes; the primary is untouched.
+    await clearFor(page, 'discord_webhook_added').click();
+    await confirmDialog(page, 'Clear Webhook');
+    now = await canonical(page);
+    expect(now.discord_webhook_added_configured).toBe(false);
+    expect(now.discord_webhook_url_configured).toBe(true);
+
+    // The primary goes; reporting loses the fallback it was relying on and says
+    // so honestly -- without either participation flag moving.
+    await clearFor(page, 'discord_webhook_url').click();
+    await confirmDialog(page, 'Clear Webhook');
+    now = await canonical(page);
+    expect(now.stats_reporting_configured).toBe(false);
+    await expect(status(page, 'dp-settings-statistics-reporting-card')).toHaveText('Unconfigured');
+    expect(now.discord_notifications_enabled).toBe(before.discord_notifications_enabled);
+    expect(now.stats_reporting_enabled).toBe(before.stats_reporting_enabled);
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('an Enable toggle gates participation without erasing configuration', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  try {
+    await commit(page, 'discord_webhook_url', PRIMARY);
+
+    await page.locator('label[for="dp-settings-field-discord-notifications-enabled"] .ttrack').click();
+    await page.waitForResponse(r => r.url().includes('/api/settings') && r.request().method() === 'PUT');
+
+    const off = await canonical(page);
+    expect(off.discord_notifications_enabled).toBe(false);
+    // Configuration survives, the status keeps reporting it, and the other
+    // section is not touched.
+    expect(off.discord_webhook_url_configured).toBe(true);
+    expect(off.discord_notifications_configured).toBe(true);
+    expect(off.stats_reporting_enabled).toBe(true);
+    await expect(status(page, 'dp-settings-discord-card')).toHaveText('Configured');
+    // And Test stays available, because it is about configuration.
+    await expect(page.locator('#view-settings .dp-settings-discord-card [data-action="test-discord"]'))
+      .toBeEnabled();
+  } finally {
+    await restoreNotifications(page, before,
+      {clears: ['discord_webhook_url'], discord_webhook_url: ''});
+  }
+});
+
+test('Test exercises the value just committed, not stale stored configuration', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  try {
+    await commit(page, 'discord_webhook_url', PRIMARY);
+
+    // The operator types a NEW destination and reaches straight for Test
+    // without leaving the field first. The action settles the pending write, so
+    // what the backend tests is the value they just entered.
+    let tested = '';
+    await page.route('**/api/settings/validate-discord', async route => {
+      tested = (await (await page.request.get('/api/settings')).json()).discord_webhook_url_configured;
+      await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, notifications: {discord_notifications_configured: true,
+          discord_notifications_verified: true, stats_reporting_configured: true,
+          stats_reporting_verified: false}})});
+    });
+
+    const writes = [];
+    page.on('request', request => {
+      if (request.url().includes('/api/settings') && request.method() === 'PUT') {
+        writes.push(request.postDataJSON().discord_webhook_url);
+      }
+    });
+    await field(page, 'discord_webhook_url').fill(REPORT);
+    await page.locator('#view-settings .dp-settings-discord-card [data-action="test-discord"]').click();
+    await expect(status(page, 'dp-settings-discord-card')).toHaveText('Verified');
+
+    // The pending draft reached the server BEFORE the test ran.
+    expect(writes).toContain(REPORT);
+    expect(tested).toBe(true);
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('a rejected write converges the control back onto canonical truth', async ({page}) => {
+  const before = await canonical(page);
+  await openSettings(page, 'notifications');
+
+  try {
+    await page.route('**/api/settings', async route => {
+      if (route.request().method() !== 'PUT') return route.fallback();
+      await route.fulfill({status: 503, contentType: 'application/json',
+        body: JSON.stringify({detail: 'Storage unavailable'})});
+    });
+
+    await field(page, 'discord_username').fill('Never Saved');
+    await field(page, 'discord_username').blur();
+    await expect(field(page, 'discord_username')).toHaveValue(before.discord_username);
+
+    await page.unroute('**/api/settings');
+    expect((await canonical(page)).discord_username).toBe(before.discord_username);
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('the Avatar URL field has ONE embedded action: Upload while empty, Clear while it holds a URL, one fixed slot', async ({page}) => {
+  const before = await canonical(page);
+  const writes = [];
+  page.on('request', request => {
+    if (request.url().includes('/api/settings') && request.method() === 'PUT') writes.push(request.postDataJSON());
+  });
+  try {
+    await restoreNotifications(page, before, {clears: [], discord_avatar_url: ''});
+    await page.reload();
+    await openSettings(page, 'notifications');
+    writes.length = 0;
+    const avatar = field(page, 'discord_avatar_url');
+    const action = page.locator('#view-settings .dp-settings-avatar-row [data-avatar-action]');
+    const read = () => page.locator('#view-settings .dp-settings-avatar-row').evaluate(row => {
+      const input = row.querySelector('#dp-settings-field-discord-avatar-url');
+      const compound = input.closest('.dp-action-field');
+      const buttons = [...row.querySelectorAll('button')];
+      const button = buttons[0], b = button.getBoundingClientRect(), c = compound.getBoundingClientRect(), i = input.getBoundingClientRect();
+      return {buttons: buttons.length, inField: compound.contains(button), label: button.textContent.trim(),
+        name: button.getAttribute('aria-label'), tip: button.dataset.tooltip, action: button.dataset.action,
+        danger: button.classList.contains('btn-danger'), size: [Math.round(b.width * 10) / 10, Math.round(b.height * 10) / 10],
+        input: Math.round(i.width * 10) / 10, field: Math.round(c.height * 10) / 10,
+        right: Math.round((c.right - b.right) * 10) / 10, centred: Math.abs((b.top + b.bottom) / 2 - (c.top + c.bottom) / 2) < 2,
+        clears: i.right <= b.left + 0.5, focusable: button.tabIndex >= 0};
+    });
+    // Empty: Upload, neutral, inside the field.
+    const empty = await read();
+    expect(empty).toMatchObject({buttons: 1, inField: true, label: 'Upload', name: 'Upload Avatar', tip: 'Upload Avatar',
+      action: 'upload-avatar', danger: false, centred: true, clears: true, focusable: true});
+    // Upload opens the existing file browser.
+    const chooser = page.waitForEvent('filechooser');
+    await action.click();
+    expect((await chooser).isMultiple()).toBe(false);
+    // A typed URL: Clear, destructive -- the SAME slot, nothing moved, nothing written.
+    await avatar.fill('https://example.com/typed-draft.png');
+    const typed = await read();
+    expect(typed).toMatchObject({buttons: 1, label: 'Clear', name: 'Clear Avatar', tip: 'Clear Avatar', action: 'clear-avatar', danger: true});
+    expect([typed.size, typed.input, typed.field, typed.right]).toEqual([empty.size, empty.input, empty.field, empty.right]);
+    // Clearing a draft nothing stores sends nothing and needs no confirmation.
+    await action.click();
+    await expect(avatar).toHaveValue('');
+    await expect(page.locator('.dp-modal-overlay')).toHaveCount(0);
+    await expect(action).toHaveText('Upload');
+    await page.waitForTimeout(300);
+    expect(writes, 'a draft was submitted in order to be cleared').toEqual([]);
+
+    // A stored URL: Clear asks first; declining changes nothing and keeps a newer draft.
+    await commit(page, 'discord_avatar_url', 'https://example.com/avatar.png');
+    await expect(page.locator('#dp-settings-avatar-preview')).toBeVisible();
+    await expect(action).toHaveText('Clear');
+    await avatar.fill('https://example.com/newer-draft.png');
+    writes.length = 0;
+    await action.click();
+    await expect(page.locator('.dp-modal-overlay')).toBeVisible();
+    await page.locator('.dp-modal-overlay [data-modal-cancel]').click();
+    await expect(page.locator('.dp-modal-overlay')).toHaveCount(0);
+    await expect(avatar).toHaveValue('https://example.com/newer-draft.png');
+    await page.waitForTimeout(300);
+    expect(writes, 'cancelling wrote something').toEqual([]);
+    expect((await canonical(page)).discord_avatar_url).toBe('https://example.com/avatar.png');
+    // Confirming removes the STORED URL through the existing write -- the newer
+    // draft is never submitted first.
+    await action.click();
+    await confirmDialog(page, 'Clear Avatar');
+    expect(writes.map(write => write.discord_avatar_url)).toEqual(['']);
+    await expect(avatar).toHaveValue('');
+    await expect(action).toHaveText('Upload');
+    await expect(page.locator('#dp-settings-avatar-preview')).toBeHidden();
+    expect((await canonical(page)).discord_avatar_url).toBe('');
+  } finally {
+    await restore(page, before);
+  }
+});
+
+test('a refused avatar removal keeps the stored URL on screen', async ({page}) => {
+  const before = await canonical(page);
+  try {
+    await withStoredAvatar(page, before, 'https://example.com/avatar.png');
+    await page.route('**/api/settings', route => route.request().method() === 'PUT'
+      ? route.fulfill({status: 500, contentType: 'application/json', body: '{"detail":"synthetic failure"}'}) : route.continue());
+    await page.locator('#view-settings [data-avatar-action]').click();
+    await page.locator('.dp-modal-overlay').getByRole('button', {name: 'Clear Avatar'}).click();
+    await expect(page.locator('#toasts .toast').last()).toContainText('synthetic failure');
+    await expect(field(page, 'discord_avatar_url')).toHaveValue('https://example.com/avatar.png');
+    await expect(page.locator('#view-settings [data-avatar-action]')).toHaveText('Clear');
+    await expect(page.locator('#dp-settings-avatar-preview')).toBeVisible();
+    await page.unroute('**/api/settings');
+    expect((await canonical(page)).discord_avatar_url).toBe('https://example.com/avatar.png');
+  } finally {
+    await restoreNotifications(page, before, {clears: []});
+  }
+});
+
+test('every webhook Clear is inside its own field, named for what it clears, and keeps the typing room', async ({page}) => {
+  await openSettings(page, 'notifications');
+  for (const width of [1440, 1180, 1024, 900, 780, 480]) {
+    await page.setViewportSize({width, height: 1000});
+    for (const [key, name] of [['discord_webhook_url', 'Clear the stored primary webhook'],
+      ['discord_webhook_added', 'Clear the stored Download Added webhook'], ['stats_report_webhook_url', 'Clear the stored reporting webhook']]) {
+      const g = await field(page, key).evaluate((input, key) => {
+        const row = input.closest('.dp-settings-inline-field'), compound = input.closest('.dp-action-field');
+        const clears = row.querySelectorAll('[data-action="clear-webhook"]'), clear = clears[0];
+        clear.scrollIntoView({block: 'center'});
+        const b = clear.getBoundingClientRect(), c = compound.getBoundingClientRect(), i = input.getBoundingClientRect(), r = row.getBoundingClientRect();
+        const hit = document.elementFromPoint((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+        return {count: clears.length, inField: compound.contains(clear), label: clear.textContent.trim(), name: clear.getAttribute('aria-label'),
+          tip: clear.dataset.tooltip, webhook: clear.dataset.webhook, danger: clear.classList.contains('btn-danger'), hit: clear.contains(hit),
+          clears: i.right <= b.left + 0.5, centred: Math.abs((b.top + b.bottom) / 2 - (c.top + c.bottom) / 2) < 2,
+          inRow: c.right <= r.right + 0.5, input: i.width, overflow: row.scrollWidth - row.clientWidth};
+      }, key);
+      const at = `${key} at ${width}px`;
+      expect(g, at).toMatchObject({count: 1, inField: true, label: 'Clear', name, tip: name, webhook: key, danger: true, hit: true,
+        clears: true, centred: true, inRow: true});
+      expect(g.input, `${at}: no room to type`).toBeGreaterThanOrEqual(100);
+      expect(g.overflow, `${at}: overflow`).toBeLessThanOrEqual(0);
+    }
+  }
+});
+
+test('the destination row keeps its geometry in both disclosure states', async ({page}) => {
+  await openSettings(page, 'notifications');
+  const panel = page.locator('.dp-settings-panel[data-panel="notifications"]');
+
+  // No horizontal overflow, and each embedded action is centred on its own
+  // field's control rather than on the whole title/hint stack.
+  const measured = await panel.evaluate(el => {
+    const rows = [...el.querySelectorAll('.dp-settings-inline-field')]
+      .filter(row => row.querySelector('.dp-action-field > .btn'));
+    return {
+      overflow: el.scrollWidth - el.clientWidth,
+      offsets: rows.map(row => {
+        const control = row.querySelector(':scope > .dp-settings-inline-field-control');
+        const action = row.querySelector('.dp-action-field > .btn');
+        const mid = node => { const b = node.getBoundingClientRect(); return b.y + b.height / 2; };
+        return Math.round(mid(action) - mid(control));
+      }),
+      rows: rows.length,
+    };
+  });
+  expect(measured.overflow).toBeLessThanOrEqual(0);
+  expect(measured.rows).toBe(4);   // three webhooks, plus the avatar
+  for (const offset of measured.offsets) expect(Math.abs(offset)).toBeLessThanOrEqual(1);
+});
+
+test('every control renders the shared horizontal title/hint + control grammar', async ({page}) => {
+  await openSettings(page, 'notifications');
+  await page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection .dp-settings-disclosure').click();
+  await expect(page.locator('.dp-settings-panel[data-panel="notifications"] .dp-settings-subsection-body')).toBeVisible();
+
+  const measured = await page.locator('.dp-settings-panel[data-panel="notifications"]').evaluate(panel => {
+    const rows = ['.dp-settings-notifications-identity-row', '.dp-settings-notifications-delivery-row',
+                  '.dp-settings-statistics-reporting-row',
+                  // The cadence pair reads as one cluster, so its two settings
+                  // are placed by the island rather than by the row.
+                  '.dp-settings-statistics-cadence-group'];
+    const fields = rows.flatMap(row =>
+      [...panel.querySelectorAll(`${row} > .dp-settings-inline-field`)]);
+    const mid = node => { const b = node.getBoundingClientRect(); return b.y + b.height / 2; };
+    return {
+      // Only the shared inline field; no stacked field survives in these rows.
+      stacked: rows.reduce((n, row) => n + panel.querySelectorAll(`${row} > .dp-settings-field`).length, 0),
+      fields: fields.map(field => {
+        const info = field.querySelector(':scope > .dp-settings-inline-field-info');
+        const label = info.querySelector('.form-label');
+        const hint = info.querySelector('.form-hint');
+        const control = field.querySelector(':scope > .dp-settings-inline-field-control');
+        return {
+          key: field.querySelector('[data-setting]').dataset.setting,
+          titleAboveHint: Math.round(hint.getBoundingClientRect().y - label.getBoundingClientRect().bottom),
+          controlIsRightOfInfo: control.getBoundingClientRect().left >= info.getBoundingClientRect().right,
+          infoCentredOnControl: Math.abs(mid(info) - mid(control)),
+          controlWidth: Math.round(control.getBoundingClientRect().width),
+        };
+      }),
+    };
+  });
+
+  expect(measured.stacked).toBe(0);
+  expect(measured.fields.map(f => f.key)).toEqual([
+    'discord_username', 'discord_avatar_url',
+    'discord_webhook_url', 'discord_webhook_added',
+    'stats_report_webhook_url', 'stats_report_interval_hours', 'stats_report_window_hours',
+  ]);
+  for (const field of measured.fields) {
+    expect(field.titleAboveHint, `${field.key} hint is not beneath its title`).toBeGreaterThanOrEqual(0);
+    expect(field.controlIsRightOfInfo, `${field.key} control is not to the right`).toBe(true);
+    expect(field.infoCentredOnControl, `${field.key} block is not centred`).toBeLessThanOrEqual(1);
+    expect(field.controlWidth, `${field.key} control is starved`).toBeGreaterThan(90);
+  }
+});
+
+/* Measure the Avatar field as it is DRAWN: where the preview sits relative to
+ * the control row that owns it. */
+async function avatarGeometry(page) {
+  return page.locator('#view-settings .dp-settings-avatar-row').evaluate(row => {
+    const box = node => {
+      const r = node.getBoundingClientRect();
+      return {top: Math.round(r.top), bottom: Math.round(r.bottom),
+              left: Math.round(r.left), right: Math.round(r.right)};
+    };
+    const control = row.querySelector(':scope > .dp-settings-inline-field-control');
+    const action = row.querySelector('[data-avatar-action]');
+    const line = row.querySelector(':scope > .dp-settings-inline-field-second-line');
+    const preview = row.querySelector('#dp-settings-avatar-preview');
+    return {
+      control: box(control), action: box(action), line: box(line), preview: box(preview),
+      // The preview is the SECOND LINE's content, not the control's.
+      previewInSecondLine: line.contains(preview),
+      previewInsideControl: control.contains(preview),
+      rowWidth: Math.round(row.getBoundingClientRect().width),
+    };
+  });
+}
+
+/** Render the panel with a stored avatar, whatever was there before. */
+async function withStoredAvatar(page, before, url) {
+  await restoreNotifications(page, before, {clears: [], discord_avatar_url: url});
+  await page.reload();
+  await openSettings(page, 'notifications');
+  await expect(page.locator('#dp-settings-avatar-preview')).toBeVisible();
+}
+
+test('the avatar preview is a dedicated second line beneath the Avatar URL row', async ({page}) => {
+  const before = await canonical(page);
+
+  try {
+    await withStoredAvatar(page, before, 'https://example.com/a-fairly-long-avatar-name.png');
+
+    // Wide, wider, and the widest this layout is asked to serve: the preview is
+    // the row beneath the control at every one of them, because its place is
+    // declared rather than reached by running out of room.
+    for (const width of [1280, 1440, 1920, 2560]) {
+      await page.setViewportSize({width, height: 1000});
+      const g = await avatarGeometry(page);
+
+      expect(g.previewInSecondLine, `${width}px: preview is not the field's second line`).toBe(true);
+      expect(g.previewInsideControl, `${width}px: preview is inside the control box`).toBe(false);
+      // Structurally below: the whole preview clears the whole control row and
+      // the field's one action inside it. No shared line at any width.
+      expect(g.preview.top, `${width}px: preview shares the control's line`)
+        .toBeGreaterThanOrEqual(g.control.bottom);
+      expect(g.preview.top, `${width}px: preview shares the action's line`)
+        .toBeGreaterThanOrEqual(g.action.bottom);
+      // ... and beneath the control, not beneath the title block.
+      expect(g.line.left, `${width}px: second line is not under the control`)
+        .toBeGreaterThanOrEqual(g.control.left - 1);
+      // The one action stays INSIDE the field, on the control's line (a stored
+      // URL: Clear).
+      const placement = await page.locator('#view-settings .dp-settings-avatar-row').evaluate(row => {
+        const input = row.querySelector('#dp-settings-field-discord-avatar-url');
+        const compound = input.closest('.dp-action-field');
+        const action = row.querySelector('[data-avatar-action]');
+        const mid = node => { const b = node.getBoundingClientRect(); return b.y + b.height / 2; };
+        return {
+          buttons: row.querySelectorAll('button').length,
+          actionInsideField: compound.contains(action),
+          actionOnTheControlLine: Math.abs(mid(action) - mid(compound)) < 2,
+          label: action.textContent.trim(),
+        };
+      });
+      expect(placement, `${width}px`).toEqual({
+        buttons: 1, actionInsideField: true, actionOnTheControlLine: true, label: 'Clear',
+      });
+    }
+  } finally {
+    await page.setViewportSize({width: 1440, height: 1000});
+    await restoreNotifications(page, before, {clears: []});
+  }
+});
+
+test('the webhook row begins below the avatar preview, with room to breathe', async ({page}) => {
+  const before = await canonical(page);
+
+  try {
+    await withStoredAvatar(page, before, 'https://example.com/avatar.png');
+
+    const measured = await page.locator('.dp-settings-panel[data-panel="notifications"]').evaluate(panel => {
+      const rect = selector => panel.querySelector(selector).getBoundingClientRect();
+      const identity = rect('.dp-settings-notifications-identity-row');
+      const delivery = rect('.dp-settings-notifications-delivery-row');
+      const preview = rect('#dp-settings-avatar-preview');
+      return {
+        // Row 1 is sized by its tallest field, so the preview is INSIDE it.
+        previewWithinRowOne: Math.round(identity.bottom - preview.bottom) >= 0,
+        gapBelowPreview: Math.round(delivery.top - preview.bottom),
+        gapBelowRowOne: Math.round(delivery.top - identity.bottom),
+        rails: [Math.round(identity.left), Math.round(identity.right),
+                Math.round(delivery.left), Math.round(delivery.right)],
+      };
+    });
+
+    expect(measured.previewWithinRowOne).toBe(true);
+    // Row 2 begins after ALL of row 1, and is not crowded against it.
+    expect(measured.gapBelowPreview).toBeGreaterThanOrEqual(32);
+    expect(measured.gapBelowRowOne).toBe(32);
+    // Both rows still begin and end on the same card-body rails.
+    expect(measured.rails[0]).toBe(measured.rails[2]);
+    expect(measured.rails[1]).toBe(measured.rails[3]);
+  } finally {
+    await restoreNotifications(page, before, {clears: []});
+  }
+});
+
+test('the report cadence and window are one centred bordered group, side by side', async ({page}) => {
+  await openSettings(page, 'notifications');
+
+  const measured = await page.locator('.dp-settings-panel[data-panel="notifications"]').evaluate(panel => {
+    const group = panel.querySelector('.dp-settings-statistics-cadence-group');
+    const row = panel.querySelector('.dp-settings-statistics-reporting-row');
+    const field = key => panel.querySelector(`[data-setting="${key}"]`).closest('.dp-settings-inline-field');
+    const interval = field('stats_report_interval_hours');
+    const window_ = field('stats_report_window_hours');
+    const style = getComputedStyle(group);
+    const g = group.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const a = interval.getBoundingClientRect();
+    const b = window_.getBoundingClientRect();
+    // The control region is what carries the compact width: the number field
+    // shares its box with the `hours` unit, and the select with its projected
+    // listbox shell, so neither bare element is the measurement.
+    const controlWidth = key => Math.round(field(key)
+      .querySelector(':scope > .dp-settings-inline-field-control').getBoundingClientRect().width);
+    return {
+      // One wrapper holding exactly these two settings, and not the destination.
+      holdsBoth: group.contains(interval) && group.contains(window_),
+      holdsTheWebhook: !!group.querySelector('[data-setting="stats_report_webhook_url"]'),
+      fieldsInside: group.querySelectorAll('.dp-settings-inline-field').length,
+      // Centred in the card body: equal air either side, and narrower than the
+      // row it sits in rather than stretched across it.
+      leftAir: Math.round(g.left - r.left),
+      rightAir: Math.round(r.right - g.right),
+      narrowerThanTheRow: Math.round(r.width - g.width) > 0,
+      // Side by side on one line, separated by ONE moderate declared gap.
+      sameLine: Math.abs(Math.round(a.top - b.top)) <= 1,
+      between: Math.round(b.left - a.right),
+      // The distribution is centring, not space-between.
+      justifyContent: style.justifyContent,
+      flexDirection: style.flexDirection,
+      // A subtle single border, nothing decorative.
+      borderWidth: style.borderTopWidth,
+      borderStyle: style.borderTopStyle,
+      boxShadow: style.boxShadow,
+      // Compact widths, exactly as accepted.
+      intervalWidth: controlWidth('stats_report_interval_hours'),
+      windowWidth: controlWidth('stats_report_window_hours'),
+    };
+  });
+
+  expect(measured.holdsBoth).toBe(true);
+  expect(measured.holdsTheWebhook).toBe(false);
+  expect(measured.fieldsInside).toBe(2);
+
+  expect(measured.narrowerThanTheRow).toBe(true);
+  expect(Math.abs(measured.leftAir - measured.rightAir)).toBeLessThanOrEqual(1);
+  expect(measured.leftAir).toBeGreaterThan(0);
+
+  expect(measured.sameLine).toBe(true);
+  expect(measured.flexDirection).toBe('row');
+  expect(measured.justifyContent).toBe('center');
+  // Moderate: they neither touch nor sit half a viewport apart.
+  expect(measured.between).toBe(44);
+
+  expect(measured.borderWidth).toBe('1px');
+  expect(measured.borderStyle).toBe('solid');
+  expect(measured.boxShadow).toBe('none');
+
+  // Compact, and bounded by the ceiling the sheet declares -- not pinned to a
+  // measured constant, because both are font-sized.
+  for (const width of [measured.intervalWidth, measured.windowWidth]) {
+    expect(width).toBeLessThanOrEqual(170);
+    expect(width).toBeGreaterThan(90);
+  }
+});
+
+test('both Discord rows share the same card-body rails', async ({page}) => {
+  await openSettings(page, 'notifications');
+  const rails = await page.locator('.dp-settings-panel[data-panel="notifications"]').evaluate(panel => {
+    const edges = selector => {
+      const r = panel.querySelector(selector).getBoundingClientRect();
+      return [Math.round(r.left), Math.round(r.right)];
+    };
+    return {
+      identity: edges('.dp-settings-notifications-identity-row'),
+      delivery: edges('.dp-settings-notifications-delivery-row'),
+      statistics: edges('.dp-settings-statistics-reporting-row'),
+      overflow: panel.scrollWidth - panel.clientWidth,
+    };
+  });
+  expect(rails.delivery).toEqual(rails.identity);
+  expect(rails.statistics).toEqual(rails.identity);
+  expect(rails.overflow).toBeLessThanOrEqual(0);
+});
+
+// The four Discord fields and the cadence island at one width, in one read.
+async function responsiveGeometry(page) {
+  return page.locator('.dp-settings-panel[data-panel="notifications"]').evaluate(panel => {
+    const box = node => { const r = node.getBoundingClientRect(); return {left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width}; };
+    const inside = (inner, outer) => inner.left >= outer.left - 0.5 && inner.right <= outer.right + 0.5
+      && inner.top >= outer.top - 0.5 && inner.bottom <= outer.bottom + 0.5;
+    const groups = ['.dp-settings-notifications-identity-row', '.dp-settings-notifications-delivery-row'].map(selector => {
+      const node = panel.querySelector(selector), style = getComputedStyle(node);
+      return {node, box: box(node), display: style.display, border: style.borderTopStyle,
+        keys: [...node.querySelectorAll(':scope > .dp-settings-inline-field [data-setting]')].map(field => field.dataset.setting)};
+    });
+    const controls = ['discord_username', 'discord_avatar_url', 'discord_webhook_url', 'discord_webhook_added']
+      .map(key => box(panel.querySelector(`[data-setting="${key}"]`).closest('.dp-settings-inline-field')
+        .querySelector(':scope > .dp-settings-inline-field-control')));
+    const preview = panel.querySelector('#dp-settings-avatar-preview');
+    const avatarControl = panel.querySelector('.dp-settings-avatar-row > .dp-settings-inline-field-control');
+    const cadence = panel.querySelector('.dp-settings-statistics-cadence-group');
+    const row = panel.querySelector('.dp-settings-statistics-reporting-row');
+    const cadenceFields = [...cadence.querySelectorAll(':scope > .dp-settings-inline-field')];
+    const button = selector => { const b = panel.querySelector(selector).getBoundingClientRect(); return [Math.round(b.width), Math.round(b.height)]; };
+    return {
+      groups: groups.map(({box: _box, node: _node, ...rest}) => rest),
+      fieldsInside: groups.every(group => [...group.node.querySelectorAll(':scope > .dp-settings-inline-field')]
+        .every(field => inside(box(field), group.box))),
+      controlWidths: controls.map(control => Math.round(control.width)),
+      controlRights: controls.map(control => Math.round(control.right)),
+      preview: {belowControl: box(preview).top >= box(avatarControl).bottom - 0.5, inIdentity: inside(box(preview), groups[0].box),
+        rightWithinGroup: box(preview).right <= groups[0].box.right + 0.5},
+      cadence: {stacked: cadence.dataset.island === 'stacked', direction: getComputedStyle(cadence).flexDirection,
+        leftAir: Math.round(box(cadence).left - box(row).left), rightAir: Math.round(box(row).right - box(cadence).right),
+        hugs: Math.round(box(cadence).width) <= Math.round(Math.max(...cadenceFields.map(field => box(field).width))) + 46,
+        fieldsInside: cadenceFields.every(field => inside(box(field), box(cadence)))},
+      avatarButton: button('[data-avatar-action]'), webhookButton: button('[data-action="clear-webhook"]'),
+      overflow: panel.scrollWidth - panel.clientWidth,
+    };
+  });
+}
+
+test('narrow: two bordered Discord islands with one control width, a cadence island that hugs its stack; wide again restores both', async ({page}) => {
+  const before = await canonical(page);
+  try {
+    await withStoredAvatar(page, before, `https://example.com/${'a-very-long-avatar-path-segment/'.repeat(6)}avatar.png`);
+    const wide = await responsiveGeometry(page);
+    expect(wide.groups.map(group => [group.display, group.border])).toEqual([['grid', 'none'], ['grid', 'none']]);
+    expect(wide.cadence).toMatchObject({stacked: false, direction: 'row'});
+
+    // 1024px: the card body is under 968px -- Identity and Destinations become two bordered islands.
+    await page.setViewportSize({width: 1024, height: 1000});
+    await expect.poll(async () => (await responsiveGeometry(page)).groups[0].display).toBe('flex');
+    const narrow = await responsiveGeometry(page);
+    expect(narrow.groups).toEqual([
+      {display: 'flex', border: 'solid', keys: ['discord_username', 'discord_avatar_url']},
+      {display: 'flex', border: 'solid', keys: ['discord_webhook_url', 'discord_webhook_added']}]);
+    expect(narrow.fieldsInside).toBe(true);
+    expect(new Set(narrow.controlWidths).size, `one control width: ${narrow.controlWidths}`).toBe(1);
+    expect(new Set(narrow.controlRights).size, `one right edge: ${narrow.controlRights}`).toBe(1);
+    expect(narrow.preview).toEqual({belowControl: true, inIdentity: true, rightWithinGroup: true});
+    // The avatar's action is the webhook Clear's embedded button: the same height (the slot keeps one width for both states).
+    expect(narrow.avatarButton[1]).toBe(narrow.webhookButton[1]);
+    expect(narrow.overflow).toBeLessThanOrEqual(0);
+
+    // 900px: the cadence pair no longer fits side by side -- it stacks, and its border hugs the stack, centred.
+    await page.setViewportSize({width: 900, height: 1000});
+    await expect.poll(async () => (await responsiveGeometry(page)).cadence.stacked).toBe(true);
+    const stacked = (await responsiveGeometry(page)).cadence;
+    expect(stacked).toMatchObject({direction: 'column', hugs: true, fieldsInside: true});
+    expect(Math.abs(stacked.leftAir - stacked.rightAir)).toBeLessThanOrEqual(1);
+    expect(stacked.leftAir).toBeGreaterThan(40);
+
+    // Wider again: both layouts come back, with no border left on the Discord rows.
+    await page.setViewportSize({width: 1440, height: 1000});
+    await expect.poll(async () => (await responsiveGeometry(page)).groups[0].display).toBe('grid');
+    const restored = await responsiveGeometry(page);
+    expect(restored.groups.map(group => [group.display, group.border])).toEqual([['grid', 'none'], ['grid', 'none']]);
+    expect(restored.cadence).toMatchObject({stacked: false, direction: 'row'});
+    expect(restored.controlWidths).toEqual(wide.controlWidths);
+  } finally {
+    await page.setViewportSize({width: 1440, height: 1000});
+    await restoreNotifications(page, before, {clears: []});
+  }
+});

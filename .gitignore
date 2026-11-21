@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Data & Config (contains secrets and local state)
+config/
+data/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env files
+.env
+.env.*
+!.env.example
+backend/tests/_tmp_watch_scan/
+
+# Node / Playwright (browser contract suite)
+frontend/browser/node_modules/
+frontend/browser/test-results/
+frontend/browser/playwright-report/

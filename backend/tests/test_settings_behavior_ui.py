@@ -1,0 +1,137 @@
+from pathlib import Path
+
+from i18n_node import english, says
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+SETTINGS = STATIC / "ui-settings-page.js"
+STYLE = STATIC / "ui-settings-page.css"
+MODAL_STYLE = STATIC / "ui-modal-contract.css"
+MODAL = STATIC / "ui-settings-modal.js"
+
+
+def source(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def block(js: str, start: str, end: str) -> str:
+    return js[js.index(start):js.index(end, js.index(start))]
+
+
+def test_an_act_that_must_rebuild_settings_never_loses_the_viewport():
+    js = source(SETTINGS)
+    assert "function captureSettingsViewport()" in js
+    assert "function restoreSettingsViewport(snapshot)" in js
+    assert "function renderPreservingViewport()" in js
+    assert "root()?.querySelector('.dp-settings-scroll')" in js
+    assert "document.getElementById('content')" in js
+    assert "window.requestAnimationFrame(() => restoreSettingsViewport(snapshot))" in js
+
+    # DP 1.0.13 terminal migration: no act re-renders Settings merely because
+    # something was saved -- generic Apply, the one act that did, is retired.
+    # What still rebuilds the page is an act whose RESULT is different markup,
+    # and each of those preserves the viewport.
+    assert "async function persistNonAuth" not in js
+    wipe = block(js, "async function wipeDatabaseClean(button)", "/* Erasing a stored credential")
+    assert "renderPreservingViewport();" in wipe
+
+    # Authentication no longer re-renders on a save, because it no longer HAS
+    # one: each control commits at its own boundary while the operator is still
+    # working, so the accepted state is projected onto the derived readings in
+    # place rather than by rebuilding the page underneath them.
+    adopt = block(js, "function adoptAuthentication(auth)", "function paintAuthKpis(a)")
+    assert "renderPreservingViewport();" not in adopt
+    assert "paintAuthDerived();" in adopt
+
+
+def test_settings_uses_first_party_confirmation_dialog_not_browser_dialogs():
+    js = source(SETTINGS)
+    modal = source(MODAL)
+    css = source(STYLE)
+    modal_css = source(MODAL_STYLE)
+    # The shell (role, focus trap, Escape, restoration) is owned by the canonical dialog module, not Settings.
+    assert "role: 'alertdialog'" in modal
+    assert 'aria-modal="true"' in modal
+    assert "event.key === 'Escape'" in modal
+    assert "event.key === 'Tab'" in modal
+    assert "resolveFocusTarget(origin)" in modal
+    assert "(cancel || dialog).focus()" in modal
+    assert "window.confirm" not in js and "window.confirm" not in modal
+    assert "window.prompt" not in js and "window.prompt" not in modal
+    assert ".dp-modal-overlay" not in css
+    assert "--dp-panel-surface" not in css
+    assert "box-shadow: var(--dp-panel-shadow)" not in css
+    assert ".dp-modal-overlay" in modal_css
+    assert ".dp-modal-dialog" in modal_css
+    assert 'data-tone="warning"' in modal_css
+    assert 'data-tone="danger"' in modal_css
+
+
+def test_destructive_settings_actions_share_confirmation_primitive():
+    js = source(SETTINGS)
+    open_mode = block(js, "async function confirmOpenMode(", "function authorizeAuthCommit(")
+    wipe = block(js, "async function wipeDatabaseClean", "/* Erasing a stored credential")
+    password = block(js, "async function clearPassword", "async function clearOidcSecret")
+    secret = block(js, "async function clearOidcSecret", "function clearOidcResources(")
+    token = block(js, "async function revokeToken(", "const readActivity = account =>")
+
+    # Opening DownloadPulse is a property of the ACT, so it is asked in ONE place
+    # for every act that can perform it.
+    assert js.count("'settings.auth.open_mode_accept'") == 1 and english("settings.auth.open_mode_accept") == "Continue to Open Mode"
+    assert "window.DPSettingsModal.confirm({" in open_mode
+    assert "if (!state.auth?.authentication_required || password || oidc) return AUTH_ALLOWED;" in open_mode
+    # The gate answers with the PROOF the act must carry, never a bare
+    # permission: an authorization that does not travel with the mutation is
+    # not an authorization, because the backend refuses the write without it.
+    assert "proof: {confirm_open_mode: true}" in open_mode
+    assert "...(authorization.proof || {})" in js
+    # And the proof is minted per act -- nothing holds one for a later write.
+    assert "confirmationGranted" not in js and "openModeConfirmed = true" not in js
+
+    assert "await window.DPSettingsModal.confirm" in password
+    assert password.count("await window.DPSettingsModal.confirm") == 1
+    assert "entersOpenMode" in password
+    assert "if (!confirmed) return;" in password
+    assert password.index("if (!confirmed) return;") < password.index("clear_password: true")
+
+    assert "await window.DPSettingsModal.confirm" in secret
+    assert secret.count("await window.DPSettingsModal.confirm") == 1
+    assert "if (!confirmed) return;" in secret
+    assert secret.index("if (!confirmed) return;") < secret.index("clear_oidc_client_secret: true")
+
+    assert "await window.DPSettingsModal.confirm" in token
+    assert says(token, "Revoke this token?")
+    assert says(token, "Revoke Token")
+    assert "if (!confirmed) return;" in token
+    assert token.index("if (!confirmed) return;") < token.index("request('DELETE', `/accounts/")
+
+    assert "await window.DPSettingsModal.confirm" in wipe
+    assert "typedPhrase: 'WIPE'" in wipe
+    assert says(wipe, "Wipe Database")
+    assert "if (!confirmed) return;" in wipe
+    assert wipe.index("if (!confirmed) return;") < wipe.index("request('POST', '/admin/database/wipe'")
+
+
+def test_typed_confirmation_gates_destructive_action_until_exact_phrase():
+    confirm = block(source(MODAL), "function confirm(", "window.DPSettingsModal")
+    assert "acceptDisabled: !!typedPhrase" in confirm
+    assert "handle.setAcceptEnabled(typedInput.value === typedPhrase)" in confirm
+    # Enter in the typed field submits only once the accept action is enabled (shell-owned key handling).
+    assert "event.key === 'Enter'" in source(MODAL)
+    assert "!entry.accept.disabled" in source(MODAL)
+
+
+def test_settings_action_rerenders_use_viewport_preserving_refresh():
+    js = source(SETTINGS)
+    for start, end in [
+        ("async function sendStatsReport", "async function uploadAvatar"),
+        ("async function testDiscordDelivery", "async function sendStatsReport"),
+        ("async function clearAvatar", "async function clearWebhook"),
+        ("async function clearWebhook", "async function runBackup"),
+        ("async function wipeDatabaseClean", "/* Erasing a stored credential"),
+        ("async function finishOidc", "function armOidc"),
+    ]:
+        section = block(js, start, end)
+        if "render" in section:
+            assert "renderPreservingViewport();" in section
+            assert "\n      render();" not in section

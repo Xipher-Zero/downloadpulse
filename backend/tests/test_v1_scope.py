@@ -1,0 +1,367 @@
+from pathlib import Path
+
+from packaging.version import Version
+
+from core.branding import APP_METADATA_TITLE, APP_NAME, APP_SHORT_NAME, REPOSITORY_URL
+from core.config import AppSettings
+from main import app
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+REMOVED_SETTINGS = {
+    "sonarr_enabled",
+    "radarr_enabled",
+    "jackett_enabled",
+    "prowlarr_enabled",
+    "flexget_enabled",
+    "rules_enabled",
+    "saved_searches_interval_minutes",
+    "plex_url",
+    "jellyfin_url",
+    "on_torrent_complete",
+    "download_profiles",
+    "priority_aging_interval_minutes",
+    "watch_folder",
+    "processed_folder",
+    "watch_interval_seconds",
+}
+
+REMOVED_ROUTE_MARKERS = {
+    "/api/v2",
+    "/jackett",
+    "/prowlarr",
+    "/flexget",
+    "/saved-searches",
+    "/rules/",
+    "/download-profiles",
+    "/webhooks/test",
+}
+
+
+def test_v1_identity_is_downloadpulse_everywhere_it_is_centralized():
+    assert APP_NAME == "DownloadPulse"
+    assert APP_SHORT_NAME == "DownloadPulse"
+    assert APP_METADATA_TITLE == "DownloadPulse — Universal Transfer Manager"
+    assert REPOSITORY_URL == "https://github.com/Xipher-Zero/downloadpulse"
+
+
+def test_removed_services_and_qbit_router_are_not_shipped():
+    removed_files = (
+        "backend/api/qbit.py",
+        "backend/services/flexget.py",
+        "backend/services/integrations.py",
+        "backend/services/jackett.py",
+        "backend/services/learning.py",
+        "backend/services/media_server.py",
+        "backend/services/prowlarr.py",
+        "backend/services/rules.py",
+        "backend/services/webhook_actions.py",
+    )
+    assert not [path for path in removed_files if (REPO_ROOT / path).exists()]
+
+
+def test_removed_settings_are_not_accepted_by_v1_model():
+    assert REMOVED_SETTINGS.isdisjoint(AppSettings.model_fields)
+
+
+def test_removed_api_routes_are_not_registered():
+    routes = {getattr(route, "path", "") for route in app.routes}
+    assert not {
+        path
+        for path in routes
+        if any(marker in path for marker in REMOVED_ROUTE_MARKERS)
+    }
+
+
+def test_api_has_no_duplicate_method_and_path_registrations():
+    registrations = [
+        (method, route.path)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+        if method not in {"HEAD", "OPTIONS"}
+    ]
+    assert len(registrations) == len(set(registrations))
+
+
+def test_frontend_and_runtime_lock_have_no_legacy_surface():
+    frontend = "\n".join(
+        (REPO_ROOT / path).read_text().casefold()
+        for path in ("frontend/static/index.html", "frontend/static/app.js")
+    )
+    for marker in (
+        "qbittorrent",
+        "jackett",
+        "prowlarr",
+        "flexget",
+        "saved-search",
+        "sonarr",
+        "radarr",
+    ):
+        assert marker not in frontend
+
+    requirements = (REPO_ROOT / "backend/requirements.txt").read_text().casefold()
+    assert "bencode2==0.3.33" in requirements
+    assert "bencodepy" not in requirements
+
+
+def test_release_surfaces_do_not_advertise_removed_watch_folder_workflow():
+    release_surfaces = "\n".join(
+        (REPO_ROOT / path).read_text().casefold()
+        for path in (
+            "README.md",
+            "index.html",
+            "Dockerfile",
+            "docker-compose.yml",
+            "entrypoint.sh",
+            "frontend/static/index.html",
+        )
+    )
+    assert "watch folder" not in release_surfaces
+    assert "/app/data/watch" not in release_surfaces
+    assert "/app/data/processed" not in release_surfaces
+
+
+# Release-history records describe earlier releases and are not current documentation.
+HISTORICAL_RECORDS: set[str] = set()
+
+
+def test_current_documentation_and_configuration_describe_one_managed_aria2():
+    surfaces = [
+        "README.md", "SECURITY.md", "CONTRIBUTING.md", "index.html", "Dockerfile", "docker-compose.yml",
+        "entrypoint.sh", ".github/ISSUE_TEMPLATE/bug_report.yml",
+        "frontend/static/index.html", "frontend/static/ui-help-page.js",
+    ] + [
+        str(path.relative_to(REPO_ROOT)) for path in sorted((REPO_ROOT / "docs").rglob("*.md"))
+        if str(path.relative_to(REPO_ROOT)) not in HISTORICAL_RECORDS
+    ]
+    for surface in surfaces:
+        text = (REPO_ROOT / surface).read_text(encoding="utf-8").casefold()
+        for marker in (
+            "external aria2", "external rpc", "shared aria2", "shared external", "external mode",
+            "external daemon", "aria2 rpc url", "rpc secret", "aria2_url", "aria2_mode",
+            "aria2_download_path", "external_aria2", "built-in aria2", "built-in or external",
+        ):
+            assert marker not in text, f"{surface}: {marker}"
+
+
+def test_v1_runtime_database_scope_is_sqlite_only():
+    assert not (REPO_ROOT / "docker-compose.postgres.yml").exists()
+    surfaces = "\n".join(
+        (REPO_ROOT / path).read_text().casefold()
+        for path in (
+            "backend/api/routes.py",
+            "backend/core/config.py",
+            "frontend/static/app.js",
+            "backend/db/database.py",
+        )
+    )
+    assert "postgres_internal" not in surfaces
+    assert "postgresql" not in surfaces
+    assert "asyncpg" not in surfaces
+
+
+def test_unified_submission_input_expands_to_five_lines():
+    frontend = (REPO_ROOT / "frontend/static/index.html").read_text()
+    scripts = (REPO_ROOT / "frontend/static/app.js").read_text()
+    # DP 1.0.12 canonical flattening: style.css is now a pure @import list;
+    # this content lives in ui-dashboard.css (migrated from the retired
+    # ui-legacy-foundation.css).
+    styles = (REPO_ROOT / "frontend/static/ui-dashboard.css").read_text()
+
+    assert 'id="q-transfer-input" rows="2"' in frontend
+    assert 'id="q-debrid-links"' not in frontend
+    assert 'id="q-magnet"' not in frontend
+    assert 'oninput="resizeDebridLinkInput(this)"' in frontend
+    assert "function resizeDebridLinkInput(input)" in scripts
+    assert "const minimum = Math.ceil((lineHeight * 2) + chrome);" in scripts
+    assert "const maximum = Math.ceil((lineHeight * 5) + chrome);" in scripts
+    assert "resizeDebridLinkInput(input);" in scripts
+    assert ".direct-link-input" in styles
+    assert "overflow-y: hidden" in styles
+
+
+def test_release_workflow_accepts_public_v1_tags():
+    image_workflow = (REPO_ROOT / ".github/workflows/image.yml").read_text()
+    promotion_workflow = (REPO_ROOT / ".github/workflows/release-promotion.yml").read_text()
+    release_helper = (REPO_ROOT / "release.py").read_text()
+    assert "- 'v*'" in image_workflow
+    assert "- 'v*'" in promotion_workflow
+    assert 'target_tag="$GITHUB_REF_NAME"' in promotion_workflow
+    assert "type=ref,event=tag" not in image_workflow
+    assert "DB_PATH=/app/data/downloadpulse.db" in image_workflow
+    version = (REPO_ROOT / "VERSION").read_text().strip()
+    parsed = Version(version)
+    assert parsed.release[:2] == (1, 0)
+    assert 'tag = f"v{version}"' in release_helper
+    assert "internal-v{version}" not in release_helper
+
+
+def test_operator_tab_title_uses_short_active_identity_and_queue_average():
+    frontend = (REPO_ROOT / "frontend/static/app.js").read_text()
+    routes = (REPO_ROOT / "backend/api/routes.py").read_text()
+
+    assert "document.title = 'DownloadPulse';" in frontend
+    from i18n_node import english
+    assert "document.title = DPI18n.t('operator_title.active', {speed, percent: DPI18n.number(_operatorTitleState.progress)});" in frontend
+    assert english("operator_title.active") == "DP | {speed} ({percent}%)"
+    assert "document.title = `DownloadPulse | (${active} Active)" not in frontend
+    assert "renderOperatorTitle();" in frontend
+
+    assert "AVG(CASE WHEN status='downloading' THEN COALESCE(progress, 0)" in routes
+    assert "AS operator_active_progress_pct" in routes
+    assert "AS weighted_progress" not in routes
+
+
+def test_dashboard_recent_activity_exposes_pause_resume_but_not_remove():
+    frontend = (REPO_ROOT / "frontend/static/app.js").read_text()
+    index = (REPO_ROOT / "frontend/static/index.html").read_text()
+
+    # Dashboard Recent Items has one canonical renderer: renderRecent() in the
+    # bounded presentation owner. app.js's loadRecent() is a stable delegator.
+    owner = (
+        REPO_ROOT / "frontend/static/ui-dashboard-transfer-presentation.js"
+    ).read_text()
+    recent_renderer = owner.split("async function renderRecent()", 1)[1].split(
+        "window.__dpRegisterRecentRenderer(renderRecent)", 1
+    )[0]
+    recent_markup = index.split('id="dash-activity-card"', 1)[1].split(
+        "</table>", 1
+    )[0]
+
+    assert "pauseT(${t.id},this)" in recent_renderer
+    assert "resumeT(${t.id},this)" in recent_renderer
+    # (Their words are the catalog's, 1.0.14 localization: the same English.)
+    from i18n_node import english
+    assert "T('transfer.action.pause_tooltip')" in recent_renderer and english("transfer.action.pause_tooltip") == "Pause this download"
+    assert "T('transfer.action.resume_tooltip')" in recent_renderer and english("transfer.action.resume_tooltip") == "Resume this download"
+    assert "deleteT(" not in recent_renderer
+    assert "Remove" not in recent_renderer
+    assert "Remove" not in recent_markup
+    assert 'colspan="6"' in recent_markup
+
+    # The app.js entrypoint delegates and never becomes a second renderer.
+    delegator = frontend.split("async function loadRecent()", 1)[1].split(
+        "function openTorrentFilePicker()", 1
+    )[0]
+    assert "__dpRegisterRecentRenderer" in delegator
+    assert "_recentRenderer" in delegator
+    assert "dash-tbody" not in delegator
+    assert "innerHTML" not in delegator
+
+    pause_item_handler = frontend.split(
+        "async function pauseT(id, button)", 1
+    )[1].split(
+        "async function resumeT(id, button)", 1
+    )[0]
+
+    resume_item_handler = frontend.split(
+        "async function resumeT(id, button)", 1
+    )[1].split(
+        "// ── Detail Modal", 1
+    )[0]
+
+    for handler in (pause_item_handler, resume_item_handler):
+        assert "loadTorrents();" in handler
+        assert "loadStats();" in handler
+        assert "loadRecent();" in handler
+
+
+
+
+def test_topbar_uses_live_aria2_speed_with_human_download_units():
+    frontend = (REPO_ROOT / "frontend/static/app.js").read_text()
+    index = (REPO_ROOT / "frontend/static/index.html").read_text()
+    # DP 1.0.12 canonical flattening: style.css is now a pure @import list;
+    # the aria2 speed-cap popover lives in ui-dropdown-contract.css (migrated
+    # from the retired ui-legacy-foundation.css).
+    styles = (REPO_ROOT / "frontend/static/ui-dropdown-contract.css").read_text()
+    routes = (REPO_ROOT / "backend/api/routes.py").read_text()
+    aria2_service = (REPO_ROOT / "backend/executors/aria2/client.py").read_text()
+
+    assert frontend.count("function fmtSpeed(bps)") == 1
+    assert frontend.count("function fmtSpeedCap(bps)") == 1
+    assert "fmtTransferRate(speed, 100)" in frontend
+    assert "fmtTransferRate(speed, 1000)" in frontend
+    assert "Number(value.toFixed(2)) >= rollover" in frontend
+    # The words and units are the catalog's (1.0.14 localization), the same English.
+    from i18n_node import english
+    assert "return DPI18n.t('format.rate.zero')" in frontend and english("format.rate.zero") == "0 KB/s"
+    assert "return DPI18n.t('format.rate.below_one_kb')" in frontend and english("format.rate.below_one_kb") == "<1 KB/s"
+    assert "return DPI18n.t('speed_cap.unlimited')" in frontend and english("speed_cap.unlimited") == "Unlimited"
+    assert "const units = ['KB', 'MB', 'GB', 'TB']" in frontend
+    assert english("format.rate.mb") == "{value} MB/s"
+    assert '<span id="runtime-badge-limit" data-i18n="speed_cap.unlimited">Unlimited</span>' in index
+
+    # DP 1.0.13 work item G: the topbar indicator is executor-NEUTRAL. It reads
+    # one application-owned fact that aggregates every acquiring executor, so
+    # the human download units below are proven against that owner rather than
+    # against one daemon's global-stat response.
+    # The volatile speed has its own cheap read and cadence; the occupancy
+    # count keeps its own -- one state, one writer, one source per fact.
+    speed_handler = frontend.split("async function loadRuntimeSpeed()", 1)[1].split(
+        "async function loadRuntimeStatus()", 1
+    )[0]
+    runtime_handler = frontend.split("async function loadRuntimeStatus()", 1)[1].split(
+        "function updateRuntimeStatusBadge(", 1
+    )[0]
+    assert "liveBps: Number(data.download_bytes_per_second) || 0" in speed_handler
+    assert "api('GET', '/execution/throughput', null, 3000)" in speed_handler
+    assert "active: Number(data.active_execution_slots) || 0" in runtime_handler
+    assert "liveBps" not in runtime_handler
+    assert "api('GET', '/execution/runtime-status', null, 3000)" in runtime_handler
+    assert "var RUNTIME_SPEED_INTERVAL_MS = 500;" in frontend
+    assert "var RUNTIME_STATUS_INTERVAL_MS = 1000;" in frontend
+    assert "_runtimeSpeedBusy" in frontend and "_runtimeStatusBusy" in frontend
+    assert 'id="runtime-badge-limit"' in index
+    assert 'id="runtime-cap-menu"' in index
+    assert 'id="runtime-cap-custom-mbps"' in index
+    assert "Custom cap (MB/s)" in index
+    assert "applyTopbarSpeedCap(104857600)" in index
+    assert "Math.round(mbps * 1048576)" in frontend
+    assert "updateRuntimeStatusBadge({limitBps: bps})" in frontend
+    assert ".runtime-cap-menu" in styles
+    assert ".runtime-cap-options" in styles
+
+    assert "async def get_global_stat(self)" in aria2_service
+    assert 'return {"ok": True, **await application.integration_admin("aria2").get_global_stat()}' in routes
+    assert 'downloads = await application.integration_admin("aria2").filter_owned(downloads)' in routes
+
+
+
+
+def test_statistics_history_strip_omits_duplicate_database_and_queue_health_tiles():
+    index = (REPO_ROOT / "frontend/static/index.html").read_text()
+    frontend = (REPO_ROOT / "frontend/static/app.js").read_text()
+    dashboard_styles = (REPO_ROOT / "frontend/static/ui-dashboard.css").read_text()
+    statistics_styles = (REPO_ROOT / "frontend/static/ui-statistics-page.css").read_text()
+
+    assert 'class="dash-kpi-strip dash-kpi-strip--dashboard"' not in index
+    stats_view = index[index.index('<!-- Statistics -->'):index.index('<!-- Help -->')]
+    history = stats_view.split('<div class="dash-kpi-strip dp-stats-history-grid">', 1)[1].split(
+        '<div class="scard dp-stats-chart', 1
+    )[0]
+
+    assert history.count('class="dash-kpi ') == 5
+    assert 'id="i-db-type"' not in history
+    assert '<div class="dash-kpi-lbl">Database</div>' not in history
+    assert 'id="i-queue-health"' not in history
+    assert 'id="i-queue-copy"' not in history
+    assert "getElementById('i-db-type')" not in frontend
+    assert "getElementById('i-queue-health')" not in frontend
+    assert "setDot('db'" in frontend
+    assert ".dash-kpi-strip--dashboard" not in dashboard_styles
+    assert "#view-stats .dp-stats-history-grid" in statistics_styles
+
+
+def test_inherited_file_preview_and_block_routes_are_hardened():
+    routes = (REPO_ROOT / "backend/api/routes.py").read_text()
+    assert "size_bytes, status, blocked, progress" not in routes
+    block_route = routes.split('async def block_file(torrent_id: int, file_id: int, request: Request, blocked: bool = True,', 1)[1].split('@router.get("/torrents/{torrent_id}")', 1)[0]
+    assert "application.select_artifact" in block_route
+    assert "selected=not blocked" in block_route
+    assert "409" in block_route
+
+
+def test_removed_postgres_migration_documentation_is_not_shipped():
+    assert not (REPO_ROOT / "docs/migration.md").exists()

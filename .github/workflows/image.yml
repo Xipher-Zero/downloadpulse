@@ -1,0 +1,609 @@
+name: Image
+
+on:
+  push:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+    tags:
+      - 'v*'
+      - 'internal-v*'
+  pull_request:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+  workflow_dispatch:
+    inputs:
+      publish_sha:
+        description: Publish an immutable SHA image from an approved branch
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One publishable candidate exists per full source SHA, and its sha-<40> tag is
+# write-once. Runs for the same source SHA (for example a branch push and a tag
+# push at one commit) are serialized and never cancelled mid-publication, so two
+# runs cannot race through the pre-publish existence check.
+concurrency:
+  group: image-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Two event-exclusive paths, so every run has exactly one of them:
+#
+#   build-and-smoke-test  every event that does not publish (a pull request, a
+#                         dispatch without publish_sha or from another branch):
+#                         build and smoke qualification only, with the
+#                         workflow's read-only token and no registry login.
+#   publish               a push, or an authorized publishing dispatch: the SAME
+#                         build and smoke steps (YAML aliases of the anchored
+#                         steps below, never a copy), then -- on the same
+#                         runner, only once smoke qualification has passed --
+#                         the immutable publication. A publication therefore
+#                         never waits for a second runner after its smoke test.
+#
+# The two `if:` expressions are exact complements (the condition, and its
+# negation); test_image_job_paths_contract.py holds them to that.
+jobs:
+  build-and-smoke-test:
+    name: Build and smoke test
+    if: >-
+      ${{ !(
+      github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.publish_sha &&
+          (
+            github.ref == 'refs/heads/main' ||
+            startsWith(github.ref, 'refs/heads/feature/') ||
+            startsWith(github.ref, 'refs/heads/fix/') ||
+            startsWith(github.ref, 'refs/heads/chore/')
+          )
+        )
+      ) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - &checkout
+        name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - &read-version
+        name: Read application version
+        id: version
+        shell: bash
+        run: echo "version=$(tr -d '\r\n' < VERSION)" >> "$GITHUB_OUTPUT"
+
+      # Docker Hub pulls (the Python base image, BuildKit) are authenticated:
+      # anonymous runner pulls are rate-limited. Where the secret is not
+      # available (a pull request from a fork) the pull stays anonymous.
+      - &docker-hub-login
+        name: Log in to Docker Hub
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.XIPHERZERO_DOCKER_PAT }}
+        run: |
+          if [ -n "$DOCKERHUB_TOKEN" ]; then
+            printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username xipherzero --password-stdin
+          else
+            echo "Docker Hub credentials are not available to this run; pulling anonymously"
+          fi
+
+      - &setup-buildx
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - &test-image-metadata
+        name: Generate test image metadata
+        id: test_meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf
+        with:
+          images: local/downloadpulse
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=DownloadPulse: Universal Transfer Manager
+            org.opencontainers.image.description=Universal transfer orchestration for debrid services and Usenet plus direct network and media sources with managed download engines
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=GPL-2.0-or-later
+
+      - &build-test-image
+        name: Build test image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: local/downloadpulse:${{ github.sha }}
+          labels: ${{ steps.test_meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+
+      - &smoke-test-image
+        name: Smoke test image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          container_name="downloadpulse-smoke"
+          trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --name "$container_name" \
+            --env PUID=0 \
+            --env PGID=0 \
+            --env CONFIG_PATH=/app/config/config.json \
+            --env DB_PATH=/app/data/downloadpulse.db \
+            "local/downloadpulse:${GITHUB_SHA}"
+
+          healthy=0
+          for _ in $(seq 1 30); do
+            if docker exec "$container_name" \
+              curl --fail --silent --show-error \
+              http://127.0.0.1:8095/api/health >/dev/null; then
+              healthy=1
+              break
+            fi
+
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != "true" ]; then
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ "$healthy" -ne 1 ]; then
+            echo "Container failed to become healthy"
+            docker inspect "$container_name" --format 'running={{.State.Running}} status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' || true
+            docker logs "$container_name" || true
+            exit 1
+          fi
+
+          expected_version="${{ steps.version.outputs.version }}"
+          expected_revision="${GITHUB_SHA}"
+          expected_title="DownloadPulse: Universal Transfer Manager"
+          image_ref="local/downloadpulse:${GITHUB_SHA}"
+
+          image_version="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          image_revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          image_title="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.title" }}')"
+          image_license="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}')"
+          health_payload="$(docker exec "$container_name" curl --fail --silent --show-error http://127.0.0.1:8095/api/health)"
+          health_version="$(jq -r '.version // empty' <<< "$health_payload")"
+
+          if [ "$image_version" != "$expected_version" ]; then
+            echo "OCI version mismatch: expected $expected_version, got $image_version"
+            exit 1
+          fi
+
+          if [ "$image_revision" != "$expected_revision" ]; then
+            echo "OCI revision mismatch: expected $expected_revision, got $image_revision"
+            exit 1
+          fi
+
+          if [ "$image_title" != "$expected_title" ]; then
+            echo "OCI title mismatch: expected $expected_title, got $image_title"
+            exit 1
+          fi
+
+          if [ "$image_license" != "GPL-2.0-or-later" ]; then
+            echo "OCI license mismatch: expected GPL-2.0-or-later, got $image_license"
+            exit 1
+          fi
+
+          docker exec "$container_name" test -f /app/LICENSE
+          docker exec "$container_name" test -f /app/NOTICE
+          docker exec "$container_name" test -f /app/licenses/python-runtime.json
+          docker exec "$container_name" test -f /app/licenses/bencode2-MIT.txt
+          docker exec "$container_name" grep -q "Chris Moore" /app/NOTICE
+
+          echo "Checking Debian Trixie base"
+          docker exec "$container_name" grep -q '^VERSION_CODENAME=trixie$' /etc/os-release
+
+          echo "Checking required Debian packages"
+          docker exec "$container_name" dpkg-query -W 7zip 7zip-rar aria2 gosu
+
+          # The aria2 package boundary (docs/SUPPLY_CHAIN_POLICY.md 4a): the
+          # installed packages' exact version and compiled feature set -- no
+          # BitTorrent and no BitTorrent option; HTTPS, SFTP and Metalink.
+          echo "Checking the qualified aria2 feature set"
+          docker exec "$container_name" sh -c 'bash /usr/share/downloadpulse/aria2/verify-features.sh "$(cat /usr/share/downloadpulse/aria2/VERSION)"'
+
+          echo "Checking 7zip-rar notices"
+          docker exec "$container_name" test -f /usr/share/doc/7zip-rar/copyright
+          docker exec "$container_name" test -f /usr/share/doc/7zip-rar/unRarLicense.txt
+
+          echo "Checking RAR codec registration"
+          if ! docker exec "$container_name" sh -c '7z i | grep -qi rar'; then
+            docker exec "$container_name" sh -c '7z i' || true
+            exit 1
+          fi
+
+          echo "Checking 7z create/extract round-trip"
+          docker exec "$container_name" sh -c '
+            set -eu
+            rm -rf /tmp/downloadpulse-7z-smoke
+            mkdir -p /tmp/downloadpulse-7z-smoke/input /tmp/downloadpulse-7z-smoke/output
+            printf "downloadpulse-7z-smoke\n" > /tmp/downloadpulse-7z-smoke/input/payload.txt
+            (cd /tmp/downloadpulse-7z-smoke/input && 7z a -bd -y ../archive.7z payload.txt)
+            7z x -bd -y /tmp/downloadpulse-7z-smoke/archive.7z -o/tmp/downloadpulse-7z-smoke/output
+            grep -q "downloadpulse-7z-smoke" /tmp/downloadpulse-7z-smoke/output/payload.txt
+          '
+
+          if [ "$health_version" != "$expected_version" ]; then
+            echo "Health version mismatch: expected $expected_version, got $health_version"
+            exit 1
+          fi
+
+  publish:
+    name: Build, smoke test and publish immutable image
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.publish_sha &&
+        (
+          github.ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/heads/feature/') ||
+          startsWith(github.ref, 'refs/heads/fix/') ||
+          startsWith(github.ref, 'refs/heads/chore/')
+        )
+      )
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      candidate_ref: ${{ steps.identity.outputs.candidate_ref }}
+      candidate_digest: ${{ steps.candidate.outputs.digest }}
+      candidate_reused: ${{ steps.candidate.outputs.reused }}
+
+    steps:
+      # The build and smoke qualification of build-and-smoke-test, step for
+      # step (the anchored steps above). Publication below runs only after it
+      # succeeded: a failed step fails the job before any registry login.
+      - *checkout
+      - *read-version
+      - *docker-hub-login
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
+
+      - *setup-buildx
+      - *test-image-metadata
+      - *build-test-image
+      - *smoke-test-image
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate immutable SHA tag
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=DownloadPulse: Universal Transfer Manager
+            org.opencontainers.image.description=Universal transfer orchestration for debrid services and Usenet plus direct network and media sources with managed download engines
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=GPL-2.0-or-later
+
+      - name: Verify generated image metadata and immutable tag policy
+        id: identity
+        shell: bash
+        env:
+          METADATA_JSON: ${{ steps.meta.outputs.json }}
+          GENERATED_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          expected_version="${{ steps.version.outputs.version }}"
+          expected_revision="${GITHUB_SHA}"
+          expected_title="DownloadPulse: Universal Transfer Manager"
+          generated_version="$(jq -r '.labels["org.opencontainers.image.version"] // empty' <<< "$METADATA_JSON")"
+          generated_revision="$(jq -r '.labels["org.opencontainers.image.revision"] // empty' <<< "$METADATA_JSON")"
+          generated_title="$(jq -r '.labels["org.opencontainers.image.title"] // empty' <<< "$METADATA_JSON")"
+          generated_license="$(jq -r '.labels["org.opencontainers.image.licenses"] // empty' <<< "$METADATA_JSON")"
+
+          if [ "$generated_version" != "$expected_version" ]; then
+            echo "Generated OCI version mismatch: expected $expected_version, got $generated_version"
+            exit 1
+          fi
+          if [ "$generated_revision" != "$expected_revision" ]; then
+            echo "Generated OCI revision mismatch: expected $expected_revision, got $generated_revision"
+            exit 1
+          fi
+          if [ "$generated_title" != "$expected_title" ]; then
+            echo "Generated OCI title mismatch: expected $expected_title, got $generated_title"
+            exit 1
+          fi
+          if [ "$generated_license" != "GPL-2.0-or-later" ]; then
+            echo "Generated OCI license mismatch: expected GPL-2.0-or-later, got $generated_license"
+            exit 1
+          fi
+
+          mapfile -t generated_tags < <(printf '%s\n' "$GENERATED_TAGS" | sed '/^[[:space:]]*$/d')
+          if [ "${#generated_tags[@]}" -ne 1 ]; then
+            printf 'Immutable publication must generate exactly one tag; got:\n%s\n' "$GENERATED_TAGS"
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Source revision is not a full 40-character SHA: $GITHUB_SHA"
+            exit 1
+          fi
+          if [ "${generated_tags[0]}" != "${IMAGE_NAME}:sha-${GITHUB_SHA}" ]; then
+            echo "Publication tag must be exactly ${IMAGE_NAME}:sha-${GITHUB_SHA}; got ${generated_tags[0]}"
+            exit 1
+          fi
+          if [[ "${generated_tags[0]}" == *":latest" || "${generated_tags[0]}" == *":v"* || "${generated_tags[0]}" == *":internal-v"* ]]; then
+            echo "Mutable/version publication tag generated unexpectedly: ${generated_tags[0]}"
+            exit 1
+          fi
+
+          echo "candidate_ref=${generated_tags[0]}" >> "$GITHUB_OUTPUT"
+
+      # The source-SHA tag is write-once. Decide BEFORE building whether the
+      # candidate already exists; an existing tag is never pushed over. The
+      # concurrency group above serializes runs for the same source SHA.
+      - name: Check for an existing candidate for this source SHA
+        id: existing
+        shell: bash
+        env:
+          CANDIDATE_REF: ${{ steps.identity.outputs.candidate_ref }}
+        run: |
+          set -euo pipefail
+
+          state="unknown"
+          digest=""
+          for attempt in $(seq 1 5); do
+            if inspect_output="$(docker buildx imagetools inspect "$CANDIDATE_REF" 2>&1)"; then
+              digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$inspect_output")"
+              state="present"
+              break
+            fi
+            if grep -qiE 'denied|unauthorized|forbidden' <<< "$inspect_output"; then
+              echo "Registry refused the existence check for $CANDIDATE_REF: $inspect_output"
+              exit 1
+            fi
+            if grep -qiE 'not found|manifest unknown|no such manifest|name unknown' <<< "$inspect_output"; then
+              state="absent"
+              break
+            fi
+            echo "Existence check for $CANDIDATE_REF inconclusive on attempt ${attempt}/5: $inspect_output"
+            sleep 5
+          done
+
+          if [ "$state" = "unknown" ]; then
+            echo "Unable to determine whether $CANDIDATE_REF exists; refusing to publish"
+            exit 1
+          fi
+
+          if [ "$state" = "absent" ]; then
+            echo "No candidate exists for $CANDIDATE_REF; it will be published once"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Existing candidate $CANDIDATE_REF has an invalid digest: ${digest:-<empty>}"
+            exit 1
+          fi
+
+          index_json="$(docker buildx imagetools inspect --raw "${IMAGE_NAME}@${digest}")"
+          existing_revision="$(jq -r '.annotations["org.opencontainers.image.revision"] // empty' <<< "$index_json")"
+          if [ "$existing_revision" != "$GITHUB_SHA" ]; then
+            echo "Existing candidate $CANDIDATE_REF records source revision '${existing_revision:-<empty>}', expected $GITHUB_SHA; refusing to reuse or overwrite"
+            exit 1
+          fi
+          for arch in amd64 arm64; do
+            child="$(jq -r --arg arch "$arch" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest][0] // empty' <<< "$index_json")"
+            if [[ ! "$child" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Existing candidate $CANDIDATE_REF is missing its linux/$arch child"
+              exit 1
+            fi
+          done
+
+          echo "Existing candidate $CANDIDATE_REF is valid for $GITHUB_SHA and will be reused unchanged: $digest"
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish
+        id: publish
+        if: steps.existing.outputs.exists != 'true'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: |
+            index:org.opencontainers.image.title=DownloadPulse: Universal Transfer Manager
+            index:org.opencontainers.image.description=Universal transfer orchestration for debrid services and Usenet plus direct network and media sources with managed download engines
+            index:org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.licenses=GPL-2.0-or-later
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
+      - name: Select the immutable candidate digest
+        id: candidate
+        shell: bash
+        env:
+          EXISTING: ${{ steps.existing.outputs.exists }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "$EXISTING" = "true" ]; then
+            if [ -n "$PUBLISHED_DIGEST" ]; then
+              echo "An existing candidate was reused but a build also reported a digest; refusing"
+              exit 1
+            fi
+            digest="$EXISTING_DIGEST"
+            reused=true
+          else
+            digest="$PUBLISHED_DIGEST"
+            reused=false
+          fi
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid or missing candidate digest: ${digest:-<empty>}"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "reused=$reused" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Candidate ${IMAGE_NAME}:sha-${GITHUB_SHA}"
+            echo "- digest: \`$digest\`"
+            echo "- reused existing candidate: $reused"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify candidate digest and OCI identity
+        shell: bash
+        env:
+          GENERATED_TAGS: ${{ steps.meta.outputs.tags }}
+          PUBLISHED_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          expected_version="${{ steps.version.outputs.version }}"
+          expected_revision="${GITHUB_SHA}"
+          expected_title="DownloadPulse: Universal Transfer Manager"
+          expected_description="Universal transfer orchestration for debrid services and Usenet plus direct network and media sources with managed download engines"
+          expected_source="https://github.com/${GITHUB_REPOSITORY}"
+          digest="$PUBLISHED_DIGEST"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid or missing published digest: $digest"
+            exit 1
+          fi
+
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            remote_digest=""
+            for attempt in $(seq 1 12); do
+              inspect_output=""
+              if inspect_output="$(docker buildx imagetools inspect "$tag" 2>&1)"; then
+                remote_digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$inspect_output")"
+                if [ "$remote_digest" = "$digest" ]; then
+                  break
+                fi
+                echo "Registry digest not converged for $tag on attempt ${attempt}/12: expected $digest, got ${remote_digest:-<empty>}"
+              else
+                echo "Registry visibility check failed for $tag on attempt ${attempt}/12"
+              fi
+
+              if [ "$attempt" -lt 12 ]; then
+                sleep 5
+              fi
+            done
+
+            if [ "$remote_digest" != "$digest" ]; then
+              echo "Published tag digest mismatch for $tag after retries: expected $digest, got ${remote_digest:-<empty>}"
+              exit 1
+            fi
+          done <<< "$GENERATED_TAGS"
+
+          index_json="$(docker buildx imagetools inspect --raw "${IMAGE_NAME}@${digest}")"
+          index_title="$(jq -r '.annotations["org.opencontainers.image.title"] // empty' <<< "$index_json")"
+          index_description="$(jq -r '.annotations["org.opencontainers.image.description"] // empty' <<< "$index_json")"
+          index_version="$(jq -r '.annotations["org.opencontainers.image.version"] // empty' <<< "$index_json")"
+          index_revision="$(jq -r '.annotations["org.opencontainers.image.revision"] // empty' <<< "$index_json")"
+          index_source="$(jq -r '.annotations["org.opencontainers.image.source"] // empty' <<< "$index_json")"
+          index_license="$(jq -r '.annotations["org.opencontainers.image.licenses"] // empty' <<< "$index_json")"
+          if [ "$index_title" != "$expected_title" ]; then
+            echo "Published OCI index title mismatch: expected $expected_title, got $index_title"
+            exit 1
+          fi
+          if [ "$index_description" != "$expected_description" ]; then
+            echo "Published OCI index description mismatch: expected $expected_description, got $index_description"
+            exit 1
+          fi
+          if [ "$index_version" != "$expected_version" ]; then
+            echo "Published OCI index version mismatch: expected $expected_version, got $index_version"
+            exit 1
+          fi
+          if [ "$index_revision" != "$expected_revision" ]; then
+            echo "Published OCI index revision mismatch: expected $expected_revision, got $index_revision"
+            exit 1
+          fi
+          if [ "$index_source" != "$expected_source" ]; then
+            echo "Published OCI index source mismatch: expected $expected_source, got $index_source"
+            exit 1
+          fi
+          if [ "$index_license" != "GPL-2.0-or-later" ]; then
+            echo "Published OCI index license mismatch: expected GPL-2.0-or-later, got $index_license"
+            exit 1
+          fi
+
+          pulled=0
+          for attempt in $(seq 1 12); do
+            if docker pull "${IMAGE_NAME}@${digest}"; then
+              pulled=1
+              break
+            fi
+            echo "Published digest pull failed on attempt ${attempt}/12"
+            if [ "$attempt" -lt 12 ]; then
+              sleep 5
+            fi
+          done
+          if [ "$pulled" -ne 1 ]; then
+            echo "Unable to pull published digest after retries: ${IMAGE_NAME}@${digest}"
+            exit 1
+          fi
+
+          image_version="$(docker image inspect "${IMAGE_NAME}@${digest}" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          image_revision="$(docker image inspect "${IMAGE_NAME}@${digest}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          if [ "$image_version" != "$expected_version" ]; then
+            echo "Published OCI version mismatch: expected $expected_version, got $image_version"
+            exit 1
+          fi
+          if [ "$image_revision" != "$expected_revision" ]; then
+            echo "Published OCI revision mismatch: expected $expected_revision, got $image_revision"
+            exit 1
+          fi
+
+          echo "Candidate digest: $digest"
+          printf 'Candidate tags:\n%s\n' "$GENERATED_TAGS"
+
+  # This commit's immutable image is published (a re-run included): move the
+  # rolling development alias 1.0.0-testing to it, if it is still the 1.0.0
+  # tip, one evaluation at a time. Its outcome is the "1.0.0-testing" commit
+  # status, never this workflow's verdict.
+  testing-alias:
+    name: Testing alias
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/1.0.0'
+    permissions:
+      contents: read
+      packages: write
+      statuses: write
+    uses: ./.github/workflows/testing-alias.yml

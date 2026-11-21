@@ -1,0 +1,344 @@
+"""Final-state contracts for the canonical Dashboard presentation owner.
+
+The accepted v1.0.11 calibration remains behaviorally protected, but historical
+batch/polish files are no longer architectural owners. Their accepted rules are
+folded into ui-dashboard.css by the v1.0.11.1 canonicalization pass.
+"""
+
+from pathlib import Path
+
+from ui_chrome_tokens import require_token
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+STYLE = STATIC / "style.css"
+DASHBOARD = STATIC / "ui-dashboard.css"
+UTILITY = STATIC / "ui-utility-controls.css"
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def require(css: str, fragments: tuple[str, ...], label: str) -> None:
+    missing = [fragment for fragment in fragments if fragment not in css]
+    assert not missing, f"{label} is missing: {missing}"
+
+
+def dashboard_css() -> str:
+    return read(DASHBOARD)
+
+
+def test_dashboard_has_one_canonical_calibration_owner() -> None:
+    overlay = read(STYLE)
+    assert "/ui-dashboard.css?v=24" in overlay
+    for retired in (
+        "ui-dashboard-structural.css",
+        "ui-dashboard-consistency.css",
+        "ui-dashboard-batch1.css",
+        "ui-dashboard-batch2.css",
+        "ui-dashboard-batch2-final.css",
+        "ui-dashboard-batch3.css",
+        "ui-dashboard-batch4.css",
+        "ui-dashboard-control-polish.css",
+        "ui-dashboard-batch5.css",
+        "ui-dashboard-polish.css",
+        "ui-dashboard-polish-final.css",
+        "ui-dashboard-final.css",
+    ):
+        assert retired not in overlay
+        assert not (STATIC / retired).exists()
+
+
+def test_canonical_dashboard_keeps_provider_and_spotlight_geometry() -> None:
+    require(
+        dashboard_css(),
+        (
+            "padding: 2px 0 10px 28px !important",
+            "left: 4px !important",
+            "max-width: 164px !important",
+            "transparent 100%) !important",
+            "box-shadow: none !important",
+        ),
+        "Dashboard provider and spotlight contract",
+    )
+
+
+def test_canonical_dashboard_keeps_transfer_semantics_and_progress_emphasis() -> None:
+    require(
+        dashboard_css(),
+        (
+            "height: var(--dp-row-progress-track, 6px) !important",
+            "font-size: 15px !important",
+            "tr:has(.badge-partial) .prog-fill",
+        ),
+        "Dashboard transfer semantic contract",
+    )
+    # 1.0.14 six fixes (F): no table injects a text status glyph. The canonical
+    # Lucide runtime draws every badge's glyph (ui-visual-accents.css removes any
+    # badge ::before), and the legacy Dashboard ::before glyph and tone rules,
+    # dead on badges, drew a second status mark on a handheld row's status glyph
+    # (DPIcons.statusGlyph carries the tone class): removed, not hidden.
+    css = dashboard_css()
+    for gone in ("badge-downloading::before", "badge-partial::before", "badge-paused::before", "badge-completed::before",
+                 "badge-error::before", "content: '↓'", "content: 'Ⅱ'", "content: '✓'", "content: '×'", "content: '⚠'",
+                 "#view-dashboard .badge-completed {", "#view-dashboard .badge-error {", "#dash-tbody .badge::before"):
+        assert gone not in css, gone
+    # Downloads' badge tone colours stay the badges' own (same specificity), never the glyph's.
+    assert ':is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="error"] .badge-error:where(.badge) {' in css
+    # DP 1.0.12 UI Finishing (Correction 9 anti-layering audit): the higher-
+    # specificity `tr[data-status="downloading"]:not(:has(.badge-partial))
+    # .prog-fill` / `:has(.badge-partial) .prog-fill` pair used to live here,
+    # silently overriding the general ordinary-progress-glow declaration for
+    # exactly the downloading-status case. Removed as a superseded duplicate,
+    # not folded into a second override -- see the general
+    # #dash-tbody/#t-tbody .prog-fill glow declaration instead, which is now
+    # the sole effective owner for every status.
+    assert ':not(:has(.badge-partial)) .prog-fill' not in dashboard_css()
+
+
+def test_canonical_dashboard_keeps_action_color_grammar_and_primary_add_depth() -> None:
+    require(
+        dashboard_css(),
+        (
+            "#btn-pause-all",
+            'button[onclick*="pauseT("]',
+            "#btn-resume-all",
+            "#btn-resume-paused",
+            'button[onclick*="resumeT("]',
+            "#btn-recover-all",
+            "#e3c5ff",
+            "#btn-add-transfer",
+            "#973cf4",
+            "inset 0 1px rgba(255,255,255,.24)",
+        ),
+        "Dashboard action contract",
+    )
+
+
+def test_canonical_dashboard_keeps_topbar_pause_and_speedcap_semantics() -> None:
+    require(
+        dashboard_css(),
+        (
+            "#topbar-actions #btn-pause-all.btn",
+            "#fff2cc",
+            "#f7dda0",
+            "#runtime-cap-toggle:hover",
+            'aria-expanded="true"',
+            "background: transparent !important",
+            "color: inherit !important",
+            "font-weight: 800 !important",
+        ),
+        "topbar polish contract",
+    )
+
+
+def test_canonical_dashboard_keeps_sidebar_provider_and_badge_presentation() -> None:
+    require(
+        dashboard_css(),
+        (
+            "#premium-row::before",
+            "top: 17px !important",
+            "#dot-api.ok",
+            "color-mix(in srgb, var(--dp-state-success-fill) 78%, transparent)",
+            "ellipse 78% 46% at 52% 50%",
+            "#nb-active.nav-badge",
+        ),
+        "sidebar and provider polish contract",
+    )
+    # The count badge's reviewed light face and text are its chrome tokens' defaults.
+    require_token(dashboard_css(), "--dp-chrome-count-surface", "#eadcff")
+    require_token(dashboard_css(), "--dp-chrome-count-text", "#6623a8")
+
+
+def test_canonical_dashboard_keeps_progress_add_and_activity_depth() -> None:
+    require(
+        dashboard_css(),
+        (
+            "#btn-add-transfer",
+            "height: var(--dp-row-progress-track, 7px) !important",
+            # DP 1.0.12 UI Finishing (Correction 9): ordinary progress glow
+            # reduced by a relative 15% (.34 * 0.85 = .289).
+            "0 0 13px color-mix(in srgb, var(--dp-state-success-fill) 28.9%, transparent)",
+            "font-size: 16px !important",
+            "font-weight: 800 !important",
+            ".dash-activity-table-wrap",
+        ),
+        "Dashboard depth contract",
+    )
+    # The Add button is the shared primary material; the activity body's
+    # ambient light is its chrome token. Both keep their reviewed values.
+    require_token(dashboard_css(), "--dp-primary-surface", "#8950d4", "#6551c3")
+    require_token(dashboard_css(), "--dp-chrome-table-ambient", "radial-gradient(ellipse 88% 84% at 100% 100%")
+
+
+def test_canonical_dashboard_keeps_indeterminate_progress_stripes() -> None:
+    require(
+        dashboard_css(),
+        (
+            '.prog-fill[style*="repeating-linear-gradient"]',
+            "repeating-linear-gradient(",
+            "var(--accent) 8px",
+            "box-shadow: none !important",
+            "opacity: .35 !important",
+        ),
+        "indeterminate progress guard",
+    )
+
+
+def test_canonical_dashboard_keeps_sidebar_starburst_without_count_badge_overlap() -> None:
+    css = dashboard_css()
+    require(
+        css,
+        (
+            ".nav-item.active::after",
+            "right: -2px !important",
+            "width: 76px !important",
+            "height: 54px !important",
+            "mask-image: radial-gradient(ellipse 100% 86% at 98% 50%",
+            "border-radius: 0 !important",
+            "box-shadow: none !important",
+        ),
+        "sidebar starburst contract",
+    )
+    require_token(css, "--dp-chrome-nav-bloom", "radial-gradient(circle at 98% 50%", "conic-gradient(from 180deg at 98% 50%")
+
+
+def test_canonical_dashboard_keeps_provider_baseline_crown_and_metric_icon_lighting() -> None:
+    require(
+        dashboard_css(),
+        (
+            "#premium-row::before",
+            "top: 15px !important",
+            "drop-shadow(0 0 11px rgba(153,65,239,.42))",
+            ".dash-hero-stat .dhs-icon .dp-icon",
+            "color-mix(in srgb, var(--c) 62%, transparent)",
+            "color-mix(in srgb, var(--c) 70%, transparent)",
+        ),
+        "provider and metric lighting contract",
+    )
+    # The 24px lower datum Provider Status shares with the extended Download
+    # Activity card is the sidebar stack's on every desktop page (auth-ux.css),
+    # so the Dashboard keeps no positional override of its own.
+    assert ".sidebar-footer" not in dashboard_css()
+    assert "@media (min-width: 780px) {\n  #sidebar .sidebar-bottom-stack {\n    margin-bottom: 24px;" in (STATIC / "auth-ux.css").read_text(encoding="utf-8")
+
+
+def test_canonical_dashboard_keeps_original_progress_percentage_geometry() -> None:
+    require(
+        dashboard_css(),
+        (
+            ".prog-pct",
+            "margin-top: 3px !important",
+            "font-family: var(--mono) !important",
+            "font-size: 10px !important",
+            "font-weight: 500 !important",
+            "letter-spacing: normal !important",
+            "color: #3e465f !important",
+            "text-shadow: none !important",
+        ),
+        "progress percentage contract",
+    )
+
+
+def test_canonical_dashboard_hides_recent_activity_view_all() -> None:
+    css = dashboard_css()
+    assert 'button[onclick*="data-view=torrents"]' in css
+    assert "display: none !important" in css
+
+
+def test_canonical_dashboard_keeps_live_micro_refinements() -> None:
+    require(
+        dashboard_css(),
+        (
+            "height: calc(100% - 12px) !important",
+            "max-height: 38px !important",
+            "ellipse 100% 74% at 98% 50%",
+            "#runtime-badge-speed",
+            "body.light #runtime-badge-speed {\n  color: var(--dp-state-success) !important",
+            ".dash-hero-stat:hover",
+            "transform: none !important",
+            "transition: none !important",
+            # 1.0.14: Add sits inside Quick Add's field, as wide as its label.
+            "min-width: 0 !important",
+            "min-height: var(--dp-quick-add-action-height, 40px) !important",
+            "height: var(--dp-quick-add-action-height, 40px) !important",
+        ),
+        "Dashboard micro-refinement contract",
+    )
+
+
+def test_canonical_dashboard_keeps_color_spacing_and_sidebar_hover_refinements() -> None:
+    require(
+        dashboard_css(),
+        (
+            "#dash-error-card",
+            "--c: #ff4854 !important",
+            "saturate(1.28)",
+            "height: var(--dp-row-progress-track, 4.5px) !important",
+            "@media (min-width: 780px) {\n  /* Correction 3",
+            "table-layout: fixed !important",
+            "--dp-dashboard-status-track: max(13cqw - 2.21px, 180px);",
+            "--dp-dashboard-date-track: max(21cqw - var(--dp-dashboard-action-track) - 3.57px, 158px);",
+            "width: var(--dp-dashboard-status-track) !important",
+            "--dp-dashboard-progress-track: calc(21cqw - 3.57px);",
+            "width: var(--dp-dashboard-progress-track) !important",
+            ".nav-item:not(.active):hover",
+        ),
+        "Dashboard color and spacing contract",
+    )
+    require_token(dashboard_css(), "--dp-chrome-nav-hover-surface", "rgba(136,76,228,.13)", "rgba(143,91,222,.17)")
+
+
+def test_shared_utility_controls_keep_integrated_outline_hierarchy() -> None:
+    require(
+        read(UTILITY),
+        (
+            "#btn-recover-all",
+            "#view-events .dp-activity-refresh",
+            # 36px unless Quick Add's handheld header asks for its 44px target.
+            "height: var(--dp-utility-control-block, 36px) !important",
+            "min-height: var(--dp-utility-control-block, 36px) !important",
+            "box-shadow: none !important",
+            "hue-rotate(215deg)",
+            ".dp-utility-icon",
+            "filter: none !important",
+            "transform: none !important",
+        ),
+        "shared utility-control contract",
+    )
+    require_token(read(UTILITY), "--dp-chrome-utility-surface", "rgba(157,91,213,.028)")
+    require_token(read(UTILITY), "--dp-chrome-utility-edge", "#c5a3dc")
+    require_token(read(UTILITY), "--dp-chrome-utility-text", "#714790")
+    # 1.0.14: the Downloads header Refresh control is retired with its material.
+    assert "dp-downloads-refresh" not in read(UTILITY)
+
+
+def test_shared_utility_controls_keep_light_pause_all_treatment() -> None:
+    require(
+        read(UTILITY),
+        (
+            # Every light theme draws Pause All in the light operational
+            # material (design-tokens.css) of its caution hue.
+            "body.light #topbar-actions #btn-pause-all.btn {",
+            "--dp-op-hue: var(--dp-state-caution);",
+            "background: var(--dp-op-surface) !important;",
+            "border-color: var(--dp-op-edge) !important;",
+            "color: var(--dp-op-ink) !important;",
+            "text-shadow: none !important",
+            "body.light #topbar-actions #btn-pause-all.btn:hover",
+            "background: var(--dp-op-surface-hover) !important;",
+        ),
+        "light Pause All contract",
+    )
+
+
+def test_canonical_dashboard_keeps_empty_state_and_field_focus_contracts() -> None:
+    css = dashboard_css()
+    assert "#dash-activity-card.dp-dashboard-activity .empty-icon" in css
+    assert "width: 76px !important" in css
+    assert "height: 76px !important" in css
+    # 1.0.14: the field's material and focus ring are the universal
+    # .dp-action-field's (Add inside the field); Quick Add's textarea is bare.
+    assert "textarea.input.direct-link-input" not in css
+    assert "direct-link-entry:focus-within" not in css      # the ring is the universal field's

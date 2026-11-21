@@ -1,0 +1,155 @@
+"""Permanent import/policy boundaries for the canonical transfer package."""
+import ast
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+from api.serializers import public_download_file, public_payload, public_torrent
+from transfers.errors import Category, Domain, NormalizedError, Recovery, Retryability, Stage
+from transfers.policy import TransferPolicy
+
+
+def test_core_imports_without_any_production_integration():
+    script = """
+import importlib.abc
+import sys
+class RejectIntegrations(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname.startswith(('providers.', 'executors.')):
+            raise AssertionError('Concrete integration imported: ' + fullname)
+sys.meta_path.insert(0, RejectIntegrations())
+from transfers.engine import TransferEngine
+from transfers.registry import IntegrationRegistry
+from transfers.repository import TransferRepository
+engine = TransferEngine(TransferRepository(), IntegrationRegistry(), download_root='/tmp/proof')
+assert engine.registry.providers == {}
+assert engine.registry.executors == {}
+"""
+    result = subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).parents[1], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_universal_modules_never_import_or_branch_on_native_integrations():
+    root = Path(__file__).parents[1] / "transfers"
+    for path in root.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not (node.module or "").startswith(("providers.", "executors.", "services.manager")), path
+            if isinstance(node, ast.Import):
+                assert not any(alias.name.startswith(("providers.", "executors.", "services.manager")) for alias in node.names), path
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value not in {"alldebrid", "aria2", "statusCode", "MAGNET_INVALID_ID", "LINK_DOWN"}, path
+            if path.name in {"engine.py", "policy.py", "registry.py"} and isinstance(node, ast.Attribute):
+                # Native provider codes remain forbidden everywhere in universal policy.
+                # A diagnostic value is provider-neutral data: engine cleanup may preserve a
+                # sanitized diagnostic, while retry/selection policy must never branch on it.
+                forbidden = {"native_code"}
+                if path.name in {"policy.py", "registry.py"}:
+                    forbidden.add("diagnostic")
+                assert node.attr not in forbidden, (path, node.attr)
+
+
+def test_file_selection_policy_sources_no_wall_clock():
+    # All manifest-window and decision-hold calculations must derive from the
+    # injected core clock. The policy owner imports neither `time` nor `datetime`
+    # and never calls a direct wall-clock API.
+    source = (Path(__file__).parents[1] / "transfers" / "file_selection.py").read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not any(alias.name.split(".")[0] in {"time", "datetime"} for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] not in {"time", "datetime"}
+    for banned in ("time.time(", "time.monotonic(", "datetime.now(", "datetime.utcnow(", "utcnow("):
+        assert banned not in source
+
+
+def test_file_selection_api_and_engine_integration_stay_provider_neutral():
+    root = Path(__file__).parents[1]
+    for relative in ("api/file_selection_routes.py", "transfers/file_selection.py"):
+        source = (root / relative).read_text().casefold()
+        for token in ("alldebrid", "realdebrid", "real-debrid", "aria2", "statuscode",
+                      "general_http", "magnet/files"):
+            assert token not in source, relative
+    # The engine's file-selection wiring speaks only to the repository, never a
+    # provider- or executor-specific selection concept.
+    engine = ast.parse((root / "transfers" / "engine.py").read_text())
+    for node in ast.walk(engine):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            assert node.value not in {"alldebrid", "aria2", "statusCode", "file_manifest_index"}
+
+
+def test_core_policy_ignores_native_code_message_and_context():
+    policy = TransferPolicy()
+    error = NormalizedError(Domain.NETWORK, Category.CONNECTION_TIMEOUT, Stage.EXECUTION,
+                            Retryability.BACKOFF, Recovery.BACKOFF,
+                            native_code="new-provider-error", diagnostic="do not retry", context={"number": 7})
+    first = policy.retry(error, 1, 100)
+    changed = NormalizedError(Domain.NETWORK, Category.CONNECTION_TIMEOUT, Stage.EXECUTION,
+                              Retryability.BACKOFF, Recovery.BACKOFF,
+                              native_code="permanent", diagnostic="always retry", context={"number": 8})
+    assert first == policy.retry(changed, 1, 100)
+
+
+def test_presentation_never_exposes_opaque_context_or_native_diagnostics():
+    error = NormalizedError(Domain.PROVIDER, Category.UNMAPPED_PROVIDER_ERROR, Stage.RESOLUTION,
+                            native_code="opaque-native-code", diagnostic="native diagnostic")
+    row = {"id": 1, "name": "file", "filename": "file", "status": "error",
+           "normalized_error": json.dumps(error.as_dict(diagnostics=True)),
+           "candidates": "opaque-signed-capability", "handle": "opaque-handle-secret",
+           "context": {"api_key": "opaque-key-secret"}, "payload": "opaque-request-secret"}
+    for value in (public_torrent(row), public_download_file(row), public_payload({"rows": [row]})):
+        encoded = json.dumps(value)
+        for secret in ("opaque-", "native diagnostic"):
+            assert secret not in encoded
+    assert public_torrent(row)["error"]["category"] == "unmapped_provider_error"
+
+
+def test_one_input_lifecycle_one_secret_owner_and_neutral_evidence_owners():
+    """DP 1.0.13: pre-writer evidence acquisition generalized the existing owners
+    in place -- one challenge store, one ephemeral secret broker, one equivalence
+    owner consuming neutral evidence -- and added no parallel lifecycle."""
+    backend = Path(__file__).parents[1]
+    classes = {}
+    for path in backend.rglob("*.py"):
+        if "tests" in path.parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ClassDef):
+                classes.setdefault(node.name, []).append(path.relative_to(backend).as_posix())
+    stores = {name: paths for name, paths in classes.items()
+              if any(token in name for token in ("ChallengeStore", "Broker", "CredentialStore", "SecretStore",
+                                                 "Cookies"))}
+    # 1.0.14 (operator, 2026-11-19): exactly one more in-memory secret holder, outside the
+    # transfer core -- a connected browser's per-job video sign-in, read by Media Downloads.
+    assert stores == {"InputChallengeStore": ["transfers/input_required.py"],
+                      "EphemeralInputBroker": ["transfers/input_required.py"],
+                      "BrowserCookies": ["external/browser_cookies.py"]}
+    schema = (backend / "db" / "database.py").read_text()
+    assert schema.count("CREATE TABLE IF NOT EXISTS transfer_input_challenges") == 1
+    assert [line for line in schema.splitlines()
+            if "CREATE TABLE" in line and "challenge" in line.lower()] == [
+        '    """CREATE TABLE IF NOT EXISTS transfer_input_challenges (']
+    from transfers.models import InputOrigin
+    assert {item.value for item in InputOrigin} == {"provider", "evidence", "executor"}
+    # One fingerprint model: retained canonical evidence reuses ArtifactFingerprint.
+    fingerprint_models = {name for name in classes if "Fingerprint" in name}
+    assert fingerprint_models == {"ArtifactFingerprint", "FingerprintKind"}
+    import typing
+    from transfers.models import ArtifactFingerprint, TransferCandidate
+    hints = typing.get_type_hints(TransferCandidate)
+    assert hints["content_evidence"] == ArtifactFingerprint | None
+    for path in backend.rglob("*.py"):
+        if "tests" in path.parts:
+            continue
+        assert "CREATE TABLE IF NOT EXISTS" not in path.read_text() or "fingerprint" not in " ".join(
+            line for line in path.read_text().splitlines() if "CREATE TABLE" in line).lower(), path
+    mirrors = (backend / "transfers" / "mirrors.py").read_text()
+    for concrete in ("aria2", "general_ftp", "general_http", "alldebrid", "asyncssh", "artifact_sampling"):
+        assert concrete not in mirrors
+    for path in ("transfers/cohorts.py", "transfers/canonical.py", "transfers/policy.py", "transfers/input_required.py"):
+        source = (backend / path).read_text()
+        for concrete in ("general_ftp", "general_http", "alldebrid", "aria2", "asyncssh", "artifact_sampling"):
+            assert concrete not in source, (path, concrete)

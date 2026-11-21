@@ -1,0 +1,1181 @@
+/* DownloadPulse application-session bootstrap and owner. Loaded before app.js.
+ *
+ * Owns the browser session and the authenticated same-origin request path.
+ * It publishes that path as downloadPulseAuth.fetch (session cookie, CSRF header
+ * on mutations, session revalidation on 401 and 403); it does not replace the
+ * native fetch. Every application HTTP call goes through downloadPulseAuth.fetch.
+ *
+ * It is also the interface's ONE source of authority. The server prepends the
+ * caller's authority to this bundle (window.downloadPulseAuthority: role,
+ * capabilities, account generation, display timezone -- the projection
+ * /api/auth/session serves), and before any later script runs this owner
+ * mounts every shell part declared as <template data-requires="capability">
+ * whose capability the caller holds; every other one is discarded, never
+ * constructed. Other owners ask downloadPulseAuth.can(capability). Whenever the
+ * session's role or generation stops matching it (an account_changed event, a
+ * (re)connected live pulse, a 403, the periodic check) the page reloads under
+ * the server's current authority. The server enforces every action regardless. */
+(() => {
+  'use strict';
+
+  const nativeFetch = window.fetch.bind(window);   // native API, never reassigned
+  const mutatingMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+  let csrfToken = '';
+  let sessionState = null;
+  let sessionRequest = null;
+  let redirecting = false;
+  const granted = window.downloadPulseAuthority || {};
+  const held = new Set(granted.capabilities || []);
+  const authority = Object.freeze({...granted, capabilities: Object.freeze([...held])});
+
+  function can(capability) {
+    return held.has(String(capability || ''));
+  }
+
+  // May this caller destroy a transfer's work (remove it, cancel it, switch
+  // or narrow its route)? The server's policy, read from what it issued: an
+  // Admin may destroy any transfer; anyone else only where the transfer's own
+  // server-given ``access.destroy`` says so. The server re-checks every act.
+  function mayDestroy(item) {
+    return can('administer') || item?.access?.destroy === true;
+  }
+
+  // Mount each declared shell part the caller may have; discard the rest.
+  // A mounted part may itself declare parts, found on the next pass.
+  function composeAuthorized(root = document) {
+    let part = root.querySelector('template[data-requires]');
+    while (part) {
+      if (can(part.dataset.requires)) part.replaceWith(part.content.cloneNode(true));
+      else part.remove();
+      part = root.querySelector('template[data-requires]');
+    }
+  }
+
+  // The authority this page was composed for no longer holds: start over.
+  function authorityChanged(data) {
+    if (!data || !authority.account_id) return false;
+    return data.account_id !== authority.account_id
+      || data.role !== authority.role
+      || (data.account_generation || null) !== (authority.account_generation || null);
+  }
+
+  function roleLabel(role) {
+    return ['admin', 'user', 'readonly', 'integration'].includes(role) ? DPI18n.t(`role.${role}`) : '';
+  }
+
+  /* Whose account the shell offers, from the server's own session answer:
+   * "authenticated" -- a signed-in browser session (Log Out and My Account);
+   * "standalone" -- no interactive authentication, where the server admits
+   * every request as the installation's default Admin (auth/models.py
+   * Principal.standalone: bound to that account, authenticating nothing, so
+   * no mechanism); otherwise none. The client never claims a session. */
+  function sessionKind(data) {
+    if (data?.authenticated === true) return 'authenticated';
+    if (data && data.authenticated === false && !data.mechanism && data.account_id) return 'standalone';
+    return '';
+  }
+
+  function currentReturnPath() {
+    return window.location.pathname + window.location.search + window.location.hash;
+  }
+
+  function redirectToLogin() {
+    if (redirecting || window.location.pathname === '/login') return;
+    redirecting = true;
+    window.location.assign('/login?next=' + encodeURIComponent(currentReturnPath()));
+  }
+
+  function isSameOrigin(input) {
+    try {
+      const raw = input instanceof Request ? input.url : String(input || '');
+      return new URL(raw, window.location.href).origin === window.location.origin;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // The shell provides #sidebar-bottom-stack (which wraps the sidebar footer) and
+  // an empty #sidebar-auth-mount. This owner populates its own mount and marks the
+  // stack's session state; it does not move or restyle any other owner's markup.
+  //
+  // The session's ONE sidebar row: Log Out at its start, and at its end the
+  // signed-in account (Display Name over Role) that opens My Account. Two
+  // separate controls in one row, with the elastic space between them
+  // belonging to neither. Without interactive authentication there is no
+  // session to leave: the row holds My Account alone, in the same place,
+  // opening the default Admin's own account.
+  function syncSidebarSessionUi(data) {
+    syncHeaderSessionUi(data);
+    const stack = document.getElementById('sidebar-bottom-stack');
+    const mount = document.getElementById('sidebar-auth-mount');
+    if (!stack || !mount) return;
+
+    const kind = sessionKind(data);
+    if (!kind) {
+      delete stack.dataset.session;
+      mount.hidden = true;
+      mount.replaceChildren();
+      return;
+    }
+
+    stack.dataset.session = kind;
+    mount.hidden = false;
+    if (mount.querySelector(`#sidebar-auth-row[data-session="${kind}"]`)) return;
+    mount.replaceChildren();
+    if (kind === 'standalone') {
+      mount.appendChild(standaloneSidebarRow(data));
+      return;
+    }
+
+    const row = document.createElement('div');
+    row.id = 'sidebar-auth-row';
+    row.className = 'nav-item dp-sidebar-session-row';
+    row.dataset.session = 'authenticated';
+    row.style.flexShrink = '0';
+    row.innerHTML = `
+      <button type="button" class="dp-sidebar-logout" data-i18n-attr="aria-label:session.log_out.label;data-tooltip:session.log_out">
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"></path>
+            <path d="M14 8l4 4-4 4"></path>
+            <path d="M18 12H9"></path>
+          </svg>
+        </span>
+        <span class="nav-label" data-i18n="session.log_out"></span>
+      </button>
+      <span class="dp-sidebar-session-space" aria-hidden="true"></span>
+      <button type="button" class="dp-sidebar-profile">
+        <span class="nav-label"><span class="dp-sidebar-account-copy"><span class="dp-sidebar-account-name"></span><span class="dp-sidebar-account-role"></span></span></span>
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path>
+          </svg>
+        </span>
+      </button>`;
+
+    // Log Out is quiet: its label and icon never change, so the row keeps its
+    // measure beside the account.
+    bindLogout(row.querySelector('.dp-sidebar-logout'));
+
+    // Its name and tooltip are showAccount's alone (no data-i18n-attr, which a
+    // later render would put back to the bare "My Account"): named from the
+    // markup that creates it, before the row is placed.
+    const profile = row.querySelector('.dp-sidebar-profile');
+    const showAccount = name => {
+      const display = String(name || '');
+      profile.querySelector('.dp-sidebar-account-name').textContent = display;
+      profile.querySelector('.dp-sidebar-account-role').textContent = roleLabel(data.role);
+      profile.setAttribute('aria-label', display ? DPI18n.t('session.my_account.named', {name: display, role: roleLabel(data.role)})
+        : DPI18n.t('session.my_account.role', {role: roleLabel(data.role)}));
+      // A name too long for the row is shown in full here.
+      profile.dataset.tooltip = display ? DPI18n.t('session.my_account.tooltip', {name: display, role: roleLabel(data.role)})
+        : DPI18n.t('session.my_account.tooltip_role', {role: roleLabel(data.role)});
+    };
+    showAccount('');
+    // The account's own Display Name. The session's name is its sign-in (an
+    // OIDC ``name`` claim, a username) and is never shown first; it stands in
+    // only when the account's profile cannot be read.
+    readProfile().then(own => {
+      const name = own?.display_name || data.display_name || DPI18n.t('session.my_account');
+      showAccount(name);
+      showHeaderAccount(data, name);
+    });
+    profile.addEventListener('click', () => { void openAccountDialog(data); });
+    DPI18n.render(row);
+    mount.appendChild(row);
+  }
+
+  // The standalone row: My Account alone, an ordinary sidebar entry -- its
+  // glyph on the icon rail and its label after it, as Log Out sits in the
+  // signed-in row -- named only My Account: no session, so no sign-in name.
+  function standaloneSidebarRow(data) {
+    const row = document.createElement('div');
+    row.id = 'sidebar-auth-row';
+    row.className = 'nav-item dp-sidebar-session-row';
+    row.dataset.session = 'standalone';
+    row.style.flexShrink = '0';
+    row.innerHTML = `
+      <button type="button" class="dp-sidebar-profile" data-i18n-attr="aria-label:session.my_account;data-tooltip:session.my_account">
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path>
+          </svg>
+        </span>
+        <span class="nav-label" data-i18n="session.my_account"></span>
+      </button>`;
+    row.querySelector('.dp-sidebar-profile').addEventListener('click', () => { void openAccountDialog(data); });
+    DPI18n.render(row);
+    return row;
+  }
+
+  // A pending logout refuses a second press; a refused or failed one says so
+  // and may be pressed again.
+  function bindLogout(button) {
+    button.addEventListener('click', async () => {
+      if (button.getAttribute('aria-disabled') === 'true') return;
+      button.setAttribute('aria-disabled', 'true');
+      try {
+        const ok = await logoutSession();
+        if (!ok) throw new Error('Logout failed');
+      } catch (_) {
+        button.setAttribute('aria-disabled', 'false');
+        try { window.toast(DPI18n.t('session.log_out.failed'), 'error'); } catch (_) {}
+      }
+    });
+  }
+
+  /* The handheld shell's session control (below 780px, where the sidebar
+   * gives way to the dock; ui-shell-mobile.css): one account button at the
+   * start of the header, opening a sheet with the account (Display Name over
+   * Role), My Account and Log Out -- the same dialog and the same logout as
+   * the sidebar's row. A press beside the sheet's panel closes it without
+   * reaching the page; Escape and Tab close it, focus back on the button.
+   * Without interactive authentication the same button opens My Account
+   * itself: there is no session to log out of, so no sheet. */
+  const handheld = window.matchMedia('(max-width: 779px)');
+  function syncHeaderSessionUi(data) {
+    const mount = document.getElementById('topbar-account-mount');
+    if (!mount) return;
+    const kind = sessionKind(data);
+    if (!kind) {
+      mount.hidden = true;
+      mount.replaceChildren();
+      return;
+    }
+    mount.hidden = false;
+    if (mount.querySelector(`#topbar-account-button[data-session="${kind}"]`)) return;
+    if (kind === 'standalone') {
+      mount.innerHTML = `
+      <button type="button" id="topbar-account-button" class="dp-topbar-account-button" data-session="standalone" data-i18n-attr="aria-label:session.my_account">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path>
+        </svg>
+      </button>`;
+      mount.querySelector('#topbar-account-button').addEventListener('click', () => { void openAccountDialog(data); });
+      DPI18n.render(mount);
+      return;
+    }
+    mount.innerHTML = `
+      <button type="button" id="topbar-account-button" class="dp-topbar-account-button" data-session="authenticated" aria-haspopup="dialog" aria-controls="topbar-account-sheet" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path>
+        </svg>
+      </button>
+      <div id="topbar-account-sheet" class="dp-shell-sheet dp-shell-sheet--down" popover="manual" role="dialog" aria-labelledby="topbar-account-name">
+        <div class="dp-shell-sheet-panel">
+          <div class="dp-shell-sheet-title dp-topbar-account-copy">
+            <span class="dp-topbar-account-name" id="topbar-account-name"></span>
+            <span class="dp-topbar-account-role"></span>
+          </div>
+          <div class="dp-shell-sheet-list">
+            <button type="button" class="dp-shell-sheet-item" data-account-action="profile">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg></span>
+              <span class="dp-shell-label" data-i18n="session.my_account"></span>
+            </button>
+            <button type="button" class="dp-shell-sheet-item" data-account-action="logout">
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"></path><path d="M14 8l4 4-4 4"></path><path d="M18 12H9"></path></svg></span>
+              <span class="dp-shell-label" data-i18n="session.log_out"></span>
+            </button>
+          </div>
+        </div>
+      </div>`;
+    const sheet = mount.querySelector('#topbar-account-sheet');
+    const button = mount.querySelector('#topbar-account-button');
+    // Opened and closed through the shell's one sheet lifetime (app.js
+    // DPShellSheet): closing, it rolls back up to the header before it hides.
+    const close = options => window.DPShellSheet.close(sheet, options);
+    button.addEventListener('click', () => window.DPShellSheet.toggle(sheet, {opener: button}));
+    sheet.addEventListener('click', event => {
+      if (event.target !== sheet) return;
+      close();
+      button.focus();
+    });
+    sheet.addEventListener('keydown', event => { if (event.key === 'Tab') close(); });
+    sheet.addEventListener('toggle', event => {
+      // Into the sheet without scrolling it while its panel travels in.
+      if (event.newState === 'open') sheet.querySelector('.dp-shell-sheet-item')?.focus({preventScroll: true});
+    });
+    handheld.addEventListener('change', () => close({immediate: true}));
+    sheet.querySelector('[data-account-action="profile"]').addEventListener('click', () => {
+      close();
+      void openAccountDialog(data);
+    });
+    bindLogout(sheet.querySelector('[data-account-action="logout"]'));
+    DPI18n.render(mount);
+    showHeaderAccount(data, '');
+  }
+
+  function showHeaderAccount(data, name) {
+    const mount = document.getElementById('topbar-account-mount');
+    const button = mount?.querySelector('#topbar-account-button');
+    if (!button) return;
+    const display = String(name || '');
+    mount.querySelector('.dp-topbar-account-name').textContent = display || DPI18n.t('session.my_account');
+    mount.querySelector('.dp-topbar-account-role').textContent = roleLabel(data.role);
+    button.setAttribute('aria-label', display ? DPI18n.t('session.my_account.named', {name: display, role: roleLabel(data.role)})
+      : DPI18n.t('session.my_account.role', {role: roleLabel(data.role)}));
+  }
+
+  async function readProfile() {
+    try {
+      const response = await downloadPulseFetch('/api/account', {headers: {'Accept': 'application/json'}});
+      return response.ok ? await response.json() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /* The account's own language as the server decides it ({locale,
+   * preference, default}; Candidate A's contract), or null when unread. */
+  async function readAccountLocale() {
+    try {
+      const response = await downloadPulseFetch('/api/account/locale', {headers: {'Accept': 'application/json'}});
+      return response.ok ? await response.json() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function sendJson(method, url, body) {
+    const response = await downloadPulseFetch(url, {
+      method, headers: {'Content-Type': 'application/json', 'Accept': 'application/json'}, body: JSON.stringify(body),
+    });
+    if (response.ok) return null;
+    return {status: response.status, message: errorMessage(await response.json().catch(() => ({})))};
+  }
+
+  /* What a refused request says, in the page's language: an error the server
+   * names by its stable code (core.localization.DisplayError) is the
+   * catalog's message for that code; any other keeps the server's text. */
+  function errorMessage(payload, fallback = 'common.not_saved') {
+    const code = typeof payload?.code === 'string' ? `error.${payload.code}` : '';
+    if (code && DPI18n.has(code)) return DPI18n.t(code, payload.params && typeof payload.params === 'object' ? payload.params : {});
+    const detail = Array.isArray(payload?.detail) ? payload.detail[0]?.msg : payload?.detail;
+    return String(detail || DPI18n.t(fallback));
+  }
+
+  // The account's own profile, read from the account API when the dialog
+  // opens. Its email is shown as the bare address: one its identity provider
+  // supplied is read-only here; one the account entered itself carries the
+  // Usenet server name's Pencil (the same control) to correct it. An account
+  // with none may enter one. An entered address is recorded unverified; the
+  // server decides every save.
+  function emailMarkup(profile, editing) {
+    if (!profile.email || editing) {
+      return '<label class="form-label" for="dp-account-email-input" data-i18n="account.field.email"></label>'
+        + '<input class="input" id="dp-account-email-input" data-field="email" type="email" maxlength="254" '
+        + 'autocomplete="email" spellcheck="false" data-i18n-attr="placeholder:account.field.email.placeholder">';
+    }
+    const pencil = profile.email_self_entered
+      ? '<button type="button" class="btn btn-ghost btn-sm dp-usenet-name-edit dp-account-email-edit" '
+        + 'data-i18n-attr="data-tooltip:account.field.email.edit;aria-label:account.field.email.edit"><img src="/icons/lucide/pencil.svg" alt="" aria-hidden="true"></button>'
+      : '';
+    return '<span class="form-label" data-i18n="account.field.email"></span>'
+      + `<span class="dp-account-email-value"><span class="dp-account-email-address"></span>${pencil}</span>`;
+  }
+
+  /* My Account: ONE dialog of one fixed size with two views. The profile view
+   * (the account's DP Username, shown read-only -- an Admin changes it --
+   * then Display Name, Actual Name, Email) saves the two names and, while the
+   * account has none, an email; the password action swaps the same dialog to
+   * the password view, whose Cancel returns to the profile -- with its unsaved
+   * edits intact -- and whose Save changes only the password. An account that
+   * holds a local password is offered Change Password (Current, New,
+   * Confirm); one whose own profile says it has none -- it signs in through
+   * its identity provider -- is offered Set Password, its first one (New and
+   * Confirm only, under the username it already has, for a password manager).
+   * Neither is offered when the profile could not be read; the server decides
+   * either way. A failed save keeps the dialog and says why.
+   *
+   * On a Standalone installation (the deployment type the server states) the
+   * profile has no DP Username line, and beneath the title the header says
+   * whether signing in needs a password now -- the server's own reading
+   * (``sign_in_required``), and nothing while it is unread. A password-
+   * protected Standalone installation's signed-in Administrator is offered,
+   * beside Change Password, Clear Password: a third view, destructive, that
+   * proves the current password and, once confirmed, removes it and turns
+   * password sign-in off together (the server does both, or neither).
+   *
+   * At the header's far end, for every account that owns a presentation, is
+   * Easy | Advanced (presentationSelector): a choice that applies at once and
+   * is saved on its own, never by Save, and whose Cancel undoes nothing. */
+  // What clearing a Standalone installation's one password does: the catalog's
+  // account.clear.consequence, a critical warning kept whole in every language.
+
+  async function openAccountDialog(data) {
+    const modal = window.DPSettingsModal;
+    if (!modal) return;
+    // The language belongs to the same account the presentation does (the
+    // server says so before first paint); unread, no language is offered.
+    const languages = window.DPLanguagePicker;
+    const languageOwned = window.downloadPulseLocale?.owned === true && Boolean(languages);
+    const localeReading = languageOwned ? readAccountLocale() : Promise.resolve(null);
+    const own = await readProfile();
+    let localeState = await localeReading;
+    const profile = own || {display_name: data.display_name || '', actual_name: '', email: '',
+      email_verification: null, has_password: false};
+    const fields = {};
+    const views = {};
+    let view = 'profile';
+    const notice = text => window.toast(text, 'error');
+    // Set Password: the account's own read says it has no local password.
+    const first = Boolean(own) && own.has_password === false;
+    // Change (an account with a local password) or Set (its first one), or none.
+    const passwordAction = profile.has_password ? 'change' : first ? 'set' : '';
+    const standalone = (own?.deployment_type || data.deployment_type) === 'standalone';
+    // A Standalone installation's open default Admin: its first password also
+    // turns on password sign-in (the server does both, or neither).
+    const standaloneFirst = first && standalone && sessionKind(data) === 'standalone';
+    const required = typeof own?.sign_in_required === 'boolean' ? own.sign_in_required : null;
+    // Said words (ui-settings-modal.js): the key travels with them, so an open
+    // My Account re-words its title, hint and footer on a language change.
+    const said = key => ({key, values: null, toString: () => DPI18n.t(key)});
+    const statusHint = !standalone || required === null ? ''
+      : said(required ? 'account.signin.required' : 'account.signin.not_required');
+    // Clear Password: the password-protected Standalone installation's own
+    // signed-in Administrator only.
+    const clearable = standalone && required === true && own?.has_password === true
+      && sessionKind(data) === 'authenticated';
+    // Rerun Setup Wizard: for an Admin (a Server's, or a Standalone
+    // installation's protected one); the server refuses anyone else.
+    const setupWizard = can('administer') && Boolean(window.DPSetupWizard);
+    // Connected Browsers: every person who may connect a browser (not ReadOnly).
+    const connectsBrowsers = can('browsers.own');
+    let emailSlot = null;
+    // The Pencil turns the shown address into the field, holding it; Save
+    // sends the change, Cancel discards it.
+    let editingEmail = false;
+    const paintEmail = () => {
+      if (!emailSlot) return;
+      emailSlot.innerHTML = emailMarkup(profile, editingEmail);
+      DPI18n.render(emailSlot);
+      fields.email = emailSlot.querySelector('[data-field="email"]');
+      if (fields.email && editingEmail) fields.email.value = String(profile.email || '');
+      const address = emailSlot.querySelector('.dp-account-email-address');
+      if (address) address.textContent = String(profile.email || '');
+      emailSlot.querySelector('.dp-account-email-edit')?.addEventListener('click', () => {
+        editingEmail = true;
+        paintEmail();
+        fields.email.focus();
+      });
+    };
+
+    const show = (next, handle, returnTo = null) => {
+      // Back from the language view returns to the control that opened it.
+      const from = view;
+      view = next;
+      Object.entries(views).forEach(([name, node]) => { node.hidden = name !== next; });
+      ['password', 'clear'].forEach(id => handle.setActionHidden(id, next !== 'profile'));
+      // Clear Password's view is destructive: the red treatment, and its own accept.
+      handle.setTone(next === 'clear' ? 'danger' : '');
+      handle.setAcceptLabel(said(next === 'clear' ? 'account.action.clear_password' : 'common.save'));
+      // The language view saves where a row is chosen: no Save, and its
+      // Cancel is the way back to the profile.
+      // Connected Browsers acts where a row is disconnected, as the language
+      // view saves where a row is chosen: no Save, and Cancel is the way back.
+      const listView = next === 'language' || next === 'browsers';
+      handle.setAcceptHidden(listView);
+      handle.setTitle(said(next === 'language' ? 'account.language.title'
+        : next === 'browsers' ? 'account.browsers.title' : 'account.title'));
+      handle.setCancelLabel(said(listView ? 'settings.common.back' : 'common.cancel'));
+      if (next === 'profile') {
+        // Secrets never outlive their view.
+        ['current', 'next', 'confirm', 'clear_current'].forEach(name => { if (fields[name]) fields[name].value = ''; });
+        (returnTo || (from === 'language' ? language.button : from === 'browsers' ? browsers.button : null)
+          || fields.display_name).focus();
+      } else if (next === 'language') {
+        language.open();
+      } else if (next === 'browsers') {
+        void browsers.open();
+      } else if (next === 'clear') {
+        fields.clear_current.focus();
+      } else {
+        (fields.current || fields.next).focus();
+      }
+    };
+    /* The account's language, chosen in its own view of this dialog: the
+     * button shows the language the server says it is shown in (flag and
+     * name); a row saves at once, independent of the profile's Save and
+     * Cancel, and only the server's answer changes the page's language.
+     * Nothing else in the dialog is rebuilt, so every draft stays. */
+    const language = {
+      button: null, error: null, slot: null, rows: null, handle: null, saving: false,
+      async paint() {
+        if (!this.button || !localeState) return;
+        const shown = await languages.language(localeState.locale);
+        languages.paintButton(this.button, shown, DPI18n.t('account.language.button', {language: shown.native}));
+      },
+      mount(body, handle) {
+        this.handle = handle;
+        this.button = body.querySelector('[data-account-language]');
+        this.error = body.querySelector('[data-account-language-error]');
+        this.slot = body.querySelector('[data-account-language-list]');
+        if (!this.button) return;
+        void this.paint();
+        this.button.addEventListener('click', () => show('language', handle));
+        // A language change re-says the button's name (its face is the language's own).
+        this.relabel = () => { void this.paint(); };
+        document.addEventListener('downloadpulse:locale-changed', this.relabel);
+      },
+      release() {
+        if (this.relabel) document.removeEventListener('downloadpulse:locale-changed', this.relabel);
+      },
+      async open() {
+        this.error.hidden = true;
+        const [choices, inherited] = await Promise.all([languages.choices().catch(() => null),
+          languages.language(localeState.default)]);
+        if (view !== 'language') return;
+        if (!choices) { this.fail(); this.slot.replaceChildren(); return; }
+        this.rows = languages.list(this.slot, {
+          languages: choices, selected: localeState.preference, systemDefault: {language: inherited},
+          label: DPI18n.t('account.language.title'), onChoose: value => void this.choose(value),
+        });
+        this.rows.focus();
+      },
+      fail() {
+        this.error.textContent = DPI18n.t('language.picker.account_not_saved');
+        this.error.dataset.i18n = 'language.picker.account_not_saved';
+        this.error.hidden = false;
+      },
+      async choose(value) {
+        if (this.saving) return;
+        this.saving = true;
+        this.error.hidden = true;
+        this.rows.setBusy(true);
+        this.handle.setBusy(true);
+        let next = null;
+        try {
+          const response = await downloadPulseFetch('/api/account/locale', {method: 'PUT',
+            headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+            body: JSON.stringify({locale: value})});
+          next = response.ok ? await response.json() : null;
+        } catch (_) {
+          next = null;
+        }
+        this.saving = false;
+        this.rows.setBusy(false);
+        this.handle.setBusy(false);
+        if (!next || typeof next.locale !== 'string') { this.fail(); return; }
+        localeState = next;
+        const shown = await languages.language(next.locale);
+        await languages.apply(shown);
+        await this.paint();
+        if (view === 'language') show('profile', this.handle, this.button);
+      },
+    };
+
+    /* The account's own connected browsers (api/browser_routes.py): each one's
+     * name, when it was connected and last used, and Disconnect. The server's
+     * list is the only truth shown; a Disconnect re-reads it. */
+    const browsers = {
+      slot: null, handle: null, button: null,
+      escape: value => String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch])),
+      mount(body, handle) {
+        this.handle = handle;
+        this.slot = body.querySelector('[data-account-browsers-list]');
+        // Opened from the profile, as the language view is: never a footer
+        // action, so the footer stays the profile's own acts at every width.
+        this.button = body.querySelector('[data-account-browsers-open]');
+        this.button?.addEventListener('click', () => show('browsers', handle));
+      },
+      async read() {
+        try {
+          const response = await downloadPulseFetch('/api/account/browsers', {headers: {'Accept': 'application/json'}});
+          const data = response.ok ? await response.json() : null;
+          return Array.isArray(data?.browsers) ? data.browsers : null;
+        } catch (_) {
+          return null;
+        }
+      },
+      async open() {
+        if (!this.slot) return;
+        this.slot.setAttribute('aria-busy', 'true');
+        const listed = await this.read();
+        this.slot.removeAttribute('aria-busy');
+        if (view !== 'browsers') return;
+        this.paint(listed);
+      },
+      paint(listed) {
+        const date = value => window.downloadsDateMarkup ? window.downloadsDateMarkup(value) : this.escape(value);
+        if (!listed) {
+          this.slot.innerHTML = '<p class="dp-account-browsers-empty" role="alert" data-i18n="account.browsers.unreadable"></p>';
+        } else if (!listed.length) {
+          this.slot.innerHTML = '<p class="dp-account-browsers-empty" data-i18n="account.browsers.none"></p>';
+        } else {
+          this.slot.innerHTML = `<ul class="dp-account-browsers">${listed.map(item => `
+            <li class="dp-account-browser" data-browser-id="${this.escape(item.id)}">
+              <div class="dp-account-browser-text">
+                <span class="dp-account-browser-name" data-browser-name></span>
+                <span class="dp-account-browser-detail"><span data-i18n="account.browsers.connected"></span> ${date(item.created_at)}</span>
+                <span class="dp-account-browser-detail"><span data-i18n="account.browsers.last_used"></span> ${item.last_seen_at
+                  ? date(item.last_seen_at) : '<span data-i18n="account.browsers.never_used"></span>'}</span>
+              </div>
+              <button type="button" class="btn btn-danger btn-sm" data-browser-disconnect data-i18n="account.browsers.disconnect"></button>
+            </li>`).join('')}</ul>`;
+          this.slot.querySelectorAll('[data-browser-id]').forEach((row, index) => {
+            row.querySelector('[data-browser-name]').textContent = String(listed[index].label || '');
+            row.querySelector('[data-browser-disconnect]').addEventListener('click',
+              () => void this.disconnect(listed[index]));
+          });
+        }
+        DPI18n.render(this.slot);
+        (this.slot.querySelector('button') || this.slot).focus?.();
+      },
+      async disconnect(item) {
+        const name = String(item.label || '');
+        const confirmed = await modal.confirm({tone: 'danger',
+          title: {key: 'account.browsers.disconnect_title', values: {name}, toString: () => DPI18n.t('account.browsers.disconnect_title', {name})},
+          message: said('account.browsers.disconnect_message'),
+          confirmLabel: said('account.browsers.disconnect'), cancelLabel: said('common.cancel')});
+        if (!confirmed) return;
+        let ok = false;
+        try {
+          const response = await downloadPulseFetch(`/api/account/browsers/${encodeURIComponent(item.id)}`,
+            {method: 'DELETE', headers: {'Accept': 'application/json'}});
+          ok = response.ok;
+        } catch (_) {
+          ok = false;
+        }
+        window.toast(ok ? DPI18n.t('account.browsers.disconnected', {name}) : DPI18n.t('account.browsers.not_disconnected'),
+          ok ? 'success' : 'error');
+        if (view === 'browsers') await this.open();
+      },
+    };
+
+    /* Whether the profile holds an edit Save has not sent. */
+    const profileEdited = () => Boolean(fields.display_name) && (
+      fields.display_name.value.trim() !== String(profile.display_name || data.display_name || '')
+      || fields.actual_name.value.trim() !== String(profile.actual_name || '')
+      || Boolean(fields.email && fields.email.value.trim() !== String(profile.email || '')));
+    /* The setup wizard (opened over this dialog) takes the operator to a
+     * page: this dialog steps aside -- at once when nothing is unsaved, else
+     * only once the operator chooses to discard the edits. Keep Editing leaves
+     * every edit and both dialogs as they are. */
+    async function leaveForSetup() {
+      if (!profileEdited()) return true;
+      return modal.confirm({tone: 'warning', title: said('account.leave.title'), message: said('account.leave.message'),
+        confirmLabel: said('account.leave.discard'), cancelLabel: said('account.leave.keep')});
+    }
+
+    const actions = [];
+    if (passwordAction) actions.push({id: 'password', placement: 'leading',
+      label: said(passwordAction === 'change' ? 'account.action.change_password' : 'account.action.set_password')});
+    if (clearable) actions.push({id: 'clear', label: said('account.action.clear_password'), tone: 'danger', placement: 'leading'});
+
+    // The header's far end: My Account's Help, then Easy | Advanced for every
+    // account that owns a presentation. Help explains what this dialog offers
+    // this account, from the facts it was opened with, over this dialog.
+    const selector = presentation.owned ? presentationSelector() : null;
+    const headerEnd = document.createElement('div');
+    headerEnd.className = 'dp-account-header-end';
+    headerEnd.innerHTML = '<button type="button" class="dp-settings-help-chip" data-i18n-attr="aria-label:account.help;data-tooltip:account.help">'
+      + `${window.DPIcons?.svg ? window.DPIcons.svg('help', 'dp-settings-help-glyph') : '?'}</button>`;
+    DPI18n.render(headerEnd);
+    headerEnd.querySelector('button').addEventListener('click', () => window.DPSettingsHelp?.open('my-account', {account: {
+      standalone, open: sessionKind(data) === 'standalone', signInRequired: required, hasPassword: own?.has_password === true,
+      passwordAction, first, standaloneFirst, clearable, showsUsername: !standalone,
+      email: Boolean(profile.email), emailSelfEntered: profile.email_self_entered === true,
+      presentation: presentation.owned, language: Boolean(localeState), setupWizard,
+    }}));
+    if (selector) headerEnd.append(selector.element);
+    const dialog = modal.open({
+      title: said('account.title'),
+      titleHint: statusHint,
+      headerEnd,
+      acceptLabel: said('common.save'),
+      cancelLabel: said('common.cancel'),
+      className: 'dp-account-dialog',
+      actions,
+      onAction(id) {
+        if (id === 'password' || id === 'clear') show(id, this.handle);
+      },
+      mount(body, handle) {
+        this.handle = handle;
+        body.innerHTML = `
+          <div class="dp-account-view" data-account-view="profile">${standalone ? '' : `
+            <div class="dp-modal-field dp-account-username">
+              <span class="form-label" data-i18n="account.field.username"></span>
+              <span class="dp-account-username-value" data-account-username></span>
+              <p class="dp-account-username-note" data-i18n="account.field.username.note"></p>
+            </div>`}
+            <label class="dp-modal-field"><span class="form-label" data-i18n="account.field.display_name"></span>
+              <input class="input" data-field="display_name" type="text" maxlength="256" autocomplete="nickname"></label>
+            <label class="dp-modal-field"><span class="form-label" data-i18n="account.field.actual_name"></span>
+              <input class="input" data-field="actual_name" type="text" maxlength="256" autocomplete="name"></label>
+            <div class="dp-account-email-row">
+              <div class="dp-modal-field dp-account-email" data-account-email></div>${localeState ? `
+              <button type="button" class="btn dp-language-button dp-account-language" data-account-language></button>` : ''}
+            </div>${connectsBrowsers ? `
+            <div class="dp-account-browsers-entry">
+              <button type="button" class="btn dp-account-browsers-open" data-account-browsers-open data-i18n="account.action.browsers"></button>
+            </div>` : ''}${setupWizard ? `
+            <div class="dp-account-setup">
+              <h3 class="dp-account-setup-title" data-i18n="account.setup.title"></h3>
+              <p class="dp-account-setup-hint" data-i18n="account.setup.hint.review"></p>
+              <button type="button" class="btn dp-account-setup-rerun" data-account-setup-rerun data-i18n="account.setup.rerun"></button>
+            </div>` : ''}
+          </div>${localeState ? `
+          <div class="dp-account-view dp-account-language-view" data-account-view="language" hidden>
+            <p class="dp-language-error" role="alert" data-account-language-error hidden></p>
+            <div class="dp-language-slot" data-account-language-list></div>
+          </div>` : ''}
+          <div class="dp-account-view" data-account-view="password" hidden>${first ? `
+            <input type="text" data-account-password-username autocomplete="username" readonly hidden>` : `
+            <label class="dp-modal-field"><span class="form-label" data-i18n="account.field.current_password"></span>
+              <input class="input" data-field="current" type="password" maxlength="4096" autocomplete="current-password"></label>`}
+            <label class="dp-modal-field"><span class="form-label" data-i18n="account.field.new_password"></span>
+              <input class="input" data-field="next" type="password" maxlength="4096" autocomplete="new-password"></label>
+            <label class="dp-modal-field"><span class="form-label" data-i18n="account.field.confirm_password"></span>
+              <input class="input" data-field="confirm" type="password" maxlength="4096" autocomplete="new-password"></label>${first ? `
+            <p class="dp-account-username-note" data-i18n="${standaloneFirst
+              ? 'account.first_password.note.standalone' : 'account.first_password.note.server'}"></p>` : ''}
+          </div>${clearable ? `
+          <div class="dp-account-view" data-account-view="clear" hidden>
+            <label class="dp-modal-field"><span class="form-label" data-i18n="account.field.current_password"></span>
+              <input class="input" data-field="clear_current" type="password" maxlength="4096" autocomplete="current-password"></label>
+            <p class="dp-account-clear-warning" data-i18n="account.clear.consequence"></p>
+          </div>` : ''}${connectsBrowsers ? `
+          <div class="dp-account-view dp-account-browsers-view" data-account-view="browsers" hidden>
+            <p class="dp-account-browsers-intro" data-i18n="account.browsers.intro"></p>
+            <div data-account-browsers-list></div>
+          </div>` : ''}`;
+        DPI18n.render(body);
+        body.querySelectorAll('[data-account-view]').forEach(node => { views[node.dataset.accountView] = node; });
+        body.querySelectorAll('[data-field]').forEach(input => { fields[input.dataset.field] = input; });
+        const username = body.querySelector('[data-account-username]');
+        if (username) username.textContent = String(profile.username || '');
+        // The account the new password belongs to, for a password manager only:
+        // never sent, never chosen here.
+        const passwordUsername = body.querySelector('[data-account-password-username]');
+        if (passwordUsername) passwordUsername.value = String(profile.username || '');
+        fields.display_name.value = String(profile.display_name || data.display_name || '');
+        fields.actual_name.value = String(profile.actual_name || '');
+        emailSlot = body.querySelector('[data-account-email]');
+        paintEmail();
+        language.mount(body, handle);
+        browsers.mount(body, handle);
+        // Opened over this dialog, which keeps every unsaved edit as it is:
+        // the wizard never saves them, and they are discarded only by the
+        // operator's own choice when it opens a page (leaveForSetup).
+        body.querySelector('[data-account-setup-rerun]')?.addEventListener('click', () => {
+          window.DPSetupWizard.rerun({opener: {mayLeave: leaveForSetup, leave: () => handle.close()}})
+            .catch(error => notice(error?.message || DPI18n.t('setup.error.not_opened')));
+        });
+        return null;
+      },
+      onCancel(handle) {
+        if (view === 'profile') return true;
+        show('profile', handle);
+        return false;
+      },
+      async onAccept() {
+        if (view === 'clear') {
+          if (!fields.clear_current.value) { notice(DPI18n.t('account.validation.current_password')); return false; }
+          const confirmed = await modal.confirm({tone: 'danger', title: DPI18n.t('account.clear.confirm_title'),
+            confirmLabel: DPI18n.t('account.action.clear_password'), cancelLabel: DPI18n.t('common.cancel'),
+            message: DPI18n.t('account.clear.consequence')});
+          if (!confirmed) return false;
+          const failure = await sendJson('POST', '/api/account/clear-password',
+            {current_password: fields.clear_current.value});
+          if (failure) { notice(failure.message); return false; }
+          // The server ended every session: the installation is open now.
+          window.location.assign('/');
+          return true;
+        }
+        if (view === 'password' && first) {
+          if (!fields.next.value) { notice(DPI18n.t('account.validation.new_password')); return false; }
+          if (fields.next.value !== fields.confirm.value) { notice(DPI18n.t('account.validation.passwords_differ')); return false; }
+          const failure = await sendJson('POST', '/api/account/first-password', {new_password: fields.next.value});
+          if (failure) { notice(failure.message); return false; }
+          // The server ended every session of this account: sign in again.
+          redirectToLogin();
+          return true;
+        }
+        if (view === 'password') {
+          if (!fields.current.value || !fields.next.value) { notice(DPI18n.t('account.validation.current_and_new')); return false; }
+          if (fields.next.value !== fields.confirm.value) { notice(DPI18n.t('account.validation.passwords_differ')); return false; }
+          const failure = await sendJson('PUT', '/api/account/password',
+            {current_password: fields.current.value, new_password: fields.next.value});
+          if (failure) { notice(failure.message); return false; }
+          // The server ended every session of this account: sign in again.
+          redirectToLogin();
+          return true;
+        }
+        const name = fields.display_name.value.trim();
+        if (!name) { notice(DPI18n.t('account.validation.display_name')); return false; }
+        // Each saved part is the profile's at once, so a retry after a later
+        // part's failure sends only what is still unsaved.
+        if (name !== String(profile.display_name || '')) {
+          const failure = await sendJson('PUT', '/api/account/display-name', {display_name: name});
+          if (failure) { notice(failure.message); return false; }
+          profile.display_name = name;
+        }
+        const actual = fields.actual_name.value.trim();
+        if (actual !== String(profile.actual_name || '')) {
+          const failure = await sendJson('PUT', '/api/account/actual-name', {actual_name: actual});
+          if (failure) { notice(failure.message); return false; }
+          profile.actual_name = actual;
+        }
+        // A blank first email stays blank; an entered or corrected address is
+        // sent with the address this form showed, so the server refuses (409)
+        // a stale form, a concurrent save or an address it does not let this
+        // account change -- and the dialog then shows the stored one. An
+        // emptied correction is sent too: the server says why it is invalid.
+        const email = fields.email ? fields.email.value.trim() : '';
+        const shown = String(profile.email || '');
+        if (fields.email && (shown ? email !== shown : email)) {
+          const failure = await sendJson('PUT', '/api/account/email', {email, expected: shown});
+          if (failure) {
+            notice(failure.message);
+            if (failure.status === 409) {
+              const current = await readProfile();
+              if (current) Object.assign(profile, current);
+              editingEmail = false;
+              paintEmail();
+            }
+            return false;
+          }
+        }
+        window.location.reload();
+        return true;
+      },
+    });
+    if (selector) dialog.closed.then(selector.release);
+    dialog.closed.then(() => language.release());
+  }
+
+  async function refreshSession({force = false} = {}) {
+    if (sessionRequest && !force) return sessionRequest;
+    sessionRequest = nativeFetch('/api/auth/session', {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json'}
+    }).then(async response => {
+      if (response.status === 401) {
+        csrfToken = '';
+        sessionState = null;
+        syncSidebarSessionUi(null);
+        document.dispatchEvent(new CustomEvent('downloadpulse:session-changed'));
+        redirectToLogin();
+        return null;
+      }
+      if (!response.ok) return sessionState;
+      const data = await response.json();
+      if (authorityChanged(data)) {
+        window.location.reload();
+        return data;
+      }
+      sessionState = data;
+      csrfToken = String(data && data.csrf_token || '');
+      syncSidebarSessionUi(data);
+      document.dispatchEvent(new CustomEvent('downloadpulse:session-changed'));
+      return data;
+    }).catch(() => sessionState).finally(() => {
+      sessionRequest = null;
+    });
+    return sessionRequest;
+  }
+
+  async function downloadPulseFetch(input, init) {
+    const options = {...(init || {})};
+    const requestMethod = input instanceof Request ? input.method : 'GET';
+    const method = String(options.method || requestMethod || 'GET').toUpperCase();
+    const sameOrigin = isSameOrigin(input);
+
+    if (sameOrigin) {
+      options.credentials = options.credentials || 'same-origin';
+    }
+
+    if (sameOrigin && mutatingMethods.has(method)) {
+      await refreshSession();
+      if (csrfToken) {
+        const inherited = input instanceof Request ? input.headers : undefined;
+        const headers = new Headers(options.headers || inherited || {});
+        headers.set('X-CSRF-Token', csrfToken);
+        options.headers = headers;
+      }
+    }
+
+    const response = await nativeFetch(input, options);
+    if (sameOrigin && (response.status === 401 || response.status === 403) && window.location.pathname !== '/login') {
+      // A 401 from an application endpoint is not, by itself, proof that the
+      // DownloadPulse browser session expired, nor a 403 that the account's role
+      // changed. Confirm against the canonical session endpoint: it signs out
+      // an ended session and reloads under a changed authority.
+      await refreshSession({force: true});
+    }
+    return response;
+  }
+
+  async function logoutSession() {
+    const response = await downloadPulseFetch('/api/auth/logout', {method: 'POST'});
+    if (response.ok) {
+      csrfToken = '';
+      sessionState = null;
+      syncSidebarSessionUi(null);
+      window.location.assign('/login');
+      return true;
+    }
+    return false;
+  }
+
+  /* The account's own presentation: Advanced -- the whole interface its role
+   * and the installation's deployment type allow -- or Easy, that same
+   * interface without the parts the Easy list of that deployment type names.
+   * It changes what is shown, never what the account may do: the server
+   * enforces that either way. The server states it before this bundle runs
+   * (window.downloadPulsePresentation: whether the request has an account to
+   * own one, and that account's saved choice, null when it could not be read
+   * in time), so an Easy page never shows an Advanced-only part first; an
+   * unread choice is Advanced until it is read. The choice is the account's
+   * own record (PUT /api/account/presentation) -- the default Admin's while
+   * sign-in is off -- the same in every browser; the browser keeps none.
+   *
+   * One Easy list per deployment type, each the complete list of what Easy
+   * omits there; both name the same parts for now, and each may change
+   * without the other. Owners ask omits(part) when they compose; a shell part
+   * declares itself with data-presentation and is placed or withdrawn here
+   * (composePresented). A choice applies at once; its saves are sent one at a
+   * time, the newest choice last, so an older answer never overrides a newer
+   * choice; a refused or failed save returns to the last saved choice and
+   * says so. */
+  const EASY_PASS_1 = ['activity-log', 'provider-additional-settings', 'download-behavior-advanced',
+    'transfer-method-settings', 'disk-space-recovery', 'download-engine-activity', 'username-password',
+    'openid-connect', 'deployment-type', 'statistics-reporting', 'event-logging', 'backup-additional-settings',
+    'database-reset'];
+  const EASY = Object.freeze({
+    server: Object.freeze([...EASY_PASS_1]),
+    standalone: Object.freeze([...EASY_PASS_1]),
+  });
+  const PRESENTATION_MODES = ['easy', 'advanced'];
+  const stated = window.downloadPulsePresentation || {};
+  const presentation = {
+    owned: stated.owned === true,
+    // The last choice the server confirmed (null: not read), and the one shown.
+    saved: PRESENTATION_MODES.includes(stated.mode) ? stated.mode : null,
+    mode: stated.mode === 'easy' ? 'easy' : 'advanced',
+    // The newest choice not yet sent, and the save on its way.
+    wanted: null,
+    writing: null,
+    listeners: new Set(),
+  };
+  // Every shell part that declares itself, with the place it is returned to.
+  const presentedParts = [];
+
+  function omits(part, deployment = authority.deployment_type) {
+    if (presentation.mode !== 'easy') return false;
+    return EASY[deployment === 'standalone' ? 'standalone' : 'server'].includes(String(part || ''));
+  }
+
+  // Place every declared shell part this presentation shows and withdraw the
+  // rest; returns the parts it withdrew now.
+  function composePresented() {
+    const withdrawn = [];
+    presentedParts.forEach(({node, anchor}) => {
+      const omitted = omits(node.dataset.presentation);
+      if (omitted && node.isConnected) { node.remove(); withdrawn.push(node); }
+      else if (!omitted && !node.isConnected && anchor.isConnected) { anchor.after(node); DPI18n.render(node); }
+    });
+    return withdrawn;
+  }
+
+  function presentationState() {
+    if (!presentation.owned) return 'none';
+    if (presentation.writing) return 'saving';
+    return presentation.saved ? 'saved' : 'unavailable';
+  }
+
+  function announcePresentation(detail = {}) {
+    presentation.listeners.forEach(listener => { try { listener(detail); } catch (_) {} });
+  }
+
+  function present(mode) {
+    if (mode === presentation.mode) return;
+    presentation.mode = mode;
+    const withdrawn = composePresented();
+    document.dispatchEvent(new CustomEvent('downloadpulse:presentation-changed', {detail: {mode, withdrawn}}));
+  }
+
+  async function savePresentation() {
+    let outcome = {};
+    while (presentation.wanted) {
+      const mode = presentation.wanted;
+      presentation.wanted = null;
+      let accepted = null;
+      let message = DPI18n.t('presentation.failed');
+      try {
+        const response = await downloadPulseFetch('/api/account/presentation', {
+          method: 'PUT', headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+          body: JSON.stringify({presentation_mode: mode}),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (response.ok && PRESENTATION_MODES.includes(payload?.presentation_mode)) accepted = payload.presentation_mode;
+        else if (payload?.code || (typeof payload?.detail === 'string' && payload.detail)) {
+          message = DPI18n.t('presentation.failed.detail', {reason: errorMessage(payload, 'presentation.failed')});
+        }
+      } catch (_) {}
+      if (accepted) presentation.saved = accepted;
+      // A newer choice is on its way: its answer, not this one, decides.
+      if (presentation.wanted) continue;
+      if (accepted === mode) {
+        outcome = {saved: mode};
+      } else {
+        present(presentation.saved || 'advanced');
+        outcome = {failed: mode};
+        window.toast?.(message, 'error');
+      }
+    }
+    presentation.writing = null;
+    announcePresentation(outcome);
+  }
+
+  function choosePresentation(mode) {
+    if (!presentation.owned || !PRESENTATION_MODES.includes(mode)) return Promise.resolve(false);
+    present(mode);
+    presentation.wanted = mode;
+    if (!presentation.writing) presentation.writing = savePresentation();
+    announcePresentation();
+    return presentation.writing.then(() => presentation.saved === mode);
+  }
+
+  // An unread choice is read again where it is offered (My Account).
+  async function readPresentation() {
+    if (!presentation.owned || presentation.saved || presentation.writing) return;
+    try {
+      const response = await downloadPulseFetch('/api/account/presentation', {headers: {'Accept': 'application/json'}});
+      const payload = response.ok ? await response.json() : null;
+      if (PRESENTATION_MODES.includes(payload?.presentation_mode) && !presentation.saved && !presentation.writing) {
+        presentation.saved = payload.presentation_mode;
+        present(payload.presentation_mode);
+      }
+    } catch (_) {}
+    announcePresentation();
+  }
+
+  /* My Account's Easy | Advanced: one control of two compartments, a radio
+   * group. While the choice is unread neither compartment is chosen; while a
+   * save is on its way the group is busy; its status line says what the
+   * server last answered. */
+  function presentationSelector() {
+    const group = document.createElement('div');
+    group.className = 'dp-presentation-switch';
+    group.setAttribute('role', 'radiogroup');
+    group.setAttribute('aria-label', DPI18n.t('presentation.label'));
+    group.innerHTML = PRESENTATION_MODES.map(mode => `<button type="button" class="dp-presentation-option" role="radio" `
+      + `data-presentation-mode="${mode}" data-i18n="presentation.${mode}"></button>`).join('')
+      + '<span class="dp-presentation-status" role="status"></span>';
+    DPI18n.render(group);
+    const options = [...group.querySelectorAll('[data-presentation-mode]')];
+    const status = group.querySelector('.dp-presentation-status');
+    const paint = (detail = {}) => {
+      const state = presentationState();
+      const chosen = state === 'unavailable' ? null : presentation.mode;
+      group.dataset.state = state;
+      group.setAttribute('aria-busy', state === 'saving' ? 'true' : 'false');
+      options.forEach(option => {
+        const checked = option.dataset.presentationMode === chosen;
+        option.setAttribute('aria-checked', String(checked));
+        option.tabIndex = checked || (!chosen && option === options[0]) ? 0 : -1;
+      });
+      if (detail.failed) status.textContent = DPI18n.t('presentation.status.not_saved', {mode: detail.failed});
+      else if (state === 'saving') status.textContent = DPI18n.t('presentation.status.saving', {mode: presentation.mode});
+      else if (detail.saved) status.textContent = DPI18n.t('presentation.status.saved', {mode: detail.saved});
+      else if (state === 'unavailable') status.textContent = DPI18n.t('presentation.status.unavailable');
+    };
+    const choose = option => {
+      void choosePresentation(option.dataset.presentationMode);
+      option.focus();
+    };
+    options.forEach((option, index) => {
+      option.addEventListener('click', () => choose(option));
+      option.addEventListener('keydown', event => {
+        const step = {ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1}[event.key];
+        if (!step) return;
+        event.preventDefault();
+        choose(options[(index + step + options.length) % options.length]);
+      });
+    });
+    presentation.listeners.add(paint);
+    paint();
+    void readPresentation();
+    return {element: group, release: () => presentation.listeners.delete(paint)};
+  }
+
+  window.downloadPulseAuth = Object.freeze({
+    fetch: downloadPulseFetch,
+    refreshSession,
+    session: () => sessionState,
+    logout: logoutSession,
+    can,
+    mayDestroy,
+    authority,
+    presentation: Object.freeze({
+      mode: () => presentation.mode,
+      omits,
+      choose: choosePresentation,
+      state: presentationState,
+      // The interface this page composes, as the explanations of it read it:
+      // the role's capabilities, the deployment type and the presentation,
+      // with the Easy list's omissions -- this owner's facts, nothing more.
+      context: () => Object.freeze({
+        role: String(authority.role || ''),
+        deployment: authority.deployment_type === 'standalone' ? 'standalone' : 'server',
+        standalone: authority.deployment_type === 'standalone',
+        server: authority.deployment_type !== 'standalone',
+        // The installed desktop application (window.downloadPulseDesktop): an
+        // installation fact, not a role or deployment -- what only it has
+        // (Local Port) is explained only there.
+        desktop: window.downloadPulseDesktop === true,
+        mode: presentation.mode,
+        easy: presentation.mode === 'easy',
+        advanced: presentation.mode !== 'easy',
+        admin: can('administer'),
+        personal: can('notifications.self'),
+        submit: can('transfers.submit'),
+        operate: can('transfers.operate'),
+        omits: part => omits(part),
+        shows: part => !omits(part),
+      }),
+    }),
+  });
+
+  composeAuthorized();
+  DPI18n.render(document);
+  document.querySelectorAll('[data-presentation]').forEach(node => {
+    const anchor = document.createComment(` ${node.dataset.presentation} `);
+    node.before(anchor);
+    presentedParts.push({node, anchor});
+  });
+  composePresented();
+
+  // The signed-in account's own appearance. DPTheme (ui-theme-bootstrap.js)
+  // owns the choices; this owner only carries them to and from the account's
+  // record. While sign-in is off DPTheme keeps them in the browser and takes
+  // no record.
+  window.DPTheme?.connect({
+    save: changes => sendJson('PATCH', '/api/account/appearance', changes).then(failure => !failure),
+    read: () => downloadPulseFetch('/api/account/appearance', {headers: {'Accept': 'application/json'}})
+      .then(response => (response.ok ? response.json() : null)),
+  });
+
+  // The page's language changed (ui-i18n.js): the session's own controls are
+  // built again, from the same session answer, in that language.
+  document.addEventListener('downloadpulse:locale-changed', () => {
+    document.getElementById('sidebar-auth-mount')?.replaceChildren();
+    document.getElementById('topbar-account-mount')?.replaceChildren();
+    syncSidebarSessionUi(sessionState);
+  });
+
+  refreshSession().catch(() => {});
+  window.setInterval(() => refreshSession({force: true}).catch(() => {}), 60000);
+  // The live pulse (re)connected. An account_changed is announced only to the
+  // streams subscribed at that moment, so one made while this page was loading
+  // (before its stream subscribed) or while a dropped stream was reconnecting
+  // reached nobody: re-read the session now, which resets the page only if its
+  // authority moved.
+  document.addEventListener('downloadpulse:pulse-connected', () => {
+    refreshSession({force: true}).catch(() => {});
+  });
+})();

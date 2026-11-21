@@ -1,0 +1,13 @@
+/* DownloadPulse v1.0.11 final Help License footer balance. */
+#view-help .dp-help-license-actions {
+  justify-content: center;
+}
+
+#view-help .dp-help-license-note {
+  text-align: center;
+}
+
+#view-help .dp-help-license-note > p {
+  margin-left: auto;
+  margin-right: auto;
+}

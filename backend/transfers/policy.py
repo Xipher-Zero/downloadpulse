@@ -1,0 +1,637 @@
+"""Universal lifecycle and recovery policy; no integration-native semantics.
+
+Providers and executors emit factual normalized evidence. This universal owner
+combines those facts with durable transfer context and selects recovery behavior.
+``NormalizedError.recovery`` is a derived, write-only compatibility projection:
+``recovery_action`` computes the action from canonical facts alone (domain,
+category, stage, retryability, permanence), ``compatibility_error`` stamps that
+value onto the error for serialization, and no decision in the core ever reads
+the field back. ``tests/test_recovery_projection_boundary.py`` proves it.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from enum import StrEnum
+
+from transfers.errors import Category, Domain, NormalizedError, Origin, Permanence, Recovery, Retryability, Stage
+from transfers.models import TransferState
+
+
+# DP 1.0.12 leveling remediation (FUNC-001): the single canonical owner of
+# "which parent lifecycle states are a dead end" versus "which parent
+# lifecycle states retire an old pause intent / INPUT_REQUIRED challenge
+# because their generation has settled". These are deliberately distinct:
+# FAILED is reopenable (transition_allowed permits an operator to leave it),
+# so it belongs only in the second, broader set. Repository, input-challenge,
+# and engine/recovery code must consume these instead of maintaining an
+# independent literal terminal-state set.
+TERMINAL_TRANSFER_STATES = frozenset({
+    TransferState.COMPLETED, TransferState.CONSOLIDATED, TransferState.DELETED, TransferState.CANCELLED,
+})
+SIDE_STATE_RETIRING_TRANSFER_STATES = TERMINAL_TRANSFER_STATES | frozenset({TransferState.FAILED})
+_EXECUTION_ALTERNATE_CATEGORIES = frozenset({
+    Category.READ_TIMEOUT, Category.SOURCE_NOT_FOUND, Category.TRANSFER_STALLED,
+    Category.CONNECTION_FAILED, Category.CONNECTION_REFUSED, Category.REMOTE_READ_FAILED, Category.DNS_FAILURE,
+    Category.CANDIDATE_EXPIRED, Category.SOURCE_TEMPORARILY_UNAVAILABLE,
+    Category.CHECKSUM_MISMATCH, Category.TLS_FAILURE, Category.REMOTE_RESET,
+})
+_EXECUTION_RECONCILE_CATEGORIES = frozenset({Category.TRANSFER_INTERRUPTED, Category.RESOURCE_STATE_CONFLICT})
+_EXPIRY_CATEGORIES = frozenset({Category.CANDIDATE_EXPIRED, Category.SOURCE_EXPIRED, Category.RESOURCE_EXPIRED})
+_PERMANENT_CATEGORIES = frozenset({Category.CONTENT_INVALID})
+_TRANSIENT_CATEGORIES = frozenset({
+    Category.READ_TIMEOUT, Category.CONNECTION_TIMEOUT, Category.CONNECTION_FAILED, Category.CONNECTION_REFUSED,
+    Category.REMOTE_RESET, Category.REMOTE_READ_FAILED, Category.DNS_FAILURE,
+    Category.TLS_FAILURE, Category.SOURCE_TEMPORARILY_UNAVAILABLE,
+    Category.SOURCE_UNAVAILABLE, Category.PROVIDER_UNAVAILABLE,
+    Category.PROVIDER_DEGRADED, Category.PROVIDER_MAINTENANCE,
+    Category.RESOLUTION_TEMPORARILY_FAILED, Category.TRANSFER_STALLED,
+    Category.RATE_LIMITED, Category.CONCURRENCY_LIMITED,
+})
+_RECONCILE_CATEGORIES = frozenset({
+    Category.EXECUTOR_UNAVAILABLE,
+    Category.RECONCILIATION_FAILED,
+    Category.TRANSFER_INTERRUPTED,
+    Category.RESOURCE_STATE_CONFLICT,
+})
+
+# Facts that make waiting (or an operator/resource change) mandatory: an
+# immediately available refresh never outranks them.
+_MANDATORY_WAIT_CATEGORIES = frozenset({Category.RATE_LIMITED, Category.CONCURRENCY_LIMITED})
+_MANDATORY_WAIT_RETRYABILITY = frozenset({
+    Retryability.BACKOFF, Retryability.AFTER_REAUTH, Retryability.AFTER_RESOURCE_CHANGE,
+})
+# Waiting on remote capacity never grows the retry delay past this exponent.
+_CAPACITY_BACKOFF_STEPS = 32
+
+
+def remote_source_capacity(error: NormalizedError) -> bool:
+    """The source server itself refused to admit more concurrent work right
+    now (its own connection limit, reported by the executor that reached it).
+
+    An external capacity fact, not evidence against the candidate or its route:
+    such a refusal never spends a recovery or retry budget, and it is never a
+    stall or an unrelated network failure. DownloadPulse stays the one admission
+    owner -- it simply retries later (or moves to an equivalent alternate), with
+    no second scheduler and no count of the server's slots. A provider
+    account's own concurrency limit is a provider fact (``Domain.PROVIDER``) and
+    keeps its ordinary bounded budget."""
+    return error.domain == Domain.NETWORK and error.category == Category.CONCURRENCY_LIMITED
+
+
+# A source route that is permanently unusable as submitted. Intrinsically so:
+# the object is not there, the endpoint is unsupported, or DownloadPulse may not
+# reach it. Otherwise only a route failure its emitter declared terminal
+# (non-retryable or permanent): an ordinary transient failure -- a timeout, a
+# DNS or connection failure retried with backoff -- is never a dead route,
+# however many retries it exhausted. Never a credential or identity question
+# (operator-actionable), a local, provider-account or internal fault, or a
+# fact about the object's identity.
+_INTRINSICALLY_DEAD_CATEGORIES = frozenset({
+    Category.SOURCE_NOT_FOUND, Category.RESOURCE_NOT_FOUND, Category.DESTINATION_BLOCKED,
+    Category.UNSUPPORTED_REQUEST,
+})
+_ROUTE_FAILURE_CATEGORIES = frozenset({
+    Category.SOURCE_UNAVAILABLE, Category.CONNECTION_REFUSED, Category.CONNECTION_FAILED,
+    Category.CONNECTION_TIMEOUT, Category.DNS_FAILURE, Category.PROTOCOL_ERROR,
+})
+
+
+def dead_source(error: NormalizedError | None) -> bool:
+    """A request whose resolution failed because its route is dead: an
+    intrinsically dead route, or a route failure declared terminal. Such a
+    source may still be associated with the canonical artifact its submission
+    cohort proved, as a failed, non-executable contribution
+    (``transfers.canonical``); this says nothing more."""
+    if error is None:
+        return False
+    if error.category in _INTRINSICALLY_DEAD_CATEGORIES:
+        return True
+    return error.category in _ROUTE_FAILURE_CATEGORIES and (
+        error.retryability == Retryability.NEVER or error.permanence == Permanence.PERMANENT)
+
+
+def interpretation_absent(error: NormalizedError) -> bool:
+    """The server positively established that one interpretation of a source
+    does not provide it: the server itself reported the resource absent, or
+    the endpoint actively refused (nothing serves that port).
+
+    Only this lets core try a provider's alternate interpretation of the same
+    request. Authentication, authorization, capacity, timeouts and every other
+    network failure say nothing about which interpretation is meant: they stay
+    with the interpretation that produced them."""
+    return ((error.domain == Domain.RESOLUTION and error.category == Category.SOURCE_NOT_FOUND)
+            or (error.domain == Domain.NETWORK and error.category == Category.CONNECTION_REFUSED))
+
+
+def alternate_interpretation_progresses(error: NormalizedError) -> bool:
+    """One reading of an ambiguous request did not reach its resource, so core
+    may advance to the alternate reading its provider named: the reading was
+    positively absent (``interpretation_absent``), or its endpoint never
+    answered within the bounded Connection Timeout.
+
+    Progression through ambiguous input only -- never equivalence and never
+    resource truth: a timeout is still not absence, and everywhere else it
+    keeps its ordinary transient meaning. An unambiguous request (one naming
+    its own port or scheme) has no alternate, so nothing here applies to it.
+    Authentication, authorization, capacity, policy denial and every other
+    failure stay with the reading that produced them."""
+    return interpretation_absent(error) or (
+        error.domain == Domain.NETWORK and error.category == Category.CONNECTION_TIMEOUT)
+
+# Facts about the request, its source or its content, whoever reported them: a
+# malformed or invalid input, content proven invalid, or a source that is gone,
+# unavailable or expired is the same through every provider.
+_REQUEST_GLOBAL_CATEGORIES = frozenset({
+    Category.INVALID_REQUEST, Category.CONTENT_INVALID, Category.SOURCE_NOT_FOUND, Category.SOURCE_UNAVAILABLE,
+    Category.SOURCE_TEMPORARILY_UNAVAILABLE, Category.SOURCE_EXPIRED,
+})
+# Who the emitter says a failure is about, when that is not the provider.
+_REQUEST_GLOBAL_ORIGINS = frozenset({Origin.USER, Origin.REMOTE_SOURCE, Origin.SECURITY_POLICY, Origin.LOCAL_SYSTEM})
+
+
+def provider_attributable(error: NormalizedError) -> bool:
+    """A failure of the provider ITSELF -- its service, account, credential,
+    capability or protocol, or the network path to it -- never of the request,
+    its source or its content.
+
+    Only such a failure can exhaust one provider while another may still
+    satisfy the same request. Source facts, request facts, security and
+    integrity verdicts, local and lifecycle faults are the request's own: no
+    other provider changes them. Read from the emitter's own normalized facts
+    -- domain, category and origin -- never from a message: a provider-domain
+    failure the emitter attributed to the source, the user or a policy is the
+    request's, and a network failure counts only when attributed to the
+    provider."""
+    if error.category in _REQUEST_GLOBAL_CATEGORIES or error.origin in _REQUEST_GLOBAL_ORIGINS:
+        return False
+    return error.domain == Domain.PROVIDER or (error.domain == Domain.NETWORK and error.origin == Origin.PROVIDER)
+
+
+def continuity_disqualifying(error: NormalizedError) -> bool:
+    """A root route's CONCLUSIVE continuity refusal: core proved, from durable
+    evidence a retry would read unchanged, that this route's resource cannot
+    carry the root's established selection
+    (``TransferRepository.commit_selected_manifest``). It is no failure of the
+    provider -- never provider-attributable, never its health or its transient
+    budget -- yet retrying the same route cannot succeed, so the route is
+    disqualified like an exhausted one and the request continues through the
+    rest of its competition. Recognized by its exact normalized facts only."""
+    return (error.domain == Domain.LIFECYCLE and error.category == Category.RESOURCE_STATE_CONFLICT
+            and error.stage == Stage.RECONCILIATION and error.origin == Origin.CORE
+            and error.permanence == Permanence.PERMANENT and error.retryability == Retryability.NEVER)
+
+
+MEANINGFUL_PROGRESS_FLOOR_BYTES = 64 * 1024
+MEANINGFUL_PROGRESS_CEILING_BYTES = 1024 * 1024
+MEANINGFUL_PROGRESS_DIVISOR = 100
+
+
+def meaningful_progress_threshold(expected_bytes: int | None) -> int:
+    """Deterministic byte threshold; known small files can still reach it."""
+    value = int(expected_bytes or 0)
+    if value <= 0:
+        return MEANINGFUL_PROGRESS_CEILING_BYTES
+    one_percent = max(1, (value + MEANINGFUL_PROGRESS_DIVISOR - 1) // MEANINGFUL_PROGRESS_DIVISOR)
+    bounded = min(MEANINGFUL_PROGRESS_CEILING_BYTES,
+                  max(MEANINGFUL_PROGRESS_FLOOR_BYTES, one_percent))
+    return min(value, bounded)
+
+
+def failure_signature(error: NormalizedError) -> str:
+    """Stable signature built only from canonical normalized facts."""
+    return "|".join((error.stage.value, error.domain.value, error.category.value, error.retryability.value))
+
+
+def transition_allowed(current: TransferState, target: TransferState, *, operator=False, verified=False) -> bool:
+    if current == target:
+        return True
+    if current == TransferState.DELETED:
+        return operator and target == TransferState.ACCEPTED
+    if current == TransferState.CONSOLIDATED:
+        # DP 1.0.12 consolidation corrective, Round 3. CONSOLIDATED was the
+        # only terminal state with no operator escape hatch, which predates
+        # Remediation 4: a transfer may now settle CONSOLIDATED while holding
+        # a terminal UNVERIFIED association -- identity that is deliberately
+        # unproven, not delivered material. Remediation 4 always promised that
+        # an EXPLICIT operator reconsideration of such an association could
+        # still run ordinary equivalence proof (only AUTOMATIC/background
+        # reconsideration was deferred), and that is impossible while every
+        # path out of this state is closed. This grants exactly the hatch
+        # COMPLETED and CANCELLED already have -- ``operator=True`` only, so
+        # nothing autonomous can take it -- and its sole caller
+        # (``convergence_engine.TransferEngine.retry``) additionally requires
+        # a durable terminal UNVERIFIED association to exist. Settled
+        # transfers are therefore not broadly reopened: an ordinary
+        # consolidated transfer has no such association and is refused before
+        # any transition is attempted.
+        return target == TransferState.DELETED or (
+            operator and target in {TransferState.ACCEPTED, TransferState.QUEUED})
+    if current == TransferState.COMPLETED:
+        return target == TransferState.DELETED or (operator and target in {TransferState.ACCEPTED, TransferState.QUEUED})
+    if current == TransferState.CANCELLED:
+        return target == TransferState.DELETED or (operator and target in {TransferState.ACCEPTED, TransferState.QUEUED})
+    if target == TransferState.DELETED:
+        return True
+    if current == TransferState.FAILED:
+        return operator or (verified and target in {TransferState.COMPLETED, TransferState.POST_PROCESSING}) or target in {TransferState.RESOLVING, TransferState.QUEUED, TransferState.PAUSED}
+    return target in set(TransferState) - {TransferState.ACCEPTED, TransferState.CONSOLIDATED}
+
+
+def recovery_action(error: NormalizedError) -> Recovery:
+    """The recovery action implied by an error's canonical facts.
+
+    A pure function of ``domain``, ``category``, ``stage``, ``retryability`` and
+    ``permanence``. It deliberately never consults ``error.recovery`` or
+    ``error.operator_action_required``: those are the output projection of this
+    function, so an emitter-supplied value can neither select nor veto a decision.
+    """
+    if error.domain == Domain.SECURITY:
+        return Recovery.FAIL
+    if (error.domain == Domain.INTEGRITY or error.permanence == Permanence.PERMANENT
+            or error.category in _PERMANENT_CATEGORIES):
+        return Recovery.FAIL
+    if error.retryability == Retryability.UNKNOWN:
+        return Recovery.NONE
+    if error.category in {Category.EXECUTOR_UNAVAILABLE, Category.RECONCILIATION_FAILED}:
+        return Recovery.RECONCILE
+    if error.stage == Stage.EXECUTION:
+        if error.category in _EXECUTION_ALTERNATE_CATEGORIES:
+            return Recovery.TRY_ALTERNATE_CANDIDATE
+        if error.category in _EXECUTION_RECONCILE_CATEGORIES:
+            return Recovery.RECONCILE
+        if error.domain == Domain.LIFECYCLE and error.category == Category.LOCAL_PATH_CONFLICT:
+            return Recovery.RECONCILE
+        if error.category == Category.INVALID_CONFIGURATION:
+            return Recovery.REQUIRE_OPERATOR
+    if error.retryability == Retryability.NEVER:
+        return Recovery.FAIL
+    if error.retryability == Retryability.IMMEDIATE:
+        return Recovery.RETRY
+    if error.retryability == Retryability.BACKOFF:
+        return Recovery.BACKOFF
+    if error.retryability == Retryability.AFTER_REAUTH:
+        return Recovery.REAUTHENTICATE
+    if error.retryability == Retryability.AFTER_RERESOLUTION:
+        return Recovery.RERESOLVE
+    if error.retryability == Retryability.AFTER_RESOURCE_CHANGE:
+        return Recovery.REQUIRE_OPERATOR
+    return Recovery.NONE
+
+
+def compatibility_error(error: NormalizedError) -> NormalizedError:
+    """Stamp the derived projection onto the error for serialization only."""
+    action = recovery_action(error)
+    operator = action in {Recovery.REQUIRE_OPERATOR, Recovery.REAUTHENTICATE} or error.domain == Domain.SECURITY
+    return replace(error, recovery=action, operator_action_required=operator)
+
+
+class RecoveryAction(StrEnum):
+    RECONCILE = "reconcile"
+    RETRY_SAME_CANDIDATE = "retry_same_candidate"
+    BACKOFF = "backoff"
+    REFRESH_CANDIDATE = "refresh_candidate"
+    TRY_ALTERNATE_CANDIDATE = "try_alternate_candidate"
+    WAIT_FOR_RESOURCE = "wait_for_resource"
+    WAIT_FOR_PROVIDER = "wait_for_provider"
+    WAIT_FOR_OPERATOR = "wait_for_operator"
+    FAIL_PERMANENTLY = "fail_permanently"
+
+
+@dataclass(frozen=True)
+class RecoveryContext:
+    execution_attempts: int = 0
+    consecutive_no_progress_failures: int = 0
+    failures_since_meaningful_progress: int = 0
+    same_signature_failures: int = 0
+    candidate_refreshes: int = 0
+    candidate_switches: int = 0
+    recovery_epoch: int = 0
+    can_refresh: bool = False
+    has_alternate: bool = False
+    provider_ready: bool = True
+    executor_ready: bool = True
+    storage_ready: bool = True
+    input_required: bool = False
+    # Bytes the executor itself reported for the failed attempt. ``None`` means
+    # no authoritative observation exists; unknown progress is never zero.
+    observed_completed_bytes: int | None = None
+    # When the selected source's provider quota hold lets it be asked again
+    # (``TransferRepository.quota_hold_until``); ``None`` while no hold applies.
+    quota_held_until: float | None = None
+
+
+@dataclass(frozen=True)
+class RecoveryDecision:
+    action: RecoveryAction
+    reason: str
+    retry_at: float | None = None
+    quiescence_reason: str | None = None
+    wake_condition: str | None = None
+
+    @property
+    def automatic(self) -> bool:
+        return self.action not in {RecoveryAction.WAIT_FOR_OPERATOR, RecoveryAction.FAIL_PERMANENTLY}
+
+
+@dataclass(frozen=True)
+class RetryDecision:
+    action: Recovery = Recovery.REQUIRE_OPERATOR
+    retry_at: float | None = None
+
+    @property
+    def automatic(self) -> bool:
+        return self.retry_at is not None
+
+
+@dataclass(frozen=True)
+class TransferPolicy:
+    max_attempts: int = 3
+    retry_delay: float = 5.0
+    max_retry_delay: float = 300.0
+    max_active_executions: int = 5
+    resolution_concurrency: int = 3
+    adoption_stability_seconds: float = 3.25
+    cleanup_after_completion: bool = False
+    resource_poll_interval: float = 30.0
+    resolution_max_attempts: int | None = None
+    resolution_retry_delay: float | None = None
+    stalled_after_seconds: float = 0
+    local_resource_failure_handler: Callable[[NormalizedError], bool] | None = None
+    same_candidate_no_progress_limit: int = 2
+    refreshes_per_recovery_epoch: int = 1
+    # A provider quota hold (a typed quota-scope refusal): how long its scope
+    # is avoided before ONE dispatch of pending work may ask again, and how
+    # long that one probe holds the scope's turn. DownloadPulse's own interval,
+    # never a provider's reset time.
+    quota_requalify_seconds: float = 300.0
+    quota_probe_lease_seconds: float = 120.0
+    # DownloadPulse-owned material continuation: how often a running writer's
+    # reported material is made durable and committed, and how long a writer
+    # being replaced may quiesce before it is force-fenced.
+    material_checkpoint_interval: float = 5.0
+    graceful_stop_timeout: float = 10.0
+    # Explicit operator-submitted private-LAN destinations (admission policy;
+    # the connection boundary enforces the same setting independently).
+    private_lan_connections: bool = False
+    skip_private_lan_confirmation: bool = False
+
+    @staticmethod
+    def compatibility(error: NormalizedError) -> NormalizedError:
+        return compatibility_error(error)
+
+    def retry_resolution(self, error, attempts, now):
+        """The request-resolution retry decision, and THE provider-exhaustion
+        decision.
+
+        The bound provider's own retry budget always comes first. Once it is
+        spent -- or the error says this provider cannot continue without an
+        operator -- a provider-attributable failure (``provider_attributable``)
+        has exhausted that provider: ``TRY_ALTERNATE_PROVIDER``, with no retry
+        of it. A conclusive continuity refusal (``continuity_disqualifying``)
+        ends that route the same way without being the provider's failure. That is a fact about the provider alone; whether another
+        provider can take the request over is routing's question, never part
+        of this one. Anything else stays the request's own failure."""
+        policy = replace(self,
+            max_attempts=self.max_attempts if self.resolution_max_attempts is None else self.resolution_max_attempts,
+            retry_delay=self.retry_delay if self.resolution_retry_delay is None else self.resolution_retry_delay)
+        decision = policy.retry(error, attempts, now, can_refresh=True)
+        if decision.retry_at is None and (provider_attributable(error) or continuity_disqualifying(error)):
+            return RetryDecision(Recovery.TRY_ALTERNATE_PROVIDER)
+        return decision
+
+    def _delay(self, error: NormalizedError, failures: int) -> float:
+        delay = 0.0 if error.retryability == Retryability.IMMEDIATE else min(
+            self.max_retry_delay, self.retry_delay * 2 ** max(0, int(failures) - 1))
+        if error.retry_after_seconds is not None:
+            delay = max(delay, float(error.retry_after_seconds))
+        return max(0.0, delay)
+
+    @staticmethod
+    def _zero_progress_without_mandatory_wait(error: NormalizedError, context: RecoveryContext) -> bool:
+        """An execution attempt the executor itself reported at exactly zero
+        completed bytes, with no fact that requires waiting instead.
+
+        The boundary is the exact observed zero: unknown progress (``None``)
+        and any positive byte count keep the existing recovery. Security,
+        integrity, permanent, nonretryable, input, provider and executor
+        readiness facts have already decided before ``recover`` asks this.
+        """
+        return (
+            error.stage == Stage.EXECUTION
+            and context.observed_completed_bytes == 0
+            and context.storage_ready
+            and error.domain != Domain.LOCAL_RESOURCE
+            and error.category not in _MANDATORY_WAIT_CATEGORIES
+            and error.retryability not in _MANDATORY_WAIT_RETRYABILITY
+            and error.retry_after_seconds is None
+            and recovery_action(error) not in {
+                Recovery.FAIL, Recovery.BACKOFF, Recovery.REAUTHENTICATE,
+                Recovery.REQUIRE_OPERATOR, Recovery.RECONCILE,
+            }
+        )
+
+    def recover(self, error: NormalizedError, context: RecoveryContext, now: float) -> RecoveryDecision:
+        """Choose from normalized evidence, durable accounting and readiness."""
+        if error.domain == Domain.SECURITY:
+            return RecoveryDecision(RecoveryAction.FAIL_PERMANENTLY, "security_failure")
+        if error.domain == Domain.INTEGRITY:
+            # Material the canonical verifier rejected indicts the route that
+            # produced it, not the logical artifact: an existing verified
+            # alternate is activated first; with none left the failure is
+            # terminal. Every other integrity failure stays terminal.
+            if error.stage == Stage.VERIFICATION and context.has_alternate:
+                return RecoveryDecision(RecoveryAction.TRY_ALTERNATE_CANDIDATE, "integrity_alternate", retry_at=now)
+            return RecoveryDecision(RecoveryAction.FAIL_PERMANENTLY, "integrity_failure")
+        # A route failure during execution (the exact source is gone, refused
+        # or unreachable) is scoped to that candidate's route, like expiry: it
+        # says nothing about the logical artifact, so a verified alternate is
+        # tried first however permanent the route's own failure is. Security
+        # and integrity failures were decided above; a logical-artifact
+        # failure (``_PERMANENT_CATEGORIES``) and every other permanent or
+        # non-retryable failure stay terminal below, as does this one when no
+        # alternate exists.
+        if (error.stage == Stage.EXECUTION and error.category in _EXECUTION_ALTERNATE_CATEGORIES
+                and error.category not in _PERMANENT_CATEGORIES and context.has_alternate
+                and (error.permanence == Permanence.PERMANENT or error.retryability == Retryability.NEVER)):
+            return RecoveryDecision(RecoveryAction.TRY_ALTERNATE_CANDIDATE, "permanent_source_alternate", retry_at=now)
+        # Expiry permanence is scoped to the current candidate/source/resource;
+        # the logical transfer may still refresh or select an alternate below.
+        if ((error.permanence == Permanence.PERMANENT and error.category not in _EXPIRY_CATEGORIES)
+                or error.category in _PERMANENT_CATEGORIES):
+            return RecoveryDecision(RecoveryAction.FAIL_PERMANENTLY, "permanent_failure")
+        if error.retryability == Retryability.NEVER:
+            return RecoveryDecision(RecoveryAction.FAIL_PERMANENTLY, "nonretryable_failure")
+        if (error.domain == Domain.LOCAL_RESOURCE
+                and self.local_resource_failure_handler is not None
+                and self.local_resource_failure_handler(error)):
+            context = replace(context, storage_ready=False)
+        if context.input_required:
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_OPERATOR, "input_required",
+                quiescence_reason="input_required", wake_condition="operator_input",
+            )
+        if error.domain == Domain.LOCAL_RESOURCE and not context.storage_ready:
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_RESOURCE, "storage_unavailable",
+                quiescence_reason="storage_unavailable",
+                wake_condition=f"storage_healthy:{error.domain.value}",
+            )
+        if not context.provider_ready:
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_PROVIDER, "provider_unavailable",
+                quiescence_reason="provider_disabled", wake_condition="provider_enabled",
+            )
+        if not context.executor_ready:
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_RESOURCE, "executor_unavailable",
+                quiescence_reason="executor_unavailable", wake_condition="executor_available",
+            )
+        if context.quota_held_until is not None:
+            # The selected source's provider scope is under a quota hold:
+            # another source outside it goes on now; with none, the file waits
+            # for the hold's own requalification, never for an operator.
+            if context.has_alternate:
+                return RecoveryDecision(RecoveryAction.TRY_ALTERNATE_CANDIDATE, "quota_hold_alternate", retry_at=now)
+            until = max(float(context.quota_held_until), now)
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_PROVIDER, "provider_quota_hold", retry_at=until,
+                quiescence_reason="provider_quota", wake_condition=f"quota_requalify:{until}",
+            )
+
+        can_refresh = context.can_refresh and context.candidate_refreshes < max(1, self.refreshes_per_recovery_epoch)
+        if error.category in _EXPIRY_CATEGORIES:
+            if can_refresh:
+                return RecoveryDecision(
+                    RecoveryAction.REFRESH_CANDIDATE, "candidate_expired_refresh", retry_at=now,
+                )
+            if context.has_alternate:
+                return RecoveryDecision(
+                    RecoveryAction.TRY_ALTERNATE_CANDIDATE, "candidate_expired_alternate", retry_at=now,
+                )
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_OPERATOR, "candidate_expired_exhausted",
+                quiescence_reason="recovery_exhausted", wake_condition="operator_retry",
+            )
+
+        no_progress = max(context.consecutive_no_progress_failures, context.same_signature_failures)
+        if remote_source_capacity(error):
+            if no_progress >= max(1, self.same_candidate_no_progress_limit) and context.has_alternate:
+                return RecoveryDecision(
+                    RecoveryAction.TRY_ALTERNATE_CANDIDATE, "remote_capacity_alternate", retry_at=now,
+                )
+            retry_at = now + self._delay(error, min(max(1, no_progress), _CAPACITY_BACKOFF_STEPS))
+            return RecoveryDecision(
+                RecoveryAction.BACKOFF, "remote_capacity_wait", retry_at=retry_at,
+                quiescence_reason="retry_backoff", wake_condition=f"retry_at:{retry_at}",
+            )
+        if error.category in _RECONCILE_CATEGORIES:
+            if no_progress < max(1, self.same_candidate_no_progress_limit):
+                retry_at = now + self._delay(error, max(1, no_progress))
+                return RecoveryDecision(
+                    RecoveryAction.RECONCILE, "reconciliation_backoff",
+                    retry_at=retry_at, quiescence_reason="retry_backoff",
+                    wake_condition=f"retry_at:{retry_at}",
+                )
+            if error.category == Category.TRANSFER_INTERRUPTED and context.has_alternate:
+                return RecoveryDecision(
+                    RecoveryAction.TRY_ALTERNATE_CANDIDATE,
+                    "reconciliation_exhausted_alternate", retry_at=now,
+                )
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_OPERATOR, "reconciliation_exhausted",
+                quiescence_reason="recovery_exhausted", wake_condition="operator_retry",
+            )
+
+        if no_progress < max(1, self.same_candidate_no_progress_limit):
+            # Nothing was transferred and the same logical candidate can be
+            # refreshed right now within budget: do that instead of sleeping
+            # through a timed retry of the endpoint that just failed.
+            if can_refresh and self._zero_progress_without_mandatory_wait(error, context):
+                return RecoveryDecision(
+                    RecoveryAction.REFRESH_CANDIDATE, "zero_progress_refresh", retry_at=now,
+                )
+            if error.category == Category.RATE_LIMITED:
+                action = RecoveryAction.BACKOFF
+                reason = "rate_limited_backoff"
+            elif error.retryability == Retryability.BACKOFF:
+                action = RecoveryAction.BACKOFF
+                reason = "transient_backoff"
+            else:
+                action = RecoveryAction.RETRY_SAME_CANDIDATE
+                reason = "bounded_same_candidate_retry"
+            retry_at = now + self._delay(error, max(1, no_progress))
+            return RecoveryDecision(
+                action, reason, retry_at=retry_at,
+                quiescence_reason="retry_backoff" if retry_at > now else None,
+                wake_condition=f"retry_at:{retry_at}" if retry_at > now else None,
+            )
+
+        if can_refresh and (error.retryability in {Retryability.UNKNOWN, Retryability.BACKOFF,
+                                                   Retryability.AFTER_RERESOLUTION}
+                            or error.category in _TRANSIENT_CATEGORIES):
+            return RecoveryDecision(
+                RecoveryAction.REFRESH_CANDIDATE, "no_progress_refresh", retry_at=now,
+            )
+        if context.has_alternate:
+            return RecoveryDecision(
+                RecoveryAction.TRY_ALTERNATE_CANDIDATE, "no_progress_alternate", retry_at=now,
+            )
+        if error.retryability == Retryability.AFTER_RESOURCE_CHANGE:
+            if error.domain == Domain.LOCAL_RESOURCE:
+                return RecoveryDecision(
+                    RecoveryAction.WAIT_FOR_RESOURCE, "resource_change_required",
+                    quiescence_reason="storage_unavailable",
+                    wake_condition=f"storage_healthy:{error.domain.value}",
+                )
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_OPERATOR, "resource_change_operator",
+                quiescence_reason="recovery_exhausted", wake_condition="operator_retry",
+            )
+        return RecoveryDecision(
+            RecoveryAction.WAIT_FOR_OPERATOR, "recovery_budget_exhausted",
+            quiescence_reason="recovery_exhausted", wake_condition="operator_retry",
+        )
+
+    def retry(self, error: NormalizedError, attempts: int, now: float, *, can_refresh=False, has_alternate=False) -> RetryDecision:
+        """Compatibility retry path for request-resolution callers."""
+        action = recovery_action(error)
+        if (error.domain == Domain.LOCAL_RESOURCE and self.local_resource_failure_handler is not None
+                and self.local_resource_failure_handler(error)):
+            return RetryDecision(Recovery.RETRY, now)
+        if (error.domain in {Domain.SECURITY, Domain.INTEGRITY}
+                or error.permanence == Permanence.PERMANENT
+                or error.category in _PERMANENT_CATEGORIES
+                or error.retryability == Retryability.NEVER):
+            return RetryDecision()
+        if error.stage == Stage.CLEANUP and error.retryability == Retryability.UNKNOWN:
+            return RetryDecision()
+        if remote_source_capacity(error):
+            if attempts >= max(1, self.max_attempts) and has_alternate:
+                return RetryDecision(Recovery.TRY_ALTERNATE_CANDIDATE, now)
+            return RetryDecision(Recovery.RETRY, now + self._delay(error, min(max(1, attempts),
+                                                                             _CAPACITY_BACKOFF_STEPS)))
+        if error.retryability == Retryability.UNKNOWN:
+            if attempts >= max(1, self.max_attempts):
+                if has_alternate:
+                    return RetryDecision(Recovery.TRY_ALTERNATE_CANDIDATE, now)
+                return RetryDecision()
+            return RetryDecision(Recovery.RETRY, now + self._delay(error, max(1, attempts)))
+        if action in {Recovery.REQUIRE_OPERATOR, Recovery.FAIL}:
+            return RetryDecision()
+        if attempts >= max(1, self.max_attempts):
+            if (has_alternate and action in {Recovery.RETRY, Recovery.BACKOFF,
+                                             Recovery.RERESOLVE, Recovery.TRY_ALTERNATE_CANDIDATE}):
+                return RetryDecision(Recovery.TRY_ALTERNATE_CANDIDATE, now)
+            return RetryDecision()
+        if error.retryability in {Retryability.AFTER_REAUTH, Retryability.AFTER_RESOURCE_CHANGE}:
+            return RetryDecision(action)
+        if action == Recovery.TRY_ALTERNATE_CANDIDATE and has_alternate:
+            return RetryDecision(Recovery.TRY_ALTERNATE_CANDIDATE, now)
+        if action == Recovery.RECONCILE:
+            return RetryDecision(Recovery.RECONCILE, now + self.retry_delay)
+        if error.retryability == Retryability.AFTER_RERESOLUTION or action == Recovery.RERESOLVE:
+            return RetryDecision(Recovery.RERESOLVE, now + self.retry_delay) if can_refresh else RetryDecision()
+        if error.retryability in {Retryability.IMMEDIATE, Retryability.BACKOFF}:
+            return RetryDecision(Recovery.RETRY, now + self._delay(error, max(1, attempts)))
+        return RetryDecision()

@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import ipaddress
+import os
+from urllib.parse import urlparse, urlsplit
+
+
+MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+PUBLIC_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/version",
+        "/api/avatar",
+        "/api/auth/status",
+        # Starting and polling a browser pairing (``api.browser_routes``): no
+        # credential exists yet; the poll's secret device code is the proof.
+        "/api/browser/v1/pairings",
+        "/api/browser/v1/pairings/poll",
+        "/login",
+        "/auth/oidc/start",
+        "/auth/oidc/callback",
+        # The browser's installed-app metadata and its icons: fixed static
+        # bytes, the same for every visitor, fetched without credentials.
+        "/manifest.webmanifest",
+        "/favicon-192.png",
+        "/favicon.png",
+        # Safari's home-screen and Dock icon: it ignores the manifest's icons
+        # and fetches this one itself, without credentials.
+        "/apple-touch-icon.png",
+    }
+)
+
+
+def is_public_path(path: str) -> bool:
+    return str(path or "") in PUBLIC_PATHS
+
+
+def password_auth_enabled(settings) -> bool:
+    return bool(getattr(settings, "auth_password_enabled", False))
+
+
+def oidc_auth_enabled(settings) -> bool:
+    return bool(getattr(settings, "auth_oidc_enabled", False))
+
+
+def interactive_auth_enabled(settings) -> bool:
+    return password_auth_enabled(settings) or oidc_auth_enabled(settings)
+
+
+def standalone_deployment(settings) -> bool:
+    """Whether the installation's deployment type is Standalone: the built-in
+    default Admin is its one person (``core.config.AppSettings.deployment_type``).
+    Not open mode, which either deployment type is until authentication is on."""
+    return getattr(settings, "deployment_type", "server") == "standalone"
+
+
+def standalone_open(settings) -> bool:
+    """Standalone with no interactive authentication: the default Admin's open
+    principal, which alone may establish the first password (and with it
+    Username & Password authentication)."""
+    return standalone_deployment(settings) and not interactive_auth_enabled(settings)
+
+
+def safe_return_path(value: str, *, default: str = "/") -> str:
+    """Accept only a local absolute-path reference; never create an open redirect."""
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 2048:
+        return default
+    # Reject every network-path reference before URL parsing. Python's urlsplit
+    # normalizes some 3+ slash inputs in ways browsers subsequently reinterpret.
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return default
+    if any(ch in candidate for ch in ("\\", "\r", "\n", "\x00")):
+        return default
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return default
+    if parsed.scheme or parsed.netloc:
+        return default
+    if not parsed.path.startswith("/") or parsed.path.startswith("//"):
+        return default
+    if parsed.path in {"/login", "/auth/oidc/start", "/auth/oidc/callback"}:
+        return default
+    return candidate
+
+
+def normalized_origin(value: str) -> tuple[str, str, int] | None:
+    """Return a canonical HTTP(S) origin tuple or ``None`` when malformed.
+
+    Scheme is part of the browser origin. Treating ``http://host`` and
+    ``https://host`` as equivalent would weaken the cross-site mutation boundary
+    on deployments that expose both transports or have an HTTP downgrade path.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.casefold()
+        if scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return scheme, parsed.hostname.casefold(), int(port)
+
+
+def normalized_host_authority(value: str) -> tuple[str, int | None] | None:
+    """Parse an HTTP Host authority without letting it define a trusted scheme."""
+    raw = str(value or "").strip()
+    if not raw or any(ch.isspace() for ch in raw) or any(ch in raw for ch in "/\\?#"):
+        return None
+    try:
+        parsed = urlsplit(f"//{raw}")
+        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path or parsed.query or parsed.fragment:
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is not None and not (1 <= int(port) <= 65535):
+        return None
+    return parsed.hostname.casefold(), int(port) if port is not None else None
+
+
+def authority_matches_origin(
+    authority: tuple[str, int | None] | None,
+    origin: tuple[str, str, int] | None,
+) -> bool:
+    """Compare Host authority to a configured origin with deliberate default ports."""
+    if authority is None or origin is None:
+        return False
+    host, explicit_port = authority
+    scheme, origin_host, origin_port = origin
+    port = explicit_port if explicit_port is not None else (443 if scheme == "https" else 80)
+    return host == origin_host and int(port) == int(origin_port)
+
+
+def configured_public_base_url(settings=None) -> str:
+    """Return the operator-owned externally advertised base URL, if configured."""
+    configured = (os.getenv("PUBLIC_BASE_URL", "") or "").strip()
+    if configured:
+        return configured
+    if settings is None:
+        try:
+            from core.config import get_settings
+
+            settings = get_settings()
+        except Exception:  # noqa: BLE001 - authority resolution must fail closed
+            return ""
+    return str(getattr(settings, "public_base_url", "") or "").strip()
+
+
+def configured_public_origin(settings=None) -> tuple[str, str, int] | None:
+    """Return the valid HTTPS public application origin or ``None``.
+
+    ``public_base_url`` already owns the externally advertised application
+    authority for OIDC and secure-cookie behavior. Reuse it rather than deriving
+    browser trust from client-selected Host values.
+    """
+    identity = normalized_origin(configured_public_base_url(settings))
+    if identity is None or identity[0] != "https":
+        return None
+    return identity
+
+
+def _direct_request_origin(request, authority: tuple[str, int | None]) -> tuple[str, str, int] | None:
+    scheme = str(getattr(request.url, "scheme", "") or "").casefold()
+    if scheme not in {"http", "https"}:
+        return None
+    host, explicit_port = authority
+    port = explicit_port if explicit_port is not None else (443 if scheme == "https" else 80)
+    return scheme, host, int(port)
+
+
+# Special-use names no public DNS delegates, so no remote site can serve a page
+# from one -- the precondition of DNS rebinding: mDNS (RFC 6762), the home
+# network domain (RFC 8375), the private-use ``internal`` TLD and loopback
+# names (RFC 6761). Only something already on the LAN can answer for them.
+_LOCAL_ONLY_NAME_SUFFIXES = (".local", ".home.arpa", ".internal", ".localhost")
+
+
+def _is_direct_host(host: str) -> bool:
+    """A Host naming this installation directly: ``localhost``, a literal IP,
+    or a name under a local-only special-use suffix. A single-label name or any
+    other DNS name is not one, however it resolves."""
+    host = str(host or "").casefold()
+    if host == "localhost" or any(
+        host.endswith(suffix) and len(host) > len(suffix) for suffix in _LOCAL_ONLY_NAME_SUFFIXES
+    ):
+        return True
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def trusted_request_origin(request, settings=None) -> tuple[str, str, int] | None:
+    """Resolve browser-visible request origin only from intentional authorities.
+
+    A configured public base URL is the canonical reverse-proxy authority.
+    Direct access deliberately permits localhost, literal IP authorities, names
+    under the local-only special-use suffixes, and an authority that exactly
+    matches ASGI's transport-owned ``scope['server']``. Any other DNS Host value
+    is never promoted to trust merely because Origin repeats the same value, and
+    no forwarded header is consulted.
+    """
+    authority = normalized_host_authority(str(request.headers.get("Host", "") or ""))
+    if authority is None:
+        return None
+
+    public_origin = configured_public_origin(settings)
+    if authority_matches_origin(authority, public_origin):
+        return public_origin
+
+    direct_origin = _direct_request_origin(request, authority)
+    if direct_origin is None:
+        return None
+    _scheme, host, port = direct_origin
+    if _is_direct_host(host):
+        return direct_origin
+
+    server = request.scope.get("server") if hasattr(request, "scope") else None
+    if isinstance(server, (tuple, list)) and len(server) >= 2:
+        server_host = str(server[0] or "").strip().casefold()
+        try:
+            server_port = int(server[1])
+        except (TypeError, ValueError):
+            server_port = -1
+        if host == server_host and port == server_port:
+            return direct_origin
+    return None
+
+
+AUTH_CONFIG_PATH = "/api/auth/config"
+
+
+def public_base_url_bootstrap_origin(request, settings=None) -> tuple[str, str, int] | None:
+    """The origin this request may establish as the application's authority.
+
+    A reverse-proxy deployment starts with no trusted authority: no
+    ``PUBLIC_BASE_URL``, no persisted value, and a Host that is neither literal
+    nor the transport's own. Every browser mutation is therefore refused --
+    including the one that would establish the authority. That is a deadlock,
+    and this is the single, one-purpose way out of it.
+
+    It returns an origin only when ALL of the following hold:
+
+    * no canonical authority exists yet, from either source, so nothing is
+      being overridden;
+    * the request is not already trusted by ordinary means, so a local operator
+      keeps completely ordinary semantics;
+    * it is the canonical Authentication partial write, not another route;
+    * the browser did not arrive from another site;
+    * the Origin is a well-formed HTTPS origin equal to the Host actually used,
+      so the operator can only nominate the authority they are standing on.
+
+    Deciding this in one place is what lets the security boundary and the route
+    agree without passing state between them: the boundary uses it to decide
+    whether the request may be SEEN, and the route uses the very same answer to
+    decide what the request may DO. Nothing is carried across the middleware
+    chain, so nothing can be lost on the way.
+    """
+    if str(getattr(request, "method", "") or "").upper() != "PUT":
+        return None
+    if str(getattr(getattr(request, "url", None), "path", "") or "") != AUTH_CONFIG_PATH:
+        return None
+    if configured_public_origin(settings) is not None:
+        return None
+    if trusted_request_origin(request, settings=settings) is not None:
+        return None
+
+    fetch_site = str(request.headers.get("Sec-Fetch-Site", "") or "").strip().casefold()
+    if fetch_site == "cross-site":
+        return None
+
+    origin_identity = normalized_origin(str(request.headers.get("Origin", "") or "").strip())
+    if origin_identity is None or origin_identity[0] != "https":
+        return None
+    authority = normalized_host_authority(str(request.headers.get("Host", "") or ""))
+    if authority is None or not authority_matches_origin(authority, origin_identity):
+        return None
+    return origin_identity
+
+
+def normalized_origin_host(origin: str) -> str:
+    """Compatibility helper returning the case-folded origin authority."""
+    try:
+        return (urlparse(str(origin or "").strip()).netloc or "").casefold()
+    except ValueError:
+        return ""

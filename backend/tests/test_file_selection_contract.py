@@ -1,0 +1,537 @@
+"""Gate A — provider-neutral file-selection capability, identity and policy contracts.
+
+Covers the capability/contract matrix, neutral manifest/entry identity and
+normalization, early-manifest validation, the pure gate decision, executable
+manifest reconciliation, and the injectable-clock source rule. No wall clock and
+no real timing appear anywhere in this module or in the code it exercises.
+"""
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+from fake_integrations import MemoryExecutor, ParcelProvider
+from transfers import file_selection as fs
+from transfers.models import (
+    Capability, ExecutionRequest, FileManifest, FileManifestEntry, IntegrationDescriptor,
+    ProviderObservation, ProviderResource, ResourceState, SourceEntry, TransferCandidate,
+    TransferRequest,
+)
+from transfers.registry import IntegrationRegistry
+
+MODULE = Path(fs.__file__)
+
+
+# --------------------------------------------------------------------------- #
+# Capability / contract
+# --------------------------------------------------------------------------- #
+
+def test_file_manifest_provider_with_resource_lookup_registers():
+    registry = IntegrationRegistry()
+    registry.register_provider(ParcelProvider(file_manifest=True))
+    provider = next(iter(registry.providers.values()))
+    assert Capability.FILE_MANIFEST in provider.descriptor.capabilities
+
+
+def test_file_manifest_provider_without_observation_contract_is_rejected():
+    class ManifestOnly:
+        descriptor = IntegrationDescriptor(
+            "manifest-only", "Manifest only",
+            frozenset({Capability.RESOLVE, Capability.FILE_MANIFEST}),
+            request_types=frozenset({"parcel"}),
+        )
+        applicability = ParcelProvider().applicability
+
+        async def resolve(self, request):  # pragma: no cover - contract shape only
+            raise AssertionError
+
+    with pytest.raises(TypeError):
+        IntegrationRegistry().register_provider(ManifestOnly())
+
+
+def test_capability_is_neutral_and_independent_of_metadata():
+    # The existing executable/routable manifest contract is unchanged: a provider
+    # may declare METADATA without FILE_MANIFEST and vice versa.
+    plain = ParcelProvider()
+    assert Capability.METADATA in plain.descriptor.capabilities
+    assert Capability.FILE_MANIFEST not in plain.descriptor.capabilities
+
+
+def test_executor_contract_has_no_selection_vocabulary():
+    registry = IntegrationRegistry()
+    registry.register_executor(MemoryExecutor(lambda *a, **k: True))
+    for field in ExecutionRequest.__dataclass_fields__:
+        assert "select" not in field and "manifest" not in field
+    for field in TransferCandidate.__dataclass_fields__:
+        assert "select" not in field and "manifest" not in field
+
+
+def test_universal_policy_module_carries_no_native_vocabulary():
+    source = MODULE.read_text()
+    lowered = source.casefold()
+    for token in ("alldebrid", "realdebrid", "real-debrid", "aria2", "statuscode",
+                  "general_http", "magnet/files"):
+        assert token not in lowered
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert not (node.module or "").startswith(("providers.", "executors.", "postprocessors."))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            assert node.value not in {"alldebrid", "aria2", "statusCode", "MAGNET_INVALID_ID", "LINK_DOWN"}
+
+
+def test_policy_module_sources_no_wall_clock():
+    source = MODULE.read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not any(alias.name.split(".")[0] in {"time", "datetime"} for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert (node.module or "").split(".")[0] not in {"time", "datetime"}
+    for banned in ("time.time(", "time.monotonic(", "datetime.now(", "datetime.utcnow(", "utcnow"):
+        assert banned not in source
+
+
+# --------------------------------------------------------------------------- #
+# Manifest normalization + identity
+# --------------------------------------------------------------------------- #
+
+def canon(resource_id, *entries):
+    return fs.canonicalize_manifest(resource_id, FileManifest(tuple(
+        FileManifestEntry(name, path, size) for name, path, size in entries
+    )))
+
+
+def test_single_and_multi_file_manifests_canonicalize():
+    single = canon("res", ("only.bin", "only.bin", 10))
+    assert single.file_count == 1 and single.total_bytes == 10
+    multi = canon("res", ("a", "d/a", 1), ("b", "d/b", 2), ("c", "c", 0))
+    assert multi.file_count == 3
+    assert [e.relative_path for e in multi.entries] == ["c", "d/a", "d/b"]
+
+
+def test_unknown_size_is_permitted():
+    manifest = canon("res", ("a", "a", 0), ("b", "b", 5))
+    assert manifest.entries[0].expected_bytes == 0
+
+
+@pytest.mark.parametrize("path", ["/abs/x", "../escape", "a/../b", "", "   "])
+def test_unsafe_or_empty_paths_are_rejected(path):
+    with pytest.raises(fs.ManifestInvalid):
+        canon("res", ("x", path, 1))
+
+
+def test_duplicate_and_sanitized_collision_paths_are_rejected():
+    with pytest.raises(fs.ManifestInvalid):
+        canon("res", ("a", "dir/file", 1), ("b", "dir/file", 2))
+    with pytest.raises(fs.ManifestInvalid):
+        # Both sanitize to the same destination component.
+        canon("res", ("a", "na:me", 1), ("b", "na*me", 2))
+
+
+def test_negative_size_is_rejected():
+    with pytest.raises(fs.ManifestInvalid):
+        canon("res", ("a", "a", -1))
+
+
+def test_provider_reordering_alone_does_not_change_identity():
+    forward = canon("res", ("a", "s/a", 1), ("b", "s/b", 2), ("c", "s/c", 3))
+    reverse = canon("res", ("c", "s/c", 3), ("b", "s/b", 2), ("a", "s/a", 1))
+    assert forward.manifest_id == reverse.manifest_id
+    assert forward.manifest_digest == reverse.manifest_digest
+    assert forward.entry_ids() == reverse.entry_ids()
+
+
+def test_size_change_is_a_new_manifest_version_but_keeps_entry_path_identity():
+    before = canon("res", ("a", "s/a", 1), ("b", "s/b", 2))
+    after = canon("res", ("a", "s/a", 999), ("b", "s/b", 2))
+    assert before.manifest_id != after.manifest_id
+    entry_before = {e.relative_path: e.entry_id for e in before.entries}
+    entry_after = {e.relative_path: e.entry_id for e in after.entries}
+    assert entry_before == entry_after  # logical pathname identity is stable
+
+
+def test_entry_identity_is_path_derived_and_size_independent():
+    manifest = canon("res-x", ("a", "s/a", 7))
+    assert manifest.entries[0].entry_id == fs.entry_identity("res-x", "s/a")
+
+
+def test_different_resource_yields_different_identity():
+    assert canon("res-1", ("a", "a", 1)).manifest_id != canon("res-2", ("a", "a", 1)).manifest_id
+
+
+def test_empty_manifest_and_missing_resource_are_rejected():
+    with pytest.raises(fs.ManifestInvalid):
+        fs.canonicalize_manifest("res", FileManifest(()))
+    with pytest.raises(fs.ManifestInvalid):
+        fs.canonicalize_manifest("", FileManifest((FileManifestEntry("a", "a", 1),)))
+
+
+def test_bounded_entry_count():
+    huge = FileManifest(tuple(FileManifestEntry(f"f{i}", f"f{i}", 1) for i in range(fs.MAX_MANIFEST_ENTRIES + 1)))
+    with pytest.raises(fs.ManifestInvalid):
+        fs.canonicalize_manifest("res", huge)
+
+
+# --------------------------------------------------------------------------- #
+# Confirm-request validation
+# --------------------------------------------------------------------------- #
+
+def test_validate_selection_ids_orders_by_manifest_and_rejects_bad_input():
+    manifest = canon("res", ("a", "s/a", 1), ("b", "s/b", 2), ("c", "s/c", 3))
+    ids = [e.entry_id for e in manifest.entries]
+    ordered = fs.validate_selection_ids(manifest, [ids[2], ids[0]])
+    assert ordered == (ids[0], ids[2])
+    with pytest.raises(fs.ManifestInvalid):
+        fs.validate_selection_ids(manifest, [])
+    with pytest.raises(fs.ManifestInvalid):
+        fs.validate_selection_ids(manifest, [ids[0], ids[0]])
+    with pytest.raises(fs.ManifestInvalid):
+        fs.validate_selection_ids(manifest, ["not-a-real-entry"])
+
+
+# --------------------------------------------------------------------------- #
+# Pure gate decision
+# --------------------------------------------------------------------------- #
+
+def state(**kw):
+    base = dict(
+        decision="pending", initially_available=True, resource_available=True,
+        available_grace_until=1060.0, hold_until=None, manifest_id=None,
+        manifest_file_count=0, manifest_committed_at=None, auto_offer_dismissed_at=None,
+    )
+    base.update(kw)
+    return fs.SelectionWindowState(**base)
+
+
+def test_gate_available_without_manifest_waits_then_times_out_on_grace_expiry():
+    # The post-AVAILABLE manifest-acquisition grace: the resource is AVAILABLE
+    # but no usable manifest is obtainable. Grace anchored at t=1000, ends 1060.
+    assert fs.evaluate_gate(state(), now=1000.0).gate == fs.SelectionGate.WAIT_FOR_MANIFEST
+    late = fs.evaluate_gate(state(), now=1060.0)
+    assert late.gate == fs.SelectionGate.PROCEED
+    assert late.resolve_decision == fs.SelectionDecision.ALL
+    assert late.resolve_reason == fs.DecisionReason.MANIFEST_TIMEOUT
+
+
+def test_gate_preparing_without_manifest_never_starts_any_countdown():
+    # Correction §4/§5/§12/§19 — provider preparation is eager and open-ended.
+    # No manifest, resource NOT available: WAIT with no timeout, no matter how
+    # far the clock has advanced past any 60s or 120s boundary from creation.
+    preparing = state(resource_available=False, available_grace_until=None)
+    for now in (1000.0, 1061.0, 1200.0, 99999.0):
+        result = fs.evaluate_gate(preparing, now=now)
+        assert result.gate == fs.SelectionGate.WAIT_FOR_MANIFEST
+        assert result.resolve_decision is None
+
+
+def test_gate_single_file_proceeds_immediately_as_all():
+    result = fs.evaluate_gate(state(manifest_id="m", manifest_file_count=1), now=1001.0)
+    assert result.gate == fs.SelectionGate.PROCEED
+    assert result.resolve_reason == fs.DecisionReason.SINGLE_FILE
+
+
+def test_gate_cached_multi_file_holds_until_deadline_then_times_out():
+    holding = state(manifest_id="m", manifest_file_count=4, hold_until=1125.0)
+    assert fs.evaluate_gate(holding, now=1100.0).gate == fs.SelectionGate.WAIT_FOR_DECISION
+    expired = fs.evaluate_gate(holding, now=1125.0)
+    assert expired.gate == fs.SelectionGate.PROCEED
+    assert expired.resolve_reason == fs.DecisionReason.DECISION_TIMEOUT
+
+
+def test_gate_preparing_origin_multi_file_honors_an_established_decision_hold():
+    # An automatically actionable multi-file offer must precede irreversible ALL
+    # materialization even when the provider resource was initially PREPARING
+    # (specification sections 5, 6.3).
+    holding = state(
+        initially_available=False, manifest_id="m", manifest_file_count=4, hold_until=1125.0,
+    )
+    assert fs.evaluate_gate(holding, now=1100.0).gate == fs.SelectionGate.WAIT_FOR_DECISION
+    expired = fs.evaluate_gate(holding, now=1125.0)
+    assert expired.gate == fs.SelectionGate.PROCEED
+    assert expired.resolve_decision == fs.SelectionDecision.ALL
+    assert expired.resolve_reason == fs.DecisionReason.DECISION_TIMEOUT
+
+
+def test_gate_timeout_reasons_are_deterministic_and_never_mislabelled():
+    # DECISION_TIMEOUT is emitted ONLY when a persisted user-decision hold
+    # actually expired.
+    hold = state(manifest_id="m", manifest_file_count=4, hold_until=1125.0)
+    assert fs.evaluate_gate(hold, now=1130.0).resolve_reason == fs.DecisionReason.DECISION_TIMEOUT
+    assert fs.evaluate_gate(hold, now=1120.0).gate == fs.SelectionGate.WAIT_FOR_DECISION
+
+    # A multi-file manifest ALWAYS co-establishes the 120s hold at first arrival
+    # (there is no submission-relative cutoff). A degenerate multi-file / no-hold
+    # row is only reachable for a pre-correction generation; while the resource
+    # is AVAILABLE it converges through the bounded post-AVAILABLE grace to
+    # MANIFEST_TIMEOUT — never DECISION_TIMEOUT (no hold existed) and never
+    # DEFAULT_MATERIALIZATION.
+    degenerate = state(manifest_id="m", manifest_file_count=4, hold_until=None,
+                       resource_available=True, available_grace_until=1060.0)
+    assert fs.evaluate_gate(degenerate, now=1005.0).gate == fs.SelectionGate.WAIT_FOR_MANIFEST
+    assert fs.evaluate_gate(degenerate, now=1065.0).resolve_reason == fs.DecisionReason.MANIFEST_TIMEOUT
+    # Same degenerate row while PREPARING: it simply keeps waiting, no timeout.
+    degenerate_preparing = state(manifest_id="m", manifest_file_count=4, hold_until=None,
+                                 resource_available=False, available_grace_until=None)
+    assert fs.evaluate_gate(degenerate_preparing, now=99999.0).resolve_decision is None
+
+    # No manifest at all + AVAILABLE: MANIFEST_TIMEOUT only once the 60s grace
+    # expired; while the grace has not started (None) the gate keeps waiting.
+    assert fs.evaluate_gate(state(available_grace_until=None), now=99999.0).gate == fs.SelectionGate.WAIT_FOR_MANIFEST
+    assert fs.evaluate_gate(state(), now=1005.0).gate == fs.SelectionGate.WAIT_FOR_MANIFEST
+    assert fs.evaluate_gate(state(), now=1065.0).resolve_reason == fs.DecisionReason.MANIFEST_TIMEOUT
+
+
+def test_gate_respects_settled_and_committed_facts():
+    assert fs.evaluate_gate(state(decision="explicit"), now=1.0).gate == fs.SelectionGate.PROCEED
+    assert fs.evaluate_gate(state(decision="all"), now=1.0).gate == fs.SelectionGate.PROCEED
+    assert fs.evaluate_gate(
+        state(manifest_committed_at=999.0, manifest_id="m", manifest_file_count=9), now=1.0,
+    ).gate == fs.SelectionGate.PROCEED
+
+
+def test_auto_offer_active_tracks_the_decision_hold_only():
+    # The selector auto-presents for exactly the life of the active decision
+    # hold — no separate pre-hold presentation window exists.
+    no_hold = state(manifest_id="m", manifest_file_count=3, hold_until=None)
+    assert fs.auto_offer_active(no_hold, now=1000.0) is False
+    held = state(manifest_id="m", manifest_file_count=3, hold_until=1125.0)
+    assert fs.auto_offer_active(held, now=1030.0) is True
+    assert fs.auto_offer_active(held, now=1075.0) is True       # cold-load recovery within the hold
+    assert fs.auto_offer_active(held, now=1125.0) is False      # hold expired
+    dismissed = state(manifest_id="m", manifest_file_count=3, hold_until=1125.0,
+                      auto_offer_dismissed_at=1010.0)
+    assert fs.auto_offer_active(dismissed, now=1020.0) is False
+    single = state(manifest_id="m", manifest_file_count=1, hold_until=1125.0)
+    assert fs.auto_offer_active(single, now=1010.0) is False
+
+
+# --------------------------------------------------------------------------- #
+# Executable manifest reconciliation
+# --------------------------------------------------------------------------- #
+
+def src(name, path, size):
+    return SourceEntry(name, size, path, TransferRequest("parcel-member", f"m:{path}", name=name))
+
+
+def test_reconcile_matches_subset_and_ignores_unselected_files():
+    executable = (src("a", "s/a", 10), src("b", "s/b", 20), src("c", "s/c", 30))
+    proven = fs.reconcile_executable_subset([("s/a", 10), ("s/c", 30)], executable)
+    assert [e.relative_path for e in proven] == ["s/a", "s/c"]
+
+
+def test_reconcile_fails_closed_on_missing_selected_path():
+    with pytest.raises(fs.SelectionUnprovable):
+        fs.reconcile_executable_subset([("s/a", 10), ("s/gone", 5)], (src("a", "s/a", 10),))
+
+
+def test_reconcile_fails_closed_on_known_size_conflict():
+    with pytest.raises(fs.SelectionUnprovable):
+        fs.reconcile_executable_subset([("s/a", 10)], (src("a", "s/a", 11),))
+
+
+def test_reconcile_accepts_unknown_early_size_against_known_late_size():
+    proven = fs.reconcile_executable_subset([("s/a", 0)], (src("a", "s/a", 12345),))
+    assert proven[0].expected_bytes == 12345
+
+
+def test_reconcile_fails_closed_on_duplicate_executable_path():
+    with pytest.raises(fs.SelectionUnprovable):
+        fs.reconcile_executable_subset([("s/a", 10)], (src("a", "s/a", 10), src("a2", "s/a", 10)))
+
+
+def test_reconcile_never_returns_the_full_list_as_a_fallback():
+    executable = (src("a", "s/a", 10), src("b", "s/b", 20))
+    with pytest.raises(fs.SelectionUnprovable):
+        fs.reconcile_executable_subset([("s/a", 99)], executable)
+
+
+# --------------------------------------------------------------------------- #
+# Observation carries the neutral manifest only as facts
+# --------------------------------------------------------------------------- #
+
+def test_provider_observation_manifest_is_pure_facts():
+    manifest = FileManifest((FileManifestEntry("a.mkv", "Season 1/a.mkv", 10),))
+    observation = ProviderObservation(
+        ProviderResource("parcel-lab", {}, id="r"), ResourceState.AVAILABLE, file_manifest=manifest,
+    )
+    for entry in observation.file_manifest.entries:
+        assert set(type(entry).__dataclass_fields__) == {"name", "relative_path", "expected_bytes"}
+
+
+# --------------------------------------------------------------------------- #
+# An inherited selection across a replacement that lost the directories
+# --------------------------------------------------------------------------- #
+#
+# Exact normalized path is the proof and stays the proof. Only an inherited
+# explicit selection whose replacement resource is the same source (equal
+# fingerprints) may cross lossy coordinates, and only when the two COMPLETE
+# manifests biject on (case-sensitive basename, exact positive size).
+
+SAME = frozenset({"a" * 40})
+SEASONS = (("S1/A.mkv", 100), ("S2/B.mkv", 200), ("S3/C.mkv", 300))
+FLAT = (("A.mkv", 100), ("B.mkv", 200), ("C.mkv", 300))
+CHOSEN = (("S1/A.mkv", 100), ("S3/C.mkv", 300))
+
+
+def executable(pairs):
+    from pathlib import PurePosixPath
+    from transfers.models import SourceEntry, TransferRequest
+    return tuple(SourceEntry(PurePosixPath(path).name, size, path, TransferRequest("member", "new:" + path))
+                 for path, size in pairs)
+
+
+def migrate(*, selected=CHOSEN, predecessor=SEASONS, replacement=FLAT, executable_pairs=None, before=SAME,
+            after=SAME, established=None):
+    return fs.migrate_inherited_subset(
+        list(selected), list(predecessor), list(replacement),
+        executable(replacement if executable_pairs is None else executable_pairs),
+        predecessor_fingerprints=before, replacement_fingerprints=after, established=established or [])
+
+
+def test_a_complete_flattened_replacement_carries_exactly_the_selected_members():
+    """M-C2 / M-C11: established logical paths, the replacement's material and
+    its own manifest coordinates for provenance; B is never added."""
+    migration = migrate()
+    assert [entry.relative_path for entry in migration.logical] == ["S1/A.mkv", "S3/C.mkv"]
+    assert [entry.request.payload for entry in migration.logical] == ["new:A.mkv", "new:C.mkv"]
+    assert [entry.relative_path for entry in migration.provenance] == ["A.mkv", "C.mkv"]
+
+
+def test_the_established_member_coordinate_is_carried_verbatim():
+    migration = migrate(established=[("S1/A.mkv", 100), ("S3/C.mkv", 300)])
+    assert [entry.relative_path for entry in migration.logical] == ["S1/A.mkv", "S3/C.mkv"]
+
+
+@pytest.mark.parametrize("case, overrides, reason", [
+    ("M-C3 duplicate identity in the predecessor",
+     dict(predecessor=(("S1/A.mkv", 100), ("S2/A.mkv", 100), ("S3/C.mkv", 300))), "fallback_duplicate_identity"),
+    ("M-C4 duplicate identity in the replacement",
+     dict(replacement=(("A.mkv", 100), ("x/A.mkv", 100), ("C.mkv", 300))), "fallback_duplicate_identity"),
+    ("M-C5 same basename, different size",
+     dict(replacement=(("A.mkv", 101), ("B.mkv", 200), ("C.mkv", 300))), "fallback_member_set_mismatch"),
+    ("M-C6 unknown size in the replacement",
+     dict(replacement=(("A.mkv", 0), ("B.mkv", 200), ("C.mkv", 300))), "fallback_unknown_size"),
+    ("M-C6 unknown size in the predecessor",
+     dict(predecessor=(("S1/A.mkv", 100), ("S2/B.mkv", 0), ("S3/C.mkv", 300))), "fallback_unknown_size"),
+    ("M-C7 missing member", dict(replacement=(("A.mkv", 100), ("C.mkv", 300))), "fallback_manifest_count_mismatch"),
+    ("M-C8 extra member",
+     dict(replacement=(*FLAT, ("D.mkv", 400))), "fallback_manifest_count_mismatch"),
+    ("M-C9 equal count, different member set",
+     dict(replacement=(("A.mkv", 100), ("B.mkv", 200), ("D.mkv", 300))), "fallback_member_set_mismatch"),
+    ("unsafe path", dict(predecessor=(("S1/A.mkv", 100), ("../B.mkv", 200), ("S3/C.mkv", 300))),
+     "fallback_unsafe_path"),
+    ("duplicate normalized path", dict(replacement=(("A.mkv", 100), ("A.mkv", 200), ("C.mkv", 300))),
+     "fallback_duplicate_path"),
+    ("selection outside the predecessor manifest", dict(selected=(("S9/Z.mkv", 5),)),
+     "fallback_selected_not_in_predecessor"),
+    ("M-C12 executable entry missing from the replacement coordinate",
+     dict(executable_pairs=(("A.mkv", 100), ("B.mkv", 200), ("other/C.mkv", 300))),
+     "fallback_executable_path_missing"),
+    ("M-C12 executable entry of another size",
+     dict(executable_pairs=(("A.mkv", 100), ("B.mkv", 200), ("C.mkv", 301))), "fallback_executable_size_conflict"),
+    ("M-C12 executable entry of unknown size",
+     dict(executable_pairs=(("A.mkv", 100), ("B.mkv", 200), ("C.mkv", 0))), "fallback_executable_size_conflict"),
+    ("M-C16 missing predecessor fingerprint", dict(before=frozenset()), "fallback_missing_fingerprint"),
+    ("M-C17 missing replacement fingerprint", dict(after=frozenset()), "fallback_missing_fingerprint"),
+    ("M-C18 mismatched fingerprints", dict(after=frozenset({"b" * 40})), "fallback_fingerprint_mismatch"),
+    ("disagreeing fingerprints of one resource", dict(before=frozenset({"a" * 40, "b" * 40})),
+     "fallback_fingerprint_mismatch"),
+    ("missing replacement manifest", dict(replacement=()), "fallback_manifest_missing"),
+])
+def test_every_unprovable_migration_fails_closed_with_its_bounded_reason(case, overrides, reason):
+    with pytest.raises(fs.SelectionUnprovable) as caught:
+        migrate(**overrides)
+    assert caught.value.reason == reason, case
+
+
+def test_equal_fingerprints_differing_only_in_case_are_the_same_source():
+    assert migrate(after=frozenset({"A" * 40})).provenance
+
+
+# --------------------------------------------------------------------------- #
+# The established logical coordinates, recovered by identity, never by path
+# --------------------------------------------------------------------------- #
+#
+# A predecessor that itself reported the files flat (an earlier migration) is
+# no authority on where they live: the established members are. Each selected
+# member's logical path is the one established member with its exact
+# (case-sensitive basename, size) identity -- and the established set must be
+# exactly the selected set.
+
+ESTABLISHED = [("S1/A.mkv", 100), ("S3/C.mkv", 300)]
+FLAT_CHOSEN = [("A.mkv", 100), ("C.mkv", 300)]
+
+
+def test_a_flat_predecessor_recovers_the_established_paths_by_identity():
+    """T-C3: a committed flat predecessor, a hierarchical replacement."""
+    migration = migrate(selected=FLAT_CHOSEN, predecessor=FLAT, replacement=SEASONS, established=ESTABLISHED)
+    assert [entry.relative_path for entry in migration.logical] == ["S1/A.mkv", "S3/C.mkv"]
+    assert [entry.relative_path for entry in migration.provenance] == ["S1/A.mkv", "S3/C.mkv"]
+    assert [entry.request.payload for entry in migration.logical] == ["new:S1/A.mkv", "new:S3/C.mkv"]
+
+
+def test_a_flat_predecessor_and_a_flat_replacement_keep_the_established_paths():
+    """T-C5: the replacement need not restore the hierarchy."""
+    migration = migrate(selected=FLAT_CHOSEN, predecessor=FLAT,
+                        replacement=(("x/A.mkv", 100), ("x/B.mkv", 200), ("x/C.mkv", 300)),
+                        established=ESTABLISHED)
+    assert [entry.relative_path for entry in migration.logical] == ["S1/A.mkv", "S3/C.mkv"]
+    assert [entry.relative_path for entry in migration.provenance] == ["x/A.mkv", "x/C.mkv"]
+
+
+def test_order_does_not_matter_only_identity():
+    """T-C13."""
+    paths = fs.established_logical_paths([("C.mkv", 300), ("A.mkv", 100)], [("S1/A.mkv", 100), ("S3/C.mkv", 300)])
+    assert paths == ("S3/C.mkv", "S1/A.mkv")
+
+
+def test_no_established_members_seed_from_the_predecessor():
+    """T-C20: a predecessor committed but never fanned out (its fan-out runs
+    in a separate transaction after the commit) has no established
+    geometry; its own coordinates seed the logical ones, as before."""
+    migration = migrate(established=[])
+    assert [entry.relative_path for entry in migration.logical] == ["S1/A.mkv", "S3/C.mkv"]
+
+
+@pytest.mark.parametrize("case, selected, established, reason", [
+    ("T-C9 duplicate established identity", FLAT_CHOSEN,
+     [("S1/A.mkv", 100), ("S2/A.mkv", 100), ("S3/C.mkv", 300)], "fallback_established_duplicate_identity"),
+    ("T-C10 unknown established size", FLAT_CHOSEN, [("S1/A.mkv", 0), ("S3/C.mkv", 300)],
+     "fallback_established_unknown_size"),
+    ("T-C11 established member missing", FLAT_CHOSEN, [("S1/A.mkv", 100)], "fallback_established_member_missing"),
+    ("T-C12 extra established member", FLAT_CHOSEN, [*ESTABLISHED, ("S2/B.mkv", 200)],
+     "fallback_established_member_set_mismatch"),
+    ("T-C14 case-sensitive identity", FLAT_CHOSEN, [("S1/a.mkv", 100), ("S3/C.mkv", 300)],
+     "fallback_established_member_missing"),
+    ("duplicate established path", FLAT_CHOSEN, [("S1/A.mkv", 100), ("S1/A.mkv", 100), ("S3/C.mkv", 300)],
+     "fallback_established_duplicate_path"),
+    ("unsafe established path", FLAT_CHOSEN, [("../A.mkv", 100), ("S3/C.mkv", 300)],
+     "fallback_established_unsafe_path"),
+    ("unknown selected size", [("A.mkv", 0), ("C.mkv", 300)], ESTABLISHED, "fallback_established_unknown_size"),
+])
+def test_established_identity_is_exact_or_refused(case, selected, established, reason):
+    with pytest.raises(fs.SelectionUnprovable) as caught:
+        fs.established_logical_paths(selected, established)
+    assert caught.value.reason == reason, case
+
+
+def test_an_established_set_that_fails_never_falls_back_to_the_predecessor_path():
+    """T-C11 through the migration: no member is ever placed at the
+    predecessor's own path because its established member is missing."""
+    with pytest.raises(fs.SelectionUnprovable) as caught:
+        migrate(selected=FLAT_CHOSEN, predecessor=FLAT, replacement=SEASONS, established=[("S1/A.mkv", 100)])
+    assert caught.value.reason == "fallback_established_member_missing"
+
+
+def test_the_whole_manifest_and_fingerprint_proofs_still_come_first():
+    """T-C15 / T-C16: established recovery never stands in for them."""
+    with pytest.raises(fs.SelectionUnprovable) as caught:
+        migrate(selected=FLAT_CHOSEN, predecessor=FLAT, replacement=SEASONS, established=ESTABLISHED,
+                after=frozenset())
+    assert caught.value.reason == "fallback_missing_fingerprint"
+    with pytest.raises(fs.SelectionUnprovable) as caught:
+        migrate(selected=FLAT_CHOSEN, predecessor=FLAT, replacement=SEASONS[:2], established=ESTABLISHED)
+    assert caught.value.reason == "fallback_manifest_count_mismatch"

@@ -1,0 +1,311 @@
+/* DownloadPulse v1.0.13 Notifications cards.
+ *
+ * Both cards are ordinary operational Settings cards: the canonical header
+ * rail on the right, the standard Title + hint + field grammar in the body,
+ * the shared two-state destructive clear beside the fields it can erase, the
+ * one canonical disclosure for the optional block, and the one compact
+ * tuning-cell collection inside it. None of that is declared here -- it is
+ * declared once, by ui-settings-page.css, ui-universal-language.css and
+ * ui-provider-state.css. What this file states is only where this page's rows
+ * sit and how much width each control in them deserves.
+ */
+
+/* Both headers are the hinted Settings card header (ui-settings-page.css,
+   fitHeaderHints) -- the Admin's Notifications and a User's own alike: only
+   the hint's type is stated here. */
+#view-settings .dp-settings-notifications-header-copy,
+#view-settings .dp-settings-statistics-reporting-header-copy {
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* Every control on this page is the shared inline field: a left descriptive
+   block (title over hint) centred against its control on the right. The
+   primitive itself is declared once in ui-settings-page.css; a row states only
+   how much room its own descriptive block and control deserve, exactly as the
+   AllDebrid credential row does. */
+#view-settings .dp-settings-notifications-identity-row > .dp-settings-inline-field,
+#view-settings .dp-settings-notifications-delivery-row > .dp-settings-inline-field,
+#view-settings .dp-settings-statistics-reporting-row > .dp-settings-inline-field,
+#view-settings .dp-settings-statistics-cadence-group > .dp-settings-inline-field {
+  min-width: 0;
+  margin: 0;
+}
+
+/* The descriptive block takes what it needs and no more; the field is the
+   flexible element between it and any trailing action. */
+#view-settings [data-panel="notifications"] .dp-settings-inline-field > .dp-settings-inline-field-info {
+  flex: 0 1 auto;
+  /* Bounded hard: a hint is a sentence, and spare row width belongs to the
+     control. Widening a row that does not bound its descriptive block spends
+     the new room on prose and never reaches the field. */
+  max-width: 190px;
+}
+
+#view-settings [data-panel="notifications"] .dp-settings-inline-field > .dp-settings-inline-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#view-settings [data-panel="notifications"] .dp-settings-inline-field-control > :is(.input, .dp-action-field) {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+#view-settings .dp-settings-notifications-identity-row,
+#view-settings .dp-settings-notifications-delivery-row,
+#view-settings .dp-settings-statistics-reporting-row {
+  min-width: 0;
+}
+
+/* Identity: the sender's name, and the avatar it is shown with. */
+#view-settings .dp-settings-notifications-identity-row {
+  display: grid;
+  grid-template-columns: minmax(260px, .9fr) minmax(420px, 1.35fr);
+  align-items: start;
+  gap: 28px;
+}
+
+/* The avatar preview is a reading of what is currently stored -- never a
+   control, and never part of the field's own box. It sits on the Avatar URL
+   field's SECOND LINE, which the shared field primitive places for it
+   (.dp-settings-inline-field--two-line in ui-settings-page.css); this sheet
+   states only the reading's own material and the distance it keeps from the
+   control row above it. */
+#view-settings .dp-settings-avatar-preview--compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 0;
+  margin-top: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dp-text-muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+#view-settings .dp-settings-avatar-preview--compact[hidden] {
+  display: none !important;
+}
+
+#view-settings .dp-settings-avatar-preview--compact img {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+#view-settings .dp-settings-avatar-preview--compact span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The Avatar URL field's one action is the shared embedded action, drawn
+   exactly as a webhook's Clear is (the plain small button inside the field's
+   own border). It states only its width: ONE slot for both of its states
+   (Upload, Clear), so switching between them moves nothing. */
+#view-settings .dp-settings-avatar-action {
+  white-space: nowrap;
+  width: 5.5em;
+  justify-content: center;
+}
+
+/* A field carrying an embedded action -- a webhook's Clear, the avatar's
+   Upload/Clear -- keeps its typing room beside it (the stored password and
+   client secret do the same): the control never narrows past what it holds,
+   and its sentence yields the width instead. */
+#view-settings [data-panel="notifications"] :is(.dp-settings-webhook-row, .dp-settings-avatar-row) > .dp-settings-inline-field-control {
+  min-width: min-content;
+}
+
+#view-settings [data-panel="notifications"] :is(.dp-settings-webhook-row, .dp-settings-avatar-row) .dp-action-field > .input {
+  min-width: 100px;
+}
+
+/* The primary destination row shares the identity row's card-body rails: same
+   left and right edge, same two-column split. Each webhook carries its own
+   explicit Clear inside its own field. The disclosure below is a
+   separate block, so opening it changes nothing here. */
+#view-settings .dp-settings-notifications-delivery-row {
+  /* One step of the shared spacing scale, wider than the 28px gap INSIDE a
+     row, so the destinations read as the row after the identity row rather
+     than as more of it -- and so the avatar's second line has somewhere to be.
+     A scale step, never a nudge measured against a screenshot. */
+  margin-top: var(--dp-space-11);
+  display: grid;
+  /* Two peers, unlike the identity row above it: neither webhook deserves more
+     room than the other. */
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  align-items: start;
+  gap: 28px;
+}
+
+/* Statistics Reporting on the same card-body rails as the Discord rows: the
+   destination is the one control with a variable-length value, so it takes the
+   row, and the cadence pair reads as one cluster on the line beneath it. One
+   column, so the row itself never distributes anything -- what sits where
+   inside it is each child's own business. */
+#view-settings .dp-settings-statistics-reporting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  row-gap: 18px;
+}
+
+/* The cadence and the window are ONE reading: how often a report is sent, and
+   how much it covers. They are read together, so they are grouped together --
+   one CENTRED bounded island with the same relationship container and the same
+   padding density as the accepted Download Engine and Extraction behaviour
+   islands, so every Settings control cluster speaks one language.
+
+   Content-bounded and centred in the card body: an intentional pair, not a band
+   stretched across whatever width happens to exist and not anchored to one
+   edge. The two settings are separated by one declared gap -- the same one those
+   islands use -- so nothing distributes them against the card's width and no
+   spare room can drift them apart. */
+#view-settings .dp-settings-statistics-cadence-group {
+  min-width: 0;
+  display: flex;
+  /* STRETCH, not centre: the two settings' informational stacks wrap to
+     different line counts as text reflows, and centring items of unequal
+     height pulls the taller one's top upward -- so two settings genuinely on
+     one row stop sharing a baseline. Each field still centres its own control
+     against its own stack. */
+  align-items: stretch;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 18px 44px;
+  width: max-content;
+  /* Bounded by the card, not by a number: the island holds font-sized content,
+     so any declared ceiling would be a guess about text this stylesheet cannot
+     measure. `max-content` is what keeps it content-bounded. */
+  max-width: 100%;
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px var(--dp-island-padding-inline, 22px) 17px;
+}
+
+#view-settings .dp-settings-statistics-cadence-group > .dp-settings-inline-field {
+  flex: 0 1 auto;
+}
+
+/* A cadence and a window are small readings, not destinations: they take the
+   room they need and leave the rest of the row alone. */
+#view-settings [data-panel="notifications"] .dp-settings-report-interval-row > .dp-settings-inline-field-control,
+#view-settings [data-panel="notifications"] .dp-settings-report-window-row > .dp-settings-inline-field-control {
+  flex: 0 0 auto;
+}
+
+#view-settings [data-panel="notifications"] .dp-settings-report-interval-row .dp-settings-unit-field,
+#view-settings [data-panel="notifications"] .dp-settings-report-window-row .input {
+  width: min(100%, 170px);
+}
+
+@media (max-width: 1280px) {
+  #view-settings .dp-settings-notifications-identity-row {
+    grid-template-columns: minmax(220px, .9fr) minmax(320px, 1.25fr);
+    gap: 22px;
+  }
+
+  #view-settings .dp-settings-notifications-delivery-row {
+    grid-template-columns: repeat(2, minmax(260px, 1fr));
+    gap: 22px;
+  }
+}
+
+/* Narrower than the two-column layout serves -- below 968px of the Discord
+   card body's content, where its narrowest control (Display Name) would fall
+   under about 200px -- the two rows become two bordered islands, Identity and
+   Destinations, one field per line, the islands' material and padding.
+   Every description takes the same width, so the four controls share one
+   width and one right edge whatever their sentences say; the avatar's reading
+   stays on its own field's second line. Measured against the card's own
+   width, never the viewport's. */
+#view-settings .dp-settings-discord-card > .card-body {
+  container: dp-discord / inline-size;
+}
+
+@container dp-discord (width < 968px) {
+  #view-settings .dp-settings-notifications-identity-row,
+  #view-settings .dp-settings-notifications-delivery-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    border: 1px solid var(--dp-divider);
+    border-radius: 12px;
+    padding: 16px 22px 17px;
+  }
+
+  #view-settings .dp-settings-notifications-delivery-row {
+    margin-top: 16px;
+  }
+
+  #view-settings :is(.dp-settings-notifications-identity-row, .dp-settings-notifications-delivery-row)
+    > .dp-settings-inline-field > .dp-settings-inline-field-info {
+    flex: 0 0 auto;
+    width: min(190px, 40cqi);
+    max-width: none;
+  }
+
+  /* The avatar's row is the two-line field (its reading beneath the
+     control): description and control only, so no empty third column's gap
+     makes its control narrower than its peers'. */
+  #view-settings .dp-settings-notifications-identity-row > .dp-settings-avatar-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+}
+
+/* Below 780px each identity and destination setting -- and the Reporting
+   Webhook -- is its title over its control: its hint leaves the layout and
+   its title says it as a tooltip (fitHandheldBodies, promoteHints), still the
+   control's neighbour to assistive technology. Help, lent by the card's
+   header (fitHeaderSteps), sits at the top-right of the first region, on its
+   first setting's title row. */
+@media (max-width: 779px) {
+  #view-settings :is(.dp-settings-notifications-identity-row, .dp-settings-notifications-delivery-row, .dp-settings-statistics-reporting-row)
+    > .dp-settings-inline-field > .dp-settings-inline-field-info > .form-hint {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Over its control, a title takes the setting's width -- not the
+     description column its hint needed beside it -- so Primary Webhook and
+     Download Added Webhook wrap only where their words need it. */
+  #view-settings :is(.dp-settings-notifications-identity-row, .dp-settings-notifications-delivery-row)
+    > .dp-settings-inline-field > .dp-settings-inline-field-info {
+    width: auto;
+  }
+
+  /* Lent Help: on the first title's row, its right edge on the controls'. */
+  #view-settings .dp-settings-notifications-identity-row.dp-settings-help-slot > .dp-settings-help-chip {
+    top: 10px;
+    right: 22px;
+  }
+
+  #view-settings .dp-settings-statistics-reporting-row.dp-settings-help-slot > .dp-settings-help-chip {
+    top: -6px;
+    right: 0;
+  }
+
+  /* While the region holds it, the chip reaches below the first title's
+     line: that setting's control starts lower, so the chip keeps the
+     clearance above it a title keeps (8px). Without the chip, the ordinary
+     title-to-control gap. */
+  #view-settings :is(.dp-settings-notifications-identity-row, .dp-settings-statistics-reporting-row):has(> .dp-settings-help-chip)
+    > .dp-settings-inline-field:first-child {
+    row-gap: 15px;
+  }
+}

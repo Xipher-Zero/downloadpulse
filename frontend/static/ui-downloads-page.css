@@ -1,0 +1,966 @@
+/* DownloadPulse v1.0.11 Downloads page layer.
+ *
+ * This file intentionally owns Downloads-only geometry, viewport behavior and
+ * content-specific details. Standard card material, fields, tables, tabs,
+ * buttons, status pills and progress styling come from
+ * ui-universal-language.css and must not be redefined here.
+ */
+
+/* ── Full-height workspace ───────────────────────────────────────────── */
+/* One workspace at every width, as Statistics and the Activity Log: the card
+   fills the content height and the table viewport takes what its header,
+   toolbar and pager leave, the pager at the card's bottom. #content already
+   owns the remaining shell height and its bottom inset (on a handheld, the
+   10px above the dock, safe area included: ui-shell-mobile.css); the view
+   fills that content box instead of recomputing 100vh here. From 780px it is
+   exactly that box; below, it is at least that box, so on a screen too short
+   for the card's own header, toolbar and one row the page scrolls as before
+   and nothing is clipped (the rows a page holds are measured to fit:
+   ui-downloads.js measuredSize). The global header changes at 900px on its
+   own; the workspace does not change with it. */
+#view-torrents:is(.active, [data-dp-motion-outgoing]) {
+  display: flex !important;
+  flex-direction: column;
+  /* The standard card's contact shadow paints outside its own box. Keep the
+     page boundary paint-visible; scrolling is confined to the table viewport. */
+  overflow: visible;
+}
+@media (min-width: 780px) {
+  #view-torrents:is(.active, [data-dp-motion-outgoing]) {
+    height: 100% !important;
+    min-height: 0;
+  }
+}
+
+#view-torrents > .card {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  /* Full-height workspaces are not stacked legacy cards. The inherited card
+     margin (18px; 10px on a handheld) was shortening the visible card. */
+  margin-bottom: 0 !important;
+}
+
+#view-torrents .dp-downloads-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+#view-torrents > .card > .card-header,
+#view-torrents > .card > div:has(#torrent-search),
+#view-torrents #torrent-pagination {
+  flex: 0 0 auto;
+}
+
+/* ── Card heading geometry ───────────────────────────────────────────── */
+#view-torrents > .card > .card-header {
+  min-height: 70px;
+}
+
+#view-torrents #torrent-card-title.dp-downloads-card-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+#view-torrents .dp-downloads-title-icon {
+  width: 51px;
+  min-width: 51px;
+  height: 51px;
+  flex: 0 0 51px;
+  object-fit: contain;
+  padding: 1px;
+}
+
+#view-torrents .dp-downloads-heading-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+#view-torrents :is(.dp-downloads-heading, .dp-downloads-count) {
+  color: var(--dp-text-primary);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+#view-torrents :is(.dp-downloads-subtitle, .dp-downloads-subtitle-short) {
+  color: var(--dp-text-muted);
+  font-size: 10.5px;
+  line-height: 1.25;
+  font-weight: 400;
+}
+
+/* The shorter presentations of the tracked count (ui-downloads.js writes all
+   four) show only where the header is too narrow for the full hint. */
+#view-torrents :is(.dp-downloads-subtitle-short, .dp-downloads-count) {
+  display: none;
+}
+
+/* ── Header control placement ────────────────────────────────────────── */
+/* The filter rail never yields width to the identity's wording: the identity
+   yields first, down to the number alone. Only then (below) do the filters'
+   side paddings narrow, so even a six-digit count keeps its reserve. */
+#view-torrents .filter-tabs {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+#view-torrents .filter-tabs .ftab {
+  min-width: 64px;
+}
+
+/* The handheld status filter (ui-downloads.js): one control standing for the
+   seven filters below 780px -- Status (its funnel glyph, label and the DP
+   dropdown chevron) opens a menu of the filters' own choices; with a status
+   chosen it is Clear (the funnel-x glyph), which returns to All. Both labels
+   and glyphs share their cells, so the control has one footprint in either
+   state: the wider label sets it, Clear is centred across its label and the
+   chevron's cell, and changing state moves nothing. From 780px the filters
+   themselves are shown and this control is not. */
+#view-torrents .dp-downloads-filter-trigger {
+  display: none;
+}
+#view-torrents .dp-downloads-filter-trigger .dp-utility-icon {
+  grid-area: 1 / 1;
+  width: 15px;
+  height: 15px;
+}
+#view-torrents .dp-downloads-filter-trigger [data-dp-filter-text="filter"] { grid-area: 1 / 2; }
+#view-torrents .dp-downloads-filter-trigger [data-dp-filter-text="clear"] {
+  grid-area: 1 / 2 / 2 / 4;
+  justify-self: center;
+}
+#view-torrents .dp-downloads-filter-trigger .dp-dropdown__chevron {
+  grid-area: 1 / 3;
+  margin: -3px 2px 0 0;
+}
+#view-torrents .dp-downloads-filter-trigger[data-state="filter"] :is([data-dp-filter-glyph="clear"], [data-dp-filter-text="clear"]),
+#view-torrents .dp-downloads-filter-trigger[data-state="clear"] :is([data-dp-filter-glyph="filter"], [data-dp-filter-text="filter"], .dp-dropdown__chevron) {
+  visibility: hidden;
+}
+/* Its menu: the projected menu's material (.dp-dropdown-menu) and options, in
+   the top layer (a popover), placed beneath the control by ui-downloads.js. */
+#view-torrents .dp-downloads-filter-menu {
+  inset: auto;
+  margin: 0;
+  width: max-content;
+  display: none;
+}
+#view-torrents .dp-downloads-filter-menu:popover-open {
+  display: block;
+}
+#view-torrents .dp-downloads-filter-menu .dp-dropdown__option {
+  white-space: nowrap;
+}
+
+/* Desktop and tablet (780px and up): one header row. The seven filters keep
+   their full width and the card's identity yields to them, in four steps
+   chosen by the header's own content width. Each step is where its wording
+   fits with the widest five-digit count in the WIDER of the faces it may be
+   drawn in -- the web face or the fallback (DejaVu Sans) -- plus 1px:
+   measured needs 882.8 / 758.2 / 736.6px (DejaVu; the web face needs less):
+     884px and wider  On the Books + "N downloads tracked. Most of them behaved."
+     760px to 884px   On the Books + "N downloads tracked"
+     738px to 760px   On the Books + "N downloads"
+     below 738px      the number alone, in the title's place
+   Each hidden line leaves the row but not the title: the full hint stays its
+   text, and DP's tooltip says it while the hint is not shown. */
+@media (min-width: 780px) {
+  #view-torrents > .card > .card-header {
+    container: dp-downloads-header / inline-size;
+  }
+
+  #view-torrents #torrent-card-title.dp-downloads-card-title {
+    white-space: nowrap;
+  }
+
+  @container dp-downloads-header (width < 884px) {
+    #view-torrents .dp-downloads-subtitle {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+  }
+  @container dp-downloads-header (760px <= width < 884px) {
+    #view-torrents [data-dp-copy="tracked"] { display: block; }
+  }
+  @container dp-downloads-header (738px <= width < 760px) {
+    #view-torrents [data-dp-copy="downloads"] { display: block; }
+  }
+  @container dp-downloads-header (width < 738px) {
+    #view-torrents .dp-downloads-heading {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #view-torrents .dp-downloads-count {
+      display: block;
+      font-size: 13px;
+    }
+    /* The number alone holds every count through six digits in the room the
+       filters leave at 780px: the same artwork and glow at 30px, 6px from it. */
+    #view-torrents #torrent-card-title.dp-downloads-card-title {
+      gap: 6px;
+    }
+    #view-torrents .dp-downloads-title-icon {
+      --dp-feature-icon-size: 30px;
+    }
+    /* With the number alone, the seven filters' side paddings narrow to 8px
+       (no label shortens; a short one keeps its 64px): at 780px that keeps a
+       six-digit count 12px clear of them in the fallback face too (measured
+       14.7px for 999999 with DejaVu Sans; -16.6px at the full padding). */
+    #view-torrents .filter-tabs .ftab {
+      padding-inline: 8px;
+    }
+  }
+}
+
+/* ── Contextual multi-selection toolbar ─────────────────────────────── */
+/* Native band inside the Downloads card, between Search and the table. */
+#view-torrents #bulk-bar.dp-downloads-bulk-card {
+  display: none;
+  flex: 0 0 auto;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--dp-divider) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  overflow: visible;
+  color: var(--dp-text-primary) !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  /* Its own width decides its labels, at every width (below). */
+  container: dp-downloads-bulk / inline-size;
+}
+#view-torrents #bulk-bar.dp-downloads-bulk-card.visible {
+  display: block !important;
+}
+#view-torrents .dp-downloads-bulk-toolbar {
+  width: 100%;
+  min-height: 54px;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 0 !important;
+}
+#view-torrents .dp-downloads-bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+#view-torrents .dp-downloads-bulk-separator {
+  width: 1px;
+  height: 24px;
+  flex: 0 0 1px;
+  margin: 0 3px;
+  background: var(--dp-divider);
+}
+#view-torrents .dp-downloads-bulk-action {
+  min-height: 36px !important;
+  height: 36px !important;
+  padding: 0 12px !important;
+  border-radius: 8px !important;
+  font-size: 11.5px !important;
+  line-height: 1 !important;
+  font-weight: 600 !important;
+}
+#view-torrents .dp-downloads-bulk-action .dp-utility-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+#view-torrents .dp-downloads-bulk-action--clear {
+  color: var(--dp-text-secondary);
+}
+/* Move to Top shows only while the selection holds an unfinished transfer. */
+#view-torrents .dp-downloads-bulk-action--top[hidden] {
+  display: none !important;
+}
+#view-torrents .dp-downloads-bulk-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Desktop and tablet (780px and up): where the toolbar is narrower than its
+   full labels need with every action shown -- 824.1px in the wider fallback
+   face (DejaVu Sans), plus 1px -- each action shows its glyph alone, in the same
+   button, and Clear Selections reads "Clear". A label leaves the row but
+   stays the button's name, and DP's tooltip says the action. */
+@media (min-width: 780px) {
+  @container dp-downloads-bulk (width < 826px) {
+    #view-torrents :is(.dp-downloads-bulk-actions [data-dp-icon-label], .dp-downloads-bulk-clear-rest) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #view-torrents .dp-downloads-bulk-actions .dp-downloads-bulk-action {
+      position: relative;
+      width: 36px;
+      min-width: 36px;
+      padding: 0 !important;
+      justify-content: center;
+    }
+  }
+}
+
+/* Handheld (below 780px): no visible "N Selected" (it stays the toolbar's
+   text for assistive technology, taking no room), Clear Selections reads
+   "Clear", and the toolbar keeps the actions' own 7px between them and Clear
+   and the table's own 14px insets at its ends. Every button -- the actions
+   and Clear -- shows its label while the whole toolbar fits with its widest
+   legitimate set (Pause, Resume, Reset, Move to Top, the separator, Delete and
+   Clear: 646.5px in the wider fallback face, DejaVu Sans, plus 1px);
+   narrower, every one shows its glyph alone at once, a 36px square, so at
+   320px all six stand on one row (265px of the 270px there). One condition,
+   the toolbar's own width: a button that mounts or leaves never changes it. */
+@media (max-width: 779px) {
+  #view-torrents .dp-downloads-bulk-toolbar {
+    gap: 7px;
+    padding-inline: 14px;
+  }
+  #view-torrents .dp-downloads-bulk-status {
+    padding-left: 0;
+  }
+  #view-torrents .dp-downloads-bulk-count {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* Hidden as the desktop's compact labels are (opacity), so DP's tooltip
+     knows it is not shown and says the whole operation. */
+  #view-torrents .dp-downloads-bulk-clear-rest {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  @container dp-downloads-bulk (width < 648px) {
+    #view-torrents .dp-downloads-bulk-toolbar :is(.dp-downloads-bulk-actions [data-dp-icon-label], .dp-downloads-bulk-action--clear > span) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #view-torrents .dp-downloads-bulk-toolbar .dp-downloads-bulk-action {
+      position: relative;
+      width: 36px;
+      min-width: 36px;
+      padding: 0 !important;
+      justify-content: center;
+    }
+  }
+}
+
+/* ── Search band ─────────────────────────────────────────────────────── */
+/* This is page-specific composition around the universal field itself. */
+#view-torrents > .card > div:has(#torrent-search) {
+  position: relative;
+  z-index: 1;
+  padding: 13px 16px 14px !important;
+  border-bottom: 1px solid var(--dp-divider);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--dp-accent-purple) 5.5%, transparent),
+    transparent 76%);
+}
+
+body.light #view-torrents > .card > div:has(#torrent-search) {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--dp-accent-purple) 4.5%, transparent),
+    transparent 78%);
+}
+
+/* ── Data viewport ───────────────────────────────────────────────────── */
+/* Its vertical scrollbar's room is always reserved (scrollbar-gutter). The
+   table's tracks are sized from this viewport's width (100cqw, below), which
+   does not shrink when a scrollbar appears later -- as one does when a
+   selection's toolbar takes height from a page sized to the rows that fit --
+   so without the reservation the table stayed a scrollbar wider than the room
+   left beside it and the viewport scrolled sideways. The reserved room lies
+   outside the table's clip, so this viewport's own background continues the
+   header's surface across it, from the header's own token. The header surface
+   is opaque in every theme, so the band drawn beneath the header cells is
+   never seen there. The header's 1px rule and the rows' paint (hover tint,
+   separators) still end at the table's edge. The table is never wider than
+   this viewport (its tracks, below), so it scrolls only vertically: what a
+   page turn's motion leaves for a moment -- the outgoing rows' still copy
+   fading out after the slide -- is clipped, never a sideways scrollbar. */
+#view-torrents .dp-downloads-table-wrap {
+  position: relative;
+  z-index: 1;
+  overflow-x: hidden !important;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+  background: var(--dp-table-head-surface) 0 0 / 100% var(--dp-table-head-height) no-repeat;
+}
+body.light #view-torrents .dp-downloads-table-wrap {
+  background-image: linear-gradient(var(--dp-chrome-table-head-plain) 0 0);
+}
+
+#view-torrents .dp-downloads-table-wrap .t-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+#view-torrents .t-table,
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) {
+  background: transparent;
+}
+
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr.dp-downloads-detail-row {
+  cursor: pointer;
+}
+
+/* Empty Downloads uses the same content-specific download art as Recent
+   Activity; the surrounding empty-state typography/material is universal. */
+#view-torrents .empty-icon {
+  width: 76px;
+  height: 76px;
+  margin: 0 auto 12px;
+  font-size: 0;
+  line-height: 0;
+  background: url('/icons/dp/card-download.svg?v=11') center / contain no-repeat;
+  opacity: .78;
+  filter: saturate(.92) drop-shadow(0 3px 7px rgba(116, 56, 196, .18));
+}
+body.light #view-torrents .empty-icon {
+  opacity: .72;
+  filter: saturate(.88) drop-shadow(0 3px 7px rgba(107, 62, 171, .14));
+}
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr:not([data-torrent-id]),
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr:not([data-torrent-id]):hover {
+  background: transparent;
+  border-bottom: 0;
+}
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr:not([data-torrent-id]) td,
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr:not([data-torrent-id]) .empty {
+  border-bottom: 0;
+  background: transparent;
+}
+
+/* ── Footer / pagination layout ──────────────────────────────────────── */
+#view-torrents #torrent-pagination {
+  position: relative;
+  z-index: 1;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px !important;
+  margin-top: auto;
+  padding: 12px 16px 13px !important;
+  border-top: 0;
+  background: transparent;
+}
+
+#view-torrents #torrent-page-btns {
+  grid-column: 2;
+}
+
+#view-torrents #torrent-page-info {
+  grid-column: 3;
+  justify-self: end;
+  color: var(--dp-text-secondary) !important;
+  font-size: 13px !important;
+  line-height: 1.2;
+  font-weight: 550 !important;
+  letter-spacing: -.005em;
+  white-space: nowrap;
+}
+
+#view-torrents .dp-pager-ellipsis {
+  padding: 0 4px;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+}
+
+/* ── Responsive geometry ─────────────────────────────────────────────── */
+@media (max-width: 779px) {
+  /* Handheld: the workspace above (at least the content box). */
+  #view-torrents:is(.active, [data-dp-motion-outgoing]) {
+    min-height: 100%;
+  }
+
+  /* One header row: the identity at the left, the status filter control at
+     the right (the seven filters step aside; ui-downloads.js keeps them the
+     one filter state). The control is a standard 36px button with 8px side
+     padding, so at 320px "On the Books" stays whole beside it in either face. */
+  #view-torrents > .card > .card-header {
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+
+  #view-torrents .filter-tabs {
+    display: none;
+  }
+
+  #view-torrents .dp-downloads-filter-trigger {
+    display: inline-grid;
+    grid-template-columns: auto auto auto;
+    align-items: center;
+    column-gap: 6px;
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding-inline: 8px;
+  }
+
+  /* The hint beside it, on one line, in the longest of three presentations
+     whose rendered text fits the identity's column (fitDownloadsHeaderHint,
+     ui-downloads.js, measures them in turn): the full hint, then "N downloads
+     tracked.", then "N downloads". A hidden line leaves the row but not the
+     title: the full wording stays its name, and DP's tooltip says it. */
+  #view-torrents #torrent-card-title.dp-downloads-card-title {
+    flex: 1 1 auto;
+    white-space: nowrap;
+  }
+  #view-torrents > .card > .card-header:is([data-dp-fit="tracked"], [data-dp-fit="downloads"]) .dp-downloads-subtitle {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #view-torrents > .card > .card-header[data-dp-fit="tracked"] [data-dp-copy="tracked"],
+  #view-torrents > .card > .card-header[data-dp-fit="downloads"] [data-dp-copy="downloads"] {
+    display: block;
+  }
+  #view-torrents [data-dp-copy="tracked"]::after {
+    content: '.';
+  }
+
+  /* Search and the order selector share one row: Search takes the room, the
+     selector its own width, both centred on the row. */
+  #view-torrents .ev-search-row {
+    align-items: center;
+  }
+
+  #view-torrents #torrent-pagination {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  #view-torrents #torrent-page-btns,
+  #view-torrents #torrent-page-info {
+    grid-column: 1;
+    justify-self: center;
+  }
+}
+
+/* ── Filter rail (folded from the retired ui-downloads-desktop.css, DP 1.0.12
+   canonical flattening) ────────────────────────────────────────────────── */
+@media (min-width: 901px) {
+  /* Desktop is the current viewport contract. Do not compress the seven-state
+     filter rail to accommodate tablet/mobile; those contexts will be designed
+     separately. */
+  #view-torrents .filter-tabs {
+    max-width: none;
+    overflow: visible;
+  }
+
+  #view-torrents .filter-tabs .ftab {
+    min-width: 64px;
+    padding-inline: 14px;
+  }
+}
+
+/* ── Table composition, at every width ────────────────────────────────────
+   Download Activity's composition (ui-dashboard.css), with Downloads' own
+   columns and measured tracks: Name (the name, its secondary bar, and its
+   source, provider and candidate controls beneath), Status, Progress, Size,
+   Added, Actions and the selection column. The table's own width decides
+   each step, not the window's: the wrapper is a size query container, and
+   every track is a plain length against it (cqw), so the fixed layout gives
+   each column exactly its width and the tracks always sum to the table.
+
+   Status holds the widest badge ("Awaiting confirmation") whole; Size the
+   longest value fmtSize writes ("999.9 MB") on one line; Added the widest
+   date the one formatter writes ("Dec 28, 2025 10:54 PM") with its heading
+   and menu trigger. Actions holds every button its rows can show together,
+   side by side -- two 72px slots and their 7px gap, or three where a row on
+   the page shows three (Pause, Retry and Remove) -- and the selection column
+   its checkbox. Progress keeps its proportion but yields to Name, which never
+   falls below 280px (the Download Activity floor, grip included: the widest
+   metadata row -- source, Debrid-Link selector, candidate launcher and size
+   -- still fits with room to spare) and takes the rest. Below 780px Progress
+   and Size step aside (the handheld composition after the compact steps
+   below) and Name takes the room they leave. The same tracks hold at every
+   width, so the table is never wider than its viewport. */
+#view-torrents .dp-downloads-table-wrap {
+  container: dp-downloads-table / inline-size;
+}
+#view-torrents .t-table {
+  width: 100%;
+  table-layout: fixed;
+  --dp-downloads-status-track: 180px;
+  --dp-downloads-size-track: max(84px, 7cqw);
+  --dp-downloads-date-track: 178px;
+  --dp-downloads-action-slot: 72px;
+  --dp-downloads-action-slots: 2;
+  --dp-downloads-action-track: 0px;
+  --dp-downloads-select-track: 0px;
+  --dp-downloads-fixed-tracks: calc(var(--dp-downloads-status-track) + var(--dp-downloads-size-track)
+    + var(--dp-downloads-date-track) + var(--dp-downloads-action-track) + var(--dp-downloads-select-track));
+  --dp-downloads-progress-track: min(22cqw, 100cqw - 280px - var(--dp-downloads-fixed-tracks));
+}
+/* The operable columns, where the caller may operate (the header renders
+   them only then): no phantom tracks for a read-only viewer. */
+#view-torrents .t-table:has(> thead .dp-downloads-select-cell) {
+  --dp-downloads-action-track: calc(var(--dp-downloads-action-slots) * var(--dp-downloads-action-slot)
+    + (var(--dp-downloads-action-slots) - 1) * 7px + var(--dp-downloads-action-allowance, 28px));
+  --dp-downloads-select-track: 36px;
+}
+#view-torrents .t-table:has(> :is(#t-tbody, .dp-downloads-styled-tbody) .actions > :nth-child(3 of :not(.dp-queue-consent-action))) {
+  --dp-downloads-action-slots: 3;
+}
+#view-torrents .t-table .dp-downloads-name-cell {
+  width: calc(100cqw - var(--dp-downloads-progress-track) - var(--dp-downloads-fixed-tracks));
+}
+#view-torrents .t-table .dp-downloads-progress-cell { width: var(--dp-downloads-progress-track); }
+#view-torrents .t-table .dp-downloads-size-cell { width: var(--dp-downloads-size-track); }
+#view-torrents .t-table .dp-downloads-date-cell { width: var(--dp-downloads-date-track); }
+#view-torrents .t-table .dp-downloads-select-cell { width: var(--dp-downloads-select-track); }
+/* Status's heading and each badge (a chip, centred as a unit), and the
+   reaffirmation beneath it, share the column's centre line; so do Actions'
+   heading and the whole group of buttons, however many it holds. */
+#view-torrents .t-table .dp-downloads-status-cell {
+  width: var(--dp-downloads-status-track);
+  text-align: center;
+}
+#view-torrents .t-table .dp-downloads-action-cell {
+  width: var(--dp-downloads-action-track);
+  text-align: center;
+}
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) .dp-downloads-action-cell .actions {
+  justify-content: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) .dp-queue-consent { margin-inline: auto; }
+#view-torrents .dp-page-placeholder-row :is(.dp-downloads-status-cell, .dp-downloads-action-cell) .dp-ph {
+  margin-inline: auto;
+}
+
+/* Compact row controls. Where the table itself is narrower than 1166px
+   (about a 1284px window) -- 1166px is the narrowest table on which the full
+   composition still holds its widest action group (three buttons) with Name
+   at its floor and Progress's percentage and estimate on one line (150px:
+   "100.0%", its 8px gap and the estimate's 13ch) -- its Status badges and
+   row actions show their glyph alone (ui-transfer-contract.css, under this
+   same container condition) and their tracks narrow to that content: Status
+   to its icon chip (35px and the cell's 14px each side: 63px), each action
+   to a 36px square. A promoted transfer's Start Now, beneath its badge,
+   shows its glyph alone too, as wide as the chip above it (its 78px of words
+   would take 43px more of every row's Status from Progress). Added steps
+   aside entirely (its heading, cells and track; the date menu stays in its
+   heading for the wider table), and Progress becomes the column that flexes:
+   it takes all the room Name's 280px and the other tracks leave. */
+@container dp-downloads-table (width < 1166px) {
+  #view-torrents .t-table {
+    --dp-downloads-status-track: 63px;
+    --dp-downloads-date-track: 0px;
+    --dp-downloads-action-slot: 36px;
+    --dp-downloads-progress-track: calc(100cqw - 280px - var(--dp-downloads-fixed-tracks));
+  }
+  #view-torrents .t-table .dp-downloads-date-cell {
+    display: none;
+  }
+  /* The STATUS heading (39px in the 10px heading type) is wider than the
+     chip's 35px: it centres over the column's whole 63px instead. */
+  #view-torrents .t-table th.dp-downloads-status-cell {
+    padding-inline: 0;
+  }
+}
+
+/* Size beside its name. Where the table itself is narrower than 763px
+   (about an 881px window) -- below that, with the widest action group,
+   Progress could no longer keep its percentage and estimate on one line
+   beside a Size column -- Size leaves its own column (heading, cells and
+   track) and the same formatted value closes the name's metadata row, at its
+   right end, in the name's own type; Progress, the column that flexes, takes
+   the room. Wider, that value is not shown and Size keeps its column. */
+:is(#t-tbody, .dp-downloads-styled-tbody) .dp-downloads-size {
+  display: none;
+}
+@container dp-downloads-table (width < 763px) {
+  #view-torrents .t-table {
+    --dp-downloads-size-track: 0px;
+  }
+  #view-torrents .t-table .dp-downloads-size-cell {
+    display: none;
+  }
+  :is(#t-tbody, .dp-downloads-styled-tbody) .dp-downloads-size {
+    display: block;
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+}
+
+/* The handheld composition (below 780px): the Transfer Summary (the Name
+   cell; ui-dashboard-transfer-presentation.css), Actions -- which there also
+   holds Start Now, Status's reaffirmation -- and the selection column last.
+   Status, Progress, Size and Date step aside, columns and tracks; Name takes
+   the rest. Between the columns each cell keeps 4px (an 8px gutter: the
+   Summary's text to the first button, the last button to the checkbox,
+   which stays centred in its 36px track); the table's outer edges keep
+   their 14px insets. Actions' track is its buttons and that 8px, and every
+   pixel it does not take is the Summary's. */
+@media (max-width: 779px) {
+  #view-torrents .t-table {
+    --dp-downloads-status-track: 0px;
+    --dp-downloads-progress-track: 0px;
+    --dp-downloads-size-track: 0px;
+    --dp-downloads-date-track: 0px;
+    --dp-downloads-action-allowance: 8px;
+  }
+  #view-torrents .t-table:has(> :is(#t-tbody, .dp-downloads-styled-tbody) .actions > :nth-child(3)) {
+    --dp-downloads-action-slots: 3;
+  }
+  #view-torrents .t-table :is(.dp-downloads-status-cell, .dp-downloads-progress-cell, .dp-downloads-size-cell, .dp-downloads-date-cell) { display: none; }
+  /* The summary's three layers (the name's line, the slot and the 20px
+     metadata line) are 42px: the Name cell's block padding is what the row's
+     height (Actions' 36px buttons and their cells' 8px) leaves them, so the
+     row is no taller and nothing is clipped. */
+  #view-torrents .t-table .dp-downloads-name-cell { padding-block: 5px; }
+  #view-torrents .t-table .dp-downloads-name-cell:not(:last-child) { padding-right: 4px; }
+  #view-torrents .t-table .dp-downloads-action-cell { padding-inline: 4px; }
+  #view-torrents .t-table .dp-downloads-select-cell { padding-inline: 0; }
+  /* The queue grip is the row's left-edge gutter: it stands in the Name
+     cell's 14px left padding (its own 14px width), over the whole height of
+     the summary and centred on the row, and reserves nothing beside it -- the
+     name, its slot and its metadata line start where every row's do. */
+  #view-torrents td[data-queue-drag="true"] .dp-queue-grip {
+    align-self: stretch;
+    margin-left: calc(-1 * var(--dp-queue-grip-size));
+    margin-right: calc(-1 * var(--dp-name-line-gap));
+  }
+  /* Where the table is narrower than 336px (a 362px window), the summary's
+     metadata line closes its gaps from 6px to 4px. */
+  @container dp-downloads-table (width < 336px) {
+    #view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) .dp-transfer-meta-main { gap: 4px; }
+    /* Last, after every reduction of information (the size, a label, the
+       providers' full names, the grip's reservation): where a line drawing
+       short names also holds a candidate launcher, its route launcher keeps
+       4px of padding each side instead of 8px, and 4px between its name and
+       caret instead of 5px, so its short name is whole. Its height, label,
+       caret, focus ring and behaviour are unchanged. */
+    #view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) .dp-transfer-provider-meta[data-dp-fit="short"]:has(.dp-candidate-chip) .dp-root-provider-launcher { padding-inline: 4px; gap: 4px; }
+  }
+}
+
+/* ── Pause shim, date menu, and name metadata material (folded
+   from the retired ui-downloads-presentation.css, DP 1.0.12 canonical
+   flattening). The footer layout (#torrent-pagination, #torrent-page-btns,
+   #torrent-page-info) is owned by the scoped rules above; the pager itself
+   is the shared DP pager in ui-shared-contract.css. ────────── */
+.dp-downloads-pause-shim{display:none;min-height:30px;padding:6px 14px;align-items:center;justify-content:center;text-align:center;font-size:10px;font-weight:600;color:var(--yellow);background:color-mix(in srgb,var(--yellow) 7%,transparent);border-bottom:1px solid color-mix(in srgb,var(--yellow) 20%,var(--border))}
+.dp-downloads-pause-shim.is-visible{display:flex}
+:is(#view-torrents, #view-dashboard) th:has(.dp-date-menu-trigger){position:relative;white-space:nowrap}
+.dp-date-menu-trigger{appearance:none;width:22px;height:22px;margin-left:3px;padding:0;display:inline-grid;place-items:center;border:1px solid transparent;border-radius:5px;color:var(--text3);background:transparent;cursor:pointer}
+.dp-date-menu-trigger:hover,.dp-date-menu-trigger:focus-visible{color:var(--text);border-color:var(--border);background:var(--surface2)}
+.dp-date-menu-trigger svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2}
+.dp-date-menu{position:absolute;z-index:30;top:calc(100% + 4px);right:0;width:184px;padding:6px;border:1px solid var(--border);border-radius:8px;background:var(--surface);box-shadow:0 10px 28px rgba(0,0,0,.24)}
+.dp-date-menu[hidden]{display:none}
+.dp-date-menu-title{padding:5px 7px 3px;color:var(--text3);font-size:9px;font-weight:700;text-transform:uppercase}
+:is(#view-torrents, #view-dashboard) .dp-date-menu button{position:relative;display:block;width:100%;padding:6px 8px 6px 28px;text-align:left;border:0;border-radius:5px;color:var(--text2);background:transparent;cursor:pointer}
+.dp-date-menu button[aria-checked="true"]::before{content:'✓';position:absolute;left:9px}
+.dp-date-menu button:hover,.dp-date-menu button:focus-visible,.dp-date-menu button[aria-checked="true"]{color:var(--text);background:var(--surface2)}
+.dp-downloads-date-value:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* A label, when set, follows the name's controls and gives way first: it
+   shrinks before the provider's name does. */
+:is(#t-tbody, .dp-downloads-styled-tbody) .dp-transfer-provider-meta .lbl-badge{flex:0 1000 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+
+/* ── Operator queue: Name-cell grip, drag, page edges, selection column ──
+   The whole Name cell is the drag surface of a queue member in the Priority
+   view (ui-downloads.js); the grip only shows that it is. Restrained, in the
+   table's own colours: no new colour family, no animation system. */
+#view-torrents .dp-downloads-name-line {
+  --dp-queue-grip-size: 14px;
+  --dp-queue-grip-overhang: 8px;
+  --dp-name-line-gap: 4px;
+  display: flex;
+  align-items: center;
+  gap: var(--dp-name-line-gap);
+  min-width: 0;
+}
+#view-torrents .dp-downloads-name-copy { flex: 1 1 auto; min-width: 0; }
+#view-torrents .dp-queue-grip {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 var(--dp-queue-grip-size);
+  width: var(--dp-queue-grip-size);
+  margin-left: calc(-1 * var(--dp-queue-grip-overhang));
+  color: var(--dp-text-muted);
+  touch-action: none;
+}
+#view-torrents .dp-queue-grip svg { width: 14px; height: 14px; }
+#view-torrents td[data-queue-drag="true"] {
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#view-torrents td[data-queue-drag="true"]:is(:hover, :focus-visible) .dp-queue-grip { color: var(--dp-text-secondary); }
+#view-torrents td[data-queue-drag="true"]:focus-visible {
+  outline: none;
+  box-shadow: inset var(--dp-focus-ring);
+}
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody).dp-queue-dragging,
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody).dp-queue-dragging td[data-queue-drag="true"] { cursor: grabbing; }
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr.dp-queue-drag-source { opacity: .45; }
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr[data-drop="before"] > td { box-shadow: inset 0 2px 0 var(--dp-accent-purple-bright); }
+#view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) tr[data-drop="after"] > td { box-shadow: inset 0 -2px 0 var(--dp-accent-purple-bright); }
+.dp-queue-drag-ghost {
+  position: fixed;
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .24);
+  color: var(--dp-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.dp-queue-drag-ghost svg { flex: 0 0 14px; width: 14px; height: 14px; color: var(--dp-text-muted); }
+.dp-queue-drag-ghost span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-queue-page-zone {
+  position: fixed;
+  z-index: 590;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px dashed color-mix(in srgb, var(--dp-accent-purple-bright) 55%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dp-accent-purple-bright) 9%, var(--surface));
+  color: var(--dp-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  pointer-events: none;
+}
+.dp-queue-page-zone[hidden] { display: none; }
+.dp-queue-page-zone.is-armed {
+  background: color-mix(in srgb, var(--dp-accent-purple-bright) 18%, var(--surface));
+  color: var(--dp-text-primary);
+}
+.dp-queue-page-zone svg { width: 14px; height: 14px; }
+.dp-queue-assistive {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+#view-torrents .dp-downloads-order {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 112px;
+}
+#view-torrents .dp-downloads-select-cell { text-align: center; }
+#view-torrents .dp-downloads-select-cell input { margin: 0; }
+
+/* The row Remove is quiet until it is meant: theme text at rest, the danger
+   colour on hover and keyboard focus. Border, tinted surface, size and
+   behaviour are the shared .btn-danger's, unchanged. */
+:is(#t-tbody, .dp-downloads-styled-tbody) .actions .dp-downloads-remove { color: var(--dp-text-secondary); }
+/* The reaffirmation a promoted transfer offers, under its status badge. */
+:is(#t-tbody, .dp-downloads-styled-tbody) .dp-queue-consent { display: flex; align-items: center; margin-top: 4px; }
+:is(#t-tbody, .dp-downloads-styled-tbody) .actions .dp-downloads-remove:is(:hover, :focus-visible) { color: var(--dp-state-error); }
+
+/* The restart confirmation: the title and every affected transfer read from
+   the left; only the two explanatory hints are centred (ui-modal-contract). */
+.dp-queue-restart-dialog .dp-queue-restart-list {
+  display: grid;
+  gap: 10px;
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  text-align: left;
+}
+.dp-queue-restart-dialog .dp-queue-restart-item {
+  display: grid;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: 8px;
+  text-align: left;
+}
+.dp-queue-restart-dialog .dp-queue-restart-name {
+  overflow: hidden;
+  color: var(--dp-text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dp-queue-restart-dialog :is(.dp-queue-restart-progress, .dp-queue-restart-consequence) {
+  color: var(--dp-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── Progress line: where Downloads shows its words ─────────────────── */
+/* The line itself (percentage and words left, estimate right) is the shared
+   progress cell's, in ui-dashboard.css. Downloads decides only where its own
+   columns have the room: from 1600px its Progress column holds the widest
+   line with the words; narrower, the line is the percentage and the estimate,
+   and the words stay in the label's accessible name and tooltip. */
+@media (width < 1600px) {
+  #view-torrents :is(#t-tbody, .dp-downloads-styled-tbody) .prog-line .prog-words {
+    display: none;
+  }
+}

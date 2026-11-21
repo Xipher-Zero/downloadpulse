@@ -1,0 +1,623 @@
+"""The locked Notifications Settings contract.
+
+Both cards are ordinary operational Settings cards built from the canonical
+primitives: the shared header rail, the shared plain-text status vocabulary,
+the shared Test treatment, the shared header Enable, the standard Title + hint
++ field grammar, the shared two-state destructive clear, the one canonical
+disclosure and the one compact tuning-cell collection.
+
+These cases hold that -- and, just as importantly, that none of it was
+re-invented locally. Where a primitive is shared, the assertion is that the
+Notifications surface RENDERS it rather than that it describes a lookalike.
+"""
+import re
+from pathlib import Path
+
+from i18n_node import english, says
+
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+RUNTIME = STATIC / "ui-settings-page.js"       # the one Settings markup owner
+STYLE = STATIC / "ui-settings-notifications.css"
+SHARED = STATIC / "ui-settings-page.css"
+LANGUAGE = STATIC / "ui-universal-language.css"
+
+
+def source(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def block(text: str, start: str, end: str) -> str:
+    return text[text.index(start):text.index(end, text.index(start))]
+
+
+def labelled(text: str, call: str, words: str) -> bool:
+    """Whether ``call`` (a builder and its key, e.g. ``input('x', ``) takes its label
+    from the catalog key whose English is exactly ``words`` (1.0.14)."""
+    match = re.search(re.escape(call) + r"say\('([a-z0-9_.]+)'\)", text)
+    return bool(match) and english(match.group(1)) == words
+
+
+def media_blocks(text: str) -> list[str]:
+    """Every `@media` block in a sheet, brace-balanced, so a rule can be told
+    apart from a rule a breakpoint states."""
+    blocks, at = [], text.find("@media")
+    while at != -1:
+        depth, i = 0, text.index("{", at)
+        while True:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        blocks.append(text[at:i + 1])
+        at = text.find("@media", i)
+    return blocks
+
+
+def declarations(path: Path) -> str:
+    """A stylesheet with its prose removed: a comment that names another
+    sheet's selector is a cross-reference, never a rule of this sheet's own."""
+    return re.sub(r"/\*.*?\*/", "", source(path), flags=re.S)
+
+
+def panel() -> str:
+    return block(source(RUNTIME), "function notificationsPanel(s, own = false) {",
+                 "/* Converge the Notifications surface")
+
+
+def discord_card() -> str:
+    return block(panel(), "const discord = card(", "const reports = card(")
+
+
+def reports_card() -> str:
+    return block(panel(), "const reports = card(", "return discord + (omitted('statistics-reporting') ? '' : reports);")
+
+
+# ── Header rails ─────────────────────────────────────────────────────────────
+
+def test_both_cards_render_the_shared_rail_in_the_locked_order():
+    """Status -> Test -> Enable, from the card primitive's own rail slots."""
+    for card in (discord_card(), reports_card()):
+        rail = card[card.index("headerStatus:"):]
+        assert rail.index("headerStatus:") < rail.index("headerAction:") < rail.index("headerEnableToggle(")
+        assert "notificationStatus(" in card
+        assert "providerTestAction(" in card
+        assert "headerEnableToggle(" in card
+
+
+def test_each_relocated_action_and_enable_control_has_exactly_one_owner():
+    runtime = source(RUNTIME)
+    assert runtime.count("providerTestAction('test-discord')") == 1
+    assert runtime.count("providerTestAction('send-report')") == 1
+    assert runtime.count("headerEnableToggle('discord_notifications_enabled'") == 1
+    assert runtime.count("headerEnableToggle('stats_reporting_enabled'") == 1
+    # The rail slot, the status node and the Enable control are the shared
+    # ones; this page declares no variant of any of them.
+    for invented in ("dp-settings-notifications-status", "dp-settings-notifications-test",
+                     "dp-settings-notifications-enable", "dp-settings-notifications-header-spacer"):
+        assert invented not in runtime, invented
+        assert invented not in source(STYLE), invented
+
+
+def test_the_status_vocabulary_is_the_shared_three_state_one():
+    status = block(source(RUNTIME), "function notificationStatus(", "/* The three stored webhooks")
+    assert "{text: say('settings.status.unconfigured'), tone: 'error'}" in status
+    assert "{text: say('settings.status.configured'), tone: 'warning'}" in status
+    assert "{text: say('settings.status.verified'), tone: 'success'}" in status
+    assert [english(f"settings.status.{word}") for word in ("unconfigured", "configured", "verified")] == ["Unconfigured", "Configured", "Verified"]
+    # Participation is a separate fact, so the report is never blanked by it.
+    assert "enabled" not in status
+    # It is a projection of canonical state; nothing else may feed it.
+    for card, prefix in ((discord_card(), "discord_notifications"),
+                         (reports_card(), "stats_reporting")):
+        assert f"notificationStatus(s.{prefix}_configured, s.{prefix}_verified)" in card
+
+
+# ── Discord identity ─────────────────────────────────────────────────────────
+
+def test_display_name_and_avatar_url_use_the_standard_field_grammar():
+    card = discord_card()
+    assert labelled(card, "input('discord_username', ", "Display Name")
+    assert says(card, "Name shown as the sender of Discord notifications.")
+    assert labelled(card, "input('discord_avatar_url', ", "Avatar URL")
+    assert says(card, "Image shown with Discord notifications. Paste a direct image URL or upload one.")
+    # No bespoke identity layout: both are the one field composer.
+    assert "<label class=\"form-label\"" not in card
+
+
+def test_the_avatar_field_has_one_embedded_action_upload_or_clear():
+    runtime = source(RUNTIME)
+    card = discord_card()
+    # Inside the field, through the ONE embedded-action primitive, and only one:
+    # Upload while the field is empty, Clear while it holds a URL. A User's own
+    # card (`own`) has no instance upload, so no action at all.
+    assert "embedAction: own ? '' : avatarAction(s.discord_avatar_url)," in card
+    assert "AVATAR_CLEAR" not in runtime and "AVATAR_UPLOAD" not in runtime
+    actions = block(runtime, "const AVATAR_ACTIONS = Object.freeze({", "});")
+    assert "upload: {action: 'upload-avatar', label: say('settings.avatar.upload'), name: say('settings.avatar.upload_label'), tone: 'btn-ghost'}" in actions
+    assert "clear: {action: 'clear-avatar', label: say('settings.avatar.clear'), name: say('settings.avatar.clear_label'), tone: 'btn-danger'}" in actions
+    assert [english(f"settings.avatar.{key}") for key in ("upload", "upload_label", "clear", "clear_label")] == [
+        "Upload", "Upload Avatar", "Clear", "Clear Avatar"]
+    # Keyboard reachable: a real button opening the hidden file input, not a
+    # <label> wrapper that no tab stop can reach.
+    markup = block(runtime, "const avatarAction = url => {", "  };")
+    assert 'type="button"' in markup and "data-avatar-action" in markup and 'id="dp-settings-avatar-file" type="file"' in markup
+    assert "dp-settings-file-button" not in runtime
+    # Room for the text is structural: the control and the action are siblings
+    # inside one compound field, so entered text cannot run beneath the button.
+    assert ".dp-action-field {" in source(LANGUAGE)
+    assert "flex: 1 1 auto" in block(source(LANGUAGE), ".dp-action-field > :is(.input, .dp-field) {", "}")
+
+
+def test_the_avatar_action_follows_the_field_in_one_fixed_slot_and_never_submits_a_draft_to_clear_it():
+    runtime = source(RUNTIME)
+    project = block(runtime, "function projectAvatarAction() {", "\n  }\n")
+    # What the FIELD holds decides the state -- never the placeholder.
+    assert "fieldFor('discord_avatar_url')?.value" in project and "placeholder" not in project
+    # One slot: the same width in both states, and a busy state with no new label.
+    css = source(STATIC / "ui-settings-notifications.css")
+    assert "width: 5.5em;" in block(css, "#view-settings .dp-settings-avatar-action {", "}")
+    clear = block(runtime, "async function clearAvatar(button) {", "\n  }\n")
+    assert "setBusy(button, true);" in clear
+    # A draft is set aside before the confirmation and the settle, and given back on cancel.
+    assert clear.index("avatar.value = accepted;") < clear.index("DPSettingsModal.confirm(")
+    assert clear.index("DPSettingsModal.confirm(") < clear.index("DPSettingsPersistence.settle(root())")
+    assert "avatar.value = draft;" in clear
+    # Pressing it does not take focus from the field (no blur commit of a draft).
+    assert "if (event.target.closest?.('[data-avatar-action]')) event.preventDefault();" in runtime
+
+
+# ── Discord destinations ─────────────────────────────────────────────────────
+
+def test_both_webhooks_use_the_standard_field_grammar_with_one_clear_each():
+    runtime = source(RUNTIME)
+    card = discord_card()
+    assert "webhookField('discord_webhook_url'" in card
+    assert "webhookField('discord_webhook_added'" in card
+
+    composer = block(runtime, "function webhookField(key, configured)", "/* The Avatar URL field's ONE action")
+    assert "input(key, spec.label, ''" in composer
+    assert "hint: spec.hint" in composer
+    # Clear is inside the field (the embedded action), as the stored password's is.
+    assert "inline: true" in composer and "embedAction: WEBHOOK_CLEAR(key" in composer
+
+    controls = block(runtime, "const WEBHOOK_CONTROLS = Object.freeze(", "const webhookPlaceholder")
+    # 1.0.14: one declaration per webhook, its words the catalog's settings.webhook.<key>.*.
+    assert "['discord_webhook_url', 'discord_webhook_added', 'stats_report_webhook_url'].map(key =>" in controls
+    for key, label, hint in (
+        ("discord_webhook_url", "Primary Webhook", "Primary destination for enabled notifications."),
+        ("discord_webhook_added", "Download Added Webhook",
+         "Optional destination for new-download notifications. Leave blank to use the primary webhook."),
+        ("stats_report_webhook_url", "Reporting Webhook",
+         "Optional destination for statistics reports. Leave blank to use the primary webhook."),
+    ):
+        assert english(f"settings.webhook.{key}.label") == label and english(f"settings.webhook.{key}.hint") == hint, key
+    assert "label: say(`settings.webhook.${key}.label`)" in controls and "hint: say(`settings.webhook.${key}.hint`)" in controls
+    # One declaration, three rows, one clear action shape.
+    assert runtime.count("const WEBHOOK_CLEAR") == 1
+    clear = block(runtime, "const WEBHOOK_CLEAR", "function webhookField")
+    assert ">${html(t('settings.webhook.clear'))}</button>" in clear and english("settings.webhook.clear") == "Clear"
+    assert ">Clear Webhook<" not in runtime
+    assert "{'aria-label': WEBHOOK_CONTROLS[key].aria, 'data-tooltip': WEBHOOK_CONTROLS[key].aria}" in clear
+    assert runtime.count("WEBHOOK_CLEAR(key") == 1
+
+
+def test_the_clear_on_apply_checkbox_semantics_are_gone_entirely():
+    runtime = source(RUNTIME)
+    for retired in (
+        "function secretField(",
+        "data-clear-secret",
+        "clearSecrets(",
+        "dp-settings-clear-secret",
+        "Clear Stored Webhook",
+        "Clear Stored Reporting Webhook",
+        "Clear Stored Download Added Webhook",
+        "when Settings are applied",
+        "clear_webhook",
+        "clear_stats_report_webhook",
+        "clear_discord_webhook",
+    ):
+        assert retired not in runtime, retired
+    for sheet in (STYLE, SHARED):
+        assert "dp-settings-clear-secret" not in source(sheet)
+
+
+def test_blanking_a_redacted_webhook_field_is_never_a_clear():
+    """A stored secret's accepted presentation is blank, so its baseline is
+    blank: blanking it is not a change and commits nothing. Erasing one is an
+    explicit action carrying only the removal."""
+    runtime = source(RUNTIME)
+    document_scope = block(runtime, "persistence.defineScope('settings-document'",
+                           "/* The ONE whole-settings write.")
+    assert "if (declared.secret) return '';" in document_scope
+
+    clear = block(runtime, "async function clearWebhook(button)", "async function runBackup")
+    assert "window.DPSettingsModal.confirm({" in clear
+    assert "if (!confirmed) return;" in clear
+    assert "await window.DPSettingsPersistence.settle(root());" in clear
+    assert "await writeSettingsDocument({}, [key]);" in clear
+    assert clear.index("if (!confirmed) return;") < clear.index("writeSettingsDocument")
+    # Convergence is the last word: releasing the busy state must not resurrect
+    # an action that now has nothing to act on.
+    assert clear.index("setBusy(button, false);") < clear.index("paintNotifications();")
+
+
+# ── The disclosure and its compact cells ─────────────────────────────────────
+
+def test_the_disclosure_is_named_exactly_and_uses_the_one_disclosure_control():
+    runtime = source(RUNTIME)
+    card = discord_card()
+    assert "disclosureSection(say('settings.notifications.events'), 'notifications-events'" in card
+    assert english("settings.notifications.events") == "Notification Events & Delivery Options"
+    assert "Additional Options" not in runtime
+
+    composer = block(runtime, "function disclosureSection(title, key, body, expanded = false, shortTitle = '')",
+                     "  // Provider card:")
+    assert "settingsDisclosure(bodyId, open, title, persistKey)" in composer
+    assert "disclosureOpen(persistKey, expanded)" in composer
+    assert 'aria-controls' not in composer          # the shared control owns ARIA
+    # Presentation only: the choice is remembered by the disclosure owner and
+    # written nowhere.
+    assert "request(" not in composer and "commitAttributes" not in composer
+    # The destination row above is a separate block, so opening this cannot
+    # resize it.
+    assert card.index("dp-settings-notifications-delivery-row") < card.index("disclosureSection(")
+
+
+def test_every_current_event_toggle_moved_into_the_compact_cells():
+    """The inventory comes from the source, not from a screenshot: exactly the
+    five event settings the delivery code actually reads."""
+    card = discord_card()
+    cells = block(card, "disclosureSection(", "    `, {")
+    expected = [
+        ("discord_notify_added", "Download Added", "Send a notification when a new download is accepted."),
+        ("discord_notify_finished", "Download Completed", "Send a notification when a download finishes successfully."),
+        ("discord_notify_error", "Download Error", "Send a notification when a download fails."),
+        ("discord_notify_extract", "Extraction Result", "Send a notification when archive extraction completes or fails."),
+        ("discord_notify_update", "Update Available", "Send a notification when a newer DownloadPulse release is detected."),
+    ]
+    assert "tuningCells(" in cells
+    for key, title, flavor in expected:
+        assert labelled(cells, f"tuningToggle('{key}', ", title), key
+        assert says(cells, flavor), key
+    assert cells.count("tuningToggle(") == len(expected)
+    # Six cells: the five events and the update interval, one collection.
+    assert cells.count("tuningToggle(") + cells.count("input(") == 6
+    # Nothing invented and nothing dropped.
+    assert source(RUNTIME).count("dp-settings-notifications-toggle-row") == 0
+
+
+def test_the_event_settings_the_delivery_code_reads_are_exactly_those_five():
+    """The screenshot is not the inventory; the runtime is. If delivery grows a
+    new event setting, this case fails until the disclosure carries it."""
+    observability = (ROOT / "backend" / "application" / "observability.py").read_text(encoding="utf-8")
+    scheduler = (ROOT / "backend" / "core" / "scheduler.py").read_text(encoding="utf-8")
+    notifications = (ROOT / "backend" / "services" / "notifications.py").read_text(encoding="utf-8")
+    config = (ROOT / "backend" / "core" / "config.py").read_text(encoding="utf-8")
+
+    declared = {line.split(":")[0].strip() for line in config.splitlines()
+                if line.strip().startswith("discord_notify_")}
+    assert declared == {"discord_notify_added", "discord_notify_finished", "discord_notify_error",
+                        "discord_notify_extract", "discord_notify_update"}
+    card = discord_card()
+    for setting in declared:
+        assert setting in card, setting
+    # And each one is actually consulted by a delivery path.
+    consulted = observability + scheduler + notifications
+    for setting in declared:
+        assert setting in consulted, setting
+
+
+def test_update_check_interval_moved_and_states_its_unit_inside_the_field():
+    card = discord_card()
+    cells = block(card, "disclosureSection(", "    `, {")
+    assert labelled(cells, "input('update_check_interval_hours', ", "Update Check Interval")
+    assert "Update Check Interval (Hours Between Checks)" not in source(RUNTIME)
+    assert "type: 'number', min: 0, max: 168, step: 1," in cells
+    assert says(cells, "Set how often DownloadPulse checks for a newer release. Enter 0 to disable update checks.")
+    assert "embedAction: fieldUnit(say('settings.unit.hours'))" in cells
+    # The delivery row no longer holds it.
+    delivery = block(card, "dp-settings-notifications-delivery-row", "disclosureSection(")
+    assert "update_check_interval_hours" not in delivery
+
+
+# ── Statistics Reporting ─────────────────────────────────────────────────────
+
+def test_statistics_reporting_is_three_standard_controls_and_no_disclosure():
+    card = reports_card()
+    assert says(card, "Configure where reports are sent, how often they are delivered, and how much activity they summarize.")
+    assert "webhookField('stats_report_webhook_url'" in card
+    assert labelled(card, "input('stats_report_interval_hours', ", "Automatic Report Interval")
+    assert "Automatic Report Interval (Hours Between Reports)" not in source(RUNTIME)
+    assert says(card, "Set how often DownloadPulse sends statistics reports. Enter 0 to disable automatic reports.")
+    assert "embedAction: fieldUnit(say('settings.unit.hours'))" in card
+    assert labelled(card, "selectField('stats_report_window_hours', ", "Report Window")
+    assert says(card, "Choose how much recent activity each statistics report includes.")
+    for hours, step, words in ((24, "day", "24 hours"), (168, "week", "7 days"), (720, "month", "30 days"), (8760, "year", "1 year")):
+        assert f"[{hours}, say('settings.reports.window_{step}')]" in card and english(f"settings.reports.window_{step}") == words, words
+    assert "disclosureSection(" not in card
+
+    order = [card.index(k) for k in ("stats_report_webhook_url", "stats_report_interval_hours",
+                                     "stats_report_window_hours")]
+    assert order == sorted(order)
+
+
+# ── Geometry that IS the contract ────────────────────────────────────────────
+
+def test_every_control_uses_the_shared_horizontal_field_grammar():
+    """Correction 1. All seven controls render the ONE shared inline field --
+    a left descriptive block (title over hint) centred against its control on
+    the right -- and none of them renders the stacked title/control/hint stack
+    or any page-local rearrangement of it."""
+    runtime = source(RUNTIME)
+    panel = block(runtime, "function notificationsPanel(s, own = false) {", "/* Converge the Notifications surface")
+    composer = block(runtime, "function webhookField(key, configured)", "/* The Avatar URL field's ONE action")
+
+    inline_declared = [
+        ("discord_username", panel), ("discord_avatar_url", panel),
+        ("stats_report_interval_hours", panel), ("stats_report_window_hours", panel),
+    ]
+    for key, where in inline_declared:
+        call = where[where.index(f"'{key}'"):]
+        call = call[:call.index("})") + 2]
+        assert "inline: true" in call, key
+    # The three webhooks share one composer, which declares it once.
+    assert "inline: true" in composer
+    for key in ("discord_webhook_url", "discord_webhook_added", "stats_report_webhook_url"):
+        assert f"webhookField('{key}'" in panel, key
+
+    # The stacked composer this page briefly used is gone, not merely unused.
+    assert "fieldRow(" not in runtime
+    assert "dp-settings-field-row" not in runtime
+    assert "dp-settings-field-row" not in source(SHARED)
+
+    # It is the SHARED primitive: the page composes it, never restates it.
+    assert "function inlineField(id, label, hint, control" in runtime
+    assert "dp-settings-inline-field" not in panel
+
+
+def test_the_shared_inline_primitive_puts_the_title_over_its_hint():
+    """The grammar itself has one owner, and this is what it renders."""
+    runtime = source(RUNTIME)
+    primitive = block(runtime, "function inlineField(id, label, hint, control", "const CONFIGURED_SECRET_MASK")
+    info = primitive[primitive.index("dp-settings-inline-field-info"):]
+    assert info.index("${title}") < info.index("hintMarkup(hint)")
+    assert '<span class="form-hint"' in block(runtime, "const hintMarkup = hint =>", ";\n")
+    layout = block(source(SHARED), ":is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field {", "}")
+    assert "display: flex" in layout and "align-items: center" in layout
+    stack = block(source(SHARED), ":is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field-info {", "}")
+    assert "flex-direction: column" in stack
+
+
+def test_the_page_states_no_field_layout_of_its_own():
+    """Correction 1's implementation rule: no Notifications-only offsets, no
+    absolutely positioned hint, no cloned component, no second abstraction.
+    (A handheld hint taken out of view -- clipped to nothing, the hidden-hint
+    idiom every Settings section uses -- is not a layout offset.)"""
+    css = source(STYLE)
+    for rule in re.findall(r"\{[^{}]*\}", css):
+        if "position: absolute" in rule:
+            assert "clip-path: inset(50%)" in rule and "width: 1px" in rule, rule
+    for banned in ("inset-inline-start", "float:",
+                   ":is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field {",
+                   ":is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field-info {",
+                   ":is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field-control {",
+                   "#view-settings .dp-settings-inline-field-action {"):
+        assert banned not in css, banned
+
+
+def test_both_discord_rows_share_the_card_body_rails():
+    """Correction 2. The webhook row carries no inset or width of its own, so
+    it begins and ends exactly where the identity row above it does."""
+    css = source(STYLE)
+    delivery = block(css, "#view-settings .dp-settings-notifications-delivery-row {", "}")
+    assert "width:" not in delivery, "the row narrows itself again"
+    assert "margin: " not in delivery and "auto" not in delivery
+    assert "display: grid" in delivery
+    # ... and no breakpoint reintroduces one. What is read is the rule's own
+    # DECLARATIONS: a breakpoint's condition is itself spelled `max-width`, and
+    # a condition is not a width the row gives itself.
+    marker = "dp-settings-notifications-delivery-row {"
+    for chunk in css.split("}"):
+        if marker in chunk:
+            assert "width:" not in chunk.split(marker, 1)[1], chunk
+    # The identity row it must match states no width either.
+    identity = block(css, "#view-settings .dp-settings-notifications-identity-row {", "}")
+    assert "width:" not in identity
+
+
+def test_the_avatar_preview_is_the_fields_own_second_line():
+    """The preview is a reading of the stored value, so it belongs BENEATH the
+    Avatar URL control row -- and it is placed there, not left to reach it by
+    running out of horizontal room."""
+    runtime = source(RUNTIME)
+    card = discord_card()
+
+    # The panel hands it to the field's second-line slot. ``after`` is content
+    # inside the control's own box (the AllDebrid in-field status); the preview
+    # is not that, so it is not passed that way.
+    call = card[card.index("'discord_avatar_url'"):]
+    call = call[:call.index("})") + 2]
+    assert "secondLine: avatarPreview(" in call
+    assert "after:" not in call
+    assert runtime.count("secondLine: avatarPreview(") == 1
+    # The field's one action stays INSIDE it.
+    assert "embedAction: own ? '' : avatarAction(s.discord_avatar_url)," in call
+
+    # The one field primitive renders it as its own region, AFTER the control
+    # and the action -- never inside the control box that holds the input.
+    primitive = block(runtime, "function inlineField(id, label, hint, control",
+                      "const CONFIGURED_SECRET_MASK")
+    assert "secondLine = ''" in primitive
+    assert "dp-settings-inline-field--two-line" in primitive
+    second = primitive.index("dp-settings-inline-field-second-line")
+    assert primitive.index("dp-settings-inline-field-control") < second
+    assert primitive.index("dp-settings-inline-field-action") < second
+    control_region = primitive[primitive.index('<div class="dp-settings-inline-field-control">'):]
+    control_region = control_region[:control_region.index("</div>")]
+    assert "second-line" not in control_region
+
+
+def test_the_second_line_is_placed_in_a_row_of_its_own_not_wrapped_into_one():
+    """Two rows is the field's STRUCTURE: the second line is placed in row two
+    of a two-row grid, so no width exists at which it becomes row one."""
+    shared = source(SHARED)
+    # Written as a modifier OF the base class, so the two-line form wins wherever
+    # the base form is stated rather than depending on where in the sheet it sits.
+    variant_selector = ("#view-settings .dp-settings-inline-field"
+                        ".dp-settings-inline-field--two-line {")
+    variant = block(shared, variant_selector, "}")
+    assert "display: grid" in variant
+    assert "grid-template-rows: auto auto" in variant
+    placed = block(shared, variant_selector.replace(
+        " {", " > .dp-settings-inline-field-second-line {"), "}")
+    assert "grid-row: 2" in placed
+    # Explicitly the control's column, and explicitly the row beneath it.
+    assert "grid-column: 2" in placed
+    # None of the forbidden ways of getting there, in either sheet.
+    for banned in ("flex-wrap", "flex-basis", "position: absolute", "float:", "width: 100%"):
+        assert banned not in variant, banned
+        assert banned not in placed, banned
+    # This page declares no rule for the variant at all -- the primitive's own
+    # sheet owns it, and the page only cross-references it in prose.
+    assert "dp-settings-inline-field--two-line" not in declarations(STYLE)
+    # The variant is declared unconditionally -- a rule of the sheet, not of a
+    # breakpoint -- and exactly one breakpoint says anything about it: the
+    # primitive's OWN narrow-width collapse, where every inline field becomes a
+    # single column.
+    blocks = media_blocks(shared)
+    unconditional = shared
+    for chunk in blocks:
+        unconditional = unconditional.replace(chunk, "")
+    assert variant_selector in unconditional
+    narrow = [chunk for chunk in blocks if "--two-line" in chunk]
+    assert len(narrow) == 1, [chunk[:40] for chunk in narrow]
+    assert narrow[0].startswith("@media (max-width: 779px)")
+    assert "flex-direction: column" in narrow[0]
+
+
+def test_the_webhook_row_clears_the_avatars_second_line():
+    """Correction 2. Row 2 begins after the WHOLE of row 1: the identity row is
+    sized by its tallest field, and the destinations row keeps a spacing-scale
+    step below it rather than a pixel value chosen against a screenshot."""
+    css = source(STYLE)
+    identity = block(css, "#view-settings .dp-settings-notifications-identity-row {", "}")
+    # The taller field decides the row's height, so a two-line field cannot be
+    # overlapped by what follows.
+    assert "align-items: start" in identity
+    delivery = block(css, "#view-settings .dp-settings-notifications-delivery-row {", "}")
+    assert "margin-top: var(--dp-space-" in delivery
+    # A shared scale step, not a local nudge.
+    import re
+    assert not re.search(r"margin-top:\s*\d+px", delivery), delivery
+
+
+def test_the_report_cadence_and_window_are_one_centred_bordered_group():
+    """Correction 3. Both settings, side by side, in one content-bounded island
+    centred in the card body -- the same island the Download Engine and
+    Extraction surfaces already use, not a new decorative language."""
+    card = reports_card()
+    # A bounded Settings island: the shared owner (fitIslands) stacks it when
+    # its row wraps, and the outline then hugs the stack.
+    group = block(card, 'class="dp-settings-statistics-cadence-group dp-settings-island"', "</div>")
+    assert "stats_report_interval_hours" in group
+    assert "stats_report_window_hours" in group
+    # The destination is NOT in it: it keeps the full row above.
+    assert "stats_report_webhook_url" not in group
+    assert card.index("webhookField('stats_report_webhook_url'") \
+        < card.index('class="dp-settings-statistics-cadence-group dp-settings-island"')
+    # Nothing new was introduced around it.
+    assert "disclosureSection(" not in card
+    assert "card(" not in group and "form-label" not in group
+
+    css = source(STYLE)
+    island = block(css, "#view-settings .dp-settings-statistics-cadence-group {", "}")
+    # Centred and content-bounded, never stretched across the card.
+    assert "justify-content: center" in island
+    assert "width: max-content" in island
+    assert "margin-inline: auto" in island
+    # Side by side, with ONE declared moderate gap -- not a distribution.
+    assert "display: flex" in island
+    assert "flex-direction: column" not in island
+    assert "space-between" not in island
+    assert "space-around" not in island and "space-evenly" not in island
+    assert "gap: 18px 44px" in island
+    # The subtle shared group border, and nothing decorative.
+    assert "border: 1px solid var(--dp-divider)" in island
+    assert "box-shadow" not in island and "glow" not in island
+    # It is the SAME island treatment the accepted surfaces declare.
+    engine = block(source(SHARED), "#view-settings .dp-settings-download-engine-row {", "}")
+    for shared_material in ("justify-content: center", "gap: 18px 44px", "width: max-content",
+                            "border: 1px solid var(--dp-divider)", "border-radius: 12px",
+                            "padding: 16px var(--dp-island-padding-inline, 22px) 17px"):
+        assert shared_material in engine, shared_material
+        assert shared_material in island, shared_material
+
+
+def test_the_reporting_row_distributes_nothing_and_the_compact_widths_survive():
+    css = source(STYLE)
+    # One column: the row places the destination and the island, and decides
+    # nothing about how the two settings inside the island sit.
+    marker = "#view-settings .dp-settings-statistics-reporting-row {"
+    bodies = [css[i + len(marker):css.index("}", i)]
+              for i in range(len(css)) if css.startswith(marker, i)]
+    layout = [body for body in bodies if "display: grid" in body]
+    assert len(layout) == 1, bodies
+    assert "grid-template-columns: minmax(0, 1fr)" in layout[0]
+    assert "space-between" not in layout[0]
+    # ... and no breakpoint gives it a second column back.
+    unconditional, *breakpoints = css.split("@media")
+    assert marker in unconditional
+    for chunk in breakpoints:
+        assert marker not in chunk, chunk
+    # The compact controls are exactly as accepted.
+    compact = block(css,
+                    '#view-settings [data-panel="notifications"] .dp-settings-report-interval-row .dp-settings-unit-field,',
+                    "}")
+    assert "width: min(100%, 170px)" in compact
+    bounded = block(css,
+                    '#view-settings [data-panel="notifications"] .dp-settings-report-interval-row > .dp-settings-inline-field-control,',
+                    "}")
+    assert "flex: 0 0 auto" in bounded
+
+
+def test_the_in_field_unit_is_a_reading_not_a_control():
+    unit = block(source(SHARED), "#view-settings .dp-settings-field-unit {", "}")
+    assert "pointer-events: none" in unit
+    assert "user-select: none" in unit
+    for banned in ("position: absolute", "transform"):
+        assert banned not in unit, banned
+    # The unit is aria-hidden and untabbable because the field's own label
+    # already names the setting.
+    assert 'aria-hidden="true"' in block(source(RUNTIME), "function fieldUnit(text)", "const CONFIGURED_SECRET_MASK")
+
+
+def test_this_page_declares_no_lookalike_of_a_shared_primitive():
+    css = source(STYLE)
+    # The rail, the status tones, the field material, the compound field, the
+    # disclosure chip, the destructive button and the tuning cells all have
+    # their own owners. This sheet places rows; it re-materialises nothing.
+    for owned in (
+        "dp-settings-provider-config-status[data-tone",
+        ".dp-settings-disclosure {",
+        ".dp-action-field {",
+        ".dp-settings-tuning-grid {",
+        "#view-settings .dp-settings-field-row {",
+        "#view-settings .dp-settings-field-unit {",
+        "display: contents",
+        "btn-danger",
+        "box-shadow",
+    ):
+        assert owned not in css, owned
+    # The rail may be RE-PLACED here when the header stops being three regions
+    # wide, but it is never re-materialised.
+    rail = [chunk for chunk in css.split("}") if "dp-settings-card-header-controls" in chunk]
+    for chunk in rail:
+        for material in ("display:", "flex-wrap", "align-items", "gap:"):
+            assert material not in chunk, material
+    # The datum itself has one owner (ui-settings-form-layout.css).
+    assert "inset-inline-start" not in css

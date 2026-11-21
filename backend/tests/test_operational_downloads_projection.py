@@ -1,0 +1,1554 @@
+import asyncio
+import json
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+import pytest_asyncio
+
+import api.operational_downloads as downloads
+import api.routes as legacy_routes
+import db.database as database
+import main as backend_main
+from fake_integrations import MemoryExecutor, ParcelProvider
+from test_group_common_sources import group_db
+from transfers.engine import TransferEngine
+from transfers.models import IntegrityMetadata, ResolutionResult, ResourceState, SourceIdentity, TransferRequest
+from transfers.policy import TransferPolicy
+from transfers.registry import IntegrationRegistry
+from transfers.repository import TransferRepository
+
+
+class _ExplodingRepository:
+    async def presentation(self, *_args, **_kwargs):
+        raise AssertionError(
+            "Downloads collection must not invoke comprehensive presentation per row"
+        )
+
+    async def _root_route_facts_by_root(self, _db, _transfer_ids):
+        # The page's one set-oriented route-facts read (no root here routes).
+        return {}
+
+
+class _FakeDb:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.calls = []
+
+    async def fetchall(self, query, params=()):
+        self.calls.append(("fetchall", query, tuple(params)))
+        return list(self.rows)
+
+    async def fetchone(self, query, params=()):
+        self.calls.append(("fetchone", query, tuple(params)))
+        return {"cnt": len(self.rows)}
+
+
+def _row(
+    transfer_id: int,
+    common_candidate_count: int = 0,
+    group_remaining_count: int = 0,
+    filenames=None,
+):
+    import json as _json
+
+    return {
+        "id": transfer_id,
+        "hash": f"hash-{transfer_id}",
+        "name": f"Transfer {transfer_id}",
+        "magnet": "magnet:?xt=urn:btih:secret",
+        "status": "completed",
+        "size_bytes": 1024,
+        "progress": 100.0,
+        "download_url": "https://private.invalid/download",
+        "local_path": "/download/private",
+        "source": "https://example.invalid/file",
+        "label": "fixture",
+        "error_message": None,
+        "created_at": "2026-09-08T12:00:00Z",
+        "updated_at": "2026-09-08T12:01:00Z",
+        "completed_at": "2026-09-08T12:01:00Z",
+        "extraction_status": "not_required",
+        "extraction_error": None,
+        "source_failure_count": 1,
+        "common_candidate_count": common_candidate_count,
+        "group_remaining_count": group_remaining_count,
+        "_group_member_filenames": _json.dumps(filenames) if filenames is not None else None,
+        "current_provider_id": "alldebrid",
+        "delivering_provider_id": "alldebrid",
+        "provider_provenance_status": "recorded",
+    }
+
+
+def _run_list(monkeypatch, row_count: int, rows=None):
+    db = _FakeDb(rows if rows is not None else (_row(index) for index in range(1, row_count + 1)))
+
+    @asynccontextmanager
+    async def fake_get_db():
+        yield db
+
+    monkeypatch.setattr(downloads, "get_db", fake_get_db)
+    application = SimpleNamespace(
+        repository=_ExplodingRepository(),
+        definitions=[],
+    )
+    result = asyncio.run(
+        downloads.list_operational_torrents(
+            status=None,
+            search=None,
+            limit=25,
+            offset=0,
+            application=application,
+        )
+    )
+    return db, result
+
+
+def test_downloads_collection_uses_bounded_projection_not_comprehensive_presentations(monkeypatch):
+    db, result = _run_list(monkeypatch, 25)
+
+    # One bounded projection read plus one count read; no call to the exploding
+    # comprehensive repository presenter can occur for any row.
+    assert len(db.calls) == 2
+    assert [kind for kind, _query, _params in db.calls] == ["fetchall", "fetchone"]
+
+    projection_sql = db.calls[0][1]
+    assert "WITH page AS" in projection_sql
+    assert "route_attempt_provenance" in projection_sql
+    assert "execution_attempt_provenance" in projection_sql
+    assert "transfer_requests" in projection_sql
+    assert "AND p.provider_id IS NOT NULL" in projection_sql
+    assert "COALESCE(a.provider_id" not in projection_sql
+    assert "t.*" not in projection_sql
+    assert "t.magnet" not in projection_sql
+    assert "t.download_url" not in projection_sql
+    assert "t.local_path" not in projection_sql
+
+    # The transfer-level common-source group summary is derived from canonical
+    # acquisition-candidate storage inside the same bounded read, never from
+    # route/provider attempt counts.
+    assert "group_common_sources AS" in projection_sql
+    assert "canonical_candidate_bindings" in projection_sql
+    assert "AS common_candidate_count" in projection_sql
+    assert "candidate_source_max" not in projection_sql
+
+    assert result["total"] == 25
+    assert len(result["items"]) == 25
+    first = result["items"][0]
+    assert first["current_provider_id"] == "alldebrid"
+    assert first["delivering_provider_id"] == "alldebrid"
+    assert first["provider_provenance_status"] == "recorded"
+    assert first["source_failure_count"] == 1
+    assert first["common_candidate_count"] == 0
+    assert "magnet" not in first
+    assert "download_url" not in first
+
+
+def test_downloads_collection_db_call_count_does_not_scale_with_page_size(monkeypatch):
+    one_db, one_result = _run_list(monkeypatch, 1)
+    many_db, many_result = _run_list(monkeypatch, 50)
+
+    assert len(one_db.calls) == 2
+    assert len(many_db.calls) == 2
+    assert len(one_result["items"]) == 1
+    assert len(many_result["items"]) == 50
+
+
+def test_assembled_app_exposes_only_operational_downloads_collection_route():
+    legacy_collection_routes = [
+        route
+        for route in legacy_routes.router.routes
+        if getattr(route, "path", None) == "/torrents"
+        and "GET" in (getattr(route, "methods", set()) or set())
+    ]
+    operational_collection_routes = [
+        route
+        for route in downloads.router.routes
+        if getattr(route, "path", None) == "/torrents"
+        and "GET" in (getattr(route, "methods", set()) or set())
+    ]
+
+    assert legacy_collection_routes == []
+    assert len(operational_collection_routes) == 1
+    assert operational_collection_routes[0].endpoint is downloads.list_operational_torrents
+
+    paths = backend_main.app.openapi()["paths"]
+    assert "/api/torrents" in paths
+    assert paths["/api/torrents"]["get"]["operationId"].startswith(
+        "list_operational_torrents_"
+    )
+    assert "/api/torrents/{torrent_id}" in paths
+    assert paths["/api/torrents/{torrent_id}"]["get"]["operationId"].startswith(
+        "get_torrent_"
+    )
+
+
+class _RecordingRepository:
+    """The repository surface the Details route reads (``get_torrent``): the
+    detailed presentation, the transfer's own error record (for its error
+    disclosure) and its root's admitted-verbatim fact."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def get(self, transfer_id):
+        return None
+
+    async def first_root_admitted_verbatim(self, transfer_id):
+        return False
+
+    async def presentation(self, transfer_id, **kwargs):
+        self.calls.append((transfer_id, kwargs))
+        return {
+            "id": transfer_id,
+            "hash": "detail-hash",
+            "name": "Detail transfer",
+            "status": "completed",
+            "size_bytes": 1024,
+            "progress": 100.0,
+            "source": "https://example.invalid/file",
+            "label": "detail",
+            "created_at": "2026-09-08T12:00:00Z",
+        }
+
+
+def test_download_detail_explicitly_requests_comprehensive_presentation():
+    repository = _RecordingRepository()
+    application = SimpleNamespace(repository=repository, definitions=[])
+
+    result = asyncio.run(legacy_routes.get_torrent(42, application=application))
+
+    # DP 1.0.12 Section 9: Details also forwards capacity_only_blocked_ids --
+    # the execution-admission owner's own positive record
+    # (transfers.convergence_engine.TransferEngine.capacity_only_blocked_ids);
+    # with no engine attached here it degrades to the conservative empty set.
+    assert repository.calls == [(42, {
+        "details": True,
+        "capacity_only_blocked_ids": frozenset(),
+    })]
+    assert result["id"] == 42
+
+
+# ── Transfer-level common-source group summary on the bounded list ────────
+
+
+def test_bounded_list_rows_carry_common_candidate_count(monkeypatch):
+    rows = [
+        _row(1, common_candidate_count=3),
+        _row(2, common_candidate_count=0),
+        _row(3, common_candidate_count=1),
+    ]
+    db, result = _run_list(monkeypatch, 3, rows=rows)
+
+    # Still one bounded projection read plus one count read.
+    assert [kind for kind, _query, _params in db.calls] == ["fetchall", "fetchone"]
+    assert [item["common_candidate_count"] for item in result["items"]] == [3, 0, 1]
+    # group_switch_available does not exist: it encoded the retired
+    # actionability-gated launcher rule. Launcher visibility is derived purely
+    # from common_candidate_count by the caller (0/1 -> hidden, 2+ -> shown).
+    assert all("group_switch_available" not in item for item in result["items"])
+
+
+def test_single_common_source_rows_do_not_advertise_a_group(monkeypatch):
+    # 0 and 1 common hosts both suppress the group launcher: there is no
+    # transfer-wide choice to make. This is a pure membership-count fact.
+    for count in (0, 1):
+        _db, result = _run_list(monkeypatch, 1, rows=[_row(9, common_candidate_count=count)])
+        assert result["items"][0]["common_candidate_count"] == count
+
+
+def test_common_candidate_count_is_normalized_to_non_negative_int(monkeypatch):
+    _db, result = _run_list(monkeypatch, 1, rows=[_row(4, common_candidate_count=None)])
+    assert result["items"][0]["common_candidate_count"] == 0
+
+
+def test_group_summary_does_not_add_db_calls_or_scale_with_page_size(monkeypatch):
+    one_db, _one = _run_list(
+        monkeypatch, 1, rows=[_row(1, common_candidate_count=4)]
+    )
+    many_db, many = _run_list(
+        monkeypatch, 40, rows=[_row(i, common_candidate_count=i % 5) for i in range(1, 41)]
+    )
+
+    assert len(one_db.calls) == 2
+    assert len(many_db.calls) == 2
+    assert [item["common_candidate_count"] for item in many["items"]] == [
+        i % 5 for i in range(1, 41)
+    ]
+
+
+def test_projection_group_summary_is_derived_from_canonical_bindings(monkeypatch):
+    """The group CTE reads canonical_candidate_bindings, not route history."""
+    db, _result = _run_list(monkeypatch, 1, rows=[_row(1)])
+    projection_sql = db.calls[0][1]
+
+    cte = projection_sql.split("group_member_artifacts AS", 1)[1]
+    assert "canonical_candidate_bindings" in cte
+    assert "AS common_candidate_count" in cte
+    # Current-artifact identity mirrors the per-artifact detail projection —
+    # this is which download_files rows are the transfer's actual current
+    # files, not a switchability gate. Sourced from the one canonical
+    # membership predicate (transfers._repository_base
+    # .canonical_artifact_membership_sql, DP 1.0.12 recovery leveling Section 7)
+    # rather than a hand-copied literal, so this and transfers._repository_base
+    # .TransferRepository.artifacts() can never again silently diverge.
+    assert "f.request_id IS NOT NULL" in cte
+    assert "COALESCE(f.mirror_state,'')!='standby'" in cte
+    assert "route_attempt_provenance" not in cte.split("group_common_sources", 1)[0]
+
+    group_block = projection_sql.split("group_member_artifacts AS", 1)[1].split(
+        "\n        SELECT\n            t.id,", 1
+    )[0]
+
+    # The base current-artifact CTE now also carries the artifact's own
+    # status/filename — feeding the SIBLING remaining-work count and
+    # display-name filename aggregate (DP 1.0.12 §10/§19), never the
+    # membership computation itself. The remaining-work predicate reuses the
+    # exact switch_eligible classification the comprehensive Details
+    # presentation already uses for switch_eligible (its SQL form, imported,
+    # not a fourth hand-copied literal list) — 'error' (a recoverable-looking
+    # failure) and a timed retry backoff count as remaining work, but a
+    # non-completed status outside it (e.g. 'cancelled', 'input_required')
+    # does not.
+    from api.operational_downloads import _SWITCHABLE_SQL
+    assert "f.status AS status" in group_block
+    assert "group_remaining_counts AS" in group_block
+    assert _SWITCHABLE_SQL in group_block
+    assert "'error'" in group_block  # recoverable failure still counts as remaining work
+    assert "'completed'" not in group_block.split("group_remaining_counts AS", 1)[1].split(")", 1)[0]
+
+    # MEMBERSHIP itself (group_member_hosts -> group_true_common_hosts ->
+    # group_common_sources) must still NOT depend on switch-eligibility,
+    # artifact operational state, or which candidate is currently selected:
+    # no artifact-status literal, no selected-candidate comparison, and no
+    # reference to download_files.status/selected_candidate/candidates
+    # anywhere in that specific sub-chain (isolated from the unrelated
+    # 'pending' literal in the outer provider_provenance_status projection,
+    # from the sibling remaining-work count above, and from the SEPARATE
+    # group_remaining_host_movement/group_actionable_common_sources
+    # actionability facts below -- those legitimately DO read status and
+    # selected-candidate, but feed only group_remaining_count, never
+    # common_candidate_count/membership; proven by the dedicated
+    # test_group_actionable_common_sources_is_derived_from_the_same_true_common_host_set).
+    membership_block = group_block.split("group_member_hosts AS", 1)[1].split(
+        "group_remaining_host_movement AS", 1
+    )[0]
+    for switchable_state in (
+        "'pending'", "'processing'", "'ready'", "'queued'", "'downloading'",
+        "'paused'", "'refresh_pending'", "'error'", "'completed'",
+    ):
+        assert switchable_state not in membership_block
+    assert "f.status" not in membership_block
+    assert "f.selected_candidate" not in membership_block
+    assert "f.candidates" not in membership_block
+    assert "json_extract" not in membership_block
+    assert "group_switch_available" not in projection_sql
+
+
+# ── Canonical display name / remaining-work count on the bounded list ─────
+# (DP 1.0.12 UI presentation task, §27 U/V: Recent/Downloads parity and
+# boundedness are proven at this shared projection, never per-surface.)
+
+
+def test_bounded_list_rows_carry_group_remaining_count(monkeypatch):
+    rows = [
+        _row(1, common_candidate_count=2, group_remaining_count=2),
+        _row(2, common_candidate_count=2, group_remaining_count=0),
+    ]
+    db, result = _run_list(monkeypatch, 2, rows=rows)
+    assert [kind for kind, _query, _params in db.calls] == ["fetchall", "fetchone"]
+    assert [item["group_remaining_count"] for item in result["items"]] == [2, 0]
+
+
+def test_group_remaining_count_is_normalized_to_non_negative_int(monkeypatch):
+    _db, result = _run_list(monkeypatch, 1, rows=[_row(4, group_remaining_count=None)])
+    assert result["items"][0]["group_remaining_count"] == 0
+
+
+def test_display_name_prefers_artifact_filenames_over_root_name(monkeypatch):
+    rows = [_row(1, filenames=["Example.Release.part01.rar", "Example.Release.part02.rar"])]
+    _db, result = _run_list(monkeypatch, 1, rows=rows)
+    item = result["items"][0]
+    assert item["display_name"] == "Example.Release + 2 files"
+    assert item["name"] == "Transfer 1"  # root/request name is preserved, untouched
+
+
+def test_display_name_falls_back_to_root_name_when_no_artifact_filenames(monkeypatch):
+    rows = [_row(1, filenames=None)]
+    _db, result = _run_list(monkeypatch, 1, rows=rows)
+    assert result["items"][0]["display_name"] == "Transfer 1"
+
+
+def test_display_name_does_not_expose_raw_root_source_bookkeeping(monkeypatch):
+    def _root_row(transfer_id):
+        row = _row(transfer_id, filenames=["Movie.Title.2026.1080p.mkv"])
+        row["name"] = "1fichier.com - abcdef123456 + 23 more"
+        return row
+
+    _db, result = _run_list(monkeypatch, 1, rows=[_root_row(7)])
+    item = result["items"][0]
+    assert item["display_name"] == "Movie.Title.2026.1080p.mkv"
+    assert "1fichier.com" not in item["display_name"]
+    # The root/request name is not destroyed -- still present as its own field.
+    assert item["name"] == "1fichier.com - abcdef123456 + 23 more"
+
+
+def test_torrent_root_name_wins_over_member_filenames_in_bounded_projection(monkeypatch):
+    """DP 1.0.12 Workstream C: a torrent's root name must survive the list projection."""
+    row = _row(
+        1,
+        filenames=["14. I'll Never Stop (Radio Edit).mp3"] + [f"{i:02d}. Track.mp3" for i in range(1, 15)],
+    )
+    row["name"] = "NSYNC - Essentials (2020) Mp3 320kbps [PMEDIA]"
+    row["_source_request_payload"] = json.dumps({"kind": "torrent_file", "payload": "<bencoded>"})
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    item = result["items"][0]
+    assert item["display_name"] == "NSYNC - Essentials (2020) Mp3 320kbps [PMEDIA]"
+    assert item["name"] == "NSYNC - Essentials (2020) Mp3 320kbps [PMEDIA]"
+
+
+def test_magnet_root_name_wins_over_member_filenames_in_bounded_projection(monkeypatch):
+    row = _row(1, filenames=["a.mkv", "b.mkv", "c.mkv"])
+    row["name"] = "Example Release"
+    row["_source_request_payload"] = json.dumps(
+        {"kind": "magnet", "payload": "magnet:?xt=urn:btih:secret"}
+    )
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["display_name"] == "Example Release"
+
+
+def test_link_kind_multi_file_batch_still_uses_artifact_normalization(monkeypatch):
+    # A non-torrent/magnet source kind must retain the existing, useful
+    # artifact-derived normalization -- narrowing applies only to torrent/
+    # magnet submissions.
+    row = _row(1, filenames=[f"Example.Release.part{i:02d}.rar" for i in range(1, 25)])
+    row["name"] = "1fichier.com - abcdef123456"
+    row["_source_request_payload"] = json.dumps(
+        {"kind": "https", "payload": "https://example.invalid/a"}
+    )
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["display_name"] == "Example.Release + 24 files"
+
+
+# ── DP 1.0.12 Workstream B: bounded file-selection affordance hint ─────────
+
+
+def test_file_selection_affordance_pure_classifier_covers_all_five_states():
+    # DP 1.0.12 canonical flattening (CANON-002 closure): the classifier is
+    # now the one shared backend domain function, consumed (not
+    # reimplemented) by both api.operational_downloads and
+    # transfers.repository.TransferRepository.file_selection_presentation.
+    from transfers.file_selection import file_selection_affordance as classify
+    torrent = {"awaiting_manifest": True}
+    # 5. genuinely not applicable: no selection generation row at all.
+    assert classify(None, None, None, 0, **torrent) == "none"
+    # 1. applicable but manifest not ready yet -- for a root whose file list
+    # always comes (a torrent/magnet); any other root's is not a choice yet.
+    assert classify(None, "pending", None, 0, **torrent) == "pending_manifest"
+    assert classify(None, "pending", None, 0, awaiting_manifest=False) == "none"
+    # 5. single-file torrent/magnet: never actionable even if unlocked.
+    assert classify("manifest-1", "all", None, 1, **torrent) == "none"
+    # 2. usable manifest, mutable, no explicit subset yet.
+    assert classify("manifest-1", "pending", None, 3, **torrent) == "choose"
+    assert classify("manifest-1", "all", None, 3, **torrent) == "choose"
+    # 3. usable manifest, mutable, explicit subset already exists.
+    assert classify("manifest-1", "explicit", None, 3, **torrent) == "change"
+    # 4. locked/materialized -- no mutation action regardless of decision.
+    assert classify("manifest-1", "explicit", 123.0, 3, **torrent) == "none"
+    assert classify("manifest-1", "all", 123.0, 3, **torrent) == "none"
+
+
+def _row_with_file_selection(transfer_id, *, manifest_id, decision, committed_at, file_count):
+    row = _row(transfer_id)
+    row["_file_selection_manifest_id"] = manifest_id
+    row["_file_selection_decision"] = decision
+    row["_file_selection_committed_at"] = committed_at
+    row["_file_selection_entry_count"] = file_count
+    return row
+
+
+def test_bounded_list_exposes_choose_affordance_for_mutable_unset_manifest(monkeypatch):
+    row = _row_with_file_selection(
+        1, manifest_id="manifest-1", decision="pending", committed_at=None, file_count=5,
+    )
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "choose"
+
+
+def test_bounded_list_exposes_change_affordance_for_explicit_subset(monkeypatch):
+    row = _row_with_file_selection(
+        1, manifest_id="manifest-1", decision="explicit", committed_at=None, file_count=5,
+    )
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "change"
+
+
+def test_bounded_list_exposes_pending_manifest_affordance_before_manifest_arrives(monkeypatch):
+    row = _row_with_file_selection(
+        1, manifest_id=None, decision="pending", committed_at=None, file_count=0,
+    )
+    row["_file_selection_request_kind"] = "magnet"
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "pending_manifest"
+
+
+def test_bounded_list_offers_nothing_for_a_link_roots_pending_generation(monkeypatch):
+    row = _row_with_file_selection(
+        1, manifest_id=None, decision="pending", committed_at=None, file_count=0,
+    )
+    row["_file_selection_request_kind"] = "https"
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "none"
+
+
+def test_bounded_list_exposes_none_affordance_when_locked(monkeypatch):
+    row = _row_with_file_selection(
+        1, manifest_id="manifest-1", decision="explicit", committed_at=1234.0, file_count=5,
+    )
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "none"
+
+
+def test_bounded_list_exposes_none_affordance_for_single_file_torrent(monkeypatch):
+    row = _row_with_file_selection(
+        1, manifest_id="manifest-1", decision="all", committed_at=None, file_count=1,
+    )
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "none"
+
+
+def test_bounded_list_exposes_none_affordance_when_no_generation_exists(monkeypatch):
+    row = _row(1)  # no file-selection fields at all -- e.g. a direct-link transfer
+    _db, result = _run_list(monkeypatch, 1, rows=[row])
+    assert result["items"][0]["file_selection_affordance"] == "none"
+
+
+def test_file_selection_affordance_does_not_add_db_calls_or_scale_with_page_size(monkeypatch):
+    one_db, _one = _run_list(
+        monkeypatch, 1,
+        rows=[_row_with_file_selection(1, manifest_id="m", decision="pending", committed_at=None, file_count=3)],
+    )
+    many_db, many = _run_list(
+        monkeypatch, 40,
+        rows=[
+            _row_with_file_selection(i, manifest_id="m", decision="pending", committed_at=None, file_count=3)
+            for i in range(1, 41)
+        ],
+    )
+    assert len(one_db.calls) == 2
+    assert len(many_db.calls) == 2
+    assert all(item["file_selection_affordance"] == "choose" for item in many["items"])
+
+
+def test_projection_sql_joins_file_selections_bounded_by_page(monkeypatch):
+    """The file-selection CTE must join against ``page``, never scan the whole table."""
+    db, _result = _run_list(monkeypatch, 1, rows=[_row(1)])
+    projection_sql = db.calls[0][1]
+    assert "page_current_file_selection AS" in projection_sql
+    assert "FROM transfer_file_selections s" in projection_sql
+    selection_block = projection_sql.split("page_current_file_selection AS", 1)[1].split(
+        "page_file_selection_manifest_counts AS", 1
+    )[0]
+    assert "JOIN page ON page.id = s.transfer_id" in selection_block
+
+
+async def _seed_real_file_selection(db_path, *, decision, committed_at, entry_count):
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO torrents(id,hash,name,status,source) VALUES(?,?,?,?,?)",
+            (1, "hash-real-fs", "Real Torrent", "downloading", "magnet"),
+        )
+        conn.execute(
+            "INSERT INTO transfer_file_manifests(id,transfer_id,request_id,provider_resource_id,provider_id,"
+            "manifest_digest,observed_at) VALUES(?,?,?,?,?,?,?)",
+            ("manifest-1", 1, "req-1", "res-1", "alldebrid", "digest-1", 0.0),
+        )
+        for index in range(entry_count):
+            conn.execute(
+                "INSERT INTO transfer_file_manifest_entries(manifest_id,entry_id,ordinal,name,relative_path,expected_bytes) "
+                "VALUES(?,?,?,?,?,?)",
+                ("manifest-1", f"entry-{index}", index, f"file-{index}.mkv", f"file-{index}.mkv", 1024),
+            )
+        conn.execute(
+            "INSERT INTO transfer_file_selections(id,request_id,transfer_id,provider_resource_id,provider_id,"
+            "manifest_id,initially_available,manifest_wait_until,decision,manifest_committed_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("sel-1", "req-1", 1, "res-1", "alldebrid", "manifest-1", 1, 0.0, decision, committed_at, 100.0, 100.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_real_sql_bounded_list_derives_choose_affordance_from_actual_selection_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    await database.init_db()
+    await _seed_real_file_selection(tmp_path / "state.db", decision="pending", committed_at=None, entry_count=4)
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[])
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=25, offset=0, application=application,
+    )
+    assert result["items"][0]["file_selection_affordance"] == "choose"
+
+
+@pytest.mark.asyncio
+async def test_real_sql_bounded_list_derives_change_affordance_for_explicit_decision(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    await database.init_db()
+    await _seed_real_file_selection(tmp_path / "state.db", decision="explicit", committed_at=None, entry_count=4)
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[])
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=25, offset=0, application=application,
+    )
+    assert result["items"][0]["file_selection_affordance"] == "change"
+
+
+@pytest.mark.asyncio
+async def test_real_sql_bounded_list_derives_none_affordance_once_locked(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    await database.init_db()
+    await _seed_real_file_selection(tmp_path / "state.db", decision="explicit", committed_at=150.0, entry_count=4)
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[])
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=25, offset=0, application=application,
+    )
+    assert result["items"][0]["file_selection_affordance"] == "none"
+
+
+def test_display_name_and_remaining_count_do_not_add_db_calls_or_scale_with_page_size(monkeypatch):
+    one_db, _one = _run_list(
+        monkeypatch, 1, rows=[_row(1, filenames=["a.mkv", "b.mkv"], group_remaining_count=1)]
+    )
+    many_db, many = _run_list(
+        monkeypatch, 40,
+        rows=[_row(i, filenames=[f"file-{i}.mkv"], group_remaining_count=i % 2) for i in range(1, 41)],
+    )
+    assert len(one_db.calls) == 2
+    assert len(many_db.calls) == 2
+    assert [item["display_name"] for item in many["items"]] == [
+        f"file-{i}.mkv" for i in range(1, 41)
+    ]
+
+
+def test_projection_filename_aggregate_reuses_current_artifact_identity(monkeypatch):
+    """The filename aggregate must reuse group_member_artifacts, never a divergent definition."""
+    db, _result = _run_list(monkeypatch, 1, rows=[_row(1)])
+    projection_sql = db.calls[0][1]
+
+    assert "group_member_filenames AS" in projection_sql
+    assert "json_group_array(filename)" in projection_sql
+    # It selects from group_member_artifacts -- the same current-artifact CTE
+    # common-source membership and the remaining-work count both use -- never
+    # a divergent re-derivation of the current-artifact WHERE clause.
+    filenames_block = projection_sql.split("group_member_filenames AS", 1)[1].split(
+        "group_member_hosts AS", 1
+    )[0]
+    assert "FROM group_member_artifacts" in filenames_block
+    assert "download_files" not in filenames_block
+
+
+_SHA256 = "b1c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2299"
+
+
+class _HostParcelProvider(ParcelProvider):
+    def candidate_for(self, request):
+        candidate = super().candidate(request.name or "same.bin", payload="shared")
+        host = "rapidgator.net" if request.payload == "rapidgator" else "1fichier.com"
+        return replace(
+            candidate,
+            integrity=(IntegrityMetadata("sha256", _SHA256),),
+            source_identity=SourceIdentity("host", host),
+        )
+
+    async def resolve(self, request):
+        self.calls.append(("resolve", request.payload))
+        return ResolutionResult(ResourceState.AVAILABLE, (self.candidate_for(request),))
+
+
+@pytest_asyncio.fixture
+async def projection_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    await database.init_db()
+    repository = TransferRepository()
+    registry = IntegrationRegistry()
+    provider = _HostParcelProvider("provider-a")
+    executor = MemoryExecutor(repository.authorize_execution)
+    registry.register_provider(provider)
+    registry.register_executor(executor)
+    engine = TransferEngine(
+        repository,
+        registry,
+        download_root=str(tmp_path / "payloads"),
+        policy=TransferPolicy(retry_delay=0, adoption_stability_seconds=0, max_active_executions=8, resolution_concurrency=8),
+    )
+    await engine.initialize()
+    return engine, repository
+
+
+async def _submit(engine, name, payload):
+    return await engine.submit(
+        (TransferRequest("parcel", payload, name=name, preferred_provider="provider-a"),),
+        name=name,
+        deduplicate=False,
+    )
+
+
+async def _list_normal():
+    async with _tracking_db() as tracker:
+        result = await downloads.list_operational_torrents(
+            status=None,
+            search=None,
+            limit=0,
+            offset=0,
+            application=SimpleNamespace(repository=_ExplodingRepository(), definitions=[]),
+        )
+    return result, tracker
+
+
+class _DbCallTracker:
+    def __init__(self):
+        self.calls = []
+
+
+@asynccontextmanager
+async def _tracking_db():
+    """Wrap the real get_db so the test can count round-trips."""
+    tracker = _DbCallTracker()
+    real_get_db = database.get_db
+
+    @asynccontextmanager
+    async def counting():
+        async with real_get_db() as conn:
+            real_fetchall = conn.fetchall
+            real_fetchone = conn.fetchone
+
+            async def fetchall(query, params=()):
+                tracker.calls.append(("fetchall", query))
+                return await real_fetchall(query, params)
+
+            async def fetchone(query, params=()):
+                tracker.calls.append(("fetchone", query))
+                return await real_fetchone(query, params)
+
+            conn.fetchall = fetchall
+            conn.fetchone = fetchone
+            yield conn
+
+    token = downloads.get_db
+    downloads.get_db = counting
+    try:
+        yield tracker
+    finally:
+        downloads.get_db = token
+
+
+@pytest.mark.asyncio
+async def test_list_common_candidate_count_reflects_canonical_bindings(projection_runtime):
+    engine, _repository = projection_runtime
+    multi = await _submit(engine, "multi.bin", "rapidgator")
+    await engine.resolve_pending()
+    await _submit(engine, "multi.bin", "1fichier")  # consolidates onto `multi`
+    await engine.resolve_pending()
+    single = await _submit(engine, "single.bin", "rapidgator")
+    await engine.resolve_pending()
+
+    result, tracker = await _list_normal()
+    by_id = {item["id"]: item for item in result["items"]}
+
+    # The sole artifact carries two canonical host candidates -> two common hosts.
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    # A single unconsolidated source has no canonical alternate bindings — its
+    # real host set is unknown here, so the (single-artifact) intersection is
+    # empty and it never advertises a group.
+    assert by_id[single.id]["common_candidate_count"] == 0
+
+    # Bounded: exactly the projection read and the collection-count read.
+    assert [kind for kind, _q in tracker.calls] == ["fetchall", "fetchone"]
+
+
+@pytest.mark.asyncio
+async def test_list_candidate_summary_never_scales_db_calls_with_rows(projection_runtime):
+    engine, _repository = projection_runtime
+    for index in range(6):
+        await _submit(engine, f"file-{index}.bin", "rapidgator")
+    await engine.resolve_pending()
+
+    _result, tracker = await _list_normal()
+    assert [kind for kind, _q in tracker.calls] == ["fetchall", "fetchone"]
+
+
+@pytest.mark.asyncio
+async def test_list_display_name_reflects_the_submitted_artifact_filename(projection_runtime):
+    """Real-DB proof (not a fake row): display_name is artifact-derived, bounded."""
+    engine, _repository = projection_runtime
+    solo = await _submit(engine, "solo.bin", "rapidgator")
+    await engine.resolve_pending()
+
+    result, tracker = await _list_normal()
+    by_id = {item["id"]: item for item in result["items"]}
+
+    # Single current artifact -> its own filename is the display name, and the
+    # root/request name is preserved untouched alongside it.
+    assert by_id[solo.id]["display_name"] == "solo.bin"
+    assert by_id[solo.id]["name"] == "solo.bin"
+    assert isinstance(by_id[solo.id]["group_remaining_count"], int)
+
+    # Bounded: exactly the projection read and the collection-count read --
+    # the filename aggregate added no extra round-trip.
+    assert [kind for kind, _q in tracker.calls] == ["fetchall", "fetchone"]
+
+
+@pytest.mark.asyncio
+async def test_list_remaining_count_excludes_non_switchable_states_but_includes_recoverable_error(projection_runtime):
+    """Real-DB proof of the exact list-interactivity predicate (DP 1.0.12 §10).
+
+    ``group_remaining_count`` must distinguish "unfinished work exists" from
+    "meaningful remaining SWITCH work exists": a non-completed artifact whose
+    own lifecycle state has no candidate-switch path (e.g. 'cancelled') must
+    NOT count, so a transfer stuck there shows the static list indicator, not
+    a dead chooser full of "not switchable" rows. A recoverable-looking
+    failure ('error') DOES count -- this codebase's own established
+    switch_eligible classification (transfers.repository
+    ``_SWITCHABLE_ARTIFACT_STATES``, reused verbatim by the projection, not
+    duplicated) already treats it that way for the comprehensive Details
+    presentation, and the bounded list must agree.
+    """
+    engine, _repository = projection_runtime
+    multi = await _submit(engine, "multi.bin", "rapidgator")
+    await engine.resolve_pending()
+    await _submit(engine, "multi.bin", "1fichier")  # consolidates onto `multi`: 2 common hosts
+    await engine.resolve_pending()
+
+    async with database.get_db() as db:
+        row = await db.fetchone(
+            "SELECT id FROM download_files WHERE torrent_id = ?", (multi.id,)
+        )
+        artifact_id = row["id"]
+
+    async def _set_status(status):
+        async with database.get_db() as db:
+            await db.execute(
+                "UPDATE download_files SET status = ? WHERE id = ?", (status, artifact_id)
+            )
+            await db.commit()
+
+    # Case: unfinished (not completed) but genuinely non-switchable -> zero
+    # meaningful remaining SWITCH work, even though common_candidate_count
+    # still correctly reports the historical membership.
+    await _set_status("cancelled")
+    result, _tracker = await _list_normal()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    assert by_id[multi.id]["group_remaining_count"] == 0
+
+    # Case: recoverable failure -- still switchable, still counts.
+    await _set_status("error")
+    result, _tracker = await _list_normal()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    assert by_id[multi.id]["group_remaining_count"] == 1
+
+    # Case: a normal in-progress state also counts, as a control.
+    await _set_status("downloading")
+    result, _tracker = await _list_normal()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["group_remaining_count"] == 1
+
+
+# ── Target actionability, not just lifecycle switchability (DP 1.0.12 §10
+#    reviewer follow-up) — a non-completed artifact in a "switchable" state
+#    is NOT enough on its own; the list must also know at least one common
+#    host actually has a currently-enabled provider behind it. ────────────
+
+
+@pytest.mark.asyncio
+async def test_list_remaining_count_is_zero_when_every_common_host_routes_through_a_disabled_provider(projection_runtime):
+    """Real-DB, real-registry proof of the exact target-actionability gap.
+
+    Lifecycle switchability (_SWITCHABLE_ARTIFACT_STATES) alone proves an
+    artifact is in a state a switch would normally be attempted from -- it
+    does NOT prove any target currently exists. A transfer with unfinished,
+    switchable-state work and 2+ common hosts must still render the static
+    list indicator (group_remaining_count == 0) when every one of those
+    hosts routes through a provider that is not currently enabled: there is
+    no possible target, so an interactive launcher would open a chooser full
+    of dead rows. common_candidate_count (membership/history) is completely
+    unaffected -- only the interactivity signal changes.
+    """
+    engine, _repository = projection_runtime
+    multi = await _submit(engine, "multi.bin", "rapidgator")
+    await engine.resolve_pending()
+    await _submit(engine, "multi.bin", "1fichier")  # consolidates: 2 common hosts, one provider
+    await engine.resolve_pending()
+
+    provider = engine.registry.providers["provider-a"]
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+
+    async def _list():
+        return await downloads.list_operational_torrents(
+            status=None, search=None, limit=0, offset=0, application=application,
+        )
+
+    # Baseline: provider enabled (fixture default) -> genuinely remaining work.
+    result = await _list()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    assert by_id[multi.id]["group_remaining_count"] == 1
+
+    # Disable the provider backing every common host of this transfer --
+    # durable, page-global (AppSettings-derived), not a live per-row check.
+    provider.descriptor = replace(provider.descriptor, enabled=False)
+    result = await _list()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2  # history/membership unchanged
+    assert by_id[multi.id]["group_remaining_count"] == 0   # no possible target -> static
+
+
+@pytest.mark.asyncio
+async def test_list_remaining_count_stays_positive_when_a_recoverable_failure_still_has_an_enabled_common_target(projection_runtime):
+    """Companion GREEN case: an 'error' (recoverable-looking) artifact status
+    with an enabled provider behind a common host still counts as remaining
+    work -- interactive, not static."""
+    engine, _repository = projection_runtime
+    multi = await _submit(engine, "multi.bin", "rapidgator")
+    await engine.resolve_pending()
+    await _submit(engine, "multi.bin", "1fichier")
+    await engine.resolve_pending()
+
+    async with database.get_db() as db:
+        row = await db.fetchone(
+            "SELECT id FROM download_files WHERE torrent_id = ?", (multi.id,)
+        )
+        await db.execute(
+            "UPDATE download_files SET status = 'error' WHERE id = ?", (row["id"],)
+        )
+        await db.commit()
+
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=0, offset=0, application=application,
+    )
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    assert by_id[multi.id]["group_remaining_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_enablement_check_does_not_add_db_calls_or_scale_with_page_size(projection_runtime):
+    """Bounded-list/N+1 invariant: the provider-enablement check reads the
+    already-injected in-memory registry, never an extra DB round-trip, and
+    never scales with row count."""
+    engine, _repository = projection_runtime
+    for index in range(6):
+        await _submit(engine, f"file-{index}.bin", "rapidgator")
+    await engine.resolve_pending()
+
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+
+    async with _tracking_db() as tracker:
+        await downloads.list_operational_torrents(
+            status=None, search=None, limit=0, offset=0, application=application,
+        )
+    assert [kind for kind, _q in tracker.calls] == ["fetchall", "fetchone"]
+
+
+def test_group_actionable_common_sources_is_derived_from_the_same_true_common_host_set(monkeypatch):
+    """SQL-structure proof: the actionability gate reuses group_true_common_hosts
+    (the exact same host set group_common_sources counts) rather than a
+    divergent re-derivation, and group_common_sources itself is untouched."""
+    db, _result = _run_list(monkeypatch, 1, rows=[_row(1)])
+    projection_sql = db.calls[0][1]
+
+    assert "group_true_common_hosts AS" in projection_sql
+    assert "group_actionable_common_sources AS" in projection_sql
+    # group_common_sources now reads straight from the shared host CTE --
+    # still just a COUNT, no actionability/provider filter mixed in.
+    common_sources_block = projection_sql.split("group_common_sources AS", 1)[1].split("GROUP BY common.transfer_id", 1)[0]
+    assert "FROM group_true_common_hosts common" in common_sources_block
+    assert "provider" not in common_sources_block
+    assert "enabled" not in common_sources_block
+    # The actionability CTE requires a movement-requiring, common, enabled
+    # target -- not just "common host has an enabled provider" (which would
+    # wrongly include an already-uniform ACTIVE source that needs zero
+    # artifact movement). group_remaining_host_movement carries provider_id
+    # through from group_member_hosts; the NOT IN (...) disabled-provider
+    # clause itself is only interpolated when the request actually has a
+    # disabled provider (empty here, since this fixture's application has no
+    # .engine/.registry) -- what must always be present is the join path
+    # that makes filtering on it possible, and the movement predicate.
+    assert "group_remaining_host_movement AS" in projection_sql
+    movement_block = projection_sql.split("group_remaining_host_movement AS", 1)[1].split(
+        "group_actionable_common_sources AS", 1
+    )[0]
+    assert "gmh.candidate_id IS NOT gmsc.selected_candidate_id" in movement_block
+    assert "gmh.provider_id" in movement_block
+    actionable_block = projection_sql.split("group_actionable_common_sources AS", 1)[1]
+    assert "JOIN group_remaining_host_movement movement" in actionable_block
+    assert "movement.host = common.host" in actionable_block
+    assert "b.provider_id AS provider_id" in projection_sql.split(
+        "group_member_hosts AS", 1
+    )[1].split("group_true_common_hosts AS", 1)[0]
+    assert "b.candidate_id AS candidate_id" in projection_sql.split(
+        "group_member_hosts AS", 1
+    )[1].split("group_true_common_hosts AS", 1)[0]
+
+
+class _FixedHostProvider(ParcelProvider):
+    """A provider that always resolves to ONE fixed host, independent of its
+    own request payload -- used to build two INDEPENDENTLY enable/disable-
+    able providers that still consolidate onto the same artifact (shared
+    integrity hash), so a "the ACTIVE host alone is not actionable" scenario
+    can be constructed with genuinely different provider_ids per host."""
+
+    def __init__(self, identity, host):
+        super().__init__(identity)
+        self._host = host
+
+    def candidate_for(self, request):
+        candidate = super().candidate(request.name or "same.bin", payload=self._host)
+        return replace(
+            candidate,
+            integrity=(IntegrityMetadata("sha256", _SHA256),),
+            source_identity=SourceIdentity("host", self._host),
+        )
+
+    async def resolve(self, request):
+        self.calls.append(("resolve", request.payload))
+        return ResolutionResult(ResourceState.AVAILABLE, (self.candidate_for(request),))
+
+
+async def _submit_via(engine, provider_id, name, payload):
+    return await engine.submit(
+        (TransferRequest("parcel", payload, name=name, preferred_provider=provider_id),),
+        name=name, deduplicate=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_static_when_the_only_alternate_target_is_disabled_and_the_active_host_requires_no_movement(projection_runtime):
+    """Counterexample proof (reviewer follow-up #2): the already-uniform
+    ACTIVE source alone cannot satisfy list-level actionability, even though
+    it is common and its own provider is enabled -- it requires ZERO
+    artifact movement. Two common hosts A (enabled, currently selected by
+    every remaining-work artifact) and B (disabled) -> no movement-requiring
+    AND enabled target exists -> static, not a dead interactive chooser.
+    """
+    engine, _repository = projection_runtime
+    provider_a = _FixedHostProvider("provider-a-fixed", "host-a.example")
+    provider_b = _FixedHostProvider("provider-b-fixed", "host-b.example")
+    engine.registry.register_provider(provider_a)
+    engine.registry.register_provider(provider_b)
+
+    # First submission (provider A) becomes the durably SELECTED candidate
+    # (index 0); the second (provider B) consolidates in as an alternate.
+    multi = await _submit_via(engine, "provider-a-fixed", "multi.bin", "seed-a")
+    await engine.resolve_pending()
+    await _submit_via(engine, "provider-b-fixed", "multi.bin", "seed-b")
+    await engine.resolve_pending()
+
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+
+    async def _list():
+        return await downloads.list_operational_torrents(
+            status=None, search=None, limit=0, offset=0, application=application,
+        )
+
+    # Baseline: both providers enabled. Remaining work exists and B is a
+    # genuine (movement-requiring, enabled) alternate to A -> interactive.
+    result = await _list()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    assert by_id[multi.id]["group_remaining_count"] == 1
+
+    # Disable B -- the ONLY host that would require movement. A (already
+    # uniformly selected, zero movement) is common and enabled but that is
+    # NOT enough: there is no possible switch target left at all.
+    provider_b.descriptor = replace(provider_b.descriptor, enabled=False)
+    result = await _list()
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2  # history/membership unchanged
+    assert by_id[multi.id]["group_remaining_count"] == 0   # no possible movement -> static
+
+
+@pytest.mark.asyncio
+async def test_list_interactive_when_the_alternate_target_requires_movement_and_is_enabled(projection_runtime):
+    """Positive inverse of the above: same already-uniform-on-A setup, but B
+    stays enabled -> switching every remaining participant to B would issue
+    >=1 real POST, so the launcher is correctly interactive."""
+    engine, _repository = projection_runtime
+    provider_a = _FixedHostProvider("provider-a-fixed2", "host-a2.example")
+    provider_b = _FixedHostProvider("provider-b-fixed2", "host-b2.example")
+    engine.registry.register_provider(provider_a)
+    engine.registry.register_provider(provider_b)
+
+    multi = await _submit_via(engine, "provider-a-fixed2", "multi.bin", "seed-a")
+    await engine.resolve_pending()
+    await _submit_via(engine, "provider-b-fixed2", "multi.bin", "seed-b")
+    await engine.resolve_pending()
+
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=0, offset=0, application=application,
+    )
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[multi.id]["common_candidate_count"] == 2
+    assert by_id[multi.id]["group_remaining_count"] == 1  # B is a genuine, actionable alternate
+
+
+# ── Universal convergence: EVERY remaining-work participant (the shipped
+#    chooser's own scope -- only completed is excluded, ui-group-candidates.js
+#    computeGroup's actionParticipants) must be able to converge on a target,
+#    not just "some switchable participant would move there" (DP 1.0.12 §10,
+#    reviewer follow-up #3). ─────────────────────────────────────────────
+
+
+class _TwoHostProvider(ParcelProvider):
+    """Resolves to whichever host/integrity-hash the request payload encodes
+    (``"<label>:<host>:<sha256hex>"``) -- used to build a real two-artifact
+    transfer (via one multi-request submit) where each artifact independently
+    consolidates a second host candidate through a second provider."""
+
+    def candidate_for(self, request, host, sha256hex):
+        candidate = super().candidate(request.name or "file.bin", payload=host)
+        return replace(
+            candidate,
+            integrity=(IntegrityMetadata("sha256", sha256hex),),
+            source_identity=SourceIdentity("host", host),
+        )
+
+    async def resolve(self, request):
+        self.calls.append(("resolve", request.payload))
+        _label, host, sha256hex = str(request.payload).split(":", 2)
+        return ResolutionResult(ResourceState.AVAILABLE, (self.candidate_for(request, host, sha256hex),))
+
+
+async def _two_artifact_two_host_transfer(engine, *, provider_a_id, provider_b_id):
+    """Real two-artifact transfer: both artifacts start selected on host A
+    (via provider_a_id), each independently consolidates an alternate
+    candidate on host B (via provider_b_id). Returns (transfer, artifact_ids)
+    with artifact_ids in filename order [file1, file2]."""
+    h1, h2 = "1" * 64, "2" * 64
+    req1 = TransferRequest("parcel", f"file1:host-a.example:{h1}", name="file1.bin", preferred_provider=provider_a_id)
+    req2 = TransferRequest("parcel", f"file2:host-a.example:{h2}", name="file2.bin", preferred_provider=provider_a_id)
+    transfer = await engine.submit((req1, req2), name="batch", deduplicate=False)
+    await engine.resolve_pending()
+
+    req1b = TransferRequest("parcel", f"file1:host-b.example:{h1}", name="file1.bin", preferred_provider=provider_b_id)
+    req2b = TransferRequest("parcel", f"file2:host-b.example:{h2}", name="file2.bin", preferred_provider=provider_b_id)
+    await engine.submit((req1b,), name="file1.bin", deduplicate=False)
+    await engine.submit((req2b,), name="file2.bin", deduplicate=False)
+    await engine.resolve_pending()
+
+    async with database.get_db() as db:
+        rows = await db.fetchall(
+            "SELECT id, filename FROM download_files WHERE torrent_id = ? ORDER BY filename",
+            (transfer.id,),
+        )
+    by_filename = {row["filename"]: row["id"] for row in rows}
+    return transfer, [by_filename["file1.bin"], by_filename["file2.bin"]]
+
+
+@pytest.mark.asyncio
+async def test_list_static_when_a_non_switchable_participant_can_never_converge_on_the_only_movement_target(projection_runtime):
+    """RED->GREEN, real two-artifact transfer, real registry.
+
+    Two current, unfinished participants; common hosts A and B; both
+    currently selected on A. Artifact 1 is switchable (queued -- the default
+    post-submit state). Artifact 2 is 'cancelled': a genuine remaining-work
+    participant under the SHIPPED CHOOSER's own scope (ui-group-candidates.js
+    computeGroup's actionParticipants excludes ONLY completed -- confirmed by
+    direct inspection before writing this fix), but not switch-eligible for
+    B (not in _SWITCHABLE_ARTIFACT_STATES) and not already selected there.
+
+    Required: common_candidate_count stays 2 (membership/history intact);
+    B is enabled but is NOT offered, because artifact 2 can never converge
+    there; A requires no movement (both already there); so there is no
+    actionable target at all -- static, not a dead chooser.
+    """
+    engine, _repository = projection_runtime
+    provider_a = _TwoHostProvider("provider-a-univ")
+    provider_b = _TwoHostProvider("provider-b-univ")
+    engine.registry.register_provider(provider_a)
+    engine.registry.register_provider(provider_b)
+
+    transfer, (artifact1, artifact2) = await _two_artifact_two_host_transfer(
+        engine, provider_a_id="provider-a-univ", provider_b_id="provider-b-univ",
+    )
+
+    # Artifact 2 becomes a non-switchable (but non-completed) participant --
+    # still counted by membership, still a chooser action participant, but
+    # it can never converge on B by a candidate switch.
+    async with database.get_db() as db:
+        await db.execute("UPDATE download_files SET status = 'cancelled' WHERE id = ?", (artifact2,))
+        await db.commit()
+
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=0, offset=0, application=application,
+    )
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[transfer.id]["common_candidate_count"] == 2
+    assert by_id[transfer.id]["group_remaining_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_interactive_when_every_remaining_participant_can_converge_on_the_movement_target(projection_runtime):
+    """Positive inverse, real two-artifact transfer, real registry.
+
+    Same setup: both artifacts currently on A, B common and enabled. This
+    time BOTH artifacts stay in a switchable lifecycle state (the default
+    post-submit 'queued'), so every remaining-work participant can genuinely
+    converge on B, and switching would issue >=1 real POST -> interactive.
+    """
+    engine, _repository = projection_runtime
+    provider_a = _TwoHostProvider("provider-a-univ2")
+    provider_b = _TwoHostProvider("provider-b-univ2")
+    engine.registry.register_provider(provider_a)
+    engine.registry.register_provider(provider_b)
+
+    transfer, _artifact_ids = await _two_artifact_two_host_transfer(
+        engine, provider_a_id="provider-a-univ2", provider_b_id="provider-b-univ2",
+    )
+
+    application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[], engine=engine)
+    result = await downloads.list_operational_torrents(
+        status=None, search=None, limit=0, offset=0, application=application,
+    )
+    by_id = {item["id"]: item for item in result["items"]}
+    assert by_id[transfer.id]["common_candidate_count"] == 2
+    assert by_id[transfer.id]["group_remaining_count"] == 2
+
+
+# ── Candidate-action scope (DP 1.0.12 Contextual Candidate Action Scope task) ──
+#
+# candidate_action_scope / candidate_action_count / candidate_action_artifact_id
+# are a THIRD, orthogonal read fact alongside common_candidate_count (strict
+# transfer-wide membership) and group_remaining_count (remaining-work
+# existence). These tests use direct durable-state fixtures (mirroring
+# test_group_common_sources._seed) against the real bounded SQL projection --
+# no live provider/executor/network work, per the task's explicit allowance
+# for "deterministic durable/read-model fixtures representing the qualified
+# canonical state" (matrix Case B).
+
+
+def _scope_host(letter: str) -> str:
+    return f"{letter}.example"
+
+
+def _hc(name: str, candidate_id: str, selected: bool):
+    """A host-scoped candidate tuple: (source_scope, source_key, candidate_id, is_selected)."""
+    return ("host", _scope_host(name), candidate_id, selected)
+
+
+async def _seed_scope(db, name, artifacts):
+    """Seed a transfer for candidate-action-scope tests and return
+    ``(transfer_id, [artifact_id, ...])`` in artifact order.
+
+    ``artifacts`` is ``[(status, [(source_scope, source_key, candidate_id,
+    is_selected), ...]), ...]``. Unlike ``test_group_common_sources._seed``,
+    ``source_scope`` is caller-controlled (not hardcoded to ``"host"``) so
+    Case K (non-host candidate types) can be constructed directly, proving
+    the artifact-mode classifier is provider/candidate-neutral.
+    """
+    transfer_id = await db.execute_returning_id(
+        "INSERT INTO torrents(hash, name, status) VALUES(?, ?, ?)",
+        (f"scope-{name}-{uuid.uuid4().hex[:8]}", name, "downloading"),
+    )
+    artifact_ids = []
+    for index, (status, candidates) in enumerate(artifacts):
+        request_id = f"req-{name}-{uuid.uuid4().hex[:8]}"
+        await db.execute(
+            "INSERT INTO transfer_requests(id, transfer_id, ordinal, payload) VALUES(?, ?, ?, ?)",
+            (request_id, transfer_id, index, "{}"),
+        )
+        durable = [
+            {"name": f"file-{index}.bin", "endpoints": [], "id": candidate_id}
+            for (_scope, _key, candidate_id, _selected) in candidates
+        ]
+        selected_index = next(
+            (pos for pos, (_s, _k, _c, is_selected) in enumerate(candidates) if is_selected),
+            0,
+        )
+        artifact_id = await db.execute_returning_id(
+            """INSERT INTO download_files
+                (torrent_id, filename, status, request_id, candidates, selected_candidate, blocked, mirror_state)
+                VALUES(?, ?, ?, ?, ?, ?, 0, '')""",
+            (transfer_id, f"file-{index}.bin", status, request_id,
+             json.dumps(durable), selected_index),
+        )
+        artifact_ids.append(artifact_id)
+        for order, (scope, key, candidate_id, _is_selected) in enumerate(candidates, start=1):
+            await db.execute(
+                """INSERT INTO canonical_candidate_bindings
+                    (canonical_artifact_id, candidate_id, provider_id, source_scope, source_key, role, candidate_order)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)""",
+                (artifact_id, candidate_id, "provider-a", scope, key,
+                 "canonical" if order == 1 else "alternate", order),
+            )
+    await db.commit()
+    return transfer_id, artifact_ids
+
+
+async def _scope_list():
+    return await downloads.list_operational_torrents(
+        status=None, search=None, limit=25, offset=0,
+        application=SimpleNamespace(repository=_ExplodingRepository(), definitions=[]),
+    )
+
+
+def _sibling(index: int, status: str = "error"):
+    """A current, one-source, non-consolidated failed/unproven sibling artifact:
+    always a single distinct candidate of its own -- never merged into a
+    movable artifact's candidate set, regardless of its own lifecycle status."""
+    return (status, [("host", f"sibling{index}.example", f"s{index}", True)])
+
+
+@pytest.mark.asyncio
+async def test_case_a_one_movable_artifact_despite_failed_unproven_siblings(group_db):
+    """Matrix Case A: one canonical artifact with 7 proven candidates plus 4
+    current failed/unproven one-source siblings -> ARTIFACT scope targeting
+    exactly that artifact, with siblings left in strict group membership
+    (never excluded merely to make the action appear)."""
+    movable_candidates = [_hc(chr(ord("a") + i), f"c{i}", i == 0) for i in range(7)]
+    artifacts = [("downloading", movable_candidates)] + [_sibling(i) for i in range(4)]
+    async with group_db() as db:
+        transfer_id, artifact_ids = await _seed_scope(db, "case-a", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    # Strict membership is the EXISTING computation, untouched: each sibling's
+    # own distinct host is unrelated to the movable artifact's 7 hosts, so the
+    # whole-transfer intersection is empty. Proves siblings were not excluded.
+    assert item["common_candidate_count"] == 0
+    assert item["candidate_action_scope"] == "artifact"
+    assert item["candidate_action_count"] == 7
+    assert item["candidate_action_artifact_id"] == artifact_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_case_b_large_mirror_batch_25_of_50_proven(group_db):
+    """Matrix Case B: 50 submitted sources, 25 proven onto one canonical
+    artifact, 25 failed/unproven independent siblings -> ARTIFACT scope,
+    count 25. Deterministic durable fixture; no live resolution."""
+    movable_candidates = [_hc(f"m{i}", f"c{i}", i == 0) for i in range(25)]
+    artifacts = [("downloading", movable_candidates)] + [_sibling(i) for i in range(25)]
+    async with group_db() as db:
+        transfer_id, artifact_ids = await _seed_scope(db, "case-b", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["candidate_action_scope"] == "artifact"
+    assert item["candidate_action_count"] == 25
+    assert item["candidate_action_artifact_id"] == artifact_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_case_c_unrelated_multi_artifact_only_one_movable(group_db):
+    """Matrix Case C: 10 unrelated current artifacts, 9 with no alternative
+    candidate, one with 4 proven candidates -> ARTIFACT scope, count 4. The
+    transfer containing ten artifacts does not make the operation ambiguous."""
+    movable = ("downloading", [_hc(letter, f"c{letter}", letter == "a") for letter in "abcd"])
+    singles = [("downloading", [("host", f"solo{i}.example", f"o{i}", True)]) for i in range(9)]
+    async with group_db() as db:
+        transfer_id, artifact_ids = await _seed_scope(db, "case-c", [movable, *singles])
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["candidate_action_scope"] == "artifact"
+    assert item["candidate_action_count"] == 4
+    assert item["candidate_action_artifact_id"] == artifact_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_case_d_failed_error_artifact_with_alternatives(group_db):
+    """Matrix Case D: a single 'error' (recoverable-looking failure) artifact
+    with 3 proven candidates -> ARTIFACT scope, count 3. 'error' is the real
+    existing switchable-lifecycle state (_SWITCHABLE_ARTIFACT_STATES), not an
+    invented one."""
+    artifacts = [("error", [_hc(letter, f"c{letter}", letter == "a") for letter in "abc"])]
+    async with group_db() as db:
+        transfer_id, artifact_ids = await _seed_scope(db, "case-d", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["candidate_action_scope"] == "artifact"
+    assert item["candidate_action_count"] == 3
+    assert item["candidate_action_artifact_id"] == artifact_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_case_e_paused_artifact_with_alternatives(group_db):
+    """Matrix Case E: a single 'paused' artifact with 5 proven candidates ->
+    ARTIFACT scope. The badge/action must not disappear merely because the
+    artifact is paused."""
+    artifacts = [("paused", [_hc(letter, f"c{letter}", letter == "a") for letter in "abcde"])]
+    async with group_db() as db:
+        transfer_id, artifact_ids = await _seed_scope(db, "case-e", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["candidate_action_scope"] == "artifact"
+    assert item["candidate_action_count"] == 5
+    assert item["candidate_action_artifact_id"] == artifact_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_case_h_two_movable_artifacts_one_convergence_target_requires_movement(group_db):
+    """Matrix Case H / Example 3: A selected X (alt Z), B selected Y (alt Z);
+    the only common valid target Z requires movement for both -> GROUP scope,
+    count 1 (not the raw common count, and not >= 2 required)."""
+    artifacts = [
+        ("downloading", [_hc("x", "x1", True), _hc("z", "z1", False)]),
+        ("downloading", [_hc("y", "y1", True), _hc("z", "z2", False)]),
+    ]
+    async with group_db() as db:
+        transfer_id, _artifact_ids = await _seed_scope(db, "case-h", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["candidate_action_scope"] == "group"
+    assert item["candidate_action_count"] == 1
+    assert item["candidate_action_artifact_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_case_g_one_common_host_already_active_everywhere_is_not_an_action(group_db):
+    """Matrix Case G / Example 4: two movable artifacts each carry their own
+    private alternate plus a shared host Z that both are ALREADY selected on.
+    Z is the only common host and requires zero movement -> NONE, not GROUP.
+    Raw common count is not actionability."""
+    artifacts = [
+        ("downloading", [_hc("z", "z1", True), _hc("p", "p1", False)]),
+        ("downloading", [_hc("z", "z2", True), _hc("q", "q1", False)]),
+    ]
+    async with group_db() as db:
+        transfer_id, _artifact_ids = await _seed_scope(db, "case-g", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["common_candidate_count"] == 1
+    assert item["candidate_action_scope"] == "none"
+    assert item["candidate_action_count"] == 0
+    assert item["candidate_action_artifact_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_case_i_multiple_movable_artifacts_no_safe_group_convergence(group_db):
+    """Matrix Case I / Example 5: two movable artifacts share no common host
+    at all -> NONE. Never arbitrarily choose one artifact."""
+    artifacts = [
+        ("downloading", [_hc("x", "x1", True), _hc("z", "z1", False)]),
+        ("downloading", [_hc("y", "y1", True), _hc("w", "w1", False)]),
+    ]
+    async with group_db() as db:
+        transfer_id, _artifact_ids = await _seed_scope(db, "case-i", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["common_candidate_count"] == 0
+    assert item["candidate_action_scope"] == "none"
+    assert item["candidate_action_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_case_i1_movable_subset_must_not_become_group_membership(group_db):
+    """Matrix Case I.1 -- CRITICAL preservation regression / Example 5A: A and
+    B (movable) share Z; C is a strict current group member (single-candidate,
+    non-movable) that lacks Z entirely. Z must NOT be promoted to a group
+    target through movable-subset narrowing: it is not in the strict
+    whole-transfer intersection because C lacks it. A solution that makes this
+    case 'group' is architecturally wrong even if every other test is green."""
+    artifacts = [
+        ("downloading", [_hc("x", "x1", True), _hc("z", "z1", False)]),
+        ("downloading", [_hc("y", "y1", True), _hc("z", "z2", False)]),
+        ("completed", [_hc("w", "w1", True)]),
+    ]
+    async with group_db() as db:
+        transfer_id, _artifact_ids = await _seed_scope(db, "case-i1", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    # If C had been wrongly excluded from the intersection, Z would be common
+    # to the remaining {A,B} and common_candidate_count would read 1, not 0.
+    assert item["common_candidate_count"] == 0
+    assert item["candidate_action_scope"] == "none"
+    assert item["candidate_action_count"] == 0
+    assert item["candidate_action_artifact_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_case_j_historical_common_source_without_current_action(group_db):
+    """Matrix Case J: no artifact is currently movable (both completed) but
+    existing history/group rules still show a common-source intersection ->
+    historical common_candidate_count is preserved while scope is NONE."""
+    artifacts = [
+        ("completed", [_hc("a", "a1", True), _hc("b", "b1", False)]),
+        ("completed", [_hc("a", "a2", True), _hc("b", "b2", False)]),
+    ]
+    async with group_db() as db:
+        transfer_id, _artifact_ids = await _seed_scope(db, "case-j", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["common_candidate_count"] == 2
+    assert item["candidate_action_scope"] == "none"
+    assert item["candidate_action_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_case_k_non_host_artifact_candidates_still_classify_as_artifact_mode(group_db):
+    """Matrix Case K: canonical candidates whose source identity is not the
+    HTTP host abstraction (e.g. a future SFTP/SCP scope) must still be
+    recognized by artifact mode. Artifact mode must not depend on
+    source_scope == 'host'; common_candidate_count (host-scoped only) stays 0."""
+    artifacts = [
+        ("downloading", [
+            ("scp", "host-1.example:22", "k1", True),
+            ("scp", "host-2.example:22", "k2", False),
+        ]),
+    ]
+    async with group_db() as db:
+        transfer_id, artifact_ids = await _seed_scope(db, "case-k", artifacts)
+    item = next(row for row in (await _scope_list())["items"] if row["id"] == transfer_id)
+    assert item["common_candidate_count"] == 0
+    assert item["candidate_action_scope"] == "artifact"
+    assert item["candidate_action_count"] == 2
+    assert item["candidate_action_artifact_id"] == artifact_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_candidate_action_scope_stays_bounded_across_small_and_large_candidate_sets(group_db):
+    """Section 13/20.7 boundedness evidence: the candidate-action classifier
+    adds columns/CTEs to the SAME bounded read -- never a second query, and
+    never scales with artifact/candidate count. _ExplodingRepository (via
+    _scope_list's application) also proves no per-row comprehensive
+    presentation call occurs."""
+    async with group_db() as db:
+        small_id, _ = await _seed_scope(db, "bounded-small", [
+            ("downloading", [_hc("a", "a1", True), _hc("b", "b1", False)]),
+        ])
+    async with _tracking_db() as tracker_small:
+        result_small = await downloads.list_operational_torrents(
+            status=None, search=None, limit=0, offset=0,
+            application=SimpleNamespace(repository=_ExplodingRepository(), definitions=[]),
+        )
+    assert [kind for kind, _q in tracker_small.calls] == ["fetchall", "fetchone"]
+    small_item = next(row for row in result_small["items"] if row["id"] == small_id)
+    assert small_item["candidate_action_scope"] == "artifact"
+    assert small_item["candidate_action_count"] == 2
+
+    large_candidates = [_hc(f"m{i}", f"c{i}", i == 0) for i in range(25)]
+    large_artifacts = [("downloading", large_candidates)] + [_sibling(i) for i in range(25)]
+    async with group_db() as db:
+        large_id, _ = await _seed_scope(db, "bounded-large", large_artifacts)
+    async with _tracking_db() as tracker_large:
+        result_large = await downloads.list_operational_torrents(
+            status=None, search=None, limit=0, offset=0,
+            application=SimpleNamespace(repository=_ExplodingRepository(), definitions=[]),
+        )
+    # Exactly the projection read and the collection-count read -- identical
+    # call shape regardless of the 50-binding / 26-artifact transfer above.
+    assert [kind for kind, _q in tracker_large.calls] == ["fetchall", "fetchone"]
+    large_item = next(row for row in result_large["items"] if row["id"] == large_id)
+    assert large_item["candidate_action_scope"] == "artifact"
+    assert large_item["candidate_action_count"] == 25
+
+
+def test_recovery_net_compensation_no_longer_exists():
+    """DP 1.0.12 leveling remediation (FUNC-001): the bounded operational
+    list used to merge in a compensating "recovery net" query because a
+    settled raw ``torrents.status`` was not guaranteed to have its
+    ``transfer_pause_intents``/``transfer_input_challenges`` row retired.
+    That engine-ownership defect is now fixed at the source
+    (``transfers._repository_base._retire_transfer_auxiliary_state_in_db``,
+    invoked transactionally by every path that can settle a parent), so this
+    module must own no read-model compensation for it -- a settled raw status
+    can be trusted directly again."""
+    assert not hasattr(downloads, "_recovery_net_candidate_ids")
+    assert not hasattr(downloads, "_RECOVERY_NET_SCAN_CAP")

@@ -1,0 +1,117 @@
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+
+
+def read_static(name: str) -> str:
+    return (STATIC / name).read_text(encoding="utf-8")
+
+
+def test_downloads_outer_view_does_not_clip_universal_card_paint():
+    css = read_static("ui-downloads-page.css")
+
+    assert "#view-torrents:is(.active, [data-dp-motion-outgoing])" in css
+    assert "overflow: visible;" in css
+    assert "#view-torrents .dp-downloads-table-wrap" in css
+    assert "overflow: auto !important;" in css
+
+    desktop_rule = css.split("#view-torrents:is(.active, [data-dp-motion-outgoing])", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden" not in desktop_rule
+
+
+def test_clean_settings_uses_one_master_card_and_one_internal_scroll_boundary():
+    css = read_static("ui-settings-page.css")
+    runtime = read_static("ui-settings-page.js")
+
+    selector = "#view-settings.dp-settings-clean-view.active"
+    assert selector in css
+    rule = css.split(selector, 1)[1].split("}", 1)[0]
+    assert "overflow: visible;" in rule
+    assert "overflow: hidden;" not in rule
+
+    master = css.split("#view-settings > .dp-settings-master-card", 1)[1].split("}", 1)[0]
+    assert "flex: 1 1 auto;" in master
+    assert "min-height: 0;" in master
+    assert "margin-bottom: 0 !important;" in master
+
+    body = css.split("#view-settings .dp-settings-master-body", 1)[1].split("}", 1)[0]
+    assert "flex: 1 1 auto;" in body
+    assert "overflow: hidden;" in body
+
+    scroll = css.split("#view-settings .dp-settings-scroll", 1)[1].split("}", 1)[0]
+    assert "overflow-y: auto;" in scroll
+    assert "overscroll-behavior: contain;" in scroll
+
+    panels = css.split("#view-settings .dp-settings-panels", 1)[1].split("}", 1)[0]
+    assert "padding: 12px 12px 16px;" in panels
+
+    # The footer region carried generic Apply and nothing else; with Apply
+    # retired it is deleted, so it paints nothing and reserves no space.
+    assert "dp-settings-master-footer" not in css
+
+    assert '<section class="card dp-settings-master-card"' in runtime
+    assert '<div class="card-header dp-settings-master-header">' in runtime
+    assert '<div class="dp-settings-master-body">' in runtime
+    assert "dp-settings-master-footer" not in runtime
+    assert 'class="card dp-settings-card' in runtime
+    assert '<section class="card dp-settings-header-card"' not in runtime
+    assert '<section class="card dp-settings-footer"' not in runtime
+
+
+def test_inherited_settings_shell_state_is_rejected_but_normal_content_height_is_reused():
+    # DP 1.0.12 canonical flattening: the retired ui-legacy-foundation.css's
+    # #content.settings-active rule was merged into ui-shell-structural.css's
+    # own pre-existing rule for the same selector -- there is exactly one
+    # owner now, not two.
+    shell = read_static("ui-shell-structural.css")
+    runtime = read_static("ui-settings-page.js")
+    settings = read_static("ui-settings-page.css")
+
+    # app.js still emits the inherited class until the monolith cleanup pass.
+    # The clean Settings entry removes it synchronously before rendering any
+    # Settings DOM. The only #content selector Settings owns mirrors Activity:
+    # suppress outer scrolling while the page fills the shell-owned content box.
+    assert "#content.settings-active" in shell
+    assert "classList.remove('settings-active')" in runtime
+    assert "#content.settings-active" not in settings
+    assert "#content:has(#view-settings.active)" in settings
+
+    content_rule = settings.split("#content:has(#view-settings.active)", 1)[1].split("}", 1)[0]
+    assert "overflow-y: hidden;" in content_rule
+    for forbidden in ("#main", "#sidebar", "#topbar"):
+        assert forbidden not in settings
+
+
+
+
+def test_help_downloads_and_settings_corrections_do_not_redefine_card_material():
+    combined = (
+        read_static("ui-downloads-page.css")
+        + read_static("ui-help-page.css")
+        + read_static("ui-settings-page.css")
+    )
+
+    forbidden = (
+        "--dp-panel-surface:",
+        "--dp-panel-frame:",
+        "--dp-panel-shadow:",
+        "box-shadow: var(--dp-panel-shadow)",
+        "background: var(--dp-panel-surface)",
+    )
+    for token in forbidden:
+        assert token not in combined
+
+
+def test_card_paint_boundary_page_layers_are_loaded_after_universal_language():
+    overlay = read_static("style.css")
+
+    universal = overlay.index("/ui-universal-language.css?v=22")
+    stats = overlay.index("/ui-statistics-page.css?v=23")
+    activity = overlay.index("/ui-activity-log-page.css?v=33")
+    downloads = overlay.index("/ui-downloads-page.css?v=30")
+    settings = overlay.index("/ui-settings-page.css?v=5")
+    help_page = overlay.index("/ui-help-page.css?v=23")
+
+    assert universal < stats < activity < downloads < settings < help_page

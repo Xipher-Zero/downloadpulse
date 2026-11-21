@@ -1,0 +1,206 @@
+const { test, expect } = require('@playwright/test');
+
+function candidate(id, source, active) {
+  return {candidate_id:id,source_label:source,provider_id:'alldebrid',relationship:'Original',
+    dispositions:active?['Active']:[],is_selected:active,is_active:active,is_delivering:false,switch_eligible:!active};
+}
+function detail(active) {
+  return {id:990,name:'Candidate switch fixture',status:'downloading',progress:42,size_bytes:1024,
+    source:'direct_link',label:'',hash:'',created_at:'2026-09-06T10:00:00Z',current_provider_id:'alldebrid',
+    current_provider_name:'AllDebrid',active_provider_id:'alldebrid',active_provider_name:'AllDebrid',route_attempts:[],execution_attempts:[],executors:['aria2'],source_outcomes:[],events:[],
+    files:[{id:502,filename:'GF030926-M2SP-RN.rar',size_bytes:1024,status:'downloading',blocked:false,block_reason:null,
+      candidate_count:2,acquisition_candidates:[candidate('a','rapidgator.net',active==='a'),candidate('b','megaup.net',active==='b')]}]};
+}
+async function openCandidates(page, holder, handler) {
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status:200,contentType:'text/css',body:''}));
+  await page.route(url => url.pathname === '/api/torrents/990', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(holder.detail)}));
+  await page.route(url => url.pathname === '/api/torrents/990/artifacts/502/candidate', route => handler(route));
+  await page.goto('/');
+  await page.evaluate(() => showDetail(990));
+  await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
+  await page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure').click();
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toBeVisible();
+}
+
+test('manual switch is backend authoritative and keeps Details usable', async ({page}) => {
+  const holder={detail:detail('a')};
+  await openCandidates(page,holder,async route=>{
+    expect(route.request().postDataJSON()).toEqual({candidate_id:'b'});
+    await new Promise(resolve=>setTimeout(resolve,250));
+    holder.detail=detail('b');
+    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,transfer_id:990,artifact_id:502,filename:'GF030926-M2SP-RN.rar',candidate_id:'b',source_host:'megaup.net',provider_id:'alldebrid'})});
+  });
+  const panel=page.locator('tr[data-dp-candidate-owner="502"]');
+  await expect(panel.locator('.dp-detail-candidate-item').first().locator('.dp-detail-candidate-active')).toHaveText('ACTIVE');
+  const button=panel.locator('.dp-detail-candidate-switch');
+  await button.click();
+  await expect(button).toBeDisabled();
+  await expect(panel.locator('.dp-detail-candidate-item').first().locator('.dp-detail-candidate-active')).toHaveText('ACTIVE');
+  await expect(page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-item').nth(1).locator('.dp-detail-candidate-active')).toHaveText('ACTIVE');
+  await expect(page.locator('.toast')).toContainText('GF030926-M2SP-RN.rar file source switched to megaup.net');
+  const disclosure=page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure');
+  await expect(disclosure).toBeFocused();
+  await disclosure.click();
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toHaveCount(0);
+  await disclosure.click();
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toBeVisible();
+});
+
+test('switch button is keyboard reachable and ACTIVE is noninteractive', async ({page}) => {
+  const holder={detail:detail('a')};
+  await openCandidates(page,holder,async route=>{holder.detail=detail('b');await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,filename:'GF030926-M2SP-RN.rar',candidate_id:'b',source_host:'megaup.net'})});});
+  const panel=page.locator('tr[data-dp-candidate-owner="502"]');
+  await expect(panel.locator('.dp-detail-candidate-active')).not.toHaveAttribute('role','button');
+  await expect(panel.locator('.dp-detail-candidate-active')).not.toHaveAttribute('tabindex');
+  const button=panel.locator('.dp-detail-candidate-switch');
+  await button.focus();
+  await expect(button).toBeFocused();
+  await button.press('Enter');
+  await expect(page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-item').nth(1).locator('.dp-detail-candidate-active')).toHaveText('ACTIVE');
+});
+
+test('structured server rejection stays truthful and does not move ACTIVE', async ({page}) => {
+  const holder={detail:detail('a')};
+  await openCandidates(page,holder,async route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({detail:{category:'provider_unavailable',message:'Selected provider is unavailable'}})}));
+  await page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-switch').click();
+  await expect(page.locator('.toast')).toContainText('Unable to switch source for GF030926-M2SP-RN.rar');
+  await expect(page.locator('.toast')).toContainText('Selected provider is unavailable');
+  const panel=page.locator('tr[data-dp-candidate-owner="502"]');
+  await expect(panel.locator('.dp-detail-candidate-item').first().locator('.dp-detail-candidate-active')).toHaveText('ACTIVE');
+  await expect(panel.locator('.dp-detail-candidate-item').nth(1).locator('.dp-detail-candidate-active')).toHaveCount(0);
+  await expect(panel.locator('.dp-detail-candidate-switch')).toBeEnabled();
+});
+
+test('disclosure is one ghost candidate button with the Network glyph and "N Candidates" text', async ({page}) => {
+  const holder={detail:detail('a')};
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status:200,contentType:'text/css',body:''}));
+  await page.route(url => url.pathname === '/api/torrents/990', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(holder.detail)}));
+  await page.goto('/');
+  await page.evaluate(() => showDetail(990));
+  await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
+  const disclosure=page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure');
+
+  // One coherent control: it is the ghost candidate chip button itself.
+  await expect(disclosure).toHaveJSProperty('tagName','BUTTON');
+  await expect(disclosure).toHaveClass(/\bdp-candidate-chip\b/);
+  // Network glyph from the canonical Lucide owner, rendered once.
+  await expect(disclosure.locator('svg[data-dp-lucide="network"]')).toHaveCount(1);
+  // Text reads "N Candidates" with the count NOT in a circular nested badge.
+  await expect(disclosure).toContainText('Candidates');
+  await expect(disclosure.locator('.dp-candidate-chip-count')).toHaveText('2');
+  await expect(disclosure.locator('.dp-detail-candidate-count')).toHaveCount(0);
+  const badge=await disclosure.locator('.dp-candidate-chip-count').evaluate(n=>{
+    const s=getComputedStyle(n);
+    return {radius:s.borderRadius,border:s.borderTopWidth,bg:s.backgroundColor};
+  });
+  expect(badge.radius === '' || badge.radius === '0px').toBe(true);
+  expect(parseFloat(badge.border) || 0).toBe(0);
+  // Disclosure contract preserved.
+  await expect(disclosure).toHaveAttribute('aria-expanded','false');
+  await expect(disclosure).toHaveAttribute('aria-controls','dp-detail-candidates-502');
+  await expect(disclosure).toHaveAttribute('aria-label',/^Show 2 Candidates for/);
+
+  await disclosure.click();
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toBeVisible();
+  await expect(disclosure).toHaveAttribute('aria-expanded','true');
+  await expect(disclosure).toHaveAttribute('aria-label',/^Hide 2 Candidates for/);
+  await disclosure.press('Enter');
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toHaveCount(0);
+  await expect(disclosure).toBeFocused();
+});
+
+test('candidate disclosure survives the modal-coordinator ownership refactor', async ({page}) => {
+  // ui-detail-candidates.js no longer wraps window.showDetail / window.closeModal;
+  // it listens to app.js lifecycle events. Disclosure + close/reopen must be intact
+  // and the file-selection Details host (DP 1.0.12 Workstream B: the Files-section
+  // header right-side mount, not the retired generic #dp-detail-actions) must not
+  // interfere.
+  const holder = {detail: detail('a')};
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status: 200, contentType: 'text/css', body: ''}));
+  await page.route(url => url.pathname === '/api/torrents/990', route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(holder.detail)}));
+  await page.route(url => url.pathname === '/api/torrents/990/file-selection', route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({eligible: false})}));
+
+  const rendered = [];
+  await page.goto('/');
+  await page.evaluate(() => {
+    window.__dpDetailEvents = [];
+    document.addEventListener('downloadpulse:detail-rendered', e => window.__dpDetailEvents.push(['rendered', e.detail && e.detail.transferId]));
+    document.addEventListener('downloadpulse:detail-closed', () => window.__dpDetailEvents.push(['closed']));
+  });
+
+  await page.evaluate(() => showDetail(990));
+  await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
+  await expect(page.locator('#dp-detail-actions')).toHaveCount(0);
+  await expect(page.locator('[data-dp-file-selection-mount][data-dp-transfer-id="990"]')).toHaveCount(1);
+
+  await page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure').click();
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toBeVisible();
+
+  await page.locator('#modal .modal-close').click();
+  await expect(page.locator('#overlay')).not.toHaveClass(/\bopen\b/);
+
+  await page.evaluate(() => showDetail(990));
+  await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
+  await page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure').click();
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toBeVisible();
+
+  const events = await page.evaluate(() => window.__dpDetailEvents);
+  expect(events).toContainEqual(['rendered', 990]);
+  expect(events).toContainEqual(['closed']);
+  void rendered;
+});
+
+test('in-flight suppression prevents duplicate candidate POSTs', async ({page}) => {
+  const holder={detail:detail('a')}; let posts=0;
+  await openCandidates(page,holder,async route=>{posts+=1;await new Promise(resolve=>setTimeout(resolve,180));holder.detail=detail('b');await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,filename:'GF030926-M2SP-RN.rar',candidate_id:'b',source_host:'megaup.net'})});});
+  const button=page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-switch');
+  await button.evaluate(node=>{node.click();node.click();});
+  await expect(page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-item').nth(1).locator('.dp-detail-candidate-active')).toHaveText('ACTIVE');
+  expect(posts).toBe(1);
+});
+
+// A held live pulse: the stream is answered only when the test sends the
+// events, so they arrive at a moment the test chose, through the app's real
+// transport (app.js turns a semantic torrent_updated into
+// downloadpulse:transfer-updated).
+async function heldPulse(page) {
+  let send;
+  const body = new Promise(resolve => { send = resolve; });
+  await page.route('**/api/events/stream', async route => route.fulfill({status: 200, contentType: 'text/event-stream', body: await body}));
+  return events => send(['event: connected\ndata: {}\n', ...events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n`)].join('\n') + '\n');
+}
+
+test('a candidate committed while Details is open appears in place, its disclosure kept open', async ({page}) => {
+  // Opened away from Downloads and the Dashboard, so no list re-render can
+  // stand in for the open transfer's own semantic refresh.
+  const holder = {detail: detail('a')};
+  let reads = 0;
+  const pulse = await heldPulse(page);
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status:200,contentType:'text/css',body:''}));
+  await page.route(url => url.pathname === '/api/torrents/990', route => {
+    reads += 1;
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(holder.detail)});
+  });
+  await page.goto('/');
+  await page.evaluate(() => nav(document.querySelector('[data-view="events"]')));
+  await page.evaluate(() => showDetail(990));
+  await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
+  const disclosure = page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure');
+  await disclosure.click();
+  const items = page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-item');
+  await expect(items).toHaveCount(2);
+
+  const next = detail('a');
+  next.files[0].candidate_count = 3;
+  next.files[0].acquisition_candidates.push(candidate('c', 'pixeldrain.com', false));
+  holder.detail = next;
+  const before = reads;
+  pulse([['torrent_updated', {id: 990, status: 'downloading'}]]);
+
+  await expect(items).toHaveCount(3);
+  await expect(items.nth(2)).toContainText('pixeldrain.com');
+  await expect(page.locator('tr[data-dp-candidate-owner="502"]')).toBeVisible();     // still expanded
+  await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
+  expect(reads - before).toBeGreaterThanOrEqual(1);
+  expect(reads - before).toBeLessThanOrEqual(2);       // this owner's read, and Common Sources' own
+});

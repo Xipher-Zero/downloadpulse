@@ -1,0 +1,27 @@
+# DownloadPulse: self-hosted transfer manager
+# Generic bridge-network example. Adapt host paths, UID/GID and timezone.
+
+services:
+  downloadpulse:
+    image: ghcr.io/xipher-zero/downloadpulse:v1.0.0
+    build: .
+    container_name: downloadpulse
+    restart: unless-stopped
+    ports:
+      - "8095:8095"
+    volumes:
+      - /mnt/user/appdata/downloadpulse/data:/app/data
+      - /mnt/user/appdata/downloadpulse/config:/app/config
+      - /mnt/user/downloads:/download
+    environment:
+      - PUID=99
+      - PGID=100
+      - CONFIG_PATH=/app/config/config.json
+      - DB_PATH=/app/data/downloadpulse.db
+      - TZ=Europe/Berlin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8095/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

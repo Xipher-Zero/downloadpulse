@@ -1,0 +1,2203 @@
+"""Media Downloads (yt-dlp): the contract layer -- applicability, routing,
+policy, ownership and presentation, with no network and no native tool.
+
+Every proof here uses the installed yt-dlp registry and selector themselves
+(pure, offline) or a fake extraction; the sandboxed worker, the egress guard,
+the executor's process lifecycle and the real finalizers are proven in
+``test_v113_media_downloads_runtime``.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import re
+
+from i18n_node import english, says
+import socket
+
+import pytest
+from yt_dlp import YoutubeDL
+from yt_dlp.extractor import gen_extractor_classes, list_extractor_classes
+
+from core.config import AppSettings
+from executors.media import worker
+from executors.media.executor import MediaExecutor
+from integrations.catalog import definitions as catalog
+from integrations.configuration import effective_integration_settings, normalize_settings, public_integrations
+from integrations.definition import IntegrationEnvironment, IntegrationGroupSettings, IntegrationSettings
+from integrations.media.definition import definition as media_definition
+from integrations.media.outcomes import OUTCOMES, MediaFailure, outcome_error
+from providers.general_http.definition import definition as http_definition
+from providers.media import plan as planning
+from providers.media.provider import MEMBER_KIND, PLAN_KEY, MediaProvider
+from test_v113_collection_route_generic_closure import Route, by_payload, drive, lab, routes, submit
+from transfers import codec
+from transfers.applicability import ApplicabilityClass
+from transfers.errors import Category, Origin, Retryability, Stage, TransferError
+from transfers.models import (
+    ContinuationCapability, Endpoint, ExecutionSubject, ExecutionWork, MaterializationKind, MaterializationPlan,
+    ExecutionRequest, TransferCandidate, TransferRequest,
+)
+from transfers.policy import provider_attributable
+from transfers.registry import IntegrationRegistry
+
+VIDEO = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+SHORT = "https://youtu.be/dQw4w9WgXcQ"
+PLAYLIST = "https://www.youtube.com/playlist?list=PLbpi6ZahtOH6Ar_3GPy3workQZiTQKzxs"
+PLAIN = ("https://files.example.org/archive.zip", "https://cdn.example.org/clip.mp4", "https://example.com/")
+
+
+def media_facts(**overrides):
+    facts = {"kind": "media", "extractor": "Youtube", "id": "dQw4w9WgXcQ", "title": "Clip", "live_status": "",
+             "formats": [{"format_id": "137", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none",
+                          "protocol": "https", "height": 1080, "width": 1920},
+                         {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2",
+                          "protocol": "https", "height": None, "width": None}],
+             "subtitles": {}, "automatic_captions": {}}
+    facts.update(overrides)
+    return facts
+
+
+class Extraction:
+    """A fake of the worker's read-only extraction (``MediaSandbox.extract``)."""
+
+    def __init__(self, answer=None):
+        self.answer = answer if answer is not None else media_facts()
+        self.calls = []
+
+    async def __call__(self, url, *, selection, collection_bound, single_item=False):
+        self.calls.append((url, selection, collection_bound, single_item))
+        if isinstance(self.answer, MediaFailure):
+            raise self.answer
+        return self.answer(url) if callable(self.answer) else self.answer
+
+
+# -- applicability ------------------------------------------------------------------------
+
+def test_only_an_explicit_installed_extractor_claims_in_native_dispatch_order(monkeypatch):
+    native = tuple(gen_extractor_classes())
+    assert planning._extractor_classes() == native
+    assert native[-1].ie_key() == "Generic"
+    # The display list is sorted; the dispatch order is not that list.
+    assert [item.ie_key() for item in list_extractor_classes()] != [item.ie_key() for item in native]
+    for url in (VIDEO, SHORT, PLAYLIST, "https://vimeo.com/76979871"):
+        expected = next(item.ie_key() for item in native if item.suitable(url))
+        assert planning.explicit_extractor(url) == expected != "Generic"
+    for url in PLAIN:
+        # GenericIE would take these; it is never a claimant.
+        assert next(item.ie_key() for item in native if item.suitable(url)) == "Generic"
+        assert planning.explicit_extractor(url) is None
+
+    def no_network(*_args, **_kwargs):
+        raise AssertionError("applicability performed network I/O")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_network)
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    provider = MediaProvider(Extraction())
+    claim = provider.applicability_for(TransferRequest("https", "https://m.youtube.com/watch?v=xyzxyzxyz12"))
+    assert claim.is_specialized and claim.collection_authority is False
+    assert [item.host for item in claim.specialized_hosts] == ["m.youtube.com"]
+    for url in PLAIN:
+        assert not provider.applicability_for(TransferRequest("https", url)).is_specialized
+    member = provider.applicability_for(TransferRequest(MEMBER_KIND, VIDEO))
+    assert member.collection_authority is False and not member.is_specialized
+
+
+def _registry(*items):
+    registry = IntegrationRegistry()
+    for item in items:
+        registry.register_provider(item)
+    return registry
+
+
+def test_generic_http_keeps_every_address_media_downloads_does_not_claim():
+    registry = _registry(MediaProvider(Extraction()), http_definition.build(IntegrationSettings(), None))
+    for url in PLAIN:
+        assert [item.descriptor.id for item in registry.eligible_providers(TransferRequest("https", url))] == [
+            "general_http"]
+    assert [item.descriptor.id for item in registry.eligible_providers(TransferRequest("https", VIDEO))] == ["media"]
+    # A media claim speaks only for its own root: it never closes generic
+    # competition for the independent roots pasted beside it.
+    assert registry.collection_route_authority(
+        (TransferRequest("https", VIDEO), *(TransferRequest("https", url) for url in PLAIN))) is False
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_paste_routes_each_root_through_its_own_claimant(tmp_path, monkeypatch):
+    media = MediaProvider(Extraction(lambda url: media_facts()))
+    generic = Route("generic-route", generic=True)
+    authority = Route("special-x", hosts=("special.test",))
+    repository, _registry, _executor, engine = await lab(tmp_path, monkeypatch, media, generic, authority)
+    files = ["https://files.example.org/a.bin", "https://files.example.org/b.bin"]
+    transfer = await submit(engine, VIDEO, *files)
+
+    await drive(engine)
+
+    assert await repository.collection_route_authority(transfer.id) is False
+    assert sorted(generic.resolved) == sorted(files)
+    history = await routes(repository, transfer.id)
+    assert sorted(item["provider_id"] for item in history) == ["generic-route", "generic-route", "media"]
+    roots = await by_payload(repository, transfer.id)
+    assert roots[VIDEO].state in {"resolved", "materializing"}
+
+    # Unchanged for an authority-bearing specialized claimant: its paste still
+    # closes generic competition for every root.
+    second = await submit(engine, "https://special.test/c.bin", VIDEO, "https://files.example.org/d.bin")
+    await drive(engine)
+    assert await repository.collection_route_authority(second.id) is True
+    assert "https://files.example.org/d.bin" not in generic.resolved
+    assert (await by_payload(repository, second.id))[VIDEO].state in {"resolved", "materializing"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["unavailable", "extractor_failed", "network", "auth_required",
+                                  "runtime_unavailable", "egress_refused", "verification_challenge"])
+async def test_a_claimed_medium_never_falls_through_to_generic_http(tmp_path, monkeypatch, code):
+    media = MediaProvider(Extraction(MediaFailure(code)))
+    generic = Route("generic-route", generic=True)
+    repository, _registry, _executor, engine = await lab(tmp_path, monkeypatch, media, generic)
+    transfer = await submit(engine, VIDEO)
+
+    await drive(engine)
+
+    assert generic.resolved == []
+    root = (await by_payload(repository, transfer.id))[VIDEO]
+    assert await repository.exhausted_route_providers(root.id) == frozenset()
+    assert {item["provider_id"] for item in await routes(repository, transfer.id)} == {"media"}
+
+
+def test_no_outcome_is_ever_attributed_to_a_replaceable_provider():
+    for code in OUTCOMES:
+        for stage in (Stage.RESOLUTION, Stage.EXECUTION):
+            assert not provider_attributable(outcome_error(code, stage)), code
+    assert not provider_attributable(outcome_error("never-heard-of", Stage.RESOLUTION))
+
+
+# -- integration, enable and status -------------------------------------------------------
+
+class _Repository:
+    async def authorize_execution(self, *_args):
+        return True
+
+
+def test_one_paired_integration_one_enable_state_and_network_sources_membership():
+    environment = IntegrationEnvironment(_Repository(), "/tmp/dp-media-downloads")
+    assert media_definition.kind == "provider_executor" and media_definition.secret_fields == frozenset()
+    assert media_definition.owned_identities == frozenset({"media", "yt_dlp"})
+    provider, executor = media_definition.build(IntegrationSettings(), environment)
+    assert provider.descriptor.enabled and executor.descriptor.enabled
+
+    saved = AppSettings(integrations={"media": IntegrationSettings(enabled=False,
+                                                                   options={"target_resolution": "720"})})
+    settings = normalize_settings(saved, catalog)
+    provider, executor = media_definition.build(effective_integration_settings(settings, media_definition),
+                                                environment)
+    assert not provider.descriptor.enabled and not executor.descriptor.enabled
+    # An installation that never stored a Video Quality reads the default,
+    # High -- one fragment at a time, and Automatic player clients, exactly as
+    # before those options existed.
+    assert settings.integrations["media"].options == {"target_resolution": "720", "video_quality": "high",
+                                                      "video_codec": "auto", "concurrent_fragment_downloads": 1,
+                                                      "youtube_player_clients": []}
+    registry = _registry(provider, http_definition.build(IntegrationSettings(), None))
+    assert [item.descriptor.id for item in registry.eligible_providers(TransferRequest("https", VIDEO))] == [
+        "general_http"]
+
+    # The Network Sources gate governs it exactly like every other member,
+    # without rewriting its own namespace.
+    gated = normalize_settings(AppSettings(integration_groups={"direct_sources": IntegrationGroupSettings(
+        enabled=False)}), catalog)
+    assert effective_integration_settings(gated, media_definition).enabled is False
+    assert gated.integrations["media"].enabled is True
+
+    presentation = public_integrations(normalize_settings(AppSettings(), catalog), catalog)["media"]["presentation"]
+    members = sorted((item["presentation"]["display_order"], name) for name, item in public_integrations(
+        normalize_settings(AppSettings(), catalog), catalog).items()
+        if item["presentation"]["status_group"] == "direct_sources")
+    assert members[-1] == (916, "media")
+    assert presentation["status_name"] == "Media Downloads"
+    assert presentation["status_group_label"] == "Network Sources"
+    assert presentation["status_endpoint"] == "/integration-status/media"
+    assert (presentation["transfer_label"], presentation["transfer_theme"]) == ("Media Download", "hot-rose")
+
+
+@pytest.mark.asyncio
+async def test_status_reports_runtime_readiness_truthfully():
+    from types import SimpleNamespace
+
+    from api import settings_validation_routes as status
+
+    class Executor:
+        def __init__(self, ready):
+            self.ready = ready
+
+        async def health(self):
+            return SimpleNamespace(ready=self.ready)
+
+    def application(ready):
+        return SimpleNamespace(engine=SimpleNamespace(registry=SimpleNamespace(executors={"yt_dlp": Executor(ready)})))
+
+    # Readiness only: participation is the settings document's fact, which
+    # the status surface projects without asking a disabled member's endpoint.
+    assert await status.get_media_runtime_status(application(True)) == {"state": "healthy"}
+    assert await status.get_media_runtime_status(application(False)) == {"state": "unavailable"}
+
+
+# -- acquisition policy -------------------------------------------------------------------
+
+def _selected(heights, target, *extra):
+    def video(height, protocol="https"):
+        return {"format_id": f"{protocol}-{height}", "url": f"https://cdn.test/{height}", "height": height,
+                "width": height * 16 // 9, "vcodec": "avc1", "acodec": "none", "ext": "mp4", "protocol": protocol}
+    audio = {"format_id": "audio", "url": "https://cdn.test/a", "vcodec": "none", "acodec": "mp4a.40.2",
+             "ext": "m4a", "protocol": "https"}
+    formats = [video(height) for height in heights] + [video(*item) for item in extra] + [audio]
+    chosen = planning.selection(target)
+    with YoutubeDL({"quiet": True, "format": chosen["format"], "format_sort": chosen["format_sort"]}) as ydl:
+        result = ydl.process_ie_result({"id": "x", "title": "x", "extractor_key": "Test",
+                                        "webpage_url": "https://t/x", "formats": formats}, download=False)
+    return [item["format_id"] for item in result.get("requested_formats") or [result]]
+
+
+def test_target_resolution_is_exact_then_largest_below_then_smallest_above():
+    assert _selected([2160, 1440, 1080, 720], "1080") == ["https-1080", "audio"]
+    assert _selected([2160, 1440, 720], "1080") == ["https-720", "audio"]
+    assert _selected([2160, 1440], "1080") == ["https-1440", "audio"]
+    # Not numeric-nearest: 1440 is nearer to 1080 than 480 is, and still loses.
+    assert _selected([1440, 480], "1080") == ["https-480", "audio"]
+    # Best Available has no ceiling.
+    assert _selected([4320, 2160, 1080], "best") == ["https-4320", "audio"]
+    # Only transports carried over the guarded HTTP(S) route are ever selected.
+    assert _selected([1080], "best", (4320, "rtmp"), (2160, "rtsp"), (1440, "m3u8")) == ["https-1080", "audio"]
+    assert _selected([1080, 480], "720", (720, "m3u8_native")) == ["m3u8_native-720", "audio"]
+    assert media_definition.options_model().target_resolution == "best"
+
+
+def test_audio_only_media_is_one_native_file():
+    facts = media_facts(formats=[{"format_id": "251", "ext": "opus", "vcodec": "none", "acodec": "opus",
+                                  "protocol": "https", "height": None, "width": None}])
+    plan = planning.plan(facts, url=VIDEO, target="1080", subtitle_language="en")
+    assert (plan["container"], plan["formats"], plan["subtitle"]) == ("opus", ["251"], None)
+
+
+@pytest.mark.asyncio
+async def test_live_and_authenticated_media_are_refused_without_any_credential_flow():
+    live = MediaProvider(Extraction(media_facts(live_status="is_live")))
+    with pytest.raises(TransferError) as raised:
+        await live.resolve(TransferRequest("https", VIDEO))
+    assert (raised.value.error.category, raised.value.error.native_code) == (Category.UNSUPPORTED_REQUEST,
+                                                                             "live_unsupported")
+    private = MediaProvider(Extraction(MediaFailure("auth_required")))
+    with pytest.raises(TransferError) as raised:
+        await private.resolve(TransferRequest("https", VIDEO))
+    assert raised.value.error.category == Category.SOURCE_UNAVAILABLE
+    # Nothing can ask for, carry or store a cookie or login.
+    assert not hasattr(private, "resolve_with_input")
+    assert set(media_definition.options_model.model_fields) == {"target_resolution", "video_quality", "video_codec",
+                                                               "concurrent_fragment_downloads",
+                                                               "youtube_player_clients"}
+    params = worker._params({"proxy": "http://p"}, worker._Log())
+    assert (params["cookiefile"], params["usenetrc"], params["remote_components"]) == (None, False, [])
+
+
+def test_container_is_native_when_it_carries_everything_and_mkv_only_when_it_cannot():
+    mp4, m4a = media_facts()["formats"]
+    vp9 = {"format_id": "248", "ext": "webm", "vcodec": "vp9", "acodec": "none", "protocol": "https", "height": 1080}
+    opus = {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "protocol": "https"}
+    english_vtt = {"language": "en", "kind": "authored", "exts": ("json3", "vtt")}
+    assert planning.container_plan([mp4, m4a], None) == ("mp4", None)
+    assert planning.container_plan([vp9, opus], None) == ("webm", None)
+    assert planning.container_plan([vp9, opus], english_vtt) == (
+        "webm", {"language": "en", "kind": "authored", "ext": "vtt"})
+    # MP4 carries no source subtitle without conversion: MKV, never mov_text.
+    assert planning.container_plan([mp4, m4a], english_vtt) == (
+        "mkv", {"language": "en", "kind": "authored", "ext": "vtt"})
+    assert planning.container_plan([mp4, m4a], {**english_vtt, "exts": ("srt", "vtt")})[1]["ext"] == "srt"
+    # No preferred-language track at all: nothing to embed, native kept.
+    assert planning.container_plan([mp4, m4a], None) == ("mp4", None)
+    # A track that exists but no container carries unchanged is never dropped
+    # and never converted: the plan fails, truthfully.
+    with pytest.raises(ValueError, match="subtitle_unembeddable"):
+        planning.container_plan([mp4, m4a], {**english_vtt, "exts": ("json3", "ttml")})
+    # A native container this integration cannot rewrite still embeds the
+    # track unchanged -- in MKV.
+    flv = {"format_id": "f", "ext": "flv", "vcodec": "h264", "acodec": "aac", "protocol": "https"}
+    assert planning.container_plan([flv], {**english_vtt, "exts": ("srt",)}) == (
+        "mkv", {"language": "en", "kind": "authored", "ext": "srt"})
+    # Mismatched streams: yt-dlp's own compatibility answer is MKV.
+    assert planning.container_plan([mp4, opus], None) == ("mkv", None)
+    plan = planning.plan(media_facts(subtitles={"en": ["vtt"]}), url=VIDEO, target="best", subtitle_language="en")
+    assert plan["container"] == "mkv"
+    assert planning.file_name("Clip", "dQw4w9WgXcQ", plan["container"]).endswith(" [dQw4w9WgXcQ].mkv")
+
+
+def test_subtitle_is_authored_then_generated_in_the_preferred_language_only():
+    both = media_facts(subtitles={"en": ["vtt"], "fr": ["vtt"]}, automatic_captions={"en": ["vtt"], "de": ["vtt"]})
+    assert planning.choose_subtitle(both, "en")["kind"] == "authored"
+    generated = media_facts(subtitles={"fr": ["vtt"]}, automatic_captions={"en": ["vtt"], "es": ["vtt"]})
+    assert planning.choose_subtitle(generated, "en") == {"language": "en", "kind": "generated", "exts": ("vtt",)}
+    assert planning.choose_subtitle(media_facts(subtitles={"fr": ["vtt"]}, automatic_captions={"de": ["vtt"]}),
+                                    "en") is None
+    assert planning.choose_subtitle(media_facts(subtitles={"en-GB": ["srt"]}), "en")["language"] == "en-GB"
+    assert planning.choose_subtitle(media_facts(subtitles={"pt": ["srt"]}), "pt-br")["language"] == "pt"
+    # One track, never every language.
+    plan = planning.plan(both, url=VIDEO, target="best", subtitle_language="en")
+    assert plan["subtitle"] == {"language": "en", "kind": "authored", "ext": "vtt"}
+
+    # A GLOBAL Downloads preference, English by default, consumed -- never
+    # copied into the integration's own options.
+    assert AppSettings().preferred_subtitle_language == "en"
+    assert IntegrationEnvironment(None, "/tmp").preferred_subtitle_language == "en"
+    settings = normalize_settings(AppSettings(preferred_subtitle_language="DE"), catalog)
+    assert settings.preferred_subtitle_language == "de"
+    assert "subtitle" not in json.dumps(settings.integrations["media"].model_dump())
+    provider, _executor = media_definition.build(IntegrationSettings(), IntegrationEnvironment(
+        _Repository(), "/tmp/dp-media-downloads", preferred_subtitle_language="de"))
+    assert provider.subtitle_language == "de"
+    with pytest.raises(ValueError):
+        AppSettings(preferred_subtitle_language="english please")
+
+
+@pytest.mark.asyncio
+async def test_an_unembeddable_preferred_subtitle_fails_the_medium_instead_of_vanishing():
+    authored_only_ttml = media_facts(subtitles={"en": ["ttml", "json3"]}, automatic_captions={"en": ["vtt"]})
+    with pytest.raises(TransferError) as raised:
+        await MediaProvider(Extraction(authored_only_ttml)).resolve(TransferRequest("https", VIDEO))
+    error = raised.value.error
+    assert (error.native_code, error.category) == ("subtitle_unembeddable", Category.NO_TRANSFER_CANDIDATE)
+    assert not provider_attributable(error)
+    # Authored still wins over generated: the generated vtt is not a quiet substitute.
+    assert planning.choose_subtitle(authored_only_ttml, "en")["kind"] == "authored"
+
+
+@pytest.mark.asyncio
+async def test_one_planned_file_candidate_carries_no_volatile_material():
+    signed = "https://rr1---sn-abc.googlevideo.com/videoplayback?expire=1&sig=SECRET"
+    facts = media_facts(subtitles={"en": ["vtt"]})
+    facts["formats"][0]["url"] = signed  # whatever the worker reported, only facts are kept
+    provider = MediaProvider(Extraction(facts), target_resolution="1080", subtitle_language="en")
+    result = await provider.resolve(TransferRequest("https", VIDEO))
+    (candidate,) = result.candidates
+    plan = candidate.context[PLAN_KEY]
+    assert candidate.endpoints == () and candidate.materialization == MaterializationKind.FILE
+    assert candidate.name == "Clip [dQw4w9WgXcQ].mkv" and plan["container"] == "mkv"
+    assert (candidate.source_identity.scope, candidate.source_identity.key) == ("media", "Youtube:dQw4w9WgXcQ")
+    assert plan["formats"] == ["137", "140"] and plan["url"] == VIDEO
+    assert (plan["target_resolution"], plan["selected_height"], plan["subtitle_language"]) == ("1080", 1080, "en")
+    persisted = codec.dump(candidate)
+    assert "googlevideo" not in persisted and "SECRET" not in persisted and "sig=" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_a_playlist_is_one_complete_manifest_whose_member_names_are_final():
+    members = [{**media_facts(id="a1", title="First"), "url": "https://www.youtube.com/watch?v=aaaaaaaaaa1"},
+               {**media_facts(id="b2", title="Second", subtitles={"en": ["vtt"]}),
+                "url": "https://www.youtube.com/watch?v=bbbbbbbbbb2"},
+               {"url": "https://www.youtube.com/watch?v=cccccccccc3", "id": "c3", "title": "Gone",
+                "outcome": "unavailable"},
+               {**media_facts(id="a1", title="First"), "url": "https://www.youtube.com/watch?v=aaaaaaaaaa1"}]
+    extraction = Extraction({"kind": "collection", "extractor": "YoutubeTab", "id": "PL1", "title": "Mix",
+                             "members": members})
+    provider = MediaProvider(extraction)
+    result = await provider.resolve(TransferRequest("https", PLAYLIST))
+    assert extraction.calls[0][2] == planning.COLLECTION_BOUND
+    assert result.candidates == () and result.observation.name == "Mix"
+    names = [entry.relative_path for entry in result.observation.file_manifest.entries]
+    assert names == ["First [a1].mp4", "Second [b2].mkv", "Gone [c3]"]
+    assert all(entry.expected_bytes == 0 for entry in result.observation.file_manifest.entries)
+    entries = await provider.manifest(result.observation.resource)
+    assert [entry.request.kind for entry in entries] == [MEMBER_KIND] * 3
+    assert [entry.relative_path for entry in entries] == names
+
+    # A member resolves into exactly the file its manifest named ...
+    member = MediaProvider(Extraction(media_facts(id="a1", title="First")))
+    (candidate,) = (await member.resolve(entries[0].request)).candidates
+    assert candidate.name == "First [a1].mp4"
+    # ... and never into another container under that name.
+    changed = MediaProvider(Extraction(media_facts(id="a1", title="First", subtitles={"en": ["vtt"]})))
+    with pytest.raises(TransferError) as raised:
+        await changed.resolve(entries[0].request)
+    assert raised.value.error.native_code == "plan_changed"
+    with pytest.raises(TransferError) as raised:
+        await member.resolve(entries[2].request)
+    assert raised.value.error.native_code == "unavailable"
+
+    # The members are independent resources: chosen only explicitly, from a
+    # snapshot that observing never re-reads.
+    manifest = result.observation.file_manifest
+    assert manifest.independent_members and not manifest.source_truncated and manifest.source_total is None
+    assert (await provider.observe(result.observation.resource)).file_manifest == manifest
+    assert len(extraction.calls) == 1
+
+
+# -- acquisition scope and the bounded collection snapshot ---------------------------------
+
+MIX = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&index=12"
+
+
+def test_a_link_naming_a_video_inside_its_playlist_declares_both_scopes_and_nothing_else_asks():
+    provider = MediaProvider(Extraction())
+    asks = ["https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&index=12",
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=RDAMVMdQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ?list=PLbpi6ZahtOH6Ar_3GPy3workQZiTQKzxs"]
+    silent = [VIDEO, PLAYLIST, "https://www.youtube.com/watch?list=PLbpi6ZahtOH6Ar_3GPy3workQZiTQKzxs",
+              # Never guessed: a repeated or malformed id is no defensible pair.
+              "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLa1&list=PLb2",
+              "https://www.youtube.com/watch?v=short&list=PLbpi6ZahtOH6Ar_3GPy3workQZiTQKzxs"]
+    for url in asks:
+        assert provider.applicability_for(TransferRequest("https", url)).acquisition_scopes == (
+            ("item", "Current Video"), ("collection", "Playlist")), url
+    for url in silent:
+        assert provider.applicability_for(TransferRequest("https", url)).acquisition_scopes == (), url
+
+
+@pytest.mark.asyncio
+async def test_without_a_chosen_scope_the_link_is_refused_and_never_read():
+    extraction = Extraction()
+    with pytest.raises(TransferError) as raised:
+        await MediaProvider(extraction).resolve(TransferRequest("https", MIX))
+    assert raised.value.error.native_code == "scope_choice_required" and extraction.calls == []
+    refused = outcome_error("scope_choice_required", Stage.RESOLUTION)
+    assert (refused.category, refused.retryability) == (Category.INVALID_REQUEST, Retryability.NEVER)
+    # An answer to a question the link never asked is no answer either.
+    with pytest.raises(TransferError) as raised:
+        await MediaProvider(extraction).resolve(TransferRequest("https", VIDEO, acquisition_scope="item"))
+    assert raised.value.error.native_code == "unsupported" and extraction.calls == []
+
+
+@pytest.mark.asyncio
+async def test_current_video_reads_only_that_medium_and_plans_it_at_its_own_page():
+    extraction = Extraction(media_facts(webpage_url=VIDEO))
+    request = TransferRequest("https", MIX, acquisition_scope="item")
+    (candidate,) = (await MediaProvider(extraction).resolve(request)).candidates
+    (url, _selection, _bound, single), = extraction.calls
+    assert (url, single) == (MIX, True)          # yt-dlp's own single-item reading of the submitted link
+    assert candidate.context[PLAN_KEY]["url"] == VIDEO and request.payload == MIX
+    # A link whose item reading still yields a collection, or a medium with no
+    # page of its own, is refused -- never expanded, never guessed.
+    for answer in ({"kind": "collection", "members": []}, media_facts(webpage_url="")):
+        with pytest.raises(TransferError) as raised:
+            await MediaProvider(Extraction(answer)).resolve(request)
+        assert raised.value.error.native_code == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_playlist_reads_the_collection_and_a_member_is_always_read_as_itself():
+    members = [{**media_facts(id=f"m{index}", title=f"Song {index}"),
+                "url": f"https://www.youtube.com/watch?v=member{index:05d}"} for index in range(3)]
+    extraction = Extraction({"kind": "collection", "extractor": "YoutubeTab", "id": "RD1", "title": "Mix",
+                             "members": members, "truncated": True, "total": None})
+    result = await MediaProvider(extraction).resolve(TransferRequest("https", MIX, acquisition_scope="collection"))
+    assert extraction.calls[0][3] is False
+    manifest = result.observation.file_manifest
+    assert (manifest.independent_members, manifest.source_truncated, manifest.source_total) == (True, True, None)
+    entries = await MediaProvider(extraction).manifest(result.observation.resource)
+    member = MediaProvider(Extraction(media_facts(id="m0", title="Song 0")))
+    await member.resolve(entries[0].request)
+    assert member.extract.calls[0][0] == "https://www.youtube.com/watch?v=member00000"
+    assert member.extract.calls[0][3] is True
+
+
+@pytest.mark.parametrize("observed,stated,shown,truncated,total", [
+    (0, None, 0, False, None),
+    (1, None, 1, False, None),
+    (100, None, 100, False, None),
+    (101, None, 100, True, None),          # one beyond the bound proves the excess; the total stays unknown
+    (101, 342, 100, True, 342),            # a total the source stated is kept, separately
+    (50, 50, 50, False, 50),
+    (101, 7, 100, True, None),             # a stated count the entries contradict is no total
+])
+def test_the_snapshot_is_the_first_hundred_in_source_order(observed, stated, shown, truncated, total):
+    entries = [{"id": f"e{index}"} for index in range(observed)]
+    kept, more, count = worker.bounded_entries({"entries": entries, "playlist_count": stated},
+                                               planning.COLLECTION_BOUND)
+    assert kept == entries[:shown] and (more, count) == (truncated, total)
+    assert {"id": "e100"} not in kept
+
+
+class _CollectionYoutubeDL:
+    """A playlist of ``size`` flat entries, then each member's own medium."""
+
+    size = 101
+    seen = []
+
+    def __init__(self, params):
+        type(self).seen.append(params)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        if "list=" in url and not type(self).seen[-1].get("noplaylist"):
+            entries = [{"id": f"v{index:010d}", "title": f"Track {index}",
+                        "url": f"https://www.youtube.com/watch?v=v{index:010d}"}
+                       for index in range(min(self.size, self.seen[-1]["playlistend"]))]
+            return {"_type": "playlist", "extractor_key": "YoutubeTab", "id": "RD1", "title": "Mix",
+                    "entries": entries}
+        return {"extractor_key": "Youtube", "id": url.rsplit("=", 1)[-1][:11], "title": "Clip",
+                "webpage_url": url.split("&", 1)[0], "formats": [], "requested_formats": []}
+
+
+def test_the_worker_snapshots_a_large_playlist_boundedly_and_reads_an_item_without_its_playlist(monkeypatch):
+    import yt_dlp
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _CollectionYoutubeDL)
+    spec = {"url": MIX, "proxy": "http://127.0.0.1:9", "collection_bound": planning.COLLECTION_BOUND}
+    facts = worker.extract(spec)
+    assert _CollectionYoutubeDL.seen[-1]["playlistend"] == planning.COLLECTION_BOUND + 1
+    assert _CollectionYoutubeDL.seen[-1]["noplaylist"] is False
+    assert (facts["kind"], len(facts["members"]), facts["truncated"], facts["total"]) == ("collection", 100, True,
+                                                                                         None)
+    assert [member["id"] for member in facts["members"]] == [f"v{index:010d}" for index in range(100)]
+    single = worker.extract({**spec, "single_item": True})
+    assert _CollectionYoutubeDL.seen[-1]["noplaylist"] is True
+    assert single["kind"] == "media" and single["webpage_url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+async def _transfers():
+    import db.database as database
+    async with database.get_db() as db:
+        return [row["id"] for row in await db.fetchall("SELECT id FROM torrents")]
+
+
+@pytest.mark.asyncio
+async def test_admission_asks_each_ambiguous_link_in_order_and_admits_nothing_until_each_is_answered(
+        tmp_path, monkeypatch):
+    from dataclasses import replace
+    from application.service import AcquisitionScopeRequired, ApplicationService
+    # Any provider may declare the same contract: core names none of them.
+    neutral = Route("collector", hosts=("collect.test",))
+    neutral.applicability = replace(neutral.applicability,
+                                    acquisition_scopes=(("item", "This Item"), ("collection", "Collection")))
+    media = MediaProvider(Extraction())
+    repository, _registry, _executor, engine = await lab(tmp_path, monkeypatch, media, neutral,
+                                                         Route("generic-route", generic=True))
+    service = ApplicationService(engine)
+    other = "https://collect.test/set?item=7"
+    links = ["https://files.example.org/a.bin", MIX, other, VIDEO, PLAYLIST]
+
+    with pytest.raises(AcquisitionScopeRequired) as asked:
+        await service.submit_links(links, selection_mode="interactive")
+    assert [link["index"] for link in asked.value.links] == [1, 2]          # submission order; nothing else asks
+    assert asked.value.links[0]["choices"] == [{"scope": "item", "label": "Current Video"},
+                                               {"scope": "collection", "label": "Playlist"}]
+    assert asked.value.links[1]["choices"][0]["label"] == "This Item"
+    assert MIX not in json.dumps(asked.value.links)                        # the caller's input is never echoed
+    assert await _transfers() == []
+    # One answer is never a default for another link.
+    with pytest.raises(AcquisitionScopeRequired) as asked:
+        await service.submit_links(links, acquisition_scopes={MIX: "item"})
+    assert [link["index"] for link in asked.value.links] == [2] and await _transfers() == []
+    for answers in ({MIX: "both", other: "item"}, {MIX: "item", other: "item", VIDEO: "item"},
+                    {MIX: "item", other: "item", "https://elsewhere.test/x": "item"}):
+        with pytest.raises(ValueError):
+            await service.submit_links(links, acquisition_scopes=answers)
+    assert await _transfers() == []
+
+    admitted = await service.submit_links(links, selection_mode="interactive",
+                                          acquisition_scopes={MIX: "item", other: "collection"})
+    scopes = {str(record.request.payload): record.request.acquisition_scope
+              for record in await repository.requests(admitted["id"])}
+    assert scopes == {links[0]: "", MIX: "item", other: "collection", VIDEO: "", PLAYLIST: ""}
+    # A collection is never an alternate source of another item.
+    with pytest.raises(ValueError):
+        await service.submit_links([(MIX, "https://files.example.org/b.bin")], acquisition_scopes={MIX: "collection"})
+
+
+@pytest.mark.asyncio
+async def test_a_chosen_playlist_snapshots_once_and_only_the_explicitly_selected_members_ever_run(
+        tmp_path, monkeypatch):
+    member_urls = [f"https://www.youtube.com/watch?v=member{index:05d}" for index in range(3)]
+
+    def answer(url):
+        if url == MIX:
+            return {"kind": "collection", "extractor": "YoutubeTab", "id": "RD1", "title": "Mix",
+                    "truncated": True, "total": None,
+                    "members": [{**media_facts(id=f"m{index}", title=f"Song {index}"), "url": member}
+                                for index, member in enumerate(member_urls)]}
+        return media_facts(id=f"m{member_urls.index(url)}", title=f"Song {member_urls.index(url)}")
+
+    extraction = Extraction(answer)
+    repository, _registry, _executor, engine = await lab(tmp_path, monkeypatch, MediaProvider(extraction))
+    transfer = await engine.submit((TransferRequest("https", MIX, name="mix", acquisition_scope="collection"),),
+                                   name="mix", source="direct_link", deduplicate=False)
+    await drive(engine)
+    roots = await repository.requests(transfer.id)
+    assert [record.parent_id for record in roots] == [None]                   # no member before the choice
+    assert [call[0] for call in extraction.calls] == [MIX]
+    view = await repository.file_selection_presentation(transfer.id, now=engine.clock())
+    assert view["decision"] == "pending" and view["source_truncated"] is True and view["file_count"] == 3
+
+    # A restart observes the same snapshot: the playlist is never read again.
+    _r, _g, _e, restarted = await lab(tmp_path, monkeypatch, MediaProvider(extraction), fresh=False)
+    await drive(restarted)
+    assert [call[0] for call in extraction.calls] == [MIX]
+    assert (await repository.file_selection_presentation(transfer.id, now=engine.clock()))["entries"] == \
+        view["entries"]
+
+    chosen = [entry for entry in view["entries"] if entry["name"] != "Song 1 [m1].mp4"]
+    await repository.confirm_file_selection(transfer.id, view["manifest_id"],
+                                            [entry["entry_id"] for entry in chosen], now=engine.clock())
+    await drive(restarted)
+    members = sorted(str(record.request.payload) for record in await repository.requests(transfer.id)
+                     if record.parent_id is not None)
+    assert members == [member_urls[0], member_urls[2]]                        # exactly the selection
+
+
+def test_a_scope_refusal_is_an_actionable_conflict_naming_positions_only():
+    from api.routes import _acquisition_scope_required
+    from application.service import AcquisitionScopeRequired
+    refusal = _acquisition_scope_required(AcquisitionScopeRequired((
+        {"index": 3, "choices": [{"scope": "item", "label": "Current Video"},
+                                 {"scope": "collection", "label": "Playlist"}]},)))
+    assert refusal.status_code == 409
+    assert refusal.detail["confirmation"] == "acquisition_scope" and refusal.detail["links"][0]["index"] == 3
+
+
+# -- executor contract --------------------------------------------------------------------
+
+def _candidate(**overrides):
+    plan = planning.plan(media_facts(), url=VIDEO, target="best", subtitle_language="en")
+    values = dict(name="Clip [dQw4w9WgXcQ].mp4", endpoints=(), provider_id="media", context={PLAN_KEY: plan},
+                  request_kind="https")
+    values.update(overrides)
+    return TransferCandidate(**values)
+
+
+def test_the_executor_claims_only_media_plans_and_promises_only_a_restart(tmp_path, monkeypatch):
+    executor = MediaExecutor(str(tmp_path), str(tmp_path / "runtime"), _Repository().authorize_execution)
+    # The worker inherits no ambient proxy, credential, home or configuration,
+    # and its argv carries no instruction at all (that arrives on stdin).
+    for name in ("HTTP_PROXY", "https_proxy", "ALL_PROXY", "NO_PROXY", "XDG_CONFIG_HOME", "YTDLP_PLUGINS"):
+        monkeypatch.setenv(name, "ambient")
+    environment = executor.sandbox.environment(tmp_path / "workspace")
+    assert set(environment) == {"PATH", "LC_ALL", "LANG", "HOME", "YTDLP_NO_PLUGINS", "NO_COLOR", "TMPDIR",
+                                "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "DENO_DIR", "DENO_NO_UPDATE_CHECK"}
+    assert "ambient" not in environment.values() and environment["HOME"].startswith(str(tmp_path / "runtime"))
+    assert executor.sandbox.argv()[1:3] == ["-I", "-B"] and len(executor.sandbox.argv()) == 4
+    assert executor.capabilities.continuation == frozenset({ContinuationCapability.FULL_RESTART})
+    assert executor.capabilities.materialization_kinds == frozenset({MaterializationKind.FILE})
+    assert not (executor.capabilities.per_execution_pause or executor.capabilities.native_assisted_retry
+                or executor.capabilities.candidate_sampling or executor.capabilities.transient_input)
+    assert executor.claim(ExecutionSubject.of(_candidate())).supported
+    assert executor.claim(ExecutionSubject.of(_candidate(request_kind=MEMBER_KIND))).supported
+    assert not executor.claim(ExecutionSubject.of(_candidate(context={}))).supported
+    assert not executor.claim(ExecutionSubject.of(_candidate(endpoints=(Endpoint("https", VIDEO),)))).supported
+
+    from executors.aria2.executor import Aria2Executor
+    # The ordinary HTTP executor has nothing to claim in a media plan.
+    assert Aria2Executor._endpoint(_candidate()) is None
+
+    target = tmp_path / "Clip [dQw4w9WgXcQ].mp4"
+    work = ExecutionWork(ExecutionSubject.of(_candidate()), MaterializationPlan(MaterializationKind.FILE,
+                                                                                str(tmp_path), str(target)), "a1")
+    assert executor.footprint(work).transient_trees == (str(tmp_path / ".Clip [dQw4w9WgXcQ].mp4.dp-media"),)
+    assert executor.prepare(ExecutionRequest(work, "a1")).correlation["target"] == str(target.resolve())
+    renamed = ExecutionWork(work.subject, MaterializationPlan(MaterializationKind.FILE, str(tmp_path),
+                                                              str(tmp_path / "Clip.mkv")), "a1")
+    with pytest.raises(TransferError) as raised:
+        executor.prepare(ExecutionRequest(renamed, "a1"))
+    assert raised.value.error.category == Category.PATH_POLICY_VIOLATION
+
+
+def test_finalization_only_ever_copies_streams():
+    tools = {"ffmpeg": "/usr/bin/ffmpeg"}
+    video = ("/w/component-0.mp4", {"vcodec": "avc1", "acodec": "none"})
+    audio = ("/w/component-1.m4a", {"vcodec": "none", "acodec": "mp4a.40.2"})
+    native = worker.finalization_argv(tools, "mp4", [video, audio], None, {"title": "Clip", "description": "D"},
+                                      "/w/output.mp4")
+    webm = worker.finalization_argv(tools, "webm", [video], ("/w/subtitle.vtt", "en"), {}, "/w/output.webm")
+    merged = worker.finalization_argv(tools, "mkv", [video, audio], ("/w/subtitle.srt", "en"),
+                                      {"title": "Clip", "description": "D & <E>"}, "/w/output.mkv")
+    # One finalizer for every container, Matroska included.
+    for argv in (native, webm, merged):
+        assert argv[0] == tools["ffmpeg"] and argv[argv.index("-c") + 1] == "copy"
+        for forbidden in ("-c:v", "-c:a", "-c:s", "-vcodec", "-acodec", "-vf", "-af", "-filter_complex", "-s",
+                          "-b:v", "-b:a", "-r", "-crf", "mov_text"):
+            assert forbidden not in argv
+    assert native.count("-protocol_whitelist") == 2 and native.count("-i") == 2
+    assert native[native.index("-bsf:a") + 1] == "aac_adtstoasc"
+    assert "description=D" in native and native[-2:] == ["mp4", "file:/w/output.mp4"]
+    assert "-bsf:a" not in webm and "language=en" in webm
+    assert merged[-2:] == ["matroska", "file:/w/output.mkv"] and "description=D & <E>" in merged
+    assert "file:/w/subtitle.srt" in merged and "language=en" in merged
+    assert merged[merged.index("-disposition:s:0") + 1] == "default"
+
+
+def _http_error(status: int, headers: dict | None = None):
+    import io
+
+    from yt_dlp.networking import Response
+    from yt_dlp.networking.exceptions import HTTPError
+    return HTTPError(Response(io.BytesIO(b""), "https://media.test/videoplayback", headers or {}, status=status))
+
+
+def test_a_refusal_is_the_cause_only_of_the_failure_it_raised():
+    box = worker.Sandbox(("127.0.0.1", 9), {"ffmpeg": "/opt/dp/tools/ffmpeg"}, ("/w",), (), None)
+    # yt-dlp's HLS downloader probes the PATH's ffmpeg (not the confined one);
+    # it is refused, yt-dlp handles that and downloads natively.
+    with pytest.raises(PermissionError) as probe:
+        box("subprocess.Popen", (None, ["/usr/bin/ffmpeg", "-bsfs"], None, None))
+    assert isinstance(probe.value, worker.SandboxRefusal) and probe.value.event == "subprocess"
+    # A later, unrelated failure is classified from its own chain only.
+    assert worker.classify(_http_error(403), acquire=True, phase="component").code == "source_refused"
+    assert worker.classify(_http_error(503), acquire=True, phase="component").code == "network"
+    # A refusal that IS the failure's cause, however deeply wrapped, still is
+    # the policy refusal it was.
+    for event, code in (("socket.connect", "egress_refused"), ("subprocess", "transport_unsupported"),
+                        ("open", "path_refused")):
+        try:
+            try:
+                box._refuse(event)
+            except PermissionError as refused:
+                try:
+                    raise OSError("wrapped once") from refused
+                except OSError as wrapped:
+                    raise RuntimeError("wrapped twice") from wrapped
+        except RuntimeError as failure:
+            assert worker.classify(failure, acquire=True, phase="component").code == code, event
+
+
+def test_a_remote_403_is_the_origins_refusal_only_while_fetching_planned_media():
+    from yt_dlp.networking.exceptions import ProxyError
+
+    from transfers.errors import Origin, Retryability
+    from transfers.policy import (
+        Recovery,
+        RecoveryAction,
+        RecoveryContext,
+        TransferPolicy,
+        recovery_action,
+    )
+    for phase in ("component", "subtitle"):
+        assert worker.classify(_http_error(403), acquire=True, phase=phase).code == "source_refused"
+    error = outcome_error("source_refused", Stage.EXECUTION, detail="HTTP Error 403: Forbidden")
+    assert (error.origin, error.retryability, error.category) == (
+        Origin.REMOTE_SOURCE, Retryability.BACKOFF, Category.CANDIDATE_REJECTED)
+    # Core's existing bounded recovery: a timed retry (a fresh extraction and
+    # acquisition), never a terminal verdict on the first refusal.
+    assert recovery_action(error) == Recovery.BACKOFF
+    decision = TransferPolicy().recover(error, RecoveryContext(execution_attempts=1), 1000.0)
+    assert decision.action == RecoveryAction.BACKOFF and decision.retry_at > 1000.0
+    # The guard's own refusals keep their meaning: a plain-HTTP answer says
+    # so (Proxy-Status), an HTTPS refusal is the CONNECT tunnel's.
+    guarded = _http_error(403, {"Proxy-Status": "downloadpulse; error=destination_ip_prohibited"})
+    assert worker.classify(guarded, acquire=True, phase="component").code == "egress_refused"
+    tunnel = ProxyError("Tunnel connection failed: 403 Forbidden")
+    assert worker.classify(tunnel, acquire=True, phase="subtitle").code == "egress_refused"
+    # Only status 403 is the origin's refusal: every other status keeps the
+    # mapping it has outside the media-fetch phases.
+    for status in (401, 404, 407, 410, 429, 500, 503):
+        for phase in ("component", "subtitle"):
+            during = worker.classify(_http_error(status), acquire=True, phase=phase).code
+            assert during == worker.classify(_http_error(status), acquire=True, phase="extract").code, status
+            assert during != "source_refused", status
+    assert worker.classify(_http_error(404), acquire=True, phase="component").code == "unavailable"
+    assert worker.classify(_http_error(429), acquire=True, phase="component").code == "rate_limited"
+    assert worker.classify(_http_error(503), acquire=True, phase="subtitle").code == "network"
+    # Extraction keeps its existing handling.
+    assert worker.classify(_http_error(403), acquire=True, phase="extract").code == "extractor_failed"
+    assert worker.classify(_http_error(403), acquire=False).code == "extractor_failed"
+
+
+def test_a_tag_may_quote_a_link_but_no_operand_reaches_the_network():
+    tools = {"ffmpeg": "/opt/dp/tools/ffmpeg", "ffprobe": "/opt/dp/tools/ffprobe"}
+    box = worker.Sandbox(("127.0.0.1", 9), tools, ("/w",), (), None)
+    # Transfer 552's shape: HLS video + Opus audio + generated VTT into WebM,
+    # with a description quoting links.
+    components = [("/w/component-0.mp4", {"format_id": "616", "vcodec": "vp09.00.40.08", "acodec": "none"}),
+                  ("/w/component-1.webm", {"format_id": "251", "vcodec": "none", "acodec": "opus"})]
+    metadata = {"title": "Put them in the box", "artist": "Channel", "date": "2026-10-08",
+                "description": "Full set: https://example.org/watch?v=1&t=2 -- also rtmp://live.example.org/x"}
+    argv = worker.finalization_argv(tools, "webm", components, ("/w/subtitle.vtt", "en"), metadata,
+                                    "/w/output.webm")
+    box("subprocess.Popen", (None, argv, None, None))
+    assert f"description={metadata['description']}" in argv  # written unchanged
+
+    def refused(candidate, program=None):
+        with pytest.raises(worker.SandboxRefusal):
+            box("subprocess.Popen", (None, [program or candidate[0], *candidate[1:]], None, None))
+
+    first_input = argv.index("file:/w/component-0.mp4")
+    refused(argv[:first_input] + ["https://media.test/video.m3u8"] + argv[first_input + 1:])  # network -i
+    refused(argv[:-1] + ["https://media.test/upload"])                                    # network output
+    refused(argv[:-2] + ["-metadata", "https://media.test/x", *argv[-2:]])                # not a tag
+    refused(argv[:-2] + ["-metadata:s:s:0", "rtmp://media.test/x", *argv[-2:]])
+    refused(argv[:-2] + ["-i", "-metadata", "https://media.test/x", *argv[-2:]])
+    # Only the finalizer's grammar is read this way.
+    refused([tools["ffprobe"], "-metadata", "x=https://media.test/x"])
+
+
+def test_the_failure_phase_is_bounded_context_never_identity(tmp_path):
+    from services.transfer_trace import _exported, _Sanitizer
+    from transfers.errors import NormalizedError
+    from transfers.policy import failure_signature, recovery_action
+    executor = MediaExecutor(str(tmp_path), str(tmp_path / "runtime"), _Repository().authorize_execution)
+    handle = None
+    record = {"state": "failed", "outcome": "source_refused", "detail": "HTTP Error 403: Forbidden",
+              "context": {"phase": "component", "component": 1, "format_id": "251"}}
+    error = executor._from_record(handle, record, None).error
+    assert dict(error.context) == {"phase": "component", "component": 1, "format_id": "251"}
+    bare = outcome_error("source_refused", Stage.EXECUTION, detail="HTTP Error 403: Forbidden")
+    assert failure_signature(error) == failure_signature(bare) and recovery_action(error) == recovery_action(bare)
+    # Durable: the stored encoding, its decoding and the trace export keep it.
+    stored = json.dumps(error.as_dict(diagnostics=True))
+    assert dict(NormalizedError.from_dict(json.loads(stored)).context) == dict(error.context)
+    assert json.loads(_exported(_Sanitizer(), "normalized_error", stored))["context"] == dict(error.context)
+    # Only the known phase vocabulary and bounded scalars ever cross.
+    for context, expected in (({"phase": "finalize", "url": "https://media.test/x", "component": True},
+                               {"phase": "finalize"}),
+                              ({"phase": "somewhere", "component": 0}, {}), ("install", {})):
+        failed = dict(record, context=context)
+        assert dict(executor._from_record(handle, failed, None).error.context) == expected
+    # A malformed record is read with the same allowlist: an identifier
+    # outside it is dropped whole, never shortened into a valid-looking one.
+    from integrations.media.outcomes import FORMAT_ID
+    assert FORMAT_ID.pattern == worker._FORMAT_ID.pattern
+    for format_id in ("https://media.test/x", "x" * 65, "251 x", "../251", "-251", "", 251, None):
+        failed = dict(record, context={"phase": "component", "component": 0, "format_id": format_id})
+        assert dict(executor._from_record(handle, failed, None).error.context) == {
+            "phase": "component", "component": 0}, format_id
+    longest = "f" * 64
+    failed = dict(record, context={"phase": "component", "component": 0, "format_id": longest})
+    assert executor._from_record(handle, failed, None).error.context["format_id"] == longest
+    phase = worker._Phase()
+    for format_id, expected in (("251", "251"), ("hls-1080p+dash", "hls-1080p+dash"),
+                                ("https://media.test/x", ""), ("x" * 65, ""), (None, "")):
+        phase.enter("component", 0, format_id)
+        assert phase.context().get("format_id", "") == expected
+    phase.enter("finalize")
+    assert phase.context() == {"phase": "finalize"}
+
+
+def test_badges_name_one_media_download_in_hot_rose_and_leave_others_as_they_were():
+    from api.routes import _public_transfer_presentation
+    media = _public_transfer_presentation({"id": 1, "origin_provider_id": "media", "current_provider_id": "media"},
+                                          catalog)
+    assert (media["origin_provider_name"], media["origin_provider_theme"]) == ("Media Download", "hot-rose")
+    plain = _public_transfer_presentation({"id": 2, "origin_provider_id": "general_http"}, catalog)
+    assert plain["origin_provider_name"] == "HTTP(S)" and "origin_provider_theme" not in plain
+
+
+# -- presentation -------------------------------------------------------------------------
+
+STATIC = __import__("pathlib").Path(__file__).resolve().parents[2] / "frontend" / "static"
+
+
+def _function(text: str, name: str) -> str:
+    body = text[text.index(f"function {name}("):]
+    return body[:body.index("\n  function ", 1)]
+
+
+def test_the_settings_and_badge_surfaces_use_the_one_shared_grammar():
+    import re
+    import typing
+
+    page = (STATIC / "ui-settings-page.js").read_text(encoding="utf-8")
+    chips = (STATIC / "ui-settings-card-icons.css").read_text(encoding="utf-8")
+    badges = (STATIC / "ui-transfer-contract.css").read_text(encoding="utf-8")
+    glyph = (STATIC / "icons" / "lucide" / "monitor-down.svg").read_text(encoding="utf-8")
+
+    # Services -> Network Sources and Downloads -> Transfer Method Settings: the
+    # one protocol chip, the exact Lucide MonitorDown glyph, the Media
+    # Downloads accent #FF56AE declared once as that chip's canonical colour --
+    # and Multimeta keeps its own, distinct violet.
+    assert "    media: 'monitor-down'," in (STATIC / "ui-transfer-source-presentation.js").read_text(encoding="utf-8")
+    assert "Lucide monitor-down @ 23f9abc4ed0146cffededd3d7f94c1018bfdf693" in glyph and 'stroke="#FF56AE"' in glyph
+    assert re.search(r"\[data-protocol='media'\] \{\s*--dp-protocol-color: var\(--dp-identity-media\);\s*\}", chips)
+    assert re.search(r"\[data-protocol='multimeta'\] \{\s*--dp-protocol-color: var\(--dp-identity-multimeta\);\s*\}",
+                     chips)
+    tokens = (STATIC / "design-tokens.css").read_text(encoding="utf-8")
+    assert "--dp-identity-media: #FF56AE;" in tokens and "--dp-identity-multimeta: #E879F9;" in tokens
+    assert "'general_webdav', 'multimeta', 'media']" in page
+    assert (english("settings.source_box.media.lead"), english("settings.source_box.media.rest")) == \
+        ("Downloads supported media from", "compatible web pages and media sites.")
+    panel = _function(page, "downloadsPanel")
+    # 1.0.14: a method card's name is a proper name, or said from the catalog.
+    cards = [(ident, english(name[5:-2]) if name.startswith("say('") else name.strip("'"))
+             for ident, name in re.findall(r"executorTuningCard\('(\w+)', ('[^']+'|say\('[a-z0-9_.]+'\))", panel)]
+    assert cards == [("direct", "Network Sources"), ("rsync", "rsync"), ("webdav", "WebDAV"), ("usenet", "Usenet"),
+                     ("media", "Media Downloads")]
+    # (each method card then names its own Help topic.)
+    assert "say('settings.tuning.media_copy'), mediaTuning(s),\n        'media', 'tuning-media')" in panel
+    assert english("settings.tuning.media_copy") == "Downloads supported web-hosted media in its native form, without transcoding."
+
+    # The acquisition preferences: Target Resolution and the video preferences
+    # in the integration's own namespace, and the ONE global Preferred
+    # Subtitle Language key, whose only control is here, a searchable language
+    # picker; no raw yt-dlp control, and no subtitle acquisition or embedding
+    # switch.
+    tuning = _function(page, "mediaTuning")
+    assert re.findall(r"(selectField|input)\('(\w+)'", tuning) == [
+        ("selectField", "media_target_resolution"), ("selectField", "media_video_quality"),
+        ("selectField", "media_video_codec"), ("selectField", "preferred_subtitle_language"),
+        ("input", "media_concurrent_fragment_downloads")]
+    assert len(re.findall(r"(?:selectField|input)\('preferred_subtitle_language'", page)) == 1
+    assert "subtitleLanguageChoices(s.preferred_subtitle_language || 'en')" in tuning
+    assert "{search: say('settings.media.search_languages')}" in tuning and english("settings.media.search_languages") == "Search languages"
+    # The two video preferences are ONE related group (the shared tuningGroup outline).
+    group = tuning[tuning.index("tuningGroup("):]
+    group = group[:group.index("      selectField('preferred_subtitle_language'")]
+    assert "'media_video_quality'" in group and "'media_video_codec'" in group
+    assert says(group, "never re-encodes media")
+    assert "yt-dlp" not in tuning
+    # The one YouTube preference leads the one set of six (so two cells a row
+    # make 2 x 3): a single choice -- Automatic or one client the packaged
+    # yt-dlp offers (the server validates it) -- never free text, a raw
+    # extractor argument or command-line text. A saved selection of several
+    # stays as saved (Custom).
+    assert "return tuningCells(\n      youtubePlayerClientsField(options),\n      selectField('media_target_resolution'," in tuning
+    assert "tuningCells(youtubePlayerClientsField" not in tuning and tuning.count("tuningCells(") == 1
+    clients = _function(page, "youtubePlayerClientsField")
+    assert re.findall(r"(selectField|input)\('(\w+)'", clients) == [("selectField", "media_youtube_player_clients")]
+    # 1.0.14: the words are the catalog's, by key.
+    assert "['', say('settings.media.player_automatic')]" in clients
+    assert english("settings.media.player_automatic") == "Automatic (yt-dlp default)"
+    assert says(clients, "Custom (multiple clients)")
+    assert says(clients, "Automatic is recommended. Select another player client only when troubleshooting YouTube downloads.")
+    for gone in ("Available:", "PO-token", "DRM", "separated by commas"):
+        assert gone not in clients, gone
+    for raw in ("--", "extractor-args", "extractor_args", "player_client=", "youtube:"):
+        assert raw not in clients, raw
+    assert ("media_youtube_player_clients: {scope: 'integration:media', option: 'youtube_player_clients', "
+            "list: true}," in page)
+    for absent in ("embed", "Embed", "sidecar", "Off'", "Subtitle Acquisition", "Download Behavior"):
+        assert absent not in tuning.replace("embedded in the downloaded file", "")
+    def choices_of(table):
+        # A choice's label is a proper name, or a catalog key said in English (1.0.14).
+        block = page.split(f"const {table} = Object.freeze([", 1)[1].split("]);", 1)[0]
+        return [(value, english(key) if key else label) for value, label, key in
+                re.findall(r"\['(\w+)', (?:'([^']+)'|say\('([a-z0-9_.]+)'\))\]", block)]
+
+    qualities = choices_of("VIDEO_QUALITIES")
+    from integrations.media.definition import VideoQuality
+    assert qualities == [("high", "High"), ("normal", "Normal"), ("low", "Low")]
+    assert [value for value, _label in qualities] == list(typing.get_args(VideoQuality)) == list(
+        planning.VIDEO_QUALITIES)
+    assert "media_video_quality: {scope: 'integration:media', option: 'video_quality'}," in page
+    assert "media_video_codec: {scope: 'integration:media', option: 'video_codec'}," in page
+    codecs = choices_of("VIDEO_CODECS")
+    from integrations.media.definition import VideoCodec
+    assert codecs == [("auto", "Auto"), ("av1", "AV1"), ("hevc", "HEVC (H.265)"), ("h264", "H.264")]
+    assert [value for value, _label in codecs] == list(typing.get_args(VideoCodec)) == list(planning.VIDEO_CODECS)
+    choices = choices_of("TARGET_RESOLUTIONS")
+    from integrations.media.definition import TargetResolution
+    assert [value for value, _label in choices] == list(typing.get_args(TargetResolution)) == list(
+        planning.TARGET_RESOLUTIONS)
+    assert choices[0] == ("best", "Best Available")
+    assert "media_target_resolution: {scope: 'integration:media', option: 'target_resolution'}," in page
+
+    # The global Preferred Subtitle Language stays in the settings document --
+    # never a Media Downloads option -- and Download Behavior & Limits no
+    # longer shows it.
+    assert "subtitle" not in _function(page, "downloadBehaviorAdvanced").lower()
+    assert ("preferred_subtitle_language: {scope: 'settings-document', option: 'preferred_subtitle_language'},"
+            in page)
+
+    # The provider badge: the shared chip, whose one per-badge datum is its
+    # accent -- the named provider's identity token, by id -- and, for a
+    # protocol identity, its glyph inside on the left. Both come from the one
+    # identity owner (ui-transfer-source-presentation.js); Media's colour is
+    # declared once, as its token.
+    base = badges[badges.index(".dp-provider-chip {"):]
+    base = base[:base.index("}")]
+    assert "--dp-provider-accent: var(--dp-provider-identity, var(--dp-accent-purple-bright, var(--accent)));" in base
+    # A light theme draws the label in the light operational material's ink
+    # of the same identity hue; otherwise the identity ink.
+    assert "--dp-op-hue: var(--dp-provider-accent);" in base
+    assert "color: var(--dp-op-ink, var(--dp-identity-ink));" in base
+    # The ink is the identity's hue with only its lightness bounded (a floor
+    # on dark, a cap on light), so the label stays readable on the badge face.
+    assert "--dp-identity-ink: oklch(from var(--dp-provider-accent) max(l, 0.62) c h);" in badges
+    assert "--dp-identity-ink: oklch(from var(--dp-provider-accent) min(l, 0.48) c h);" in badges
+    tokens = (STATIC / "design-tokens.css").read_text(encoding="utf-8")
+    assert "--dp-identity-media: #FF56AE;" in tokens
+    owner = (STATIC / "ui-transfer-source-presentation.js").read_text(encoding="utf-8")
+    assert "    media: 'monitor-down'," in owner
+    assert "style=\"--dp-provider-identity: var(--dp-identity-${key})\"" in owner
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    chip = app[app.index("function providerChip("):]
+    chip = chip[:chip.index("\nfunction ", 1)]
+    assert "providerBadgeIdentity(" in chip and "dp-provider-chip" in chip
+    # No renderer names this provider to rename or recolour it.
+    for renderer in ("app.js", "ui-root-provider.js", "ui-downloads.js", "ui-dashboard-transfer-presentation.js"):
+        text = (STATIC / renderer).read_text(encoding="utf-8")
+        for literal in ("'media'", '"media"', "Media Download", "hot-rose", "#FF56AE", "yt_dlp", "monitor-down"):
+            assert literal not in text, (renderer, literal)
+
+
+# -- unified progress: the attempt's total is known as soon as yt-dlp knows it ---------
+
+class _PlannedYoutubeDL:
+    """yt-dlp's surface ``acquire`` drives, with two planned components: a
+    video whose exact size is known and an audio track offered only with an
+    estimate (``filesize_approx`` is never a total)."""
+
+    info = {"extractor_key": "Youtube", "id": "abc", "title": "Clip", "requested_formats": [
+        {"format_id": "137", "ext": "mp4", "protocol": "https", "url": "https://v.example/137", "filesize": 3000},
+        {"format_id": "140", "ext": "m4a", "protocol": "https", "url": "https://v.example/140",
+         "filesize_approx": 1000}]}
+    fetched = (3000, 1000)
+
+    def __init__(self, params):
+        self.hooks = params["progress_hooks"]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, _url, download=False):
+        return dict(self.info)
+
+    def urlopen(self, url):
+        import io
+        self.opened = url
+        return io.BytesIO(b"WEBVTT\n\n")
+
+    def dl(self, path, item):
+        size = self.fetched[["137", "140"].index(item["format_id"])]
+        total = item.get("filesize")
+        for done, status in ((size // 2, "downloading"), (size, "finished")):
+            for hook in self.hooks:
+                hook({"status": status, "downloaded_bytes": done, "total_bytes": total})
+        with open(path, "wb") as handle:
+            handle.write(b"x" * size)
+
+
+def test_the_worker_reports_every_planned_components_exact_size_before_fetching(tmp_path, monkeypatch):
+    import yt_dlp
+    events = []
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _PlannedYoutubeDL)
+    monkeypatch.setattr(worker, "_emit", events.append)
+    monkeypatch.setattr(worker, "PROGRESS_INTERVAL", 0)
+    monkeypatch.setattr(worker, "_run", lambda argv, **_: open(argv[-1].removeprefix("file:"), "wb").write(b"muxed"))
+    spec = {"url": "https://v.example/watch", "proxy": "http://127.0.0.1:9", "workspace": str(tmp_path / "w"),
+            "target": str(tmp_path / "Clip.mp4"), "tools": {"ffmpeg": "/bin/true"},
+            "plan": {"container": "mp4", "formats": ["137", "140"], "extractor": "Youtube", "id": "abc",
+                     "subtitle": None}}
+    assert worker.acquire(spec, worker._Phase()) == 0
+    progress = [event for event in events if event.get("event") == "progress"]
+    # Before any byte: the exact size where yt-dlp has one, and no guess where
+    # it has an estimate -- that estimate travels only under its own name.
+    assert progress[:2] == [
+        {"event": "progress", "component": 0, "downloaded": 0, "total": 3000, "units": None, "unit_total": None,
+         "finished": False, "estimated_total": None},
+        {"event": "progress", "component": 1, "downloaded": 0, "total": None, "units": None, "unit_total": None,
+         "finished": False, "estimated_total": 1000}]
+    assert events.index(progress[1]) < events.index(progress[2])
+    assert events[-1] == {"event": "completed", "bytes": len(b"muxed")}
+
+
+def _media_run(components):
+    from types import SimpleNamespace
+    from executors.media.executor import _Run
+    reader = asyncio.StreamReader()
+    run = _Run(SimpleNamespace(process=SimpleNamespace(stdout=reader)), None, None, components, 0.0)
+    return run, reader
+
+
+async def _observed(run, reader, *events):
+    from transfers.models import ExecutionHandle
+    executor = MediaExecutor.__new__(MediaExecutor)
+    for event in events:
+        reader.feed_data((json.dumps(event) + "\n").encode())
+    follower = asyncio.ensure_future(executor._follow(run))
+    await asyncio.sleep(0.01)
+    follower.cancel()
+    return executor._running(ExecutionHandle("media", "a", {}), run)
+
+
+def _progress(component, downloaded, total):
+    return {"event": "progress", "component": component, "downloaded": downloaded, "total": total}
+
+
+@pytest.mark.asyncio
+async def test_a_multi_component_attempt_has_a_total_from_its_first_byte():
+    run, reader = _media_run(2)
+    first = await _observed(run, reader, _progress(0, 0, 3000), _progress(1, 0, 1000))
+    assert (first.progress.total_bytes, first.progress.completed_bytes) == (4000, 0)     # known 0, not unknown
+    moving = await _observed(run, reader, _progress(0, 1500, 3000))
+    assert (moving.progress.total_bytes, moving.progress.completed_bytes) == (4000, 1500)
+    assert moving.progress.percentage == pytest.approx(37.5)                           # visibly advances
+    # A later event that omits the total does not withdraw a known one.
+    later = await _observed(run, reader, _progress(0, 3000, None), _progress(1, 400, None))
+    assert (later.progress.total_bytes, later.progress.completed_bytes) == (4000, 3400)
+    assert later.activity.network_active
+
+
+@pytest.mark.asyncio
+async def test_an_estimated_component_keeps_the_total_unknown_until_it_reports_its_own():
+    run, reader = _media_run(2)
+    planned = await _observed(run, reader, _progress(0, 0, 3000), _progress(1, 0, None))
+    assert planned.progress.total_bytes == 0                                           # unknown: no fabricated %
+    video = await _observed(run, reader, _progress(0, 3000, 3000))
+    assert video.progress.total_bytes == 0 and video.progress.completed_bytes == 3000
+    audio = await _observed(run, reader, _progress(1, 10, 900))
+    assert (audio.progress.total_bytes, audio.progress.completed_bytes) == (3900, 3010)
+
+
+@pytest.mark.asyncio
+async def test_finalization_is_local_work_with_no_acquisition_rate():
+    from transfers._engine_base import TransferEngine
+    run, reader = _media_run(1)
+    await _observed(run, reader, _progress(0, 0, 10))
+    finalizing = await _observed(run, reader, _progress(0, 10, 10), {"event": "phase", "phase": "finalize"})
+    assert (finalizing.progress.total_bytes, finalizing.progress.completed_bytes) == (10, 10)
+    assert not finalizing.activity.network_active
+    assert TransferEngine._acquired_bytes(finalizing) is None                          # no speed while muxing
+
+
+# -- segmented media (HLS): what yt-dlp actually reports, through the real path -------
+
+@pytest.mark.asyncio
+async def test_a_segmented_download_reports_exact_bytes_but_no_total_until_it_finishes(tmp_path, monkeypatch):
+    """Real yt-dlp HLS (``m3u8_native``) over a local playlist of uneven
+    segments: its hooks carry exact cumulative bytes and an exact fragment
+    count, but ``total_bytes`` only on the final event (``total_bytes_estimate``
+    is an average-fragment extrapolation and is never a total). Through the
+    worker's hook and the executor's reader, the attempt therefore has moving
+    acquired bytes (speed) and no percentage until the component is done."""
+    import http.server
+    import threading
+    from yt_dlp import YoutubeDL
+    segments = [b"a" * 1000, b"b" * 9000, b"c" * 3000, b"d" * 500]
+    playlist = ("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
+                + "".join(f"#EXTINF:2.0,\n{index}.ts\n" for index in range(len(segments))) + "#EXT-X-ENDLIST\n")
+
+    class Origin(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            name = self.path.strip("/")
+            body = playlist.encode() if name == "media.m3u8" else segments[int(name.split(".")[0])]
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Origin)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    events = []
+    monkeypatch.setattr(worker, "_emit", events.append)
+    monkeypatch.setattr(worker, "PROGRESS_INTERVAL", 0)
+    hook = worker._Progress()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/media.m3u8"
+        with YoutubeDL({"quiet": True, "noprogress": True, "progress_hooks": [hook]}) as ydl:
+            ydl.dl(str(tmp_path / "component-0.ts"), {"id": "x", "url": url, "protocol": "m3u8_native",
+                                                      "ext": "mp4", "http_headers": {}})
+    finally:
+        server.shutdown()
+    progress = [event for event in events if event["event"] == "progress"]
+    downloaded = [event["downloaded"] for event in progress]
+    assert downloaded == sorted(downloaded) and downloaded[-1] == sum(map(len, segments))
+    assert all(event["total"] is None for event in progress[:-1])        # no total while it downloads
+    assert progress[-1]["total"] == sum(map(len, segments))              # only once it has finished
+    # Its units are COMPLETED segments of the exact segment count: never ahead
+    # of the segments its bytes have covered, never backwards, all at the end.
+    ends = [sum(map(len, segments[:count])) for count in range(len(segments) + 1)]
+    units = [event["units"] for event in progress]
+    assert all(event["unit_total"] == len(segments) for event in progress)
+    assert units == sorted(units) and units[-1] == len(segments)
+    assert all(ends[unit] <= event["downloaded"] for unit, event in zip(units, progress))
+    run, reader = _media_run(1)
+    seen = [await _observed(run, reader, {**event, "event": "progress"}) for event in progress]
+    assert all(item.progress.total_bytes == 0 for item in seen[:-1])     # no byte total: never a byte percentage
+    assert [item.progress.completed_bytes for item in seen] == downloaded  # yet the bytes move (speed)
+    assert [(item.progress.completed_units, item.progress.total_units) for item in seen[:-1]] == [
+        (unit, len(segments)) for unit in units[:-1]]                    # the part percentage advances
+    # Finished, its exact byte total is known: the one scope is bytes, complete.
+    assert (seen[-1].progress.total_bytes, seen[-1].progress.completed_bytes) == (13500, 13500)
+
+
+def _parts(component, downloaded=0, total=None, units=None, unit_total=None):
+    return {"event": "progress", "component": component, "downloaded": downloaded, "total": total,
+            "units": units, "unit_total": unit_total}
+
+
+@pytest.mark.asyncio
+async def test_mixed_byte_and_segment_components_have_no_aggregate_percentage():
+    """Exact-size video beside segmented audio: no coherent scope, so no
+    percentage at any boundary -- only moving bytes."""
+    run, reader = _media_run(2)
+    for events in ([_parts(0, 0, 3000), _parts(1)], [_parts(0, 3000, 3000)], [_parts(1, 100, None, 1, 4)],
+                   [_parts(1, 400, None, 4, 4)]):
+        seen = await _observed(run, reader, *events)
+        assert seen.progress.total_bytes == 0 and seen.progress.total_units is None
+    assert seen.progress.completed_bytes == 3400
+
+
+@pytest.mark.asyncio
+async def test_a_subtitle_is_a_planned_part_of_either_coherent_scope():
+    bytes_run, bytes_reader = _media_run(3)                            # video, audio, subtitle
+    seen = await _observed(bytes_run, bytes_reader, _parts(2, 50, 50, 1, 1), _parts(0, 0, 3000), _parts(1, 0, 1000))
+    assert (seen.progress.total_bytes, seen.progress.completed_bytes) == (4050, 50)
+    seen = await _observed(bytes_run, bytes_reader, _parts(0, 3000, 3000))
+    assert seen.progress.percentage == pytest.approx(3050 / 4050 * 100)  # no reset at the boundary
+    parts_run, parts_reader = _media_run(2)                            # one segmented stream, subtitle
+    seen = await _observed(parts_run, parts_reader, _parts(1, 50, 50, 1, 1), _parts(0, 0, None, 0, 9))
+    assert (seen.progress.completed_units, seen.progress.total_units) == (1, 10)
+    seen = await _observed(parts_run, parts_reader, _parts(0, 900, None, 4, 9))
+    assert (seen.progress.total_bytes, seen.progress.completed_units, seen.progress.total_units) == (0, 5, 10)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_has_not_started_keeps_the_part_scope_unknown():
+    run, reader = _media_run(2)                                        # two segmented streams
+    first = await _observed(run, reader, _parts(0, 10, None, 1, 8), _parts(1))
+    assert first.progress.total_units is None                          # the audio's count is not known yet
+    later = await _observed(run, reader, _parts(0, 80, None, 8, 8), _parts(1, 5, None, 0, 2))
+    assert (later.progress.completed_units, later.progress.total_units) == (8, 10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [_parts(0, 30, None, 3, 9), _parts(0, 30, None, 1, 8), _parts(0, 30, None, 9, 8)])
+async def test_changing_backward_or_overrunning_units_are_never_trusted_again(bad):
+    run, reader = _media_run(1)
+    seen = await _observed(run, reader, _parts(0, 20, None, 2, 8), bad, _parts(0, 40, None, 4, 8))
+    assert seen.progress.completed_units is None and seen.progress.total_units is None
+    assert seen.progress.completed_bytes == 40
+
+
+def test_the_planned_subtitle_is_fetched_first_as_one_complete_part(tmp_path, monkeypatch):
+    import yt_dlp
+
+    class Subtitled(_PlannedYoutubeDL):
+        info = {**_PlannedYoutubeDL.info,
+                "subtitles": {"en": [{"ext": "vtt", "url": "https://v.example/en.vtt"}]}}
+    events = []
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Subtitled)
+    monkeypatch.setattr(worker, "_emit", events.append)
+    monkeypatch.setattr(worker, "PROGRESS_INTERVAL", 0)
+    monkeypatch.setattr(worker, "_run", lambda argv, **_: open(argv[-1].removeprefix("file:"), "wb").write(b"muxed"))
+    spec = {"url": "https://v.example/watch", "proxy": "http://127.0.0.1:9", "workspace": str(tmp_path / "w"),
+            "target": str(tmp_path / "Clip.mkv"), "tools": {"ffmpeg": "/bin/true"},
+            "plan": {"container": "mkv", "formats": ["137", "140"], "extractor": "Youtube", "id": "abc",
+                     "subtitle": {"kind": "authored", "language": "en", "ext": "vtt"}}}
+    assert worker.acquire(spec, worker._Phase()) == 0
+    progress = [event for event in events if event.get("event") == "progress"]
+    size = len(b"WEBVTT\n\n")
+    assert progress[0] == {"event": "progress", "component": 2, "downloaded": size, "total": size,
+                           "units": 1, "unit_total": 1, "finished": True}
+    assert [event["component"] for event in progress[1:3]] == [0, 1]    # then every stream's plan
+    assert all(event["downloaded"] == 0 for event in progress[1:3])     # before any stream byte
+
+
+@pytest.mark.asyncio
+async def test_only_planned_components_contribute_to_the_denominator():
+    """The scope is exactly the plan: its streams plus a planned subtitle
+    (``_Run.components``); an event for any other index counts for nothing."""
+    run, reader = _media_run(1)
+    seen = await _observed(run, reader, _parts(0, 10, 100), _parts(1, 50, 50, 1, 1), _parts(7, 9, 9))
+    assert (seen.progress.total_bytes, seen.progress.completed_bytes) == (100, 10)
+    assert seen.progress.total_units is None
+
+
+def test_every_reconfiguration_builds_a_new_executor_on_the_same_live_attempts(tmp_path, monkeypatch):
+    """``application.composition.configure`` registers freshly built
+    integrations on every reconfiguration; the Media executor it builds shares
+    its binding's in-flight attempts with the one it replaces."""
+    from types import SimpleNamespace
+    from db import database
+    from integrations.media.definition import MediaOptions, build
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    environment = SimpleNamespace(download_root=str(tmp_path / "downloads"), preferred_subtitle_language="en",
+                                  repository=SimpleNamespace(authorize_execution=None))
+    (_provider, first), (_again, second) = build(MediaOptions(), environment), build(MediaOptions(), environment)
+    assert first is not second and first.binding == second.binding
+    assert first._runs is second._runs
+
+
+# -- Video Preferences: codec family first, then a bitrate rank within it -------------
+
+def _fmt(format_id, *, tbr=None, height=1080, ext="mp4", vcodec="avc1.640028", acodec="none", protocol="https",
+         drm=False):
+    return {"format_id": format_id, "ext": ext, "vcodec": vcodec, "acodec": acodec, "protocol": protocol,
+            "height": height, "tbr": tbr, "drm": drm}
+
+
+AUDIO = {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "protocol": "https",
+         "height": None}
+
+# A YouTube-shaped 1080p offer, least preferred first (yt-dlp's own order).
+# yt-dlp's codec-first sort picks the AV1 stream ("399") at 2100 kbit/s over
+# the H.264 one ("137") at 4400: Auto + High must keep exactly that.
+H264_HI, H264_MID, H264_LO = (_fmt("137", tbr=4400), _fmt("137b", tbr=3000), _fmt("137c", tbr=1200))
+HEVC = _fmt("hev", tbr=2600, vcodec="hev1.1.6.L120.90")
+AV1_HI, AV1_LO = _fmt("399", tbr=2100, vcodec="av01.0.08M.08"), _fmt("399b", tbr=800, vcodec="av01.0.08M.08")
+OFFER = [H264_LO, H264_MID, H264_HI, HEVC, AV1_LO, AV1_HI]
+NATIVE = AV1_HI
+
+
+def _pick(level, codec="auto", offered=OFFER, native=NATIVE, subtitle=None):
+    chosen = planning.quality_formats([native, AUDIO], offered, level, subtitle, codec)
+    assert chosen[1] is AUDIO                                     # the audio is never touched
+    return chosen[0]["format_id"]
+
+
+def test_codec_families_come_from_codec_metadata_alone():
+    family = planning.codec_family
+    assert [family(c) for c in ("av01.0.08M.08", "AV1", "hev1.1.6.L120.90", "hvc1.2.4", "h265", "avc1.640028",
+                                "avc3.4d401f", "h264", "vp09.00.40.08", "vp9")] == [
+        "av1", "av1", "hevc", "hevc", "hevc", "h264", "h264", "h264", "vp9", "vp9"]
+    for unknown in ("", "none", "theora", "mp4", "137", "av011", "vp8"):
+        assert family(unknown) is None
+
+
+def test_auto_high_is_exactly_the_native_selection():
+    formats = [dict(NATIVE), dict(AUDIO)]
+    for offered in (OFFER, [], [dict(H264_HI)]):
+        assert planning.quality_formats(formats, offered, "high", None, "auto") is formats
+    facts = {"extractor": "Youtube", "id": "x", "formats": [NATIVE, AUDIO], "offered": OFFER}
+    planned = planning.plan(facts, url="https://www.youtube.com/watch?v=x", target="1080", subtitle_language="en")
+    # The lower-bitrate AV1 stream yt-dlp chose stays chosen over 4400 kbit/s H.264.
+    assert (planned["formats"], planned["video_quality"], planned["video_codec"]) == (["399", "140"], "high", "auto")
+
+
+def test_auto_normal_and_low_rank_only_within_the_native_codec_family():
+    assert _pick("normal") == "399"                               # AV1 pair: ceil(2/2) = 1
+    assert _pick("low") == "399b"
+    three_av1 = OFFER + [_fmt("399c", tbr=1500, vcodec="av01.0.08M.08")]
+    assert _pick("normal", offered=three_av1) == "399c"            # ceil(3/2) = 2 within AV1
+    # Never across families: H.264's higher bitrates are not "better AV1".
+    for level in ("normal", "low"):
+        assert planning.codec_family(OFFER[[f["format_id"] for f in OFFER].index(_pick(level))]["vcodec"]) == "av1"
+
+
+@pytest.mark.parametrize("codec, high, normal, low", [
+    ("h264", "137", "137b", "137c"),                               # three: ranks 1, 2, 3
+    ("hevc", "hev", "hev", "hev"),                                 # the one HEVC member, whatever the level
+    ("av1", "399", "399", "399b"),                                 # two: ranks 1, 1, 2
+])
+def test_an_explicit_codec_selects_its_family_and_ranks_within_it(codec, high, normal, low):
+    assert [_pick(level, codec) for level in ("high", "normal", "low")] == [high, normal, low]
+
+
+def test_ties_and_even_counts_use_the_upper_middle_and_native_order():
+    offered = [_fmt("a", tbr=2000), _fmt("b", tbr=2000), _fmt("c", tbr=1000), _fmt("d", tbr=500)]
+    # "b" is preferred over "a" at equal bitrate; four members: Normal is rank 2.
+    assert [_pick(level, "h264", offered) for level in ("high", "normal", "low")] == ["b", "a", "d"]
+
+
+@pytest.mark.parametrize("codec, offered", [
+    ("hevc", [H264_HI, AV1_HI]),                                   # requested codec not offered
+    ("h264", [_fmt("x"), _fmt("y")]),                              # several, none rankable by bitrate
+    ("h264", [_fmt("720p", tbr=900, height=720), AV1_HI]),         # only at another resolution tier
+    ("h264", [_fmt("drm", tbr=900, drm=True), AV1_HI]),            # only protected
+    ("h264", [_fmt("rtmp", tbr=900, protocol="rtmp"), AV1_HI]),    # only outside the guard
+    ("h264", [_fmt("18", tbr=900, acodec="mp4a.40.2"), AV1_HI]),   # only another stream shape
+    ("auto", [_fmt("t1", tbr=900, vcodec="theora"), _fmt("t2", tbr=500, vcodec="theora")]),  # unknown family
+])
+def test_an_unsatisfiable_preference_keeps_the_native_selection(codec, offered):
+    for level in planning.VIDEO_QUALITIES:
+        assert _pick(level, codec, offered) == NATIVE["format_id"]
+    unknown = _fmt("t0", tbr=1000, vcodec="theora")
+    assert _pick("low", "auto", offered + [unknown], native=unknown) == "t0"   # unknown native: kept
+
+
+def test_a_codec_whose_stream_no_container_carries_with_the_subtitle_is_not_eligible():
+    # Whatever the preference, the chosen subtitle stays embedded: a stream
+    # the final container could not carry losslessly with it is never
+    # eligible, so every choice leaves a valid plan with the same subtitle.
+    subtitle = {"language": "en", "kind": "authored", "exts": ("vtt",)}
+    vp9 = _fmt("248", tbr=2500, ext="webm", vcodec="vp09.00.40.08")
+    opus = {**AUDIO, "format_id": "251", "ext": "webm", "acodec": "opus"}
+    for codec in planning.VIDEO_CODECS:
+        for level in planning.VIDEO_QUALITIES:
+            chosen = planning.quality_formats([vp9, opus], OFFER + [vp9], level, subtitle, codec)
+            container, carried = planning.container_plan(chosen, subtitle)
+            assert chosen[1] is opus and carried == {"language": "en", "kind": "authored", "ext": "vtt"}
+            assert container in {"webm", "mkv"}
+
+
+def test_plan_records_the_preferences_and_reads_unrecognized_ones_as_auto_high():
+    from integrations.media.definition import MediaOptions
+    facts = {"extractor": "Youtube", "id": "x", "formats": [NATIVE, AUDIO], "offered": OFFER}
+    odd = planning.plan(facts, url="https://www.youtube.com/watch?v=x", target="1080", subtitle_language="en",
+                        video_quality="ultra", video_codec="vp8")
+    assert (odd["video_quality"], odd["video_codec"], odd["formats"]) == ("high", "auto", ["399", "140"])
+    h264 = planning.plan(facts, url="https://www.youtube.com/watch?v=x", target="1080", subtitle_language="en",
+                         video_codec="h264")
+    assert (h264["formats"], h264["selected_height"], h264["container"]) == (["137", "140"], 1080, "mp4")
+    assert (MediaOptions().video_quality, MediaOptions().video_codec) == ("high", "auto")
+    for stored, read in (("LOW", "low"), ("normal", "normal"), ("max", "high"), ("", "high"), (None, "high")):
+        assert MediaOptions(video_quality=stored).video_quality == read
+    for stored, read in (("AV1", "av1"), ("hevc", "hevc"), ("h264", "h264"), ("vp9", "auto"), (None, "auto")):
+        assert MediaOptions(video_codec=stored).video_codec == read
+
+
+def test_the_worker_reports_only_provider_bitrates_and_no_address():
+    info = {"formats": [
+        {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 129, "url": "https://x/a"},
+        {"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080, "tbr": 4400.5,
+         "url": "https://x/v", "protocol": "https"},
+        {"format_id": "299", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080, "filesize": 9_000_000,
+         "protocol": "https", "url": "https://x/w", "has_drm": True},
+    ]}
+    offered = worker._offered(info)
+    assert [item["format_id"] for item in offered] == ["137", "299"]             # video formats only
+    assert [item["tbr"] for item in offered] == [4400.5, None]                    # never from a size
+    assert offered[1]["drm"] is True
+    assert not any("url" in item or "://" in repr(item) for item in offered)
+
+
+def test_any_level_finalizes_by_stream_copy_with_no_encoder():
+    argv = worker.finalization_argv({"ffmpeg": "/ffmpeg"}, "mkv", [("/w/v.mp4", _fmt("299", tbr=3100)),
+                                                                  ("/w/a.m4a", AUDIO)],
+                                    ("/w/s.vtt", "en"), {}, "/w/out.mkv")
+    assert "copy" in argv and argv[argv.index("copy") - 1] in {"-c", "-codec"}
+    for encoder in ("libx264", "libx265", "libvpx", "libaom", "libopus", "aac", "-b:v", "-crf", "-preset"):
+        assert encoder not in argv
+
+
+# -- Concurrent Fragment Downloads: one bounded option, carried to yt-dlp per attempt --
+
+def test_concurrent_fragment_downloads_is_one_bounded_integer_media_option():
+    from pydantic import ValidationError
+    from integrations.media.definition import MediaOptions
+    assert MediaOptions().concurrent_fragment_downloads == 1  # unchanged behaviour by default
+    assert [MediaOptions(concurrent_fragment_downloads=value).concurrent_fragment_downloads
+            for value in (1, 8)] == [1, 8]
+    for invalid in (0, 9, -1, 2.5, "many", None):
+        with pytest.raises(ValidationError):
+            MediaOptions(concurrent_fragment_downloads=invalid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value, accepted", [(1, True), (8, True), (0, False), (9, False), (2.5, False),
+                                             ("many", False)])
+async def test_the_option_is_saved_or_refused_by_the_one_integration_configuration_path(value, accepted):
+    from unittest.mock import patch
+    from api import routes
+    from integrations.definition import IntegrationSettings
+    from test_settings_namespace_mutation import _application
+    current = AppSettings(integrations={"media": IntegrationSettings(options={"video_codec": "hevc"})})
+    application = _application(current)
+    application.definitions = (media_definition,)
+    saved = {}
+    with patch("api.routes.get_settings", return_value=current), \
+         patch("api.routes.load_settings", return_value=current), \
+         patch("api.routes.save_settings", side_effect=lambda cfg: saved.__setitem__("cfg", cfg)), \
+         patch("api.routes.apply_settings"):
+        update = routes.IntegrationConfigurationUpdate(options={"concurrent_fragment_downloads": value})
+        if accepted:
+            result = await routes.patch_integration_configuration("media", update, application=application)
+            assert result["options"]["concurrent_fragment_downloads"] == value
+            assert saved["cfg"].integrations["media"].options == {
+                "target_resolution": "best", "video_quality": "high", "video_codec": "hevc",
+                "concurrent_fragment_downloads": value,
+                "youtube_player_clients": []}  # the other options stay exactly as they were
+        else:
+            with pytest.raises(routes.HTTPException) as refused:
+                await routes.patch_integration_configuration("media", update, application=application)
+            assert refused.value.status_code == 400 and "cfg" not in saved
+
+
+def test_the_option_survives_save_reload_and_restart_and_reaches_the_built_executor(tmp_path, monkeypatch):
+    import json as _json
+    from types import SimpleNamespace
+    import core.config as config
+    from db import database
+    from integrations.definition import IntegrationSettings
+    from integrations.media.definition import MediaOptions, build
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    previous = config.get_settings()
+    try:
+        config.save_settings(normalize_settings(AppSettings(integrations={
+            "media": IntegrationSettings(options={"concurrent_fragment_downloads": 6})}), catalog))
+        reloaded = config.load_settings()  # what a restart reads
+        options = MediaOptions(**reloaded.integrations["media"].options)
+        assert options.concurrent_fragment_downloads == 6
+        environment = SimpleNamespace(download_root=str(tmp_path / "downloads"), preferred_subtitle_language="en",
+                                      repository=SimpleNamespace(authorize_execution=None))
+        assert build(options, environment)[1].concurrent_fragments == 6
+        # A document without the key (every installation until now) reads 1.
+        document = _json.loads(config.CONFIG_PATH.read_text())
+        document["integrations"]["media"]["options"].pop("concurrent_fragment_downloads")
+        config.CONFIG_PATH.write_text(_json.dumps(document))
+        assert MediaOptions(**config.load_settings().integrations["media"].options).concurrent_fragment_downloads == 1
+        assert build(MediaOptions(), environment)[1].concurrent_fragments == 1
+    finally:
+        config.apply_settings(previous)
+
+
+def test_the_worker_hands_yt_dlp_exactly_the_attempts_value_on_the_same_guarded_route():
+    baseline = worker._params({"proxy": "http://route"}, worker._Log())
+    assert baseline["concurrent_fragment_downloads"] == 1  # an extraction's instruction carries none
+    configured = worker._params({"proxy": "http://route", "concurrent_fragment_downloads": 5}, worker._Log())
+    assert configured["concurrent_fragment_downloads"] == 5
+    # Nothing else changes: the same one proxy route, the same one-connection-
+    # per-request handler, the same native downloader and retries.
+    assert {key: value for key, value in configured.items() if key not in {"concurrent_fragment_downloads", "logger"}} \
+        == {key: value for key, value in baseline.items() if key not in {"concurrent_fragment_downloads", "logger"}}
+    assert (configured["proxy"], configured["compat_opts"], configured["external_downloader"]) == (
+        "http://route", ["prefer-legacy-http-handler"], {"default": "native"})
+
+
+@pytest.mark.asyncio
+async def test_the_acquisition_instruction_carries_the_value_with_the_attempts_own_route_and_budget(tmp_path):
+    from executors.media.sandbox import MediaSandbox, MediaTools
+    routes, spawned = [], []
+
+    class Egress:
+        async def ensure_started(self):
+            pass
+
+        def public_route(self, scope, *, budget, connect_timeout_seconds):
+            routes.append((scope, budget))
+            return "127.0.0.1", 4321, "dp.public." + scope, "token"
+
+        def revoke_public_route(self, scope):
+            pass
+
+    sandbox = MediaSandbox(str(tmp_path / "runtime"), egress=Egress(), budget="yt_dlp",
+                           tools=MediaTools("/bin/true", "/bin/true", "/bin/true"))
+
+    async def spawn(attempt_id, argv, *, env, stdin):
+        spawned.append(json.loads(stdin))
+        return "owned"
+
+    sandbox.processes.spawn = spawn
+    await sandbox.start("attempt-7", url=VIDEO, plan={"formats": ["18"]}, workspace=tmp_path / "w",
+                        target=tmp_path / "t.mp4", result=tmp_path / "r.json", concurrent_fragments=7)
+    (spec,) = spawned
+    assert spec["concurrent_fragment_downloads"] == 7
+    (scope, budget), = routes
+    assert budget == "yt_dlp" and spec["proxy"] == f"http://dp.public.{scope}:token@127.0.0.1:4321"
+    assert spec["guard"] == ["127.0.0.1", 4321]
+
+
+def test_fragment_threads_report_progress_in_order(monkeypatch):
+    """Concurrent fragments call the hook from their own threads with yt-dlp's
+    ONE shared status object. A report read before a later fragment finished
+    must never be emitted after that later one: units that ran backwards would
+    make the executor distrust the part progress for the rest of the attempt."""
+    import threading
+    monkeypatch.setattr(worker, "PROGRESS_INTERVAL", 0)
+    status = {"status": "downloading", "downloaded_bytes": 100, "fragment_index": 5, "fragment_count": 9}
+    emitted, first_emitting, second_done = [], threading.Event(), threading.Event()
+
+    def emit(event):
+        if not first_emitting.is_set():
+            first_emitting.set()
+            second_done.wait(0.5)  # the second fragment gets every chance to report meanwhile
+        emitted.append((event["units"], event["downloaded"]))
+
+    monkeypatch.setattr(worker, "_emit", emit)
+    hook = worker._Progress()
+    first = threading.Thread(target=hook, args=(status,))
+    first.start()
+    assert first_emitting.wait(5)
+
+    def later_fragment():
+        status.update(fragment_index=6, downloaded_bytes=200)
+        hook(status)
+        second_done.set()
+
+    second = threading.Thread(target=later_fragment)
+    second.start()
+    first.join(5)
+    second.join(5)
+    assert emitted == [(5, 100), (6, 200)]
+    run_units = [units for units, _bytes in emitted]
+    assert run_units == sorted(run_units)
+
+
+# -- one primary best-effort estimate across every planned component --------------------
+# The observed shape (transfers 603-606): a segmented 616 HLS video whose
+# fragment count is known only once it downloads, a direct 251 audio offered
+# without an exact size, and a planned subtitle. No exact whole-plan scope
+# exists, so the bar must carry an explicitly ESTIMATED whole-plan figure.
+
+class _EstimatedYoutubeDL(_PlannedYoutubeDL):
+    """616-like HLS video with no exact size but a bitrate, 251-like audio
+    with only yt-dlp's ``filesize_approx`` estimate."""
+
+    info = {"extractor_key": "Youtube", "id": "abc", "title": "Clip", "duration": 100, "requested_formats": [
+        {"format_id": "616", "ext": "mp4", "protocol": "m3u8_native", "url": "https://v.example/616", "tbr": 5000},
+        {"format_id": "251", "ext": "webm", "protocol": "https", "url": "https://v.example/251",
+         "filesize_approx": 1_600_000}]}
+
+    def dl(self, path, item):
+        with open(path, "wb") as handle:
+            handle.write(b"x")
+
+
+def test_the_worker_announces_each_components_estimated_size_never_as_its_total(tmp_path, monkeypatch):
+    import yt_dlp
+    events = []
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _EstimatedYoutubeDL)
+    monkeypatch.setattr(worker, "_emit", events.append)
+    monkeypatch.setattr(worker, "PROGRESS_INTERVAL", 0)
+    monkeypatch.setattr(worker, "_run", lambda argv, **_: open(argv[-1].removeprefix("file:"), "wb").write(b"muxed"))
+    spec = {"url": "https://v.example/watch", "proxy": "http://127.0.0.1:9", "workspace": str(tmp_path / "w"),
+            "target": str(tmp_path / "Clip.mp4"), "tools": {"ffmpeg": "/bin/true"},
+            "plan": {"container": "mp4", "formats": ["616", "251"], "extractor": "Youtube", "id": "abc",
+                     "subtitle": None}}
+    assert worker.acquire(spec, worker._Phase()) == 0
+    announced = [event for event in events if event.get("event") == "progress"][:2]
+    assert [(event["total"], event.get("estimated_total")) for event in announced] == [
+        (None, 5000 * 125 * 100),       # bitrate x duration: an estimate, never the total
+        (None, 1_600_000)]              # yt-dlp's own estimate, never the total
+
+
+def _announce(component, estimated=None, total=None, units=None, unit_total=None):
+    return {"event": "progress", "component": component, "downloaded": 0, "total": total, "units": units,
+            "unit_total": unit_total, "finished": False, "estimated_total": estimated}
+
+
+VIDEO_EST, AUDIO_EST = 9_000_000, 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_unknown_size_plan_has_one_estimated_whole_plan_percentage():
+    """P1: video fragments arriving, audio not started and without an exact
+    size: no exact scope (none is forged), but one estimated aggregate."""
+    run, reader = _media_run(3)                                        # video, audio, subtitle
+    seen = await _observed(run, reader, {**_parts(2, 50, 50, 1, 1), "finished": True},
+                           _announce(0, VIDEO_EST), _announce(1, AUDIO_EST),
+                           _parts(0, 2_700_000, None, 3, 10))
+    assert seen.progress.total_bytes == 0 and seen.progress.total_units is None   # nothing exact is invented
+    estimated = getattr(seen.progress, "estimated_percentage", None)
+    assert estimated is not None, "no whole-plan figure: the bar can only be indeterminate"
+    whole = (VIDEO_EST * 0.3 + 50) / (VIDEO_EST + AUDIO_EST + 50)
+    assert estimated == pytest.approx(95 * whole, abs=0.05)           # all three components, 5% held back
+
+
+@pytest.mark.asyncio
+async def test_the_estimate_advances_through_every_component_without_going_back_then_processing():
+    """P2: subtitle -> video -> audio -> finalization in one attempt."""
+    run, reader = _media_run(3)
+    values = []
+    for events in ([{**_parts(2, 50, 50, 1, 1), "finished": True}, _announce(0, VIDEO_EST), _announce(1, AUDIO_EST)],
+                   [_parts(0, 900_000, None, 1, 10)], [_parts(0, 4_500_000, None, 5, 10)],
+                   [{**_parts(0, 9_400_000, 9_400_000, 10, 10), "finished": True}],     # video exact at its end
+                   [_parts(1, 100_000, None)], [_parts(1, 900_000, None)],
+                   [{**_parts(1, 1_100_000, 1_100_000), "finished": True}]):
+        seen = await _observed(run, reader, *events)
+        values.append(getattr(seen.progress, "estimated_percentage", None))
+    assert None not in values[1:] and values[1:] == sorted(values[1:])   # never backwards at the video/audio hand-off
+    assert all(value < 100 for value in values[1:])                     # never completion before DP owns it
+    # Every component reported finished, each with its exact total: the
+    # acquisition is over -- processing, before the finalize phase arrives.
+    assert seen.progress.total_bytes == 9_400_000 + 1_100_000 + 50 and not seen.activity.network_active
+    finalizing = await _observed(run, reader, {"event": "phase", "phase": "finalize"})
+    assert not finalizing.activity.network_active                      # processing: no acquisition, no bandwidth
+    # The fill the acquisition reached is kept for processing, below 100.
+    assert finalizing.progress.estimated_percentage == values[-1] == 99.9
+
+
+@pytest.mark.asyncio
+async def test_the_media_estimate_reaches_the_list_as_an_estimated_basis_never_bytes_or_units(tmp_path, monkeypatch):
+    from test_v113_active_execution_progress_lane import NativeJobExecutor, _core, _listed, _set
+    run, reader = _media_run(3)
+    seen = await _observed(run, reader, {**_parts(2, 50, 50, 1, 1), "finished": True},
+                           _announce(0, VIDEO_EST), _announce(1, AUDIO_EST), _parts(0, 2_700_000, None, 3, 10))
+    core = await _core(tmp_path, monkeypatch, NativeJobExecutor)
+    await _set(core, seen.progress)
+    listed = await _listed(core)
+    assert listed["active_execution_basis"] == "estimated"
+    assert listed["active_execution_progress"] == pytest.approx(getattr(seen.progress, "estimated_percentage", -1))
+    assert not listed["progress"]                                      # verified material untouched
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("events, exact", [
+    # P3: every component exact in bytes, or every one in authoritative units.
+    ([_announce(0, total=3000), _announce(1, total=1000), _parts(0, 1500, 3000)], ("bytes", 4000, 37.5)),
+    ([_announce(0, units=0, unit_total=8), _announce(1, units=0, unit_total=2), _parts(0, 10, None, 4, 8)],
+     ("units", 10, 40.0)),
+])
+async def test_an_exact_whole_plan_scope_is_reported_instead_of_an_estimate(events, exact):
+    run, reader = _media_run(2)
+    seen = await _observed(run, reader, *events)
+    basis, scope, figure = exact
+    assert (seen.progress.total_bytes if basis == "bytes" else seen.progress.total_units) == scope
+    # The attempt's mark is the exact figure itself, rounded down: never ahead
+    # of it, so the projection presents the exact scope.
+    assert seen.progress.estimated_percentage == figure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("components, streams, events, expected", [
+    # P4: mixed HLS + direct: the video's fragments, weighted by its size,
+    # beside an audio stream that has not started (a lone segmented stream is
+    # an exact units scope instead -- see the exact-scope test).
+    (2, 2, [_announce(0, VIDEO_EST), _announce(1, AUDIO_EST), _parts(0, 100, None, 2, 8)],
+     95 * VIDEO_EST * 0.25 / (VIDEO_EST + AUDIO_EST)),
+    # P4: direct only, measured against its approximate size alone.
+    (1, 1, [_announce(0, AUDIO_EST), _parts(0, 250_000, None)], 95 * 0.25),
+    # P4: no size facts at all -- the streams weigh equally, a subtitle nothing.
+    (3, 2, [{**_parts(2, 50, 50, 1, 1), "finished": True}, _announce(0), _announce(1),
+            {**_parts(0, 777, None), "finished": True}], 95 * 0.5),
+    # P4: one stream unsized -- it weighs the mean of the sized streams.
+    (2, 2, [_announce(0, VIDEO_EST), _announce(1), _parts(0, 4_500_000, None)], 95 * 0.25),
+    # P4: an approximate size overrun is never completion of the component.
+    (1, 1, [_announce(0, AUDIO_EST), _parts(0, 5_000_000, None)], 95 * 0.99),
+])
+async def test_a_measurable_plan_has_a_bounded_estimate(components, streams, events, expected):
+    run, reader = _media_run(components)
+    run.streams = streams
+    seen = await _observed(run, reader, *events)
+    assert seen.progress.estimated_percentage == pytest.approx(expected, abs=0.1)   # one decimal place
+    assert seen.progress.total_bytes == 0 and seen.progress.total_units is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("events", [
+    [],                                                                # nothing announced yet
+    [_announce(0, VIDEO_EST)],                                         # one of two components unknown
+    [_announce(0, VIDEO_EST), _announce(1, AUDIO_EST)],                # announced, nothing measured
+    [_announce(0, -5), _announce(1, True), _parts(0, 0, None)],        # unusable estimates, nothing measured
+    [_announce(0, 2 ** 60), _announce(1), _parts(0, 0, None, 0, 0)],   # immense estimate, zero-length fragments
+])
+async def test_nothing_measurable_stays_indeterminate_never_a_bogus_figure(events):
+    run, reader = _media_run(2)
+    seen = await _observed(run, reader, *events)
+    assert seen.progress.estimated_percentage is None
+    assert seen.progress.total_bytes == 0 and seen.progress.total_units is None
+
+
+@pytest.mark.asyncio
+async def test_new_size_evidence_and_overrunning_fragments_never_move_the_estimate_back():
+    """P5: the video's approximate size doubles mid-attempt, then its fragment
+    counter overruns its count: the figure holds and only rises."""
+    run, reader = _media_run(2)
+    first = await _observed(run, reader, _announce(0, VIDEO_EST), _announce(1, AUDIO_EST),
+                            _parts(0, 4_500_000, None))
+    larger = await _observed(run, reader, {**_parts(0, 4_600_000, None), "estimated_total": 2 * VIDEO_EST})
+    overrun = await _observed(run, reader, _parts(0, 4_700_000, None, 9, 8))
+    figures = [first.progress.estimated_percentage, larger.progress.estimated_percentage,
+               overrun.progress.estimated_percentage]
+    assert figures == sorted(figures) and figures[1] == figures[0]   # held, not dropped by the new denominator
+    assert all(math.isfinite(value) and 0 < value < 95 for value in figures)
+
+
+@pytest.mark.asyncio
+async def test_a_new_attempt_starts_from_its_own_evidence():
+    """P6: the high-water mark is the attempt's own: a restart (a new
+    ``_Run``) reads lower without carrying the old figure."""
+    old, old_reader = _media_run(2)
+    before = await _observed(old, old_reader, _announce(0, VIDEO_EST), _announce(1, AUDIO_EST),
+                             _parts(0, 8_000_000, None))
+    fresh, fresh_reader = _media_run(2)
+    after = await _observed(fresh, fresh_reader, _announce(0, VIDEO_EST), _announce(1, AUDIO_EST),
+                            _parts(0, 900_000, None))
+    assert after.progress.estimated_percentage < before.progress.estimated_percentage
+    assert old.estimate == before.progress.estimated_percentage and fresh.estimate == after.progress.estimated_percentage
+
+
+
+async def _visible(core, seen):
+    """What the operator sees for one executor observation: the real SQL
+    projection of the persisted progress, rendered by the real ``progress()``."""
+    from test_v113_active_execution_progress_lane import _listed, _render, _set
+    await _set(core, seen.progress, network_active=seen.activity.network_active)
+    listed = await _listed(core)
+    [shown] = _render([[listed["progress"], "downloading", listed["active_execution_progress"],
+                        listed["active_execution_basis"]]])
+    width = float(re.search(r"width:([0-9.]+)%", shown["bar"]).group(1))
+    label = re.search(r'class="prog-pct">([^<]*)<', shown["bar"]).group(1)
+    return width, label, listed["active_execution_basis"], shown["bar"]
+
+
+@pytest.mark.asyncio
+async def test_a_lower_late_exact_figure_never_moves_the_visible_bar_back(tmp_path, monkeypatch):
+    """The estimate (an underestimated video size) reads 63.3%; the video's
+    exact size then arrives and the exact figure is only 37.3%. The labelled
+    estimate holds until the exact figure passes it, then exact takes over."""
+    from test_v113_active_execution_progress_lane import NativeJobExecutor, _core
+    core = await _core(tmp_path, monkeypatch, NativeJobExecutor)
+    run, reader = _media_run(2)                                          # video, audio
+    shown = []
+    for events in ([_announce(0, 5_000_000), _announce(1, total=1_000_000), _parts(0, 4_000_000, None)],
+                   [_parts(0, 4_100_000, 10_000_000)],                    # exact now: 37.3%
+                   [_parts(0, 7_000_000, 10_000_000)],                    # exact 63.6%: it has caught up
+                   [_parts(0, 8_000_000, 10_000_000)]):
+        shown.append(await _visible(core, await _observed(run, reader, *events)))
+    widths = [width for width, _label, _basis, _bar in shown]
+    assert widths == sorted(widths)                                      # the primary bar never moves back
+    assert [(label, basis) for _width, label, basis, _bar in shown] == [
+        ("~63.3% estimated", "estimated"), ("~63.3% estimated", "estimated"),   # truthful: still the estimate
+        ("63.6% in progress", "bytes"), ("72.7% in progress", "bytes")]         # then the exact acquisition
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parts, last, label", [
+    # Exact bytes: the last bytes are in before the components report finished.
+    ([_announce(0, total=3000), _announce(1, total=1000)], [_parts(0, 2999, 3000), _parts(1, 1000, 1000)],
+     "99.9% in progress"),
+    # Exact units: every fragment completed before the component reports finished.
+    ([_announce(0, units=0, unit_total=8)], [_parts(0, 800, None, 8, 8)], "99.9% of parts"),
+])
+async def test_a_finished_acquisition_is_never_100_until_the_artifact_is_complete(tmp_path, monkeypatch,
+                                                                                 parts, last, label):
+    from test_v113_active_execution_progress_lane import NativeJobExecutor, _core, _render
+    core = await _core(tmp_path, monkeypatch, NativeJobExecutor)
+    run, reader = _media_run(len(parts))
+    await _observed(run, reader, *parts)
+    width, shown_label, _basis, bar = await _visible(core, await _observed(run, reader, *last))
+    assert shown_label == label and width < 100 and "done" not in bar
+    finished = [{**event, "finished": True} for event in last]
+    width, shown_label, basis, bar = await _visible(core, await _observed(run, reader, *finished))
+    assert (shown_label, basis) == ("processing", "processing")          # acquisition over: processing
+    assert width < 100 and "100" not in bar and "done" not in bar
+    [completed] = _render([[100, "completed", None, None]])               # only DP's committed artifact
+    assert ">100%<" in completed["bar"] and "prog-fill done" in completed["bar"]
+
+
+# -- YouTube Player Clients: Automatic by default, an explicit ordered choice validated
+# -- against the PACKAGED yt-dlp, and a stored choice it no longer offers read as Automatic
+
+def _player_client_route(current, options, monkeypatch=None):
+    """One ``PATCH /integrations/media/configuration`` against ``current``;
+    returns ``(result or HTTPException, saved settings or None)``."""
+    from unittest.mock import patch
+    from api import routes
+    from test_settings_namespace_mutation import _application
+    application = _application(current)
+    application.definitions = (media_definition,)
+    saved = {}
+
+    async def run():
+        with patch("api.routes.get_settings", return_value=current), \
+             patch("api.routes.load_settings", return_value=current.model_copy(deep=True)), \
+             patch("api.routes.save_settings", side_effect=lambda cfg: saved.__setitem__("cfg", cfg)), \
+             patch("api.routes.apply_settings"):
+            try:
+                return await routes.patch_integration_configuration(
+                    "media", routes.IntegrationConfigurationUpdate(options=options), application=application)
+            except routes.HTTPException as refused:
+                return refused
+    return asyncio.run(run()), saved.get("cfg")
+
+
+def test_the_offered_player_clients_are_the_packaged_yt_dlps_own_unauthenticated_clients():
+    from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+    from yt_dlp.extractor.youtube import YoutubeIE
+    from integrations.media.definition import supported_player_clients
+    offered = supported_player_clients()
+    assert offered and len(set(offered)) == len(offered)
+    assert set(offered) == {name for name, entry in INNERTUBE_CLIENTS.items()
+                            if not name.startswith("_") and not entry.get("REQUIRE_AUTH")}
+    # yt-dlp's own unauthenticated defaults are all offered; a sign-in-only
+    # client never is (DownloadPulse never signs in).
+    assert set(YoutubeIE._DEFAULT_CLIENTS) <= set(offered)
+    assert not {name for name, entry in INNERTUBE_CLIENTS.items() if entry.get("REQUIRE_AUTH")} & set(offered)
+
+
+def test_automatic_is_the_default_and_hands_yt_dlp_no_player_client_argument():
+    from integrations.media.definition import MediaOptions
+    options = MediaOptions()
+    assert options.youtube_player_clients == [] and options.effective_player_clients() == ()
+    for spec in ({"proxy": "http://route"}, {"proxy": "http://route", "youtube_player_clients": []}):
+        assert "extractor_args" not in worker._params(spec, worker._Log())
+
+
+def test_an_explicit_ordered_choice_reaches_only_yt_dlps_youtube_video_extractor():
+    baseline = worker._params({"proxy": "http://route"}, worker._Log())
+    chosen = worker._params({"proxy": "http://route", "youtube_player_clients": ["tv", "web_safari"]}, worker._Log())
+    assert chosen["extractor_args"] == {"youtube": {"player_client": ["tv", "web_safari"]}}
+    # Nothing else about the attempt changes.
+    assert {k: v for k, v in chosen.items() if k not in {"extractor_args", "logger"}} == \
+        {k: v for k, v in baseline.items() if k != "logger"}
+    def youtube(ydl):
+        # Initialized offline (the route is no address at all): yt-dlp's own
+        # client choice needs only its JavaScript-runtime check.
+        extractor = ydl.get_info_extractor("Youtube")
+        extractor.initialize()
+        return extractor
+
+    with YoutubeDL({**chosen, "logger": None}) as ydl:
+        assert youtube(ydl)._configuration_arg("player_client") == ["tv", "web_safari"]
+        # yt-dlp asks exactly those clients, in that order -- one extraction,
+        # not a DownloadPulse rotation.
+        assert list(youtube(ydl)._get_requested_clients(VIDEO, {}, False)) == ["tv", "web_safari"]
+        # Other extractors -- YouTube's own playlist/tab reader included --
+        # never see it.
+        for other in ("YoutubeTab", "Vimeo", "Dailymotion", "Generic"):
+            assert ydl.get_info_extractor(other)._configuration_arg("player_client") == []
+    with YoutubeDL({**baseline, "logger": None}) as automatic, \
+            YoutubeDL({"quiet": True, "proxy": "http://route", "js_runtimes": baseline["js_runtimes"]}) as plain:
+        # Automatic is yt-dlp's own default, exactly as an unconfigured yt-dlp
+        # with the same runtime would choose it.
+        assert youtube(automatic)._get_requested_clients(VIDEO, {}, False) == \
+            youtube(plain)._get_requested_clients(VIDEO, {}, False)
+
+
+@pytest.mark.parametrize("value", [["tv", "tv"], ["all"], ["default"], ["-web"], ["TV"], ["tv;id"], ["tv web"],
+                                   ["no_such_client"], ["web_creator"], "tv", "tv,web", [1], [None], None,
+                                   {"tv": True}])
+def test_a_new_selection_outside_the_packaged_clients_is_refused_and_nothing_is_saved(value):
+    current = AppSettings(integrations={"media": IntegrationSettings(options={"youtube_player_clients": ["web"]})})
+    refused, saved = _player_client_route(current, {"youtube_player_clients": value})
+    assert getattr(refused, "status_code", None) == 400 and saved is None
+    assert refused.detail["field"] == "youtube_player_clients"
+    assert current.integrations["media"].options == {"youtube_player_clients": ["web"]}
+
+
+def test_a_valid_ordered_selection_saves_reloads_and_reaches_every_extraction(tmp_path, monkeypatch):
+    import core.config as config
+    from db import database
+    from integrations.media.definition import MediaOptions, build
+    from types import SimpleNamespace
+    current = AppSettings(integrations={"media": IntegrationSettings(options={"video_codec": "hevc"})})
+    result, saved = _player_client_route(current, {"youtube_player_clients": ["web_safari", "tv"]})
+    assert result["options"]["youtube_player_clients"] == ["web_safari", "tv"]
+    assert result["options"]["youtube_player_client_support"]["effective"] == ["web_safari", "tv"]
+    assert saved.integrations["media"].options["youtube_player_clients"] == ["web_safari", "tv"]
+    assert saved.integrations["media"].options["video_codec"] == "hevc"  # untouched
+    # The derived support facts are presentation only, never stored.
+    assert "youtube_player_client_support" not in saved.integrations["media"].options
+    assert _player_client_route(current, {"youtube_player_clients": []})[1].integrations["media"].options[
+        "youtube_player_clients"] == []
+
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    previous = config.get_settings()
+    try:
+        config.save_settings(saved)
+        options = MediaOptions(**config.load_settings().integrations["media"].options)  # what a restart reads
+        assert options.youtube_player_clients == ["web_safari", "tv"]
+        environment = SimpleNamespace(download_root=str(tmp_path / "downloads"), preferred_subtitle_language="en",
+                                      repository=SimpleNamespace(authorize_execution=None))
+        provider, executor = build(options, environment)
+        # ONE sandbox runs both the provider's extraction and the executor's.
+        assert executor.sandbox is provider.extract.__self__
+        assert executor.sandbox.youtube_player_clients == ("web_safari", "tv")
+        # A document without the key (every installation until now) is Automatic.
+        document = json.loads(config.CONFIG_PATH.read_text())
+        document["integrations"]["media"]["options"].pop("youtube_player_clients")
+        config.CONFIG_PATH.write_text(json.dumps(document))
+        assert MediaOptions(**config.load_settings().integrations["media"].options).youtube_player_clients == []
+    finally:
+        config.apply_settings(previous)
+
+
+def test_a_stored_client_the_upgraded_yt_dlp_no_longer_offers_is_kept_shown_and_read_as_automatic(monkeypatch):
+    """Upgrade from a previously valid selection: ``retired`` was offered when
+    it was saved; the packaged yt-dlp no longer offers it."""
+    import integrations.media.definition as media
+    from types import SimpleNamespace
+    monkeypatch.setattr(media, "supported_player_clients", lambda: ("tv", "web", "web_safari"))
+    stored = {"youtube_player_clients": ["retired", "tv"], "video_codec": "hevc"}
+    current = AppSettings(integrations={"media": IntegrationSettings(options=dict(stored))})
+    # Read back: kept exactly, never rewritten; Automatic is what extraction uses.
+    options = media.MediaOptions(**normalize_settings(current, catalog).integrations["media"].options)
+    assert options.youtube_player_clients == ["retired", "tv"]
+    assert options.effective_player_clients() == ()
+    assert options.public()["youtube_player_client_support"] == {
+        "supported": ["tv", "web", "web_safari"], "unsupported": ["retired"], "effective": []}
+    environment = SimpleNamespace(download_root="/downloads", preferred_subtitle_language="en",
+                                  repository=SimpleNamespace(authorize_execution=None))
+    assert media.build(options, environment)[1].sandbox.youtube_player_clients == ()
+    # An unrelated save works and carries the stored choice forward untouched.
+    result, saved = _player_client_route(current, {"video_codec": "av1"})
+    assert result["options"]["video_codec"] == "av1"
+    assert saved.integrations["media"].options["youtube_player_clients"] == ["retired", "tv"]
+    assert result["options"]["youtube_player_client_support"]["unsupported"] == ["retired"]
+    # Re-sending the stored value unchanged is not a new selection.
+    assert _player_client_route(current, {"youtube_player_clients": ["retired", "tv"]})[1] is not None
+    # A NEW selection still meets the rule: a stale name is refused...
+    refused, nothing = _player_client_route(current, {"youtube_player_clients": ["retired"]})
+    assert refused.status_code == 400 and nothing is None
+    assert refused.detail["requirement"] == "must name each client at most once, from tv, web, web_safari"
+    # ...and an explicit supported choice, or Automatic, corrects it.
+    for chosen in (["web"], []):
+        result, saved = _player_client_route(current, {"youtube_player_clients": chosen})
+        assert saved.integrations["media"].options["youtube_player_clients"] == chosen
+        assert result["options"]["youtube_player_client_support"] == {
+            "supported": ["tv", "web", "web_safari"], "unsupported": [], "effective": chosen}
+
+
+def test_when_yt_dlp_does_not_say_which_clients_it_offers_only_automatic_is_used(monkeypatch):
+    import integrations.media.definition as media
+    monkeypatch.setattr(media, "supported_player_clients", lambda: None)
+    current = AppSettings(integrations={"media": IntegrationSettings(options={"youtube_player_clients": ["tv"]})})
+    options = media.MediaOptions(**current.integrations["media"].options)
+    assert options.youtube_player_clients == ["tv"] and options.effective_player_clients() == ()
+    assert options.public()["youtube_player_client_support"] == {"supported": None, "unsupported": ["tv"],
+                                                                  "effective": []}
+    refused, saved = _player_client_route(current, {"youtube_player_clients": ["web"]})
+    assert refused.status_code == 400 and saved is None
+    assert refused.detail["requirement"].startswith("can only be Automatic")
+    assert _player_client_route(current, {"youtube_player_clients": []})[1] is not None
+
+
+def test_a_stored_value_that_never_had_a_clients_shape_reads_as_automatic():
+    from integrations.media.definition import MediaOptions
+    for stored in ("tv", ["TV"], ["tv", "tv"], [1], {"tv": 1}, ["x" * 40], None):
+        assert MediaOptions(youtube_player_clients=stored).youtube_player_clients == []
+
+
+def test_both_worker_instructions_carry_the_sandboxs_one_effective_selection(tmp_path):
+    from executors.media.sandbox import MediaSandbox, MediaTools
+    for clients in ((), ("tv", "web")):
+        sandbox = MediaSandbox(str(tmp_path / "runtime"), tools=MediaTools("/bin/true", "/bin/true", "/bin/true"),
+                               youtube_player_clients=clients)
+        for mode in ("extract", "acquire"):
+            spec = json.loads(sandbox._spec(mode, VIDEO, "http://route", ("127.0.0.1", 1)))
+            assert spec["youtube_player_clients"] == list(clients)
+
+
+def test_a_verification_challenge_with_chosen_clients_is_one_extraction_and_an_honest_failure(monkeypatch):
+    """Mocked: no request reaches YouTube. YouTube's bot check is its own
+    verification-challenge outcome (never an account requirement), and the
+    extraction asks once: nothing tries other clients."""
+    import yt_dlp
+    from yt_dlp.utils import DownloadError, ExtractorError
+    made, asked = [], []
+
+    class Challenged:
+        def __init__(self, params):
+            made.append(params)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            asked.append(url)
+            cause = ExtractorError("Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies",
+                                   expected=True, ie="youtube")
+            raise DownloadError("ERROR: [youtube] x: " + cause.msg, (ExtractorError, cause, None))
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Challenged)
+    with pytest.raises(worker.Failure) as failed:
+        worker.extract({"url": VIDEO, "proxy": "http://route", "youtube_player_clients": ["tv", "web_safari"]})
+    assert failed.value.code == "verification_challenge"
+    assert len(made) == 1 and asked == [VIDEO]
+    assert made[0]["extractor_args"] == {"youtube": {"player_client": ["tv", "web_safari"]}}
+    assert outcome_error("verification_challenge", Stage.RESOLUTION).retryability is Retryability.BACKOFF
+
+
+# -- YouTube's verification challenge ---------------------------------------------------
+# Hand-authored yt-dlp failures; nothing reaches YouTube. A verification challenge
+# is recognized only from yt-dlp's YouTube video extractor's own message (its
+# ``ie``, stamped by the extractor -- never a URL), only by its specific phrases,
+# and only after every typed guard, proxy and network failure has had its say.
+
+def _extraction_failure(reason: str, ie: str | None = "youtube"):
+    from yt_dlp.utils import DownloadError, ExtractorError
+    cause = ExtractorError(reason, expected=True, ie=ie)
+    return DownloadError(f"ERROR: [{ie or 'generic'}] x: {cause.msg}", (ExtractorError, cause, None))
+
+
+_LOGIN_HINT = ("Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/"
+               "yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies")
+
+
+@pytest.mark.parametrize("reason", [
+    f"Sign in to confirm you're not a bot. {_LOGIN_HINT}",
+    f"Sign in to confirm you’re not a bot. {_LOGIN_HINT}",          # YouTube's own typographic apostrophe
+    "Please confirm you're not a bot",
+    "Video unavailable. YouTube is requiring a captcha challenge before playback",
+])
+def test_youtubes_verification_requests_are_a_verification_challenge_at_extraction_and_acquisition(reason):
+    for acquire in (False, True):
+        assert worker.classify(_extraction_failure(reason), acquire=acquire).code == "verification_challenge"
+
+
+@pytest.mark.parametrize("reason,ie,code", [
+    # Genuinely account-bound media stays an account requirement, never a challenge.
+    (f"Private video. Sign in if you've been granted access to this video. {_LOGIN_HINT}", "youtube", "auth_required"),
+    (f"Join this channel to get access to members-only content like this video. {_LOGIN_HINT}", "youtube",
+     "auth_required"),
+    (f"Sign in to confirm your age. This video may be inappropriate for some users. {_LOGIN_HINT}", "youtube",
+     "auth_required"),
+    ("This video requires payment to watch. Sign in to YouTube Premium", "youtube", "auth_required"),
+    # "sign in", "bot" or "cookies" alone is not the challenge.
+    (f"Sign in to continue. {_LOGIN_HINT}", "youtube", "auth_required"),
+    ("Use --cookies for the authentication", "youtube", "auth_required"),
+    ("The uploader's bot account was terminated", "youtube", "unavailable"),
+    # The same words from any other extractor (or none) are not YouTube's request.
+    (f"Sign in to confirm you're not a bot. {_LOGIN_HINT}", "vimeo", "auth_required"),
+    (f"Sign in to confirm you're not a bot. {_LOGIN_HINT}", "youtube:tab", "auth_required"),
+    (f"Sign in to confirm you're not a bot. {_LOGIN_HINT}", None, "auth_required"),
+    # An unrecognized YouTube error keeps the conservative fallback.
+    ("Something unexpected happened", "youtube", "extractor_failed"),
+])
+def test_only_youtubes_own_verification_request_is_a_challenge(reason, ie, code):
+    assert worker.classify(_extraction_failure(reason, ie), acquire=False).code == code
+
+
+def test_typed_guard_proxy_and_http_failures_keep_their_priority_over_a_challenge_message():
+    from yt_dlp.networking.exceptions import ProxyError, TransportError
+    from yt_dlp.utils import DownloadError
+    bot = "Sign in to confirm you're not a bot"
+
+    def carrying(item):
+        return DownloadError(f"ERROR: [youtube] x: {bot}", (type(item), item, None))
+
+    assert worker.classify(carrying(_http_error(429)), acquire=False).code == "rate_limited"
+    assert worker.classify(carrying(_http_error(403, {"Proxy-Status": "downloadpulse; error=destination_ip_prohibited"})),
+                           acquire=True, phase="component").code == "egress_refused"
+    assert worker.classify(carrying(_http_error(403)), acquire=True, phase="component").code == "source_refused"
+    assert worker.classify(carrying(_http_error(407)), acquire=False).code == "route_revoked"
+    assert worker.classify(carrying(ProxyError(bot)), acquire=False).code == "egress_refused"
+    assert worker.classify(carrying(TransportError(bot)), acquire=False).code == "network"
+    refusal = worker.SandboxRefusal("socket.connect")
+    assert worker.classify(carrying(refusal), acquire=False).code == "egress_refused"
+
+
+def test_a_challenge_means_the_same_at_resolution_and_execution_and_is_never_a_credential_request():
+    resolution = outcome_error("verification_challenge", Stage.RESOLUTION, detail="d")
+    execution = outcome_error("verification_challenge", Stage.EXECUTION, detail="d")
+    for error in (resolution, execution):
+        assert (error.category, error.retryability, error.origin) == (
+            Category.SOURCE_TEMPORARILY_UNAVAILABLE, Retryability.BACKOFF, Origin.REMOTE_SOURCE)
+        assert error.native_code == "verification_challenge" and not provider_attributable(error)
+    assert (resolution.stage, execution.stage) == (Stage.RESOLUTION, Stage.EXECUTION)
+    # The account requirement it is no longer confused with is unchanged.
+    auth = outcome_error("auth_required", Stage.RESOLUTION)
+    assert (auth.category, auth.retryability) == (Category.SOURCE_UNAVAILABLE, Retryability.NEVER)
+    # Its words are the integration's own declaration, read by Details alone.
+    assert media_definition.presentation.error_reason("verification_challenge") == (
+        "YouTube requested verification",
+        "YouTube requested additional verification during media extraction. This may be temporary; an account "
+        "requirement has not been established.")
+    assert media_definition.presentation.error_reason("auth_required") is None
+
+
+@pytest.mark.asyncio
+async def test_a_challenge_at_resolution_is_the_providers_own_failure_with_the_resolution_stage():
+    provider = MediaProvider(Extraction(MediaFailure("verification_challenge", "Sign in to confirm you're not a bot")))
+    with pytest.raises(TransferError) as raised:
+        await provider.resolve(TransferRequest("https", VIDEO))
+    error = raised.value.error
+    assert (error.native_code, error.stage, error.retryability) == ("verification_challenge", Stage.RESOLUTION,
+                                                                    Retryability.BACKOFF)
+
+
+def test_a_challenge_is_retried_only_within_the_existing_bounded_budgets():
+    """The configured defaults (``application.composition``): 3 resolution
+    retries 5 minutes apart, execution retries from 60 s. No policy branch is
+    YouTube's: these are rate_limited's exact decisions."""
+    from transfers.policy import RecoveryAction, RecoveryContext, TransferPolicy
+    policy = TransferPolicy(max_attempts=4, retry_delay=60.0, resolution_max_attempts=4, resolution_retry_delay=300.0)
+    now = 1_000.0
+    resolution = outcome_error("verification_challenge", Stage.RESOLUTION)
+    scheduled = [policy.retry_resolution(resolution, attempts, now).retry_at for attempts in range(1, 6)]
+    assert scheduled == [now + 300.0, now + 300.0, now + 300.0, None, None]
+    assert [policy.retry_resolution(outcome_error("rate_limited", Stage.RESOLUTION), attempts, now).retry_at
+            for attempts in range(1, 6)] == scheduled
+    # Acquisition: the same candidate is backed off twice, then the operator
+    # decides (Media Downloads cannot refresh a candidate or offer another).
+    execution = outcome_error("verification_challenge", Stage.EXECUTION)
+    decisions = [policy.recover(execution, RecoveryContext(consecutive_no_progress_failures=failures), now)
+                 for failures in (0, 1, 2)]
+    assert [(item.action, item.retry_at, item.wake_condition) for item in decisions] == [
+        (RecoveryAction.BACKOFF, now + 60.0, f"retry_at:{now + 60.0}"),
+        (RecoveryAction.BACKOFF, now + 60.0, f"retry_at:{now + 60.0}"),
+        (RecoveryAction.WAIT_FOR_OPERATOR, None, "operator_retry"),
+    ]

@@ -1,0 +1,1132 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import html
+import json
+import logging
+import os
+import re
+import secrets
+import time
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+
+from auth.csrf import (
+    clear_login_csrf_cookie,
+    login_csrf_cookie_name,
+    login_csrf_store,
+    set_login_csrf_cookie,
+)
+from auth.accounts import admitted, resolve_oidc
+from auth.manager import (
+    PasswordAuthenticationBusy,
+    password_proof_current,
+    peer_key,
+    verify_local_credentials,
+)
+from auth.middleware import session_record_valid
+from auth.permissions import capabilities
+from auth.models import AuthMechanism, Principal
+from auth.oidc import (
+    OIDC_CORRELATION_COOKIE,
+    OIDC_TRANSACTION_TTL_SECONDS,
+    OidcError,
+    begin_oidc_login,
+    complete_oidc_login,
+    oidc_auth_ready,
+    oidc_transaction_store,
+)
+from auth.oidc_version import oidc_configuration_version
+from auth.policy import (
+    interactive_auth_enabled,
+    oidc_auth_enabled,
+    password_auth_enabled,
+    safe_return_path,
+    standalone_deployment,
+)
+from auth.sessions import (
+    clear_session_cookie,
+    session_cookie_token,
+    session_store,
+    set_session_cookie,
+)
+from auth.throttle import login_challenge_rate_limiter, oidc_start_rate_limiter
+from auth.transitions import authentication_configuration_lock
+from core.config import desktop_installation, display_timezone, get_settings
+from core.version import read_version
+from services import account_appearance
+
+
+router = APIRouter()
+logger = logging.getLogger("downloadpulse.auth")
+
+
+# The login page remains server-rendered and self-contained. The only executable
+# code is this tiny hash-pinned interaction shim: press-and-hold password
+# reveal. It reads no stored state and performs no network, cookie,
+# authentication-state, or token operations. The page's theme is the
+# installation's login appearance, rendered by the server (``_login_shell``).
+_AUTH_PAGE_SCRIPT = """(()=>{\"use strict\";document.addEventListener(\"DOMContentLoaded\",()=>{const b=document.querySelector(\"[data-password-reveal]\"),p=document.getElementById(\"password\");if(!b||!p)return;const s=()=>{p.type=\"text\";b.setAttribute(\"aria-pressed\",\"true\");b.setAttribute(\"aria-label\",b.dataset.hideLabel)},h=()=>{p.type=\"password\";b.setAttribute(\"aria-pressed\",\"false\");b.setAttribute(\"aria-label\",b.dataset.showLabel)};b.addEventListener(\"pointerdown\",a=>{if(a.pointerType===\"mouse\"&&a.button!==0)return;a.preventDefault();try{b.setPointerCapture(a.pointerId)}catch(_){}s()});b.addEventListener(\"pointerup\",a=>{h();try{b.releasePointerCapture(a.pointerId)}catch(_){}});b.addEventListener(\"pointercancel\",h);b.addEventListener(\"pointerleave\",()=>{if(b.getAttribute(\"aria-pressed\")==\"true\")h()});document.addEventListener(\"pointerup\",h,true);b.addEventListener(\"keydown\",a=>{if((a.key===\" \"||a.key===\"Enter\")&&!a.repeat){a.preventDefault();s()}});b.addEventListener(\"keyup\",a=>{if(a.key===\" \"||a.key===\"Enter\"){a.preventDefault();h()}});b.addEventListener(\"blur\",h);window.addEventListener(\"blur\",h);document.addEventListener(\"visibilitychange\",()=>{if(document.hidden)h()})})})();"""
+_AUTH_PAGE_SCRIPT_HASH = base64.b64encode(
+    hashlib.sha256(_AUTH_PAGE_SCRIPT.encode("utf-8")).digest()
+).decode("ascii")
+
+
+_AUTH_PAGE_STYLE = """
+:root {
+  color-scheme: dark;
+  --bg:#030612;--bg2:#081126;
+  --card:rgba(10,16,33,.55);--card2:rgba(7,12,27,.40);--card-edge:rgba(139,105,224,.42);
+  --field:rgba(7,13,29,.52);--border:rgba(125,145,195,.24);--border-strong:rgba(151,172,226,.38);
+  --text:#f7f8ff;--text2:#bcc6e5;--text3:#8793ba;--accent:#b45cff;--accent2:#3d94ff;
+  --accent-rgb:155,69,255;--danger:#ff5264;--card-width:min(560px,calc(100vw - 48px));
+  --icon-accent:#b0a3ff;--icon-accent-strong:#8bbcff;
+  --glass-top:rgba(255,255,255,.13);--glass-line:rgba(255,255,255,.075);--glass-purple:rgba(180,92,255,.18);--glass-blue:rgba(42,148,255,.15);
+  --primary-gradient:linear-gradient(100deg,#8c22ed 0%,#6c37f5 48%,#1688ff 100%);
+  --primary-gradient-hover:linear-gradient(100deg,#a038ff 0%,#764cff 48%,#2497ff 100%);
+  --wave-purple:#c13cff;--wave-blue:#1a98ff;--particle:rgba(142,157,255,.94);
+  --dust-1:rgba(176,133,255,.90);--dust-2:rgba(77,163,255,.78);--dust-3:rgba(198,208,255,.58);
+  --shadow:0 32px 90px rgba(0,0,12,.52),0 12px 34px rgba(0,0,10,.30);--input-shadow:inset 0 1px 0 rgba(255,255,255,.035);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:#f8f9ff;--bg2:#eef4ff;
+  --card:rgba(255,255,255,.55);--card2:rgba(249,251,255,.35);--card-edge:rgba(126,98,216,.27);
+  --field:rgba(255,255,255,.50);--border:rgba(111,132,183,.24);--border-strong:rgba(103,132,203,.38);
+  --text:#111a34;--text2:#526184;--text3:#7583a8;--accent:#9637f5;--accent2:#2f86ff;
+  --accent-rgb:132,40,237;--danger:#e64255;
+  --icon-accent:#7868e4;--icon-accent-strong:#3f88f5;
+  --glass-top:rgba(255,255,255,.88);--glass-line:rgba(255,255,255,.66);--glass-purple:rgba(161,91,255,.13);--glass-blue:rgba(66,150,255,.14);
+  --primary-gradient:linear-gradient(100deg,#8f25ee 0%,#6d42f4 48%,#1688ff 100%);
+  --primary-gradient-hover:linear-gradient(100deg,#7d1ed6 0%,#5d36df 48%,#0875e9 100%);
+  --wave-purple:#a94cf8;--wave-blue:#4b94ff;--particle:rgba(94,108,218,.66);
+  --shadow:0 28px 72px rgba(56,76,122,.16),0 8px 24px rgba(57,76,119,.09);--input-shadow:inset 0 1px 0 rgba(255,255,255,.90);
+}
+/* An alternative palette (ui-theme-palettes.css, inlined with it) gives the
+   page's shared names (--bg, --text, --accent, --accent2, --border ...) its
+   own; these are the page's other decorative names, from the same core. The
+   error material and --danger keep DownloadPulse's meaning. */
+body[data-dp-palette] {
+  --card:color-mix(in srgb,var(--dp-surface-1) 55%,transparent);--card2:color-mix(in srgb,var(--dp-bg-app) 40%,transparent);
+  --card-edge:color-mix(in srgb,var(--dp-accent-purple) 42%,transparent);
+  --field:color-mix(in srgb,var(--dp-surface-input) 52%,transparent);--border-strong:var(--dp-border-strong);
+  --icon-accent:var(--dp-accent-purple-bright);--icon-accent-strong:var(--dp-accent-blue-bright);
+  --glass-purple:color-mix(in srgb,var(--dp-accent-purple) 18%,transparent);--glass-blue:color-mix(in srgb,var(--dp-accent-blue) 15%,transparent);
+  --wave-purple:var(--dp-accent-purple);--wave-blue:var(--dp-accent-blue);
+  --particle:color-mix(in srgb,var(--dp-accent-blue-bright) 90%,transparent);
+  --dust-1:color-mix(in srgb,var(--dp-accent-purple-bright) 90%,transparent);--dust-2:color-mix(in srgb,var(--dp-accent-blue-bright) 78%,transparent);
+  --dust-3:color-mix(in srgb,var(--dp-text-secondary) 58%,transparent);
+}
+body.light[data-dp-palette] {
+  --card-edge:color-mix(in srgb,var(--dp-accent-purple) 27%,transparent);
+  --glass-purple:color-mix(in srgb,var(--dp-accent-purple) 13%,transparent);--glass-blue:color-mix(in srgb,var(--dp-accent-blue) 14%,transparent);
+  --particle:color-mix(in srgb,var(--dp-accent-blue) 66%,transparent);
+}
+* { box-sizing:border-box; }
+html,body { min-height:100%; }
+body {
+  margin:0;min-height:100vh;overflow-x:hidden;position:relative;padding:58px 24px 42px;
+  display:grid;place-items:center;align-content:center;color:var(--text);
+  font-family:Outfit,Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:
+    radial-gradient(ellipse at -4% 52%,rgba(var(--accent-rgb),.42) 0%,rgba(var(--accent-rgb),.17) 25%,transparent 45%),
+    radial-gradient(ellipse at 104% 50%,color-mix(in srgb,var(--accent2) 40%,transparent) 0%,color-mix(in srgb,var(--accent2) 16%,transparent) 27%,transparent 47%),
+    radial-gradient(circle at 22% 13%,rgba(var(--accent-rgb),.10),transparent 25%),
+    radial-gradient(circle at 78% 10%,color-mix(in srgb,var(--accent2) 10%,transparent),transparent 26%),
+    radial-gradient(circle at 50% 108%,rgba(var(--accent-rgb),.08),transparent 32%),
+    linear-gradient(145deg,var(--bg2),var(--bg) 52%,var(--bg2));
+}
+body::before {
+  content:"";position:fixed;z-index:0;inset:0;pointer-events:none;opacity:.40;
+  background-image:
+    radial-gradient(circle,var(--dust-1) 0 1px,transparent 1.55px),
+    radial-gradient(circle,var(--dust-2) 0 1px,transparent 1.55px),
+    radial-gradient(circle,var(--dust-3) 0 .8px,transparent 1.25px);
+  background-size:58px 58px,91px 91px,137px 137px;background-position:0 0,29px 17px,51px 33px;
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,rgba(0,0,0,.48) 34%,rgba(0,0,0,.20) 47%,rgba(0,0,0,.20) 53%,rgba(0,0,0,.48) 66%,#000 100%);mask-image:linear-gradient(90deg,#000 0%,rgba(0,0,0,.48) 34%,rgba(0,0,0,.20) 47%,rgba(0,0,0,.20) 53%,rgba(0,0,0,.48) 66%,#000 100%);
+}
+body::after {
+  content:"";position:fixed;z-index:0;inset:-12%;pointer-events:none;opacity:.82;
+  background:
+    radial-gradient(ellipse at 15% 54%,rgba(var(--accent-rgb),.18),transparent 30%),
+    radial-gradient(ellipse at 85% 52%,color-mix(in srgb,var(--accent2) 17%,transparent),transparent 31%),
+    radial-gradient(ellipse at 31% 83%,rgba(var(--accent-rgb),.08),transparent 24%),
+    radial-gradient(ellipse at 69% 81%,color-mix(in srgb,var(--accent2) 7%,transparent),transparent 25%);
+  filter:blur(22px);
+}
+/* The version follows the card, as the application's version follows its
+   master surface (ui-shell-brand.css #sidebar-version): as wide as the card,
+   right-aligned with it and just below its bottom edge, in the page's bottom
+   padding. It takes no height of its own -- its row is empty, so the card is
+   centred exactly as alone (body align-content) -- and it moves and scrolls
+   with the card, never over it. */
+.version { position:relative;z-index:2;width:var(--card-width);height:0;transform:translateY(8px);text-align:right;color:var(--text3);font-size:12px;line-height:15px;font-weight:600;letter-spacing:.015em;white-space:nowrap;pointer-events:none; }
+.auth-backdrop { position:fixed;z-index:1;inset:0;width:100%;height:100%;pointer-events:none;opacity:1; }
+.auth-backdrop .wave { fill:none;stroke-linecap:round;stroke-width:1.05; }
+.auth-backdrop .wave-field { stroke:url(#auth-wave); }
+.auth-backdrop .wave-start { stop-color:var(--wave-purple); }.auth-backdrop .wave-end { stop-color:var(--wave-blue); }
+.auth-backdrop .soft { opacity:.25; }.auth-backdrop .mid { opacity:.43; }.auth-backdrop .strong { opacity:.78;stroke-width:1.3; }
+.auth-backdrop .micro { opacity:.14;stroke-width:.72; }.auth-backdrop .filament { opacity:.20;stroke-width:.82; }.auth-backdrop .particle { fill:var(--particle);opacity:.92; }.auth-backdrop .twinkle { filter:drop-shadow(0 0 7px currentColor); }.auth-backdrop .spark { filter:drop-shadow(0 0 7px currentColor); }
+.card {
+  position:relative;z-index:2;width:var(--card-width);padding:48px 54px 30px;overflow:hidden;isolation:isolate;
+  border:1px solid var(--card-edge);border-radius:12px;
+  background:linear-gradient(132deg,rgba(255,255,255,.045),transparent 28%),linear-gradient(150deg,var(--card),var(--card2));
+  -webkit-backdrop-filter:blur(30px) saturate(165%);backdrop-filter:blur(30px) saturate(165%);
+  box-shadow:var(--shadow),inset 0 1px 0 var(--glass-line),inset 0 -1px 0 rgba(255,255,255,.025);
+}
+.card::before {
+  content:"";position:absolute;z-index:0;inset:0;pointer-events:none;
+  background:
+    linear-gradient(128deg,var(--glass-top) 0%,rgba(255,255,255,.025) 18%,transparent 38%),
+    radial-gradient(ellipse at 5% 15%,var(--glass-purple),transparent 40%),
+    radial-gradient(ellipse at 97% 87%,var(--glass-blue),transparent 42%);
+  opacity:.78;
+}
+.card::after {
+  content:"";position:absolute;z-index:0;left:7%;right:7%;top:-66px;height:140px;pointer-events:none;
+  background:radial-gradient(ellipse at 40% 55%,rgba(var(--accent-rgb),.18),transparent 56%),radial-gradient(ellipse at 66% 55%,color-mix(in srgb,var(--accent2) 13%,transparent),transparent 58%);filter:blur(19px);
+}
+.card > * { position:relative;z-index:1; }
+.brand-lockup { position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;margin:0 0 22px; }
+.brand-pulse { position:absolute;z-index:0;top:3px;left:50%;transform:translateX(-50%);width:min(620px,96%);height:118px;opacity:.98;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16%,#000 84%,transparent);mask-image:linear-gradient(90deg,transparent,#000 16%,#000 84%,transparent); }
+.brand-pulse .grid { stroke:var(--border);stroke-width:.65;opacity:.18; }.brand-pulse .pulse-left { stroke:var(--wave-purple); }.brand-pulse .pulse-right { stroke:var(--wave-blue); }
+.brand-pulse .pulse-left,.brand-pulse .pulse-right { fill:none;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 8px currentColor) drop-shadow(0 0 15px currentColor); }
+.brand-pulse .pulse-ghost { fill:none;stroke-width:7;stroke-linecap:round;stroke-linejoin:round;opacity:.11;filter:blur(2px); }
+.brand-mark { position:relative;z-index:1;width:110px;height:110px;display:block;object-fit:contain;filter:drop-shadow(0 9px 22px rgba(var(--accent-rgb),.28)); }
+.brand { position:relative;z-index:1;margin-top:14px;font-size:46px;font-weight:800;letter-spacing:-1.7px;line-height:1;color:var(--text); }
+.brand span { color:var(--accent); }.brand-sub { margin-top:13px;color:var(--text2);font-size:19px;font-weight:500; }.sr-only { position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important; }
+.error { border:1px solid rgba(255,107,118,.45);background:rgba(255,107,118,.09);color:var(--danger);padding:11px 13px;border-radius:10px;font-size:13px;line-height:1.45;margin:0 0 18px; }
+form { margin:0; }
+label { display:block;font-size:14px;font-weight:650;color:var(--text2);margin:18px 0 8px; }
+.field { position:relative;display:flex;align-items:center; }
+.field-icon { position:absolute;z-index:2;left:17px;width:20px;height:20px;color:var(--icon-accent);pointer-events:none;filter:drop-shadow(0 0 9px rgba(var(--accent-rgb),.22)); }
+.field-icon svg,.password-reveal svg,.action-arrow svg,.foot-icon svg { display:block;width:100%;height:100%; }
+.password-reveal .eye { display:none; }.password-reveal .eye-off { display:block; }
+.password-reveal[aria-pressed="true"] .eye { display:block; }.password-reveal[aria-pressed="true"] .eye-off { display:none; }
+input {
+  width:100%;height:58px;border:1px solid var(--border);background:var(--field);color:var(--text);border-radius:10px;
+  padding:0 50px 0 52px;font:inherit;font-size:15px;outline:none;box-shadow:var(--input-shadow);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);transition:border-color .15s,box-shadow .15s,background .15s;
+}
+input::placeholder { color:var(--text3);opacity:.86; }
+input:focus { border-color:var(--accent);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.13),var(--input-shadow); }
+.password-reveal { position:absolute;z-index:3;right:8px;display:grid;place-items:center;width:42px;height:42px;padding:10px;border:0;border-radius:8px;background:transparent;color:var(--icon-accent);cursor:pointer;touch-action:none;filter:drop-shadow(0 0 8px rgba(var(--accent-rgb),.16)); }
+.password-reveal:hover,.password-reveal:focus-visible,.password-reveal[aria-pressed="true"] { color:var(--icon-accent-strong);background:rgba(var(--accent-rgb),.09);outline:none; }
+.auth-action {
+  position:relative;width:100%;min-height:60px;margin-top:24px;border-radius:10px;padding:0 58px;font-weight:700;font-size:16px;cursor:pointer;text-align:center;text-decoration:none;
+  display:flex;align-items:center;justify-content:center;gap:14px;font-family:inherit;transition:filter .15s,transform .15s,border-color .15s,background .15s;
+}
+.auth-action:hover { filter:brightness(1.07); }.auth-action:active { transform:translateY(1px); }
+.primary { border:0;background:var(--primary-gradient);color:#fff;box-shadow:0 11px 28px rgba(65,72,255,.23),inset 0 1px 0 rgba(255,255,255,.18); }.primary:hover { background:var(--primary-gradient-hover); }
+.auth-action.primary[type="submit"] { width:70%;margin-left:auto;margin-right:auto; }
+body[data-dp-palette] .primary { box-shadow:0 11px 28px color-mix(in srgb,var(--dp-accent-purple) 23%,transparent),inset 0 1px 0 rgba(255,255,255,.18); }
+.secondary { background:rgba(8,15,31,.27);color:var(--text);border:1px solid var(--border);box-shadow:var(--input-shadow);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px); }.secondary:hover { border-color:var(--border-strong); }
+:root[data-theme="light"] .secondary { background:rgba(255,255,255,.40); }
+body:not(.light)[data-dp-palette] .secondary { background:color-mix(in srgb,var(--dp-bg-app) 27%,transparent); }
+.action-arrow { position:absolute;right:20px;width:21px;height:21px;color:var(--icon-accent-strong);opacity:.96; }
+.auth-action.primary .action-arrow { color:inherit;opacity:1; }
+.oidc-mark { position:absolute;left:18px;width:28px;height:28px;color:#fff;opacity:1; }
+.oidc.secondary .oidc-mark { color:var(--text); }
+body[data-dp-palette] .primary,body[data-dp-palette] .primary .oidc-mark { color:var(--dp-accent-contrast); }
+.oidc.secondary .oidc-separator { position:absolute;left:66px;top:10px;bottom:10px;width:1px;background:var(--border); }
+.divider { display:flex;align-items:center;gap:18px;color:var(--text3);font-size:13px;margin:27px 0 0;white-space:nowrap; }.divider:before,.divider:after { content:"";height:1px;background:var(--border);flex:1; }
+.muted { color:var(--text3);font-size:13px;line-height:1.55; }
+.foot { margin-top:21px;padding:19px 5px 0;border-top:1px solid var(--border);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text3);font-size:12px;line-height:1.65;text-align:center; }
+.foot-icon { flex:0 0 21px;width:21px;height:21px;margin:0;color:var(--icon-accent);filter:drop-shadow(0 0 9px rgba(var(--accent-rgb),.21)); }.foot .https { color:var(--accent);font-weight:700; }
+.auth-only-message { text-align:center;margin:8px 0 0; }
+@media (max-width:700px) {
+  body { min-height:100vh;min-height:100dvh;padding:36px 14px; }:root { --card-width:100%; }.version { font-size:11px;line-height:14px; }
+  .card { padding:34px 24px 24px;border-radius:12px;-webkit-backdrop-filter:blur(22px) saturate(150%);backdrop-filter:blur(22px) saturate(150%); }.brand-mark { width:86px;height:86px; }.brand { font-size:36px; }.brand-sub { font-size:16px; }
+  .brand-pulse { width:100%;top:0;height:104px; }.auth-action { min-height:56px; }.oidc-mark { width:26px;height:26px;left:14px; }.oidc.secondary .oidc-separator { left:57px; }
+}
+@media (max-width:460px) {
+  .card { padding-left:17px;padding-right:17px; }.brand { font-size:32px; }.divider { gap:10px;font-size:11px; }.auth-action { font-size:14px;padding-left:52px;padding-right:48px; }
+  .auth-action.primary[type="submit"] { width:100%; }
+  .foot { font-size:11px; }.auth-backdrop { opacity:.72; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto!important;transition:none!important; } }
+"""
+
+
+_LUCIDE_USER = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>"""
+_LUCIDE_LOCK = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>"""
+_LUCIDE_EYE = """<svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>"""
+_LUCIDE_EYE_OFF = """<svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 2 20 20"/><path d="M6.71 6.71C4.69 8.1 3.25 9.85 2.55 11.3a1.6 1.6 0 0 0 0 1.4C4.28 16.27 7.64 19 12 19c1.48 0 2.83-.32 4.03-.87"/><path d="M10.73 5.08A8.7 8.7 0 0 1 12 5c4.36 0 7.72 2.73 9.45 6.3a1.6 1.6 0 0 1 0 1.4 12 12 0 0 1-1.18 1.92"/><path d="M14.12 14.12A3 3 0 0 1 9.88 9.88"/></svg>"""
+_LUCIDE_ARROW = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>"""
+_LUCIDE_SHIELD = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/><path d="m9 12 2 2 4-4"/></svg>"""
+
+_AUTH_BACKDROP_HTML = """<svg class="auth-backdrop" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+  <defs>
+    <linearGradient id="auth-wave" gradientUnits="userSpaceOnUse" x1="666" y1="0" x2="934" y2="0">
+      <stop class="wave-start" offset="0"/><stop class="wave-end" offset="1"/>
+    </linearGradient>
+  </defs>
+  <g class="wave-field spark">
+    <path class="wave filament" d="M-110 382 C38 292 126 482 251 383 S469 305 675 447 C746 496 859 439 925 384 C1047 281 1143 487 1279 385 S1490 308 1712 444"/>
+    <path class="wave filament" d="M-110 410 C49 311 133 511 263 407 S474 322 675 463 C745 512 861 467 927 412 C1057 303 1151 514 1287 409 S1496 326 1712 462"/>
+    <path class="wave micro" d="M-90 442 C56 324 128 558 274 422 S477 297 666 444 C737 499 869 501 934 440 C1066 315 1150 554 1290 422 S1490 306 1694 440"/>
+    <path class="wave soft" d="M-90 468 C62 348 136 580 282 447 S481 319 666 467 C736 523 868 526 934 466 C1072 339 1158 578 1298 446 S1496 330 1694 463"/>
+    <path class="wave soft" d="M-90 492 C68 372 146 603 291 470 S487 342 666 489 C735 546 867 550 934 491 C1078 365 1166 601 1307 470 S1502 353 1694 486"/>
+    <path class="wave mid" d="M-90 516 C73 397 154 625 300 493 S492 365 666 512 C734 570 865 573 934 516 C1084 391 1174 624 1316 494 S1508 377 1694 510"/>
+    <path class="wave mid" d="M-90 540 C79 421 164 647 309 517 S498 389 666 534 C734 592 864 597 934 541 C1090 416 1183 647 1326 518 S1515 401 1694 533"/>
+    <path class="wave strong" d="M-90 565 C87 445 174 669 320 541 S505 414 666 556 C733 615 863 620 934 566 C1097 441 1193 670 1336 542 S1522 425 1694 556"/>
+    <path class="wave strong" d="M-90 591 C95 470 187 692 332 566 S514 439 666 580 C732 641 862 645 934 592 C1104 467 1204 693 1347 567 S1530 450 1694 580"/>
+    <path class="wave mid" d="M-90 617 C106 494 199 714 345 591 S526 465 666 603 C730 666 861 670 934 618 C1111 493 1215 715 1359 592 S1539 475 1694 604"/>
+    <path class="wave mid" d="M-90 643 C117 519 213 736 359 617 S538 491 666 626 C728 691 860 694 934 644 C1118 519 1227 737 1371 618 S1548 501 1694 628"/>
+    <path class="wave soft" d="M-90 668 C128 544 227 756 374 642 S551 518 666 648 C725 715 859 719 934 670 C1125 545 1239 758 1384 643 S1558 528 1694 651"/>
+    <path class="wave soft" d="M-90 694 C141 568 243 775 390 666 S565 545 666 671 C722 741 858 744 934 696 C1133 571 1252 779 1398 668 S1568 555 1694 674"/>
+    <path class="wave micro" d="M-90 720 C154 591 260 794 406 689 S580 572 666 694 C718 767 857 768 934 722 C1141 597 1265 799 1412 692 S1579 582 1694 697"/>
+    <path class="wave filament" d="M-92 746 C168 617 279 815 431 711 S589 602 674 718 C724 786 852 790 926 748 C1149 621 1280 822 1428 714 S1590 605 1710 720"/>
+  </g>
+  <g class="particle twinkle">
+    <circle cx="34" cy="94" r="1"/><circle cx="48" cy="132" r="1.2"/><circle cx="72" cy="166" r=".9"/><circle cx="92" cy="207" r="1.7"/><circle cx="118" cy="239" r="1.1"/><circle cx="137" cy="278" r="2.3"/><circle cx="158" cy="316" r="1"/><circle cx="179" cy="352" r="1.2"/><circle cx="202" cy="372" r="1.1"/><circle cx="224" cy="391" r="3"/><circle cx="245" cy="437" r="1.2"/><circle cx="267" cy="246" r="1.5"/><circle cx="289" cy="290" r="1"/><circle cx="315" cy="323" r="1.9"/><circle cx="337" cy="393" r="1.1"/><circle cx="362" cy="476" r="3.4"/><circle cx="384" cy="531" r="1.1"/><circle cx="412" cy="171" r="1.3"/><circle cx="438" cy="228" r=".9"/><circle cx="458" cy="282" r="2.2"/><circle cx="482" cy="348" r="1.1"/><circle cx="506" cy="417" r="1.4"/><circle cx="531" cy="457" r=".9"/><circle cx="553" cy="355" r="2.7"/><circle cx="579" cy="431" r="1"/><circle cx="601" cy="505" r="1.6"/>
+    <circle cx="978" cy="111" r=".9"/><circle cx="995" cy="168" r="1.4"/><circle cx="1018" cy="198" r="1.1"/><circle cx="1042" cy="236" r="2.2"/><circle cx="1065" cy="286" r="1"/><circle cx="1088" cy="329" r="1.5"/><circle cx="1112" cy="357" r="1.1"/><circle cx="1136" cy="389" r="2.8"/><circle cx="1161" cy="432" r="1"/><circle cx="1184" cy="474" r="1.4"/><circle cx="1209" cy="311" r="1"/><circle cx="1232" cy="268" r="2.1"/><circle cx="1256" cy="302" r="1.1"/><circle cx="1281" cy="344" r="1.5"/><circle cx="1306" cy="391" r="1"/><circle cx="1331" cy="430" r="3.2"/><circle cx="1356" cy="486" r="1"/><circle cx="1381" cy="198" r="1.2"/><circle cx="1407" cy="251" r=".9"/><circle cx="1432" cy="302" r="2.4"/><circle cx="1457" cy="341" r="1.1"/><circle cx="1481" cy="382" r="1.4"/><circle cx="1506" cy="423" r="1"/><circle cx="1532" cy="463" r="2.9"/><circle cx="1556" cy="324" r="1"/><circle cx="1580" cy="242" r="1.5"/>
+    <circle cx="61" cy="503" r="1"/><circle cx="111" cy="553" r="1.3"/><circle cx="146" cy="590" r="1"/><circle cx="188" cy="625" r="2.2"/><circle cx="230" cy="664" r="1"/><circle cx="274" cy="694" r="1.4"/><circle cx="331" cy="651" r="1"/><circle cx="392" cy="604" r="1.7"/><circle cx="447" cy="671" r="1"/><circle cx="516" cy="733" r="1.2"/>
+    <circle cx="1087" cy="541" r="1"/><circle cx="1153" cy="576" r="1.1"/><circle cx="1215" cy="611" r="1.5"/><circle cx="1273" cy="648" r="1"/><circle cx="1327" cy="681" r="2.2"/><circle cx="1386" cy="643" r="1"/><circle cx="1452" cy="597" r="1.6"/><circle cx="1508" cy="641" r="1"/><circle cx="1558" cy="690" r="1.3"/>
+  </g>
+</svg>"""
+
+# The ECG trace behind the sign-in mark: one rhythm strip on its baseline
+# (y 60), a heartbeat on each side -- P wave, QRS, T wave -- clear of the mark
+# at every width, its baseline running on under the mark to the centre, where
+# the purple and blue halves meet unseen. The strip's ends fade out with it
+# (.brand-pulse mask), so neither the line nor its glow stops at an edge.
+_BRAND_PULSE_LEFT = "M0 60 H104 C108 60 110 51 114 51 C118 51 120 60 124 60 H132 L136 66 L143 24 L150 84 L155 60 H166 C172 60 175 46 182 46 C189 46 192 60 198 60 H300"
+_BRAND_PULSE_RIGHT = "M300 60 H402 C406 60 408 51 412 51 C416 51 418 60 422 60 H430 L434 66 L441 24 L448 84 L453 60 H464 C470 60 473 46 480 46 C487 46 490 60 496 60 H600"
+_BRAND_PULSE_HTML = f"""<svg class="brand-pulse" viewBox="0 0 600 120" aria-hidden="true">
+  <g class="grid"><path d="M0 60h600"/><path d="M60 14v92M120 14v92M180 14v92M240 14v92M300 14v92M360 14v92M420 14v92M480 14v92M540 14v92"/></g>
+  <path class="pulse-left pulse-ghost" d="{_BRAND_PULSE_LEFT}"/>
+  <path class="pulse-right pulse-ghost" d="{_BRAND_PULSE_RIGHT}"/>
+  <path class="pulse-left" d="{_BRAND_PULSE_LEFT}"/>
+  <path class="pulse-right" d="{_BRAND_PULSE_RIGHT}"/>
+</svg>"""
+
+
+# The sign-in was genuine but its account may not sign in: it is disabled or
+# deleted.
+_NOT_OPERATIONAL = "login.error.not_operational"   # "This account cannot sign in to DownloadPulse."
+
+
+def _session_lifetime_seconds(cfg) -> int:
+    hours = int(getattr(cfg, "auth_session_lifetime_hours", 12) or 12)
+    return max(3600, min(168 * 3600, hours * 3600))
+
+
+def _static_asset(name: str) -> Path:
+    candidates: list[Path] = []
+    configured = os.getenv("STATIC_DIR", "").strip()
+    if configured:
+        candidates.append(Path(configured) / name)
+    candidates.extend(
+        (
+            Path(__file__).resolve().parents[2] / "frontend" / "static" / name,
+            Path("/app/frontend/static") / name,
+            Path("/app/static") / name,
+        )
+    )
+    asset = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if asset is None:
+        raise RuntimeError(f"Frontend asset not found: {name}")
+    return asset
+
+
+# What the product logo's one source may hold to be drawn inline: drawing
+# elements and their own paint, never script, styles, links or handlers.
+_LOGO_REFUSED = re.compile(r"<\s*(?:script|style|foreignObject|a|image|use)\b|\son[a-z]+\s*=|href\s*=", re.I)
+
+
+def _logo_svg(prefix: str, *, class_name: str = "") -> str:
+    """The product logo for drawing inline: ``logo.svg``, its one geometry
+    source, so ``ui-logo.css`` gives it the colours of the theme in force.
+    Its ids are prefixed, so another inline copy cannot capture its
+    gradients. Beside the DownloadPulse wordmark (or a labelled host) it is
+    decorative: hidden from assistive technology, without its title or
+    description, which would also draw a native tooltip."""
+    return _inline_svg(_static_asset("logo.svg"), prefix, class_name=class_name)
+
+
+def _inline_svg(asset: Path, prefix: str, *, class_name: str = "") -> str:
+    """A shipped, decorative drawing made inline (the logo; the sidebar's
+    signal field, which ui-shell-signal-field.css colours the same way)."""
+    source = asset.read_text(encoding="utf-8").strip()
+    if not source.startswith("<svg ") or not source.endswith("</svg>") or _LOGO_REFUSED.search(source):
+        raise RuntimeError(f"{asset.name} holds content that cannot be drawn inline")
+    source = re.sub(r"<(title|desc)\b[^>]*>.*?</\1>\s*", "", source, flags=re.S)
+    for name in re.findall(r'\sid="([A-Za-z][\w-]*)"', source):
+        source = source.replace(f'id="{name}"', f'id="{prefix}-{name}"').replace(f"url(#{name})", f"url(#{prefix}-{name})")
+    root, rest = source.split(">", 1)
+    root = re.sub(r'\s(?:role|aria-labelledby|aria-label)="[^"]*"', "", root)
+    hint = f' class="{html.escape(class_name, quote=True)}"' if class_name else ""
+    return f'{root}{hint} aria-hidden="true" focusable="false">{rest}'
+
+
+def _style_source(name: str) -> str:
+    """A shipped stylesheet the sign-in page inlines whole."""
+    source = _static_asset(name).read_text(encoding="utf-8")
+    if "</" in source:
+        raise RuntimeError(f"{name} cannot be inlined in a style element")
+    return source
+
+
+def _lucide_inline_html(name: str, class_name: str) -> str:
+    """Inline one shipped Lucide icon (``icons/lucide/<name>.svg``, the canonical
+    pinned geometry) so it takes its colour from CSS: the file's own stroke
+    colour gives way to ``currentColor``, and nothing else is changed."""
+    source = _static_asset(f"icons/lucide/{name}.svg").read_text(encoding="utf-8")
+    body = re.sub(r"<!--.*?-->", "", source.split(">", 1)[1].rsplit("</svg>", 1)[0], flags=re.S).strip()
+    return (
+        f'<svg class="{class_name}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+        f'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{body}</svg>'
+    )
+
+
+def _auth_oidc_mark_html() -> str:
+    """The OpenID Connect button's mark: Lucide ShieldUser, white on the button."""
+    return _lucide_inline_html("shield-user", "oidc-mark")
+
+
+def _auth_favicon_html() -> str:
+    encoded = base64.b64encode(_static_asset("favicon.svg").read_bytes()).decode("ascii")
+    # Safari takes the home-screen / Dock icon from apple-touch-icon alone
+    # (public, like the manifest's icons), on these pages as on the application's.
+    return (f'<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,{encoded}">'
+            '<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=6">')
+
+
+_AUTH_MARK_HTML = _logo_svg("dp-login-logo", class_name="brand-mark")
+# The sidebar's mark, served with the first-paint script (``theme_bootstrap_script``).
+_APP_LOGO_SVG = _logo_svg("dp-app-logo")
+# The sidebar's signal field, served with it; each <dp-signal-field> renames
+# the "dp-signal-field" ids for itself (ui-theme-bootstrap.js).
+_SIGNAL_FIELD_SVG = _inline_svg(_static_asset("icons/dp/sidebar-wave-accent.svg"), "dp-signal-field")
+# The logo's colours, and the alternative palettes' values (inlined only while
+# one is the login appearance): the application's own stylesheets.
+_AUTH_LOGO_STYLE = _style_source("ui-logo.css")
+_AUTH_PALETTE_STYLE = _style_source("ui-theme-palettes.css")
+_AUTH_OIDC_MARK_HTML = _auth_oidc_mark_html()
+_AUTH_FAVICON_HTML = _auth_favicon_html()
+
+
+def _auth_csp(*, allow_form: bool) -> str:
+    # The installed-app metadata (manifest.webmanifest and its icons, public
+    # static files: auth.policy PUBLIC_PATHS) is what these pages may fetch
+    # from their own origin; everything they draw stays inline.
+    directives = [
+        "default-src 'none'",
+        "manifest-src 'self'",
+        "img-src data: 'self'",
+        "style-src 'unsafe-inline'",
+        f"script-src 'sha256-{_AUTH_PAGE_SCRIPT_HASH}'",
+    ]
+    if allow_form:
+        directives.append("form-action 'self'")
+    directives.extend(("base-uri 'none'", "frame-ancestors 'none'"))
+    return "; ".join(directives)
+
+
+async def _login_appearance() -> dict:
+    """The installation's login appearance (``account_appearance.login``: its
+    one row and nothing else), or DownloadPulse Dark for this response when it
+    cannot be read in time; sign-in never waits on it."""
+    try:
+        return await asyncio.wait_for(account_appearance.login(), _APPEARANCE_READ_SECONDS)
+    except Exception as exc:
+        logger.warning("Login appearance unavailable: %s", type(exc).__name__)
+        return account_appearance.public(None)
+
+
+def _login_shell(inner: str, appearance: dict, *, title: str, locale: str = "en") -> str:
+    """The sign-in card (``inner``: its content), followed by the version, in
+    the installation's login appearance, decided here
+    for the first paint: its mode on the root and the body (``body.light``),
+    and an alternative palette as ``body[data-dp-palette]`` with the
+    application's palette values. No browser or OS preference takes part."""
+    version = html.escape(read_version())
+    chosen = account_appearance.public(appearance)
+    mode, palette = chosen["mode"], chosen["palette"]
+    native = palette == account_appearance.PALETTES[mode][0]
+    body = ' class="light"' if mode == "light" else ""
+    if not native:
+        body += f' data-dp-palette="{html.escape(palette, quote=True)}"'
+    style = _AUTH_PAGE_STYLE + _AUTH_LOGO_STYLE + ("" if native else _AUTH_PALETTE_STYLE)
+    return f"""<!doctype html>
+<html lang="{html.escape(locale, quote=True)}" dir="{_locale_dir(locale)}" data-theme="{mode}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="{mode}">
+<title>{html.escape(title)}</title>
+{_AUTH_FAVICON_HTML}
+<link rel="manifest" href="/manifest.webmanifest">
+<style>{style}</style>
+<script>{_AUTH_PAGE_SCRIPT}</script>
+</head>
+<body{body}>
+{_AUTH_BACKDROP_HTML}
+<main class="card">
+{inner}
+</main>
+<div class="version">v{version}</div>
+</body>
+</html>"""
+
+
+def _username_field(locale: str) -> str:
+    return f"""<label for="username">{_text("login.username", locale)}</label>
+              <div class="field"><span class="field-icon">{_LUCIDE_USER}</span><input id="username" name="username" type="text" maxlength="256" autocomplete="username" placeholder="{_text("login.username.placeholder", locale)}" required></div>"""
+
+
+def _text(key: str, locale: str, **markup) -> str:
+    """A pre-sign-in message (``core.localization.message``), HTML-escaped.
+    Each ``markup`` value is markup the caller has built safely (its own text
+    already escaped) and is placed where the message names it."""
+    from core.localization import message
+
+    marks = {name: f"\x00{index}\x00" for index, name in enumerate(markup)}
+    text = html.escape(message(key, locale, **marks))
+    for name, mark in marks.items():
+        text = text.replace(mark, markup[name])
+    return text
+
+
+def _locale_dir(locale: str) -> str:
+    from core.localization import locale_info
+
+    return "rtl" if locale_info(locale)["dir"] == "rtl" else "ltr"
+
+
+async def _login_page(
+    request: Request,
+    *,
+    csrf_token: str,
+    return_to: str,
+    error: str = "",
+    status_code: int = 200,
+    locale: str = "en",
+) -> HTMLResponse:
+    """The sign-in page in ``locale`` (a pre-sign-in locale: English unless a
+    caller states one, ``core.localization.pre_sign_in_locale``). ``error`` is the
+    catalog key of the message to show, if any."""
+    cfg = get_settings()
+    # A Standalone installation signs in its one person, the default Admin,
+    # with its password alone: no username and no OpenID Connect are offered,
+    # and the server resolves the account itself (``verify_local_credentials``).
+    # The page reads the installation's settings only, never an account.
+    standalone = standalone_deployment(cfg)
+    password_enabled = password_auth_enabled(cfg)
+    oidc_enabled = oidc_auth_enabled(cfg) and not standalone
+    oidc_ready = oidc_auth_ready(cfg) if oidc_enabled else False
+    provider_name = html.escape(
+        str(getattr(cfg, "oidc_provider_name", "") or "OpenID Connect").strip()
+        or "OpenID Connect"
+    )
+    error_html = (
+        f'<div class="error" role="alert">{_text(error, locale)}</div>' if error else ""
+    )
+
+    password_control = ""
+    if password_enabled:
+        password_control = f"""
+            <form method="post" action="/login" autocomplete="on">
+              <input type="hidden" name="csrf_token" value="{html.escape(csrf_token, quote=True)}">
+              <input type="hidden" name="next" value="{html.escape(return_to, quote=True)}">
+              {'' if standalone else _username_field(locale)}
+              <label for="password">{_text("login.password", locale)}</label>
+              <div class="field"><span class="field-icon">{_LUCIDE_LOCK}</span><input id="password" name="password" type="password" maxlength="4096" autocomplete="current-password" placeholder="{_text("login.password.placeholder", locale)}" required><button class="password-reveal" type="button" data-password-reveal aria-label="{_text("login.password.show", locale)}" data-show-label="{_text("login.password.show", locale)}" data-hide-label="{_text("login.password.hide", locale)}" aria-pressed="false">{_LUCIDE_EYE}{_LUCIDE_EYE_OFF}</button></div>
+              <button class="auth-action primary" type="submit"><span>{_text("login.sign_in", locale)}</span><span class="action-arrow">{_LUCIDE_ARROW}</span></button>
+            </form>
+            """
+
+    oidc_control = ""
+    if oidc_enabled and oidc_ready:
+        oidc_class = "secondary" if password_enabled else "primary"
+        separator = '<span class="oidc-separator" aria-hidden="true"></span>' if password_enabled else ""
+        oidc_control = (
+            f'<a class="auth-action oidc {oidc_class}" href="/auth/oidc/start?next={quote(return_to, safe="")}">'
+            f'{_AUTH_OIDC_MARK_HTML}{separator}<span>{_text("login.sign_in_with", locale, provider=provider_name)}</span><span class="action-arrow">{_LUCIDE_ARROW}</span></a>'
+        )
+    elif oidc_enabled:
+        oidc_control = f'<div class="error" role="alert">{_text("login.oidc_incomplete", locale)}</div>'
+
+    controls: list[str] = []
+    if oidc_control:
+        controls.append(oidc_control)
+    if password_control:
+        if oidc_ready and password_enabled:
+            controls.append(f'<div class="divider"><span>{_text("login.or_password", locale)}</span></div>')
+        controls.append(password_control)
+    if not password_enabled and not oidc_enabled:
+        controls.append(f'<p class="muted auth-only-message">{_text("login.not_required", locale)}</p>')
+
+    interactive_controls = "\n".join(controls)
+    card = f"""  <div class="brand-lockup">{_BRAND_PULSE_HTML}{_AUTH_MARK_HTML}<div class="brand">Download<span>Pulse</span></div><div class="brand-sub">{_text("login.subtitle", locale)}</div><span class="sr-only">{_text("login.secure_access", locale)}</span></div>
+  {error_html}
+  {interactive_controls}
+  <div class="foot"><span class="foot-icon">{_LUCIDE_SHIELD}</span><div>{_text("login.foot.http", locale)}<br>{_text("login.foot.https", locale, https='<span class="https">HTTPS</span>')}</div></div>"""
+    response = HTMLResponse(content=_login_shell(card, await _login_appearance(), title=_text("login.title", locale),
+                                                 locale=locale), status_code=status_code)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = _auth_csp(allow_form=True)
+    return response
+
+
+async def _state_free_auth_page(
+    *,
+    message: str,
+    status_code: int,
+    retry_after: int | None = None,
+    locale: str = "en",
+) -> HTMLResponse:
+    """Render an authentication error without allocating browser challenge
+    state. ``message`` is the catalog key of the error to show."""
+    card = f"""  <div class="brand-lockup">{_BRAND_PULSE_HTML}{_AUTH_MARK_HTML}<div class="brand">Download<span>Pulse</span></div><div class="brand-sub">{_text("login.unavailable", locale)}</div><span class="sr-only">{_text("login.secure_access", locale)}</span></div>
+  <div class="error" role="alert">{_text(message, locale)}</div>
+  <a class="auth-action secondary" href="/login"><span>{_text("login.return", locale)}</span><span class="action-arrow">{_LUCIDE_ARROW}</span></a>"""
+    response = HTMLResponse(
+        content=_login_shell(card, await _login_appearance(), title=_text("login.unavailable.title", locale),
+                             locale=locale),
+        status_code=status_code,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = _auth_csp(allow_form=False)
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(max(1, int(retry_after)))
+    return response
+
+
+async def _issue_login_page(
+    request: Request,
+    *,
+    return_to: str,
+    error: str = "",
+    status_code: int = 200,
+    locale: str | None = None,
+) -> HTMLResponse:
+    """The sign-in page with a fresh form challenge. ``error`` is a catalog
+    key; ``locale`` the hook for an explicitly stated pre-sign-in language
+    (``core.localization.pre_sign_in_locale``), English otherwise."""
+    from core.localization import pre_sign_in_locale
+
+    locale = pre_sign_in_locale(locale)
+    if not login_challenge_rate_limiter.allow(peer_key(request)):
+        return await _state_free_auth_page(
+            message="login.error.challenges",
+            status_code=429,
+            retry_after=60,
+            locale=locale,
+        )
+    browser_nonce, form_token = login_csrf_store.issue()
+    response = await _login_page(
+        request,
+        csrf_token=form_token,
+        return_to=safe_return_path(return_to),
+        error=error,
+        status_code=status_code,
+        locale=locale,
+    )
+    set_login_csrf_cookie(response, request, browser_nonce)
+    return response
+
+
+def _set_oidc_correlation_cookie(response: Response, value: str) -> None:
+    response.set_cookie(
+        key=OIDC_CORRELATION_COOKIE,
+        value=str(value),
+        max_age=OIDC_TRANSACTION_TTL_SECONDS,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_oidc_correlation_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=OIDC_CORRELATION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+@router.get("/api/auth/status")
+async def public_auth_status():
+    """Minimal public bootstrap state needed to render the login experience."""
+    cfg = get_settings()
+    password_enabled = password_auth_enabled(cfg)
+    oidc_enabled = oidc_auth_enabled(cfg)
+    return {
+        "authentication_required": interactive_auth_enabled(cfg),
+        "password_enabled": password_enabled,
+        "password_ready": password_enabled,
+        "oidc_enabled": oidc_enabled,
+        "oidc_ready": oidc_auth_ready(cfg) if oidc_enabled else False,
+        "oidc_provider_name": (
+            str(getattr(cfg, "oidc_provider_name", "") or "OpenID Connect").strip()
+            or "OpenID Connect"
+        ),
+    }
+
+
+async def _presentation(principal: Principal) -> dict:
+    """The account's own presentation, decided before the interface is
+    composed (``services.account_appearance``), so an Easy account's page
+    never shows an Advanced-only part first. ``owned`` is whether the request
+    has an account to own one (``presentation_owner``); ``mode`` is null when
+    it could not be read in time, and the interface is then Advanced and says
+    the choice is unavailable."""
+    account_id = account_appearance.presentation_owner(principal, get_settings())
+    if account_id is None:
+        return {"owned": False, "mode": None}
+    mode = None
+    try:
+        mode = await asyncio.wait_for(account_appearance.load_presentation(account_id), _APPEARANCE_READ_SECONDS)
+    except Exception as exc:
+        logger.warning("Account presentation unavailable at first paint: %s", type(exc).__name__)
+    return {"owned": True, "mode": mode}
+
+
+@router.get("/app.js", include_in_schema=False)
+async def application_javascript_bundle(request: Request):
+    """Serve the protected browser bootstrap before the existing app script.
+
+    The bootstrap starts with the caller's authority (``_authority``, the
+    same projection ``/api/auth/session`` serves, without its CSRF token), so
+    the interface is composed for that authority before any other script
+    runs. It is per-request and never stored."""
+    auth_js = _static_asset("auth.js").read_text(encoding="utf-8")
+    app_js = _static_asset("app.js").read_text(encoding="utf-8")
+    principal = getattr(request.state, "principal", Principal.anonymous())
+    authority = json.dumps(_authority(principal), separators=(",", ":"))
+    presentation = json.dumps(await _presentation(principal), separators=(",", ":"))
+    response = Response(
+        content=(f"window.downloadPulseAuthority=Object.freeze({authority});\n"
+                 f"window.downloadPulsePresentation=Object.freeze({presentation});\n{auth_js}\n;\n{app_js}"),
+        media_type="application/javascript",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# How long the first-paint script waits for an account's appearance before it
+# paints the native one instead (and the interface asks again later).
+_APPEARANCE_READ_SECONDS = 0.5
+
+
+async def _appearance(principal: Principal) -> dict:
+    """Where this page's theme choices live, decided before its first paint,
+    with the one palette catalog (``services.account_appearance.CATALOG``).
+
+    ``browser``: interactive sign-in is off on a Server installation, and the
+    interface keeps its choices in this browser.
+    ``account``: the request's own account's record (the signed-in account's,
+    or -- sign-in off on a Standalone installation -- its one person's, the
+    default Admin's), never the browser's; on a Standalone installation with
+    ``login_follows`` (the sign-in page shows that theme too) and, where the
+    record holds nothing yet, ``carry`` (the browser's earlier choice moves
+    there once);
+    ``preferences`` is null when it could not be read in time, and the page
+    then paints the native appearance without reading any browser choice."""
+    settings = get_settings()
+    owner = account_appearance.appearance_owner(principal, settings)
+    if not principal.authenticated and not interactive_auth_enabled(settings) and owner is None:
+        return {"authority": "browser", "catalog": account_appearance.catalog()}
+    preferences, carry = None, False
+    if owner:
+        try:
+            preferences = await asyncio.wait_for(account_appearance.load(owner), _APPEARANCE_READ_SECONDS)
+            carry = not await asyncio.wait_for(account_appearance.stored(owner), _APPEARANCE_READ_SECONDS)
+        except Exception as exc:
+            logger.warning("Account appearance unavailable at first paint: %s", type(exc).__name__)
+    result = {"authority": "account", "account_id": owner or principal.account_id or None,
+              "preferences": preferences, "catalog": account_appearance.catalog()}
+    # A Standalone installation: the sign-in page follows this theme, and a
+    # record holding nothing yet takes this browser's own earlier choice once.
+    if account_appearance.login_follows(owner, settings):
+        result["login_follows"] = True
+        if carry:
+            result["carry"] = True
+    return result
+
+
+async def _locale(principal: Principal) -> dict:
+    """The language this page is composed in, decided before its first paint
+    (``core.localization``; the language is ``account_appearance.load_locale``),
+    for ``ui-i18n.js``: the account's own choice -- the default Admin's while
+    sign-in is off -- or, without one, the installation's default language,
+    read within the same bounded time as the appearance.
+    ``locale`` is null when it could not be read in time: the page is then
+    English and says nothing about the saved choice. ``catalog`` is the
+    locale's catalog asset, versioned by its content, where it has one."""
+    from core.localization import DEFAULT_LOCALE, catalog_version, locale_info
+
+    owner = account_appearance.presentation_owner(principal, get_settings())
+    tag, read = DEFAULT_LOCALE, True
+    if owner is not None:
+        try:
+            tag = (await asyncio.wait_for(account_appearance.load_locale(owner), _APPEARANCE_READ_SECONDS))["locale"]
+        except Exception as exc:
+            read = False
+            logger.warning("Account locale unavailable at first paint: %s", type(exc).__name__)
+    info = locale_info(tag)
+    version = catalog_version(tag)
+    return {"owned": owner is not None, "locale": tag if read else None, "dir": info["dir"] if read else "ltr",
+            "status": info["status"] if read else "canonical",
+            "catalog": f"/i18n/{tag}.js?v={version}" if read and version and tag != DEFAULT_LOCALE else None}
+
+
+@router.get("/i18n/{tag}.js", include_in_schema=False)
+async def locale_catalog_script(tag: str, request: Request):
+    """One locale's catalog as a script (``window.DPI18nCatalog(tag, messages)``),
+    so the interface can hold English before any page script runs and load
+    another locale's on demand. A target delivers its current translations
+    only (``core.localization.delivered``: a stale one is not sent, and is
+    named so the interface counts it as debt). The same bytes for everyone:
+    no account is read, and the URL is versioned by what is delivered
+    (``ETag``)."""
+    from core.localization import catalog_script, catalog_version, manifest
+
+    if tag not in manifest()["locales"]:
+        return Response(status_code=404)
+    body, version = catalog_script(tag), catalog_version(tag)
+    if body is None or version is None:
+        return Response(status_code=404)
+    etag = f'"{version}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(content=body, media_type="application/javascript", headers={"ETag": etag})
+
+
+@router.get("/ui-theme-bootstrap.js", include_in_schema=False)
+async def theme_bootstrap_script(request: Request):
+    """Serve the first-paint theme owner with this page's appearance.
+
+    The parser-blocking script starts with the caller's appearance
+    (``_appearance``), so the first paint already has the account's mode and
+    palette -- no native-dark frame for a Light account, and no other
+    account's or browser's choice. It is per-request and never stored. The
+    product logo's one source comes with it (``window.downloadPulseLogo``), so
+    the sidebar draws it inline, in the theme in force, at first paint; so
+    does the sidebar's signal field (``window.downloadPulseSignalField``). The
+    page's language comes with it too (``window.downloadPulseLocale``,
+    ``_locale``): the next script, ``ui-i18n.js``, reads it before the body is
+    parsed, so a page in another language never shows English first. Whether
+    this is the installed desktop application comes with it too
+    (``window.downloadPulseDesktop``): ``ui-desktop-start.js`` shows its starting
+    cover from the first paint only there."""
+    principal = getattr(request.state, "principal", Principal.anonymous())
+    appearance = json.dumps(await _appearance(principal), separators=(",", ":"))
+    locale = json.dumps(await _locale(principal), separators=(",", ":"))
+    script = _static_asset("ui-theme-bootstrap.js").read_text(encoding="utf-8")
+    logo = json.dumps(_APP_LOGO_SVG).replace("<", "\\u003c")
+    field = json.dumps(_SIGNAL_FIELD_SVG).replace("<", "\\u003c")
+    response = Response(
+        content=(f"window.downloadPulseLogo={logo};\nwindow.downloadPulseSignalField={field};\n"
+                 f"window.downloadPulseAppearance=Object.freeze({appearance});\n"
+                 f"window.downloadPulseLocale=Object.freeze({locale});\n"
+                 f"window.downloadPulseDesktop={'true' if desktop_installation() else 'false'};\n{script}"),
+        media_type="application/javascript",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/"):
+    cfg = get_settings()
+    return_to = safe_return_path(next)
+    if not interactive_auth_enabled(cfg):
+        return RedirectResponse(url=return_to, status_code=303)
+
+    existing_token = session_cookie_token(request)
+    existing = session_store.resolve(existing_token) if existing_token else None
+    if session_record_valid(existing, cfg):
+        return RedirectResponse(url=return_to, status_code=303)
+    if existing_token:
+        session_store.revoke(existing_token)
+
+    response = await _issue_login_page(request, return_to=return_to)
+    if existing_token:
+        clear_session_cookie(response, request)
+    return response
+
+
+@router.post("/login")
+async def password_login(request: Request):
+    cfg = get_settings()
+    if not password_auth_enabled(cfg):
+        return await _issue_login_page(
+            request,
+            return_to="/",
+            error="login.error.password_disabled",
+            status_code=403,
+        )
+    form = await request.form()
+    # Standalone signs in the default Admin by its password alone: a submitted
+    # username names no one and is not read.
+    standalone = standalone_deployment(cfg)
+    username = "" if standalone else str(form.get("username") or "")
+    password = str(form.get("password") or "")
+    csrf_token = str(form.get("csrf_token") or "")
+    return_to = safe_return_path(str(form.get("next") or "/"))
+
+    if len(username) > 256 or len(password) > 4096 or len(csrf_token) > 256:
+        return await _issue_login_page(
+            request,
+            return_to=return_to,
+            error="login.error.invalid_request",
+            status_code=400,
+        )
+
+    browser_nonce = str(request.cookies.get(login_csrf_cookie_name(request), "") or "")
+    if not login_csrf_store.consume(browser_nonce, csrf_token):
+        return await _issue_login_page(
+            request,
+            return_to=return_to,
+            error="login.error.expired",
+            status_code=403,
+        )
+
+    try:
+        proven = await verify_local_credentials(
+            request,
+            username,
+            password,
+            settings=cfg,
+        )
+    except PasswordAuthenticationBusy:
+        response = await _issue_login_page(
+            request,
+            return_to=return_to,
+            error="login.error.busy",
+            status_code=429,
+        )
+        response.headers["Retry-After"] = "2"
+        return response
+    if proven is None:
+        return await _issue_login_page(
+            request,
+            return_to=return_to,
+            error="login.error.invalid_password" if standalone else "login.error.invalid_credentials",
+            status_code=401,
+        )
+
+    async with authentication_configuration_lock:
+        current = get_settings()
+        account = await password_proof_current(proven, current)
+        if account is None or standalone_deployment(current) != standalone:
+            return await _issue_login_page(
+                request,
+                return_to=return_to,
+                error="login.error.config_changed",
+                status_code=409,
+            )
+        if not admitted(account, current):
+            return await _issue_login_page(
+                request,
+                return_to=return_to,
+                error=_NOT_OPERATIONAL,
+                status_code=403,
+            )
+
+        old_token = session_cookie_token(request)
+        if old_token:
+            session_store.revoke(old_token)
+
+        lifetime = _session_lifetime_seconds(current)
+        principal = Principal.password_session(account)
+        token, _record = session_store.create(
+            principal,
+            lifetime_seconds=lifetime,
+            credential_version=principal.credential_version,
+        )
+    response = RedirectResponse(url=return_to, status_code=303)
+    set_session_cookie(response, request, token, max_age=lifetime)
+    clear_login_csrf_cookie(response, request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/auth/oidc/start")
+async def oidc_start(request: Request, next: str = "/"):
+    cfg = get_settings()
+    return_to = safe_return_path(next)
+    if not oidc_auth_enabled(cfg):
+        return await _issue_login_page(
+            request,
+            return_to=return_to,
+            error="login.error.oidc_disabled",
+            status_code=404,
+        )
+    if not oidc_start_rate_limiter.allow(peer_key(request)):
+        return await _state_free_auth_page(
+            message="login.error.oidc_challenges",
+            status_code=429,
+            retry_after=60,
+        )
+    try:
+        authorization_url, correlation = await begin_oidc_login(cfg, return_to=return_to)
+    except OidcError:
+        return await _issue_login_page(
+            request,
+            return_to=return_to,
+            error="login.error.oidc_unavailable",
+            status_code=503,
+        )
+    response = RedirectResponse(url=authorization_url, status_code=303)
+    _set_oidc_correlation_cookie(response, correlation)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/auth/oidc/callback")
+async def oidc_callback(
+    request: Request,
+    state: str = "",
+    code: str = "",
+    error: str = "",
+):
+    correlation = str(request.cookies.get(OIDC_CORRELATION_COOKIE, "") or "")
+    if error:
+        oidc_transaction_store.consume(state, correlation)
+        response = await _issue_login_page(
+            request,
+            return_to="/",
+            error="login.error.oidc_incomplete",
+            status_code=401,
+        )
+        _clear_oidc_correlation_cookie(response)
+        return response
+
+    try:
+        principal, return_to = await complete_oidc_login(
+            state=state,
+            code=code,
+            correlation=correlation,
+        )
+    except OidcError:
+        response = await _issue_login_page(
+            request,
+            return_to="/",
+            error="login.error.oidc_refused",
+            status_code=401,
+        )
+        _clear_oidc_correlation_cookie(response)
+        return response
+
+    async with authentication_configuration_lock:
+        cfg = get_settings()
+        current_version = oidc_configuration_version(cfg)
+        proof_version = str(principal.credential_version or "")
+        if not proof_version or not current_version or not secrets.compare_digest(
+            proof_version,
+            current_version,
+        ):
+            response = await _issue_login_page(
+                request,
+                return_to="/",
+                error="login.error.config_changed_restart",
+                status_code=409,
+            )
+            _clear_oidc_correlation_cookie(response)
+            return response
+
+        account = await resolve_oidc(
+            str(principal.claims.get("iss") or ""),
+            str(principal.claims.get("sub") or ""),
+            principal.claims,
+            default_role=getattr(cfg, "auth_oidc_default_role", "user"),
+        )
+        if not admitted(account, cfg):
+            response = await _issue_login_page(
+                request,
+                return_to="/",
+                error=_NOT_OPERATIONAL,
+                status_code=403,
+            )
+            _clear_oidc_correlation_cookie(response)
+            return response
+
+        old_token = session_cookie_token(request)
+        if old_token:
+            session_store.revoke(old_token)
+        lifetime = _session_lifetime_seconds(cfg)
+        token, _record = session_store.create(
+            principal.bound_to(account),
+            lifetime_seconds=lifetime,
+            credential_version=proof_version,
+        )
+
+    response = RedirectResponse(url=safe_return_path(return_to), status_code=303)
+    set_session_cookie(
+        response,
+        request,
+        token,
+        max_age=lifetime,
+        force_secure=True,
+    )
+    clear_login_csrf_cookie(response, request)
+    _clear_oidc_correlation_cookie(response)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _authority(principal: Principal) -> dict:
+    """The caller's authority as the interface reads it. A role change
+    re-binds the session (a new ``account_generation``, the same session);
+    any other account change ends it."""
+    return {
+        "authenticated": bool(principal.authenticated),
+        "mechanism": principal.mechanism.value if principal.mechanism else None,
+        "display_name": principal.display_name,
+        "account_id": principal.account_id or None,
+        "role": principal.role or None,
+        "account_generation": principal.account_generation or None,
+        # The caller's capabilities, from the one policy (``auth.permissions``):
+        # what the interface may offer; the backend enforces it regardless.
+        "capabilities": sorted(capabilities(principal)),
+        # How every human role's interface renders timestamps.
+        "display_timezone": display_timezone(),
+        # The installation's deployment type (``AppSettings.deployment_type``).
+        "deployment_type": get_settings().deployment_type,
+    }
+
+
+@router.get("/api/auth/session")
+async def auth_session_status(request: Request, response: Response = None):
+    principal = getattr(request.state, "principal", Principal.anonymous())
+    session_token = str(getattr(request.state, "auth_session_token", "") or "")
+    record = session_store.resolve(session_token) if session_token else None
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+    return {
+        **_authority(principal),
+        "subject": principal.subject,
+        "csrf_token": session_store.csrf_token(session_token) if record is not None else "",
+        "session_expires_in_seconds": (
+            max(0, int(record.expires_at - time.monotonic())) if record is not None else None
+        ),
+    }
+
+
+@router.post("/api/auth/logout")
+async def logout(request: Request):
+    principal = getattr(request.state, "principal", Principal.anonymous())
+    if principal.mechanism not in {AuthMechanism.PASSWORD_SESSION, AuthMechanism.OIDC_SESSION}:
+        return JSONResponse(
+            content={"detail": "No browser application session", "code": "auth.no_session", "params": {}},
+            status_code=400,
+        )
+
+    session_token = str(getattr(request.state, "auth_session_token", "") or "")
+    if session_token:
+        session_store.revoke(session_token)
+    response = JSONResponse(content={"ok": True})
+    clear_session_cookie(response, request)
+    response.headers["Cache-Control"] = "no-store"
+    return response

@@ -1,0 +1,4206 @@
+"""Canonical transfer persistence, including durable recovery accounting.
+
+The qualified base remains the owner of ordinary transfer/request persistence.
+This public owner contains the atomic recovery extensions, progress-aware epoch
+accounting, candidate provenance presentation, and execution-discovered size
+acceptance. Current recovery state lives in the single-row-per-artifact
+``artifact_recovery_state`` table (DP 1.0.12 recovery leveling, Section 14);
+sparse, semantically-meaningful transitions are additionally recorded as
+durable ``application_events`` audit rows (Section 18), separate from that
+current-state row (Section 15).
+
+Recovery epoch / generation / candidate-attempt semantic model (Section 16)
+----------------------------------------------------------------------------
+Three independent counters answer three different questions. Each has
+exactly one owner and none is derived from either of the others:
+
+``recovery_epoch`` (``execution()``'s ``MEANINGFUL_PROGRESS`` reset profile,
+the ONLY writer): "how many times has this artifact crossed the meaningful-
+progress byte threshold." Advances only on genuine forward progress -- a
+plain retry or candidate switch does NOT advance it. Crossing it rezeroes
+every no-progress-budget counter (``apply_recovery_reset``) but does NOT
+itself clear ``candidate_attempt_history`` -- only an explicit
+``OPERATOR_RETRY`` full reset does that (see the RESET/PRESERVED/ARCHIVED/
+ADVANCED matrix on ``apply_recovery_reset`` below).
+
+``recovery_generation`` (``claim_recovery()`` and ``set_pause_and_fence()``,
+the ONLY writers): the exclusive-claim fencing generation. Advances once per
+successfully acquired recovery claim (any trigger) and once per pause/resume
+fence-everything event. Every claim-scoped mutation (``record_phase3_decision``,
+``record_recovery_quiescence``, ``reserve_recovery_refresh``,
+``finish_recovery_claim``, ...) requires its ``RecoveryClaim.generation`` to
+still match the persisted value -- this is what a stale/superseded claim
+cannot forge, which is what prevents it from mutating a newer generation's
+state (Section 25's adversarial concurrency guarantee).
+
+``candidate_generation`` (historical/explainability only, Section 15): NOT a
+persisted running counter in current state at all -- reconstructed on
+demand by ``_historical_audit_facts`` as a COUNT of ``finish_claim`` audit
+transitions carrying ``candidate_changed=True`` for this artifact. Answers
+"how many times has this artifact's candidate actually changed," for
+explainability only; nothing branches on it, and it costs nothing in
+``artifact_recovery_state`` because it is never stored there.
+
+``candidate_attempt_history`` (Section 12, current state, own field --
+unrelated to the three counters above): the list of candidate ids actually
+attempted in the artifact's current recovery episode. Only ever grows
+(``record_candidate_attempt``) or is wholly cleared by an explicit
+``OPERATOR_RETRY`` full reset -- never inferred from ``recovery_epoch`` or
+``recovery_generation`` moving.
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from types import SimpleNamespace
+
+from core.presentation_safety import safe_public_host
+from db.database import get_db
+from db.event_journal import record as journal
+from transfers import codec
+from transfers import journal_events as je
+from transfers import file_selection as fs
+from transfers._repository_base import (
+    _ENDED_ROUTE_STATES, _MUTATING_EXECUTION_STATES, DemandChanged, _established_children_in_db,
+    _release_selection_poll_wait_in_db,
+    _selection_intent_in_db, _set_selection_intent_in_db, terminal_cleanup_authority,
+)
+from transfers._repository_base import TransferRepository as _QualifiedTransferRepository
+from transfers.errors import Category, Domain, NormalizedError, Permanence, Retryability, Stage, TransferError
+from transfers.manual_failover import switch_eligible
+from transfers.models import (
+    CleanupAuthority, ExecutionState, FileManifestEntry, MaterializationAdmission, MaterializationAdmissionKind,
+    Ownership, ProviderResource, ResolutionAttempt, ResourceState, SourceEntry, TransferProgress, new_identity,
+)
+from transfers.policy import TERMINAL_TRANSFER_STATES, failure_signature, meaningful_progress_threshold
+
+
+class RecoveryResetAuthority(StrEnum):
+    """DP 1.0.12 recovery leveling, Section 17: the one canonical recovery
+    reset / new-attempt transition. Every caller that begins a new recovery
+    attempt/epoch names its authority here instead of hand-writing its own
+    ad-hoc snapshot-dict reset (the pattern Section 17 forbids -- e.g. the
+    pre-leveling ``manual_failover.py`` manually assigning snapshot fields).
+    Each authority intentionally resets a DIFFERENT, named set of facts --
+    they are deliberately not identical; see ``apply_recovery_reset``.
+    """
+    MEANINGFUL_PROGRESS = "meaningful_progress"
+    SOURCE_RESET = "source_reset"
+    OPERATOR_RETRY = "operator_retry"
+    CANDIDATE_ACTIVATION_BUDGET = "candidate_activation_budget"
+    CANDIDATE_SWITCHED = "candidate_switched"
+
+
+def apply_recovery_reset(snapshot: dict, authority: "RecoveryResetAuthority | str") -> None:
+    """Mutate ``snapshot`` in place per the named authority's canonical reset
+    profile (Section 17): the one canonical recovery reset / new-attempt
+    transition. Every caller that begins a new recovery attempt/epoch names
+    its authority; this function is the single place each authority's
+    RESET / PRESERVED / ARCHIVED / ADVANCED facts are defined, replacing the
+    pre-leveling pattern of ad-hoc snapshot-dict edits scattered across
+    calling code (e.g. the old ``manual_failover.py`` manually assigning
+    snapshot fields inline).
+
+    RESET / PRESERVED / ARCHIVED / ADVANCED matrix
+    ------------------------------------------------
+    Columns are the five authorities; a cell shows what happens to that row's
+    fact under that authority. "reset" = zeroed/cleared here. "preserved" =
+    left untouched by this function (the caller may still separately set it).
+    "archived" = never touched here; captured only as a sparse audit fact by
+    the caller (Section 15/18), never part of this reset. "advanced" = the
+    ADVANCED fact incremented/updated here.
+
+    ============================== ================ ============ ============== ========================== ==================
+    fact                            MEANINGFUL_       SOURCE_      OPERATOR_       CANDIDATE_ACTIVATION_      CANDIDATE_
+                                     PROGRESS          RESET        RETRY           BUDGET                     SWITCHED
+    ============================== ================ ============ ============== ========================== ==================
+    consecutive_no_progress_fail.   reset             reset        reset          reset                      reset
+    failure_signature               reset             reset        reset          reset                      reset
+    same_signature_failures         reset             reset        reset          reset                      reset
+    candidate_refreshes             reset             reset        reset          reset                      reset
+    failures_since_meaningful_prog. reset             reset        reset          reset                      preserved
+    candidate_switches              reset (=0)        preserved    reset (=0)     preserved                  advanced (+1)
+    decision_action/reason          reset             reset        reset          preserved                  preserved
+    quiescence_reason/wake_cond.    reset             preserved    reset          preserved                  preserved
+    recovery_epoch                  advanced (+1)     preserved    preserved      preserved                  preserved
+    ============================== ================ ============ ============== ========================== ==================
+
+    Every cell above is a direct transcription of the pre-leveling per-caller
+    inline behavior (``execution()``'s threshold-crossed branch,
+    ``reset_source_recovery``, ``reset_retry_budget``,
+    ``transition_recovery(reset_budget=True)``, and
+    ``transition_recovery(candidate_switched=True)`` respectively), verified
+    field-by-field before this refactor -- the authorities are deliberately
+    NOT homogenized to a single shared profile; each preserves its own
+    pre-existing, independently-tuned behavior. Historical/audit-only facts
+    (Section 15) are never touched by this function under any authority --
+    they are ARCHIVED separately, as sparse audit facts, by the calling
+    method itself.
+    """
+    authority = RecoveryResetAuthority(authority)
+    common = {
+        "consecutive_no_progress_failures": 0,
+        "failure_signature": None,
+        "same_signature_failures": 0,
+        "candidate_refreshes": 0,
+    }
+    if authority is RecoveryResetAuthority.MEANINGFUL_PROGRESS:
+        snapshot.update(common)
+        snapshot.update({
+            "recovery_epoch": int(snapshot.get("recovery_epoch") or 0) + 1,
+            "failures_since_meaningful_progress": 0,
+            "candidate_switches": 0,
+            "decision_action": None,
+            "decision_reason": None,
+            "quiescence_reason": None,
+            "wake_condition": None,
+        })
+    elif authority is RecoveryResetAuthority.SOURCE_RESET:
+        snapshot.update(common)
+        snapshot.update({
+            "failures_since_meaningful_progress": 0,
+            "decision_action": None,
+            "decision_reason": None,
+        })
+    elif authority is RecoveryResetAuthority.OPERATOR_RETRY:
+        snapshot.update(common)
+        snapshot.update({
+            "failures_since_meaningful_progress": 0,
+            "candidate_switches": 0,
+            "decision_action": None,
+            "decision_reason": None,
+            "quiescence_reason": None,
+            "wake_condition": None,
+        })
+    elif authority is RecoveryResetAuthority.CANDIDATE_ACTIVATION_BUDGET:
+        snapshot.update(common)
+        snapshot["failures_since_meaningful_progress"] = 0
+    elif authority is RecoveryResetAuthority.CANDIDATE_SWITCHED:
+        snapshot.update(common)
+        snapshot["candidate_switches"] = int(snapshot.get("candidate_switches") or 0) + 1
+    else:  # pragma: no cover - RecoveryResetAuthority(...) already rejects this
+        raise ValueError(authority)
+
+
+# DP 1.0.12 recovery leveling, Section 15: facts that are recorded for
+# durable explainability but are never read back to make a policy decision
+# anywhere in the codebase (verified by repository-wide search before this
+# leveling pass -- see the Phase 3 evidence report). These live SOLELY in
+# the sparse append-only ``recovery_audit`` trail (application_events) --
+# never in artifact_recovery_state, in any shape, current-state-adjacent or
+# otherwise. ``_historical_audit_facts`` reconstructs them on demand by
+# scanning that trail; ``recovery_context()`` merges the result in for its
+# own (non-policy) callers so existing readers (tests, future Details/audit
+# UI) see an unchanged flat shape. ``_recovery_snapshot()`` itself -- read
+# directly by every fencing/traversal/reset policy decision -- never sees
+# these keys at all.
+_HISTORICAL_SNAPSHOT_KEYS = frozenset({
+    "last_applied_trigger", "last_application_outcome", "last_execution_attempt",
+    "last_execution_identity", "last_reconstruction_reason", "last_execution_retirement_reason",
+    "durable_target", "candidate_generation", "last_candidate_id", "decision_recovery_epoch",
+    "failure_classification", "classification_confidence", "classification_evidence",
+    "bytes_at_failure", "bytes_since_prior_failure", "last_refresh_reason",
+    "last_candidate_switch_reason", "last_terminalization_reason", "partial_state_preserved",
+    "target_change_reason", "last_budget_before", "last_budget_after",
+})
+
+
+_TERMINAL_EXECUTION_STATES = frozenset({"failed", "absent", "cancelled", "succeeded"})
+_RUNTIME_TOTAL_STATES = frozenset({
+    ExecutionState.QUEUED,
+    ExecutionState.RUNNING,
+    ExecutionState.PAUSED,
+})
+_FAILED_CANDIDATE_OUTCOMES = frozenset({"failed", "error", "rejected", "absent"})
+
+
+def _source_kind(scope, key) -> str:
+    """What ``_safe_source_label`` names: a host, a scheme, or nothing known
+    (its English "Source"), so the interface can word the last itself."""
+    normalized_scope = str(scope or "").strip().lower()
+    if not str(key or "").strip():
+        return "unknown"
+    return "host" if normalized_scope == "host" else "scheme" if normalized_scope in {"scheme", "protocol"} else "unknown"
+
+
+def _safe_source_label(scope, key) -> str:
+    """Project durable source identity without exposing opaque candidate keys."""
+    normalized_scope = str(scope or "").strip().lower()
+    normalized_key = str(key or "").strip()
+    if normalized_scope == "host" and normalized_key:
+        return normalized_key.lower()
+    if normalized_scope in {"scheme", "protocol"} and normalized_key:
+        return normalized_key.upper()
+    return "Source"
+
+
+# Delegated (not redefined -- Section 31) to the ONE canonical owner,
+# ``transfers.manual_failover.switch_eligible``, so this module's read-time
+# group-switch eligibility projection can never drift from the actual command
+# gate. The authoritative switch command still re-validates every other gate
+# (live route/candidate-expiry, provider health) itself; this only ever
+# answers the lifecycle-state question, identically everywhere it is asked.
+
+
+def _group_source_host(scope, key) -> str | None:
+    """Normalized canonical host identity for transfer-level group intersection.
+
+    Kept byte-identical to the SQL host normalization in
+    ``api/operational_downloads.py`` so the Details-derived group set and the
+    bounded Downloads/Recent common-source count agree for the same transfer:
+    lower-case, drop a leading ``www.``, drop a trailing dot, reject empty or
+    over-long values. This is the established canonical lower-case host
+    semantics; it is redefined here rather than imported from
+    ``presentation_repository`` only to avoid an import cycle.
+    """
+    if str(scope or "").strip().lower() != "host":
+        return None
+    host = str(key or "").strip().lower().removeprefix("www.").rstrip(".")
+    if not host or len(host) > 253:
+        return None
+    return host
+
+
+class ManifestCommitResult(tuple):
+    """The authorized ``tuple[SourceEntry, ...]`` returned by
+    ``TransferRepository.commit_selected_manifest``, additionally carrying
+    ``.first_commitment`` -- whether THIS call is the one that moved
+    ``manifest_committed_at`` from NULL for this selection generation, derived
+    directly from truth already read inside that same transaction (no new
+    durable state, no second read) -- and ``.selection_id``, the durable
+    generation id (``transfer_file_selections.id``) this authorization was
+    committed under, or ``None`` when no selection generation applies. Callers
+    that materialize children from this result (``TransferRepository
+    .manifest``) stamp it onto each child so materialization-admission
+    (specification section 7.2) can trace a child back to its authorizing
+    generation without re-deriving it from the root's (mutable, rebindable)
+    current resource.
+
+    A ``tuple`` subclass so every existing caller that treats the result as a
+    plain ``tuple[SourceEntry, ...]`` (iteration, ``len()``, equality against a
+    bare tuple) keeps working unchanged; only callers that need the extra
+    facts read the extra attributes.
+    """
+
+    def __new__(cls, entries, *, first_commitment: bool, selection_id: str | None = None,
+                held: str | None = None, coordinates=None):
+        instance = super().__new__(cls, entries)
+        instance.first_commitment = first_commitment
+        instance.selection_id = selection_id
+        # The bounded reason this generation's continuity could not be proven:
+        # nothing was authorized and nothing may fan out. ``None`` otherwise.
+        instance.held = held
+        # Where the selection proof placed an authorized member at another path
+        # than the provider reported it under: provider path -> the authorized
+        # (established logical) path, for exactly the authorized members. Empty
+        # when every authorized member keeps the provider's own path. Transient:
+        # never persisted, never a credential.
+        instance.coordinates = dict(coordinates or {})
+        return instance
+
+
+@dataclass(frozen=True)
+class SelectionAuthority:
+    """The answer to "does a current file-selection generation govern this root's
+    resource binding?", produced only by
+    ``TransferRepository.ensure_selection_generation``.
+
+    * ``required=False`` -- the request is genuinely ALL (never opted into
+      interactive selection and the transfer owns no generation): executable
+      fan-out may proceed unfiltered. The default value.
+    * ``required=True, binding_id=<id>`` -- a generation exists for the current
+      (request, binding): that generation's gate/decision governs fan-out.
+    * ``required=True, binding_id=None`` -- selection is required but the
+      generation could not be established (the transfer or binding is gone /
+      settled): fan-out must HOLD. Absence of a generation is never ALL.
+    """
+
+    required: bool = False
+    binding_id: str | None = None
+
+    @property
+    def governed(self) -> bool:
+        return self.required and self.binding_id is not None
+
+    @property
+    def held(self) -> bool:
+        return self.required and self.binding_id is None
+
+
+# DP 1.0.12 leveling remediation (ARCH-001): only CURRENT, policy-relevant
+# fields belong here -- every one of these is read somewhere to gate a
+# fencing/single-flight/traversal decision, or (last_applied_action/
+# last_applied_reason) consumed live by the bounded Downloads/Dashboard
+# projection. Historical-only fields (last_applied_trigger,
+# last_application_outcome, last_execution_attempt/identity,
+# last_reconstruction_reason, last_execution_retirement_reason, durable_target,
+# candidate_generation, last_candidate_id, last_budget_before/after) are NOT
+# defaulted here -- they live solely in the sparse recovery_audit trail and
+# are reconstructed on demand by
+# transfers.repository.TransferRepository._historical_audit_facts /
+# recovery_context(), never carried in this policy-facing snapshot dict.
+_RECOVERY_SNAPSHOT_DEFAULTS = {
+    "recovery_generation": 0,
+    "recovery_claim_token": None,
+    "recovery_claim_trigger": None,
+    "recovery_claim_until": 0.0,
+    "recovery_decision_id": None,
+    "recovery_claim_id": None,
+    "last_failure_identity": None,
+    "last_applied_action": None,
+    "last_applied_reason": None,
+    "last_refresh_decision_id": None,
+    "refresh_inflight_decision_id": None,
+    "refresh_inflight_attempt_id": None,
+    "blocked_retry_at": 0.0,
+}
+
+
+def _attested(values) -> set[str]:
+    """The distinct non-empty source fingerprints a provider reported, as
+    compared everywhere: trimmed and case-folded."""
+    return {str(value).strip().casefold() for value in values if str(value).strip()}
+
+
+class _CarryRefused(Exception):
+    """An inherited selection the whole-manifest proofs could not carry onto
+    a replacement (``TransferRepository._authorized_subset``): the proofs'
+    ``refused`` reason, the exact-path refusal that sent it there (``exact``)
+    and the committed ``source`` it was carried from, for the one continuity
+    owner (``_continuity_refusal``) to decide."""
+
+    def __init__(self, refused, exact, source):
+        super().__init__(refused.reason)
+        self.refused, self.exact, self.source = refused, exact, source
+
+
+def _corresponds(established, replacement) -> bool:
+    """Whether two complete file lists correspond as wholes under the bounded
+    coordinate proof -- ambiguity, any missing, extra or resized member
+    included, is no correspondence."""
+    try:
+        fs.coordinate_correspondence(established, replacement)
+    except fs.SelectionUnprovable:
+        return False
+    return True
+
+
+class TransferRepository(_QualifiedTransferRepository):
+    @staticmethod
+    def _recovery_event_kind(artifact_id: int) -> str:
+        """The legacy pre-leveling snapshot-event kind (Section 19).
+
+        No longer written. Retained only so the one-time migration reader
+        (``db.database._migrate_recovery_state_from_events``) and historical
+        ``application_events`` rows predating DP 1.0.12 recovery leveling
+        remain identifiable/queryable.
+        """
+        return f"transfer_recovery:{int(artifact_id)}"
+
+    @classmethod
+    async def _recovery_snapshot(cls, db, artifact_id: int, *, row=None) -> dict:
+        """Read the ONE canonical current-state row for this artifact (Section 14).
+
+        Before DP 1.0.12 recovery leveling, "current" state was reconstructed
+        by scanning the latest ``application_events`` row of kind
+        ``transfer_recovery:<artifact_id>`` -- an unbounded, append-only
+        history that grew a full-snapshot row on every meaningful mutation,
+        including ordinary progress-byte advancement at roughly scheduler
+        cadence. It now reads ``artifact_recovery_state``, which holds
+        exactly one row per artifact, updated in place by
+        ``_save_recovery_snapshot`` below.
+        """
+        if row is None:
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+        if not row:
+            raise KeyError(artifact_id)
+        snapshot = {
+            "version": 2,
+            "recovery_epoch": 0,
+            "progress_anchor": None,
+            "consecutive_no_progress_failures": int(row.get("recovery_failures") or 0),
+            "failures_since_meaningful_progress": int(row.get("recovery_failures") or 0),
+            "failure_signature": None,
+            "same_signature_failures": 0,
+            "candidate_refreshes": int(row.get("recovery_refreshes") or 0),
+            "candidate_switches": 0,
+            "decision_action": None,
+            "decision_reason": None,
+            "quiescence_reason": None,
+            "wake_condition": None,
+            # DP 1.0.12 recovery leveling, Section 12: candidates this artifact
+            # has actually been activated onto (as either the original
+            # selection or a later switch), separate from ``selected_candidate``
+            # (a plain array index that says nothing about traversal history).
+            # Current, actionable state -- not historical audit trivia -- since
+            # it directly gates which candidates transfers._engine_recovery
+            # .TransferEngine._next_alternate_index treats as still eligible.
+            "candidate_attempt_history": [],
+            **_RECOVERY_SNAPSHOT_DEFAULTS,
+        }
+        state_row = await db.fetchone(
+            "SELECT * FROM artifact_recovery_state WHERE artifact_id=?", (artifact_id,),
+        )
+        if state_row:
+            stored = dict(state_row)
+            history = stored.get("candidate_attempt_history")
+            if isinstance(history, str):
+                try:
+                    history = codec.load(history, [])
+                except (TypeError, ValueError):
+                    history = []
+            stored["candidate_attempt_history"] = history if isinstance(history, list) else []
+            # Import EVERY stored key, not only this layer's own template keys
+            # -- the phase3/audit layers below rely on this single read
+            # already carrying their own fields (via ``setdefault``) instead
+            # of each re-querying the same row again (Section 20: this was
+            # three redundant reads/decodes of the same row before leveling).
+            # This row holds ONLY current/policy-relevant facts (Section 14) --
+            # no historical pocket in any shape. Historical facts are never
+            # merged in here; ``recovery_context()`` below merges them in
+            # separately, read-only, from the sparse audit trail, for its own
+            # (non-policy) callers.
+            snapshot.update({
+                key: value for key, value in stored.items()
+                if key not in {"artifact_id", "transfer_id", "updated_at"}
+            })
+        # Existing Phase-1 counters are known facts. If no current-state row
+        # exists yet they seed only counters, never a fabricated signature/progress.
+        snapshot["consecutive_no_progress_failures"] = max(
+            int(snapshot.get("consecutive_no_progress_failures") or 0),
+            int(row.get("recovery_failures") or 0),
+        )
+        snapshot["candidate_refreshes"] = max(
+            int(snapshot.get("candidate_refreshes") or 0),
+            int(row.get("recovery_refreshes") or 0),
+        )
+        snapshot["version"] = max(3, int(snapshot.get("version") or 0))
+        return snapshot
+
+    @classmethod
+    async def _save_recovery_snapshot(cls, db, transfer_id: int, artifact_id: int, snapshot: dict) -> None:
+        """Upsert the ONE canonical current-state row for this artifact (Section 14).
+
+        This never appends -- an artifact has exactly one row, updated in
+        place, so ordinary progress advancement (the highest-frequency
+        caller, via ``execution()`` below) costs one bounded write instead of
+        unbounded history growth. Semantically meaningful transitions
+        additionally get a small, separate, sparse audit record via
+        ``_append_recovery_audit`` (Section 18) -- this method alone is not
+        the audit trail.
+        """
+        history = snapshot.get("candidate_attempt_history")
+        columns = (
+            "recovery_epoch", "progress_anchor", "consecutive_no_progress_failures",
+            "failures_since_meaningful_progress", "failure_signature", "same_signature_failures",
+            "candidate_refreshes", "candidate_switches", "decision_action", "decision_reason",
+            "quiescence_reason", "wake_condition", "recovery_generation", "recovery_claim_token",
+            "recovery_claim_trigger", "recovery_claim_until", "recovery_claim_id", "recovery_decision_id",
+            "last_failure_identity", "last_refresh_decision_id", "refresh_inflight_decision_id",
+            "refresh_inflight_attempt_id", "blocked_retry_at", "last_applied_action", "last_applied_reason",
+        )
+        values = {name: snapshot.get(name) for name in columns}
+        values["version"] = max(3, int(snapshot.get("version") or 0))
+        # DP 1.0.12 recovery leveling: phase3-layer fields (recovery_generation,
+        # recovery_claim_until, blocked_retry_at) are NOT NULL-with-default
+        # columns, but the lower/legacy transfers.repository.TransferRepository
+        # stack (no phase3 layer applied) never populates them in its snapshot
+        # dict at all -- an explicit SQL NULL would bypass the column DEFAULT
+        # and violate the constraint, so coalesce here rather than assume every
+        # caller's snapshot dict was built by the full production layer chain.
+        for numeric_column in ("recovery_generation",):
+            values[numeric_column] = int(values[numeric_column] or 0)
+        for float_column in ("recovery_claim_until", "blocked_retry_at"):
+            values[float_column] = float(values[float_column] or 0.0)
+        values["candidate_attempt_history"] = codec.dump(history if isinstance(history, list) else [])
+        insert_cols = ["artifact_id", "transfer_id", "version", "candidate_attempt_history", *columns]
+        placeholders = ",".join("?" for _ in insert_cols)
+        update_assignments = ",".join(
+            f"{name}=excluded.{name}" for name in ["transfer_id", "version", "candidate_attempt_history", *columns]
+        )
+        params = [artifact_id, transfer_id, values["version"], values["candidate_attempt_history"]]
+        params.extend(values[name] for name in columns)
+        await db.execute(
+            f"""INSERT INTO artifact_recovery_state({','.join(insert_cols)}) VALUES({placeholders})
+                ON CONFLICT(artifact_id) DO UPDATE SET {update_assignments},updated_at=CURRENT_TIMESTAMP""",
+            tuple(params),
+        )
+
+    @staticmethod
+    async def _append_recovery_audit(db, transfer_id: int, artifact_id: int, transition: str, **fields) -> None:
+        """Sparse, semantically-meaningful recovery audit trail (Section 18).
+
+        Distinct from the current-state row above: this only grows for
+        discrete transitions named by ``transition`` (claim, decision,
+        candidate activation, refresh, execution retirement, quiescence
+        entry/exit, generation/epoch advancement, terminal recovery, operator
+        retry, operator source switch) -- never for ordinary byte-progress
+        advancement, which updates only the current-state row. One shared
+        ``kind`` ("recovery_audit") keeps every transition orderable/
+        queryable together; ``transition`` inside ``detail`` distinguishes
+        the kind of event.
+        """
+        detail = {"artifact_id": int(artifact_id), "transition": str(transition), **fields}
+        await db.execute(
+            "INSERT INTO application_events(transfer_id,kind,detail,claimed) VALUES(?,?,?,1)",
+            (int(transfer_id), "recovery_audit", codec.dump(detail)),
+        )
+
+    @classmethod
+    async def _historical_audit_facts(cls, db, artifact_id: int, transfer_id: int) -> dict:
+        """Reconstruct historical/explainability facts read-only, ON DEMAND,
+        from the sparse ``recovery_audit`` trail (Section 15): these facts
+        live SOLELY in the append-only audit log -- never persisted back as
+        a mutable "current" copy of any shape, current-state-adjacent or
+        otherwise. Cheap to scan because the trail is genuinely sparse
+        (bounded by real transitions, never by poll frequency, per Section
+        18/20). Newest-row-wins per field, except ``candidate_generation``,
+        which is a count of ``finish_claim`` transitions that actually
+        changed the candidate -- reconstructed fresh each call rather than
+        maintained as a persisted running counter.
+        """
+        result: dict = {key: None for key in _HISTORICAL_SNAPSHOT_KEYS}
+        remaining = set(_HISTORICAL_SNAPSHOT_KEYS) - {"candidate_generation"}
+        candidate_generation = 0
+        rows = await db.fetchall(
+            "SELECT detail FROM application_events WHERE transfer_id=? AND kind='recovery_audit' ORDER BY id DESC",
+            (transfer_id,),
+        )
+        for row in rows:
+            try:
+                detail = codec.load(row["detail"], {})
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(detail, dict) or int(detail.get("artifact_id") or -1) != int(artifact_id):
+                continue
+            if detail.get("transition") == "finish_claim" and detail.get("candidate_changed"):
+                candidate_generation += 1
+            if not remaining:
+                continue
+            for key in list(remaining):
+                if key in detail:
+                    result[key] = detail[key]
+                    remaining.discard(key)
+        result["candidate_generation"] = candidate_generation
+        return result
+
+    async def recovery_context(self, artifact_id: int) -> dict:
+        """Return durable recovery/accounting facts without inventing legacy
+        history. Historical/explainability facts (Section 15) are merged in
+        here, live, from the sparse audit trail -- this is the one place
+        that reconstruction happens; ``_recovery_snapshot()`` itself (read
+        directly by every fencing/traversal/reset policy decision elsewhere
+        in this file and its layered subclasses) never sees them.
+        """
+        async with get_db() as db:
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                raise KeyError(artifact_id)
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            historical = await self._historical_audit_facts(db, artifact_id, int(row["torrent_id"]))
+            attempts = await db.fetchone(
+                "SELECT COUNT(*) AS n FROM execution_attempt_provenance WHERE artifact_id=?",
+                (artifact_id,),
+            )
+        snapshot.update(historical)
+        snapshot["execution_attempts"] = int((attempts or {}).get("n") or 0)
+        return snapshot
+
+    async def record_recovery_decision(self, artifact_id: int, action: str, reason: str) -> None:
+        """Append the core-owned decision/reason without rewriting factual history."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                await db.rollback()
+                raise KeyError(artifact_id)
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            snapshot["decision_action"] = str(action)
+            snapshot["decision_reason"] = str(reason)
+            await self._save_recovery_snapshot(db, int(row["torrent_id"]), artifact_id, snapshot)
+            await self._append_recovery_audit(
+                db, int(row["torrent_id"]), artifact_id, "decision", action=str(action), reason=str(reason),
+            )
+            await db.commit()
+
+    async def record_candidate_attempt(self, artifact_id: int, *candidate_ids: str) -> None:
+        """Durably mark one or more candidate ids as attempted in the current
+        recovery episode (DP 1.0.12 recovery leveling, Section 12).
+
+        Idempotent set-union, never a duplicate/blind append.
+        transfers._engine_recovery.TransferEngine._next_alternate_index reads
+        this instead of assuming ``selected + 1`` means "never tried". Cleared
+        only by an explicit full reset (recovery_repository.TransferRepository
+        .reset_retry_budget, the live USER_RETRY mechanism) -- an operator
+        candidate switch only ever adds to it.
+        """
+        wanted = {str(item) for item in candidate_ids if item is not None}
+        if not wanted:
+            return
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                await db.rollback()
+                raise KeyError(artifact_id)
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            history = snapshot.get("candidate_attempt_history")
+            existing = list(history) if isinstance(history, list) else []
+            merged = existing + [item for item in sorted(wanted) if item not in existing]
+            if merged != existing:
+                snapshot["candidate_attempt_history"] = merged
+                await self._save_recovery_snapshot(db, int(row["torrent_id"]), artifact_id, snapshot)
+                added = [item for item in merged if item not in existing]
+                await self._append_recovery_audit(
+                    db, int(row["torrent_id"]), artifact_id, "candidate_attempt",
+                    added=added, history=merged,
+                )
+            await db.commit()
+
+    @staticmethod
+    def build_candidate_activation_detail(
+        *, transfer_id: int, artifact_id: int, old_candidate, new_candidate,
+        authority: str, recovery_generation: int | None, old_execution_id: str | None,
+        partial_decision: str, admission_decision: str, outcome: str,
+    ) -> dict:
+        """The one candidate-activation provenance shape (DP 1.0.12 recovery
+        leveling, Section 29), shared by both write paths: the atomic
+        in-transaction write ``transition_recovery(activation_provenance=...)``
+        performs for a COMMITTED activation, and the standalone
+        ``record_candidate_activation`` below for a REJECTED one (nothing was
+        durably committed in that case, so there is no commit transaction to
+        piggyback on)."""
+        return {
+            "transfer_id": int(transfer_id),
+            "artifact_id": int(artifact_id),
+            "authority": str(authority),
+            "recovery_generation": recovery_generation,
+            "old_candidate_id": str(old_candidate.id) if old_candidate is not None else None,
+            "old_provider_id": str(old_candidate.provider_id or "") if old_candidate is not None else None,
+            "new_candidate_id": str(new_candidate.id) if new_candidate is not None else None,
+            "new_provider_id": str(new_candidate.provider_id or "") if new_candidate is not None else None,
+            "old_execution_id": old_execution_id,
+            # Not knowable at commit time -- the replacement execution does
+            # not exist yet. transfers._repository_base.TransferRepository
+            # .prepare_execution links it in-place the first time this
+            # artifact actually dispatches afterward (Section 29).
+            "new_execution_id": None,
+            "partial_decision": str(partial_decision),
+            "admission_decision": str(admission_decision),
+            "outcome": str(outcome),
+        }
+
+    async def record_candidate_activation(
+        self, *, transfer_id: int, artifact_id: int, old_candidate, new_candidate,
+        authority: str, recovery_generation: int | None, old_execution_id: str | None,
+        partial_decision: str, admission_decision: str, outcome: str,
+    ) -> None:
+        """Standalone provenance write for a REJECTED activation (DP 1.0.12
+        recovery leveling, Section 29) -- nothing was durably committed, so
+        there is no commit transaction to atomically piggyback the record on,
+        unlike the committed path (see ``transition_recovery``'s
+        ``activation_provenance`` parameter, used instead for that case)."""
+        detail = self.build_candidate_activation_detail(
+            transfer_id=transfer_id, artifact_id=artifact_id, old_candidate=old_candidate,
+            new_candidate=new_candidate, authority=authority, recovery_generation=recovery_generation,
+            old_execution_id=old_execution_id, partial_decision=partial_decision,
+            admission_decision=admission_decision, outcome=outcome,
+        )
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO application_events(transfer_id,kind,detail) VALUES(?,?,?)",
+                (int(transfer_id), "candidate_activation", codec.dump(detail)),
+            )
+            await db.commit()
+
+    async def record_source_failure(self, artifact_id: int, error=None) -> tuple[int, int]:
+        """Consume one factual no-progress failure in the current recovery epoch."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                await db.rollback()
+                raise KeyError(artifact_id)
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            cursor = await db.execute(
+                "UPDATE download_files SET recovery_failures=recovery_failures+1 WHERE id=?",
+                (artifact_id,),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                raise KeyError(artifact_id)
+            failures = int(row.get("recovery_failures") or 0) + 1
+            snapshot["consecutive_no_progress_failures"] = failures
+            snapshot["failures_since_meaningful_progress"] = int(
+                snapshot.get("failures_since_meaningful_progress") or 0
+            ) + 1
+            if isinstance(error, NormalizedError):
+                signature = failure_signature(error)
+                snapshot["same_signature_failures"] = (
+                    int(snapshot.get("same_signature_failures") or 0) + 1
+                    if snapshot.get("failure_signature") == signature else 1
+                )
+                snapshot["failure_signature"] = signature
+            await self._save_recovery_snapshot(
+                db, int(row["torrent_id"]), artifact_id, snapshot,
+            )
+            await self._append_recovery_audit(
+                db, int(row["torrent_id"]), artifact_id, "source_failure",
+                failures=failures, same_signature_failures=snapshot.get("same_signature_failures"),
+            )
+            await db.commit()
+        return failures, int(row.get("recovery_refreshes") or 0)
+
+    async def consume_recovery_refresh(self, artifact_id: int) -> bool:
+        """Consume one refresh in this recovery epoch and persist the accounting."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                await db.rollback()
+                return False
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            if int(row.get("recovery_refreshes") or 0) >= 1:
+                await db.rollback()
+                return False
+            cursor = await db.execute(
+                "UPDATE download_files SET recovery_refreshes=recovery_refreshes+1 WHERE id=? AND recovery_refreshes<1",
+                (artifact_id,),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return False
+            snapshot["candidate_refreshes"] = int(snapshot.get("candidate_refreshes") or 0) + 1
+            await self._save_recovery_snapshot(db, int(row["torrent_id"]), artifact_id, snapshot)
+            await self._append_recovery_audit(
+                db, int(row["torrent_id"]), artifact_id, "refresh",
+                candidate_refreshes=snapshot["candidate_refreshes"],
+            )
+            await db.commit()
+        return True
+
+    async def reset_source_recovery(self, artifact_id: int) -> None:
+        """Explicitly reset bounded counters without manufacturing progress/epoch."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                await db.rollback()
+                raise KeyError(artifact_id)
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            await db.execute(
+                "UPDATE download_files SET recovery_failures=0,recovery_refreshes=0 WHERE id=?",
+                (artifact_id,),
+            )
+            apply_recovery_reset(snapshot, RecoveryResetAuthority.SOURCE_RESET)
+            await self._save_recovery_snapshot(db, int(row["torrent_id"]), artifact_id, snapshot)
+            await self._append_recovery_audit(db, int(row["torrent_id"]), artifact_id, "source_reset")
+            await db.commit()
+
+    async def reset_retry_budget(self, artifact_id):
+        """Reopen bounded recovery without fabricating progress or stale dedupe."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                "SELECT torrent_id,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (artifact_id,),
+            )
+            if not row:
+                await db.rollback()
+                raise KeyError(artifact_id)
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            await db.execute(
+                """UPDATE download_files SET retry_count=0,recovery_failures=0,recovery_refreshes=0
+                   WHERE id=?""",
+                (artifact_id,),
+            )
+            apply_recovery_reset(snapshot, RecoveryResetAuthority.OPERATOR_RETRY)
+            snapshot.update({
+                "blocked_retry_at": 0.0,
+                "recovery_decision_id": None,
+                "last_failure_identity": None,
+                # A full budget reset (the live USER_RETRY mechanism,
+                # TriggerAuthority.reset_exhaustion) is the one explicit
+                # "start over" boundary that restores every candidate's
+                # eligibility, including ones already tried.
+                "candidate_attempt_history": [],
+            })
+            await self._save_recovery_snapshot(
+                db, int(row["torrent_id"]), artifact_id, snapshot,
+            )
+            # last_budget_before/after are historical (sparse-audit-only,
+            # never current state in any shape).
+            await self._append_recovery_audit(
+                db, int(row["torrent_id"]), artifact_id, "operator_retry",
+                last_budget_before={
+                    "failures": int(row.get("recovery_failures") or 0),
+                    "refreshes": int(row.get("recovery_refreshes") or 0),
+                },
+                last_budget_after={"failures": 0, "refreshes": 0},
+            )
+            await db.commit()
+
+    async def execution_idle_seconds(self, observation, now):
+        """Activity clock: byte movement resets stall time, not recovery epochs."""
+        async with get_db() as db:
+            row = await db.fetchone(
+                "SELECT state,progress,progress_at FROM execution_attempts WHERE id=?",
+                (observation.handle.attempt_id,),
+            )
+            if not row:
+                return 0
+            previous = TransferProgress(**codec.load(row["progress"], {}))
+            # Only acquisition that the executor itself says should be
+            # progressing can stall; RUNNING alone implies no network semantics.
+            active = (observation.state == ExecutionState.RUNNING and observation.error is None
+                      and observation.activity.progress_expected)
+            changed = previous.completed_bytes != observation.progress.completed_bytes or row["state"] != observation.state
+            if row["progress_at"] is None or not active or changed:
+                await db.execute(
+                    "UPDATE execution_attempts SET progress_at=? WHERE id=?",
+                    (now, observation.handle.attempt_id),
+                )
+                await db.commit()
+                return 0
+            return max(0, now - row["progress_at"])
+
+    async def collection_route_authority(self, transfer_id: int) -> bool:
+        """Whether specialized authority owns this direct-link collection's
+        routing: generic competition stays closed for every one of its roots.
+        A provider-free fact -- which specialized provider takes each root is
+        that root's own route. A collection bound under the earlier
+        single-owner model (``collection_route_provider_id``) keeps the
+        authority that binding established."""
+        async with get_db() as db:
+            row = await db.fetchone(
+                "SELECT collection_route_authority,collection_route_provider_id FROM torrents WHERE id=?", (transfer_id,))
+        row = row or {}
+        return bool(row.get("collection_route_authority")) or bool(str(row.get("collection_route_provider_id") or "").strip())
+
+    async def establish_collection_route_authority(self, transfer_id: int) -> bool:
+        """Record, once, that specialized authority owns this collection --
+        only for a direct-link collection of more than one root that no route
+        attempt has touched yet. Returns whether the authority holds."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            parent = await db.fetchone(
+                "SELECT source,collection_route_authority,collection_route_provider_id FROM torrents WHERE id=?",
+                (transfer_id,))
+            if not parent or str(parent.get("source") or "") != "direct_link":
+                await db.rollback(); return False
+            if parent.get("collection_route_authority") or str(parent.get("collection_route_provider_id") or "").strip():
+                await db.rollback(); return True
+            roots = await db.fetchone("SELECT COUNT(*) AS count FROM transfer_requests WHERE transfer_id=? AND parent_id IS NULL", (transfer_id,))
+            if int((roots or {}).get("count") or 0) <= 1:
+                await db.rollback(); return False
+            routed = await db.fetchone("""SELECT 1 AS present FROM resolution_attempts a JOIN transfer_requests r ON r.id=a.request_id WHERE r.transfer_id=? LIMIT 1""", (transfer_id,))
+            if routed:
+                await db.rollback(); return False
+            await db.execute("UPDATE torrents SET collection_route_authority=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (transfer_id,))
+            await db.commit()
+        return True
+
+    # -- speculative backup preparation ------------------------------------------------
+    # A root's standby preparations (``standby_resources``): one per (root,
+    # provider, generation). The resource each one holds is an ordinary
+    # ``provider_resources`` binding of the transfer, so its state, cleanup
+    # authority and inventory identity are every resource's; nothing here
+    # routes, binds the root's primary resource or makes a candidate.
+
+    async def standbys(self, transfer_id: int) -> tuple[dict, ...]:
+        """Every standby preparation of the transfer, with the resource it
+        holds (``resource``), that resource's state (``resource_state``) and
+        whether its provider's own route of the root failed after that state
+        was last observed (``contradicted``): a newer failure of the same
+        provider on the root outranks an older readiness observation.
+
+        "Newer" is the one total evidence order (``db.database
+        .READINESS_EVIDENCE_TRIGGERS``): the failure's ``error_seq`` against
+        the binding's ``observed_seq``, both stamped in the transaction that
+        wrote them, so a failure and a readiness observation in the same
+        second are never ambiguous. Only evidence written before that order
+        existed (both 0) falls back to its timestamps."""
+        async with get_db() as db:
+            rows = await db.fetchall(
+                """SELECT s.*, r.payload AS resource_payload, r.state AS resource_state,
+                   EXISTS(SELECT 1 FROM resolution_attempts a WHERE a.request_id=s.request_id
+                          AND a.provider_id=s.provider_id AND a.error IS NOT NULL
+                          AND (a.error_seq>r.observed_seq
+                               OR (a.error_seq=0 AND r.observed_seq=0 AND a.updated_at>=r.updated_at))
+                   ) AS contradicted
+                   FROM standby_resources s LEFT JOIN provider_resources r ON r.id=s.binding_id
+                   WHERE s.transfer_id=? ORDER BY s.created_at, s.id""", (transfer_id,))
+        found = []
+        for row in rows:
+            item = dict(row)
+            payload = item.pop("resource_payload")
+            item["resource"] = codec.resource(codec.load(payload)) if payload else None
+            item["error"] = codec.error(item["error"]) if item.get("error") else None
+            item["contradicted"] = bool(item.get("contradicted"))
+            found.append(item)
+        return tuple(found)
+
+    async def begin_standby(self, transfer_id: int, request_id: str, provider_id: str,
+                            now: float) -> tuple[str, int] | None:
+        """Claim the one preparation of (root, provider) for a productive
+        attempt now: ``(id, attempts so far)``. A new preparation, a deferred
+        one whose retry time has passed, or one an interrupted attempt left
+        ``creating`` (reconciled by the attempt, never duplicated: one live
+        row per root and provider). ``None`` when the root is not a live root
+        of the transfer or its preparation is already bound, failed or
+        deferred.
+
+        A preparation the root's route took over (``promoted_at``) is
+        provenance, never a backup: once that provider no longer holds the
+        root's route (its route ended -- exhausted or released), the provider
+        may cover the root again through the NEXT generation of the same
+        (root, provider) claim, a fresh ``creating`` row with no binding.
+        While the provider still holds the route, nothing is claimed: a
+        provider is never its own root's backup."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            root = await db.fetchone(
+                """SELECT t.status FROM transfer_requests r JOIN torrents t ON t.id=r.transfer_id
+                   WHERE r.id=? AND r.transfer_id=? AND r.parent_id IS NULL""", (request_id, transfer_id))
+            if not root or root["status"] in {"deleted", "completed", "consolidated", "cancelled"}:
+                await db.rollback()
+                return None
+            row = await db.fetchone(
+                "SELECT id,state,retry_at,attempts,generation,promoted_at FROM standby_resources "
+                "WHERE request_id=? AND provider_id=? ORDER BY generation DESC LIMIT 1", (request_id, provider_id))
+            if row is not None and row["promoted_at"] is not None:
+                route = await db.fetchone(
+                    """SELECT a.provider_id,a.state FROM route_attempt_provenance p
+                       JOIN resolution_attempts a ON a.id=p.resolution_attempt_id
+                       WHERE a.request_id=? AND a.state!='declined' ORDER BY p.ordinal DESC LIMIT 1""",
+                    (request_id,))
+                if route is not None and route["provider_id"] == provider_id and route["state"] not in _ENDED_ROUTE_STATES:
+                    await db.rollback()
+                    return None
+            if row is None or row["promoted_at"] is not None:
+                standby_id = new_identity()
+                generation = 1 if row is None else int(row["generation"]) + 1
+                await db.execute(
+                    """INSERT INTO standby_resources(id,transfer_id,request_id,provider_id,generation,state,
+                       created_at,updated_at) VALUES(?,?,?,?,?,'creating',?,?)""",
+                    (standby_id, transfer_id, request_id, provider_id, generation, now, now))
+                await db.commit()
+                return standby_id, 0
+            if row["state"] == "creating" or (row["state"] == "deferred" and float(row["retry_at"]) <= now):
+                await db.execute("UPDATE standby_resources SET state='creating',updated_at=? WHERE id=?",
+                                 (now, row["id"]))
+                await db.commit()
+                return str(row["id"]), int(row["attempts"] or 0)
+            await db.rollback()
+            return None
+
+    async def bind_standby(self, standby_id: str, transfer_id: int, resource: ProviderResource,
+                           state: ResourceState, now: float, *, cleanup: str | None = None) -> str:
+        """Record the resource a preparation holds as the transfer's ordinary
+        resource binding and the preparation as bound to it. A resource
+        another live transfer already holds is refused exactly as for any
+        binding (``OWNERSHIP_CONFLICT``) and nothing is recorded. ``cleanup``:
+        the cleanup intent it gets in the same transaction (a backup found for
+        a transfer that is gone).
+
+        Decided in this transaction, whatever the caller saw: a backup of a
+        transfer that is no longer live (its preparation finished after a
+        Delete, a final withdrawal or completion) is still recorded -- the
+        remote object exists -- and owed the cleanup that transfer's end
+        authorizes (``terminal_cleanup_authority``), never left to escape it.
+        A backup the provider answers with an object whose binding on this
+        transfer still owes cleanup is not bound over that removal: the
+        removal stands and this backup ends (``failed``), so nothing re-binds
+        a resource that is being given back. Returns the binding id, or
+        ``""`` when the backup ended so."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            transfer = await db.fetchone("SELECT status,delete_remote FROM torrents WHERE id=?", (transfer_id,))
+            pending = await db.fetchone(
+                "SELECT 1 FROM provider_resources WHERE transfer_id=? AND (resource_key=? OR (resource_key IS NULL AND id=?)) "
+                "AND cleanup_authority IS NOT NULL AND COALESCE(cleanup_abandoned,0)=0",
+                (transfer_id, resource.id, resource.id))
+            live = transfer is not None and str(transfer["status"]) not in {
+                str(item) for item in TERMINAL_TRANSFER_STATES}
+            if pending and cleanup is None and live:
+                error = NormalizedError(Domain.PROVIDER, Category.RESOURCE_STATE_CONFLICT, Stage.RESOLUTION,
+                                        Retryability.NEVER, integration_id=resource.provider_id,
+                                        diagnostic="backup_resource_being_removed")
+                await db.execute(
+                    """UPDATE standby_resources SET state='failed',error=?,attempts=attempts+1,updated_at=?
+                       WHERE id=? AND state='creating'""", (codec.dump(error), now, standby_id))
+                await journal(db, je.standby("failed", transfer_id=transfer_id, standby_id=standby_id,
+                                             provider_id=resource.provider_id, error=error))
+                await db.commit()
+                return ""
+            if cleanup is None and transfer is not None and not live:
+                cleanup = terminal_cleanup_authority(transfer["status"], transfer["delete_remote"])
+            try:
+                binding_id = await self._resource(db, transfer_id, resource, state, journaled=False)
+                if cleanup:
+                    await self.cleanup_intent(transfer_id, resource.id, cleanup, db=db)
+            except Exception:
+                await db.rollback()
+                raise
+            await db.execute(
+                """UPDATE standby_resources SET state='bound',binding_id=?,error=NULL,observed_at=?,updated_at=?
+                   WHERE id=?""", (binding_id, now, now, standby_id))
+            await journal(db, je.standby("bound", transfer_id=transfer_id, standby_id=standby_id,
+                                         provider_id=resource.provider_id))
+            await db.commit()
+        return binding_id
+
+    async def observe_standby(self, standby_id: str, transfer_id: int, resource: ProviderResource,
+                              state: ResourceState, now: float, *, manifest_entries: int | None = None) -> None:
+        """A bound preparation's resource as its provider observes it now.
+        ``manifest_entries``: how many members the observation's manifest
+        lists, kept (never cleared by an observation without one) so the
+        switch read model can apply the singleton rule without provider I/O."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await self._resource(db, transfer_id, resource, state)
+            await db.execute("UPDATE standby_resources SET observed_at=?,updated_at=?,"
+                             "manifest_entries=COALESCE(?,manifest_entries) WHERE id=?",
+                             (now, now, manifest_entries, standby_id))
+            await db.commit()
+
+    async def defer_standby(self, standby_id: str, error: NormalizedError, retry_at: float, now: float) -> None:
+        """Nothing was prepared and the attempt may be made again at ``retry_at``."""
+        async with get_db() as db:
+            await db.execute(
+                """UPDATE standby_resources SET state='deferred',error=?,attempts=attempts+1,retry_at=?,updated_at=?
+                   WHERE id=? AND state='creating'""", (codec.dump(error), retry_at, now, standby_id))
+            await db.commit()
+
+    async def unowned_standby_creations(self, now: float) -> tuple[dict, ...]:
+        """``creating`` claims of transfers no longer live (deleted or
+        finished), due by ``now``: an attempt there may have created the
+        backup, and no backup pass reaches it any more. ``id``,
+        ``request_id``, ``provider_id``, ``transfer_id``, ``status``,
+        ``delete_remote``."""
+        async with get_db() as db:
+            rows = await db.fetchall(
+                """SELECT s.id,s.request_id,s.provider_id,s.transfer_id,t.status,t.delete_remote
+                   FROM standby_resources s JOIN torrents t ON t.id=s.transfer_id
+                   WHERE s.state='creating' AND s.retry_at<=?
+                   AND t.status IN ('deleted','completed','consolidated','cancelled')""", (now,))
+        return tuple(dict(row) for row in rows)
+
+    async def defer_standby_reconciliation(self, standby_id: str, at: float) -> None:
+        """A ``creating`` claim whose reconciliation could not settle yet is
+        next due ``at``; it stays ``creating``."""
+        async with get_db() as db:
+            await db.execute("UPDATE standby_resources SET retry_at=? WHERE id=? AND state='creating'",
+                             (at, standby_id))
+            await db.commit()
+
+    async def uncertain_standby(self, standby_id: str, error: NormalizedError, now: float) -> None:
+        """An attempt whose provider may have created the backup although no
+        answer named it: the claim stays ``creating`` -- reconciled, never
+        repeated blindly (``TransferEngine._reconcile_standby_claims``) --
+        carrying that uncertain ``error`` and one more spent attempt."""
+        async with get_db() as db:
+            await db.execute(
+                """UPDATE standby_resources SET error=?,attempts=attempts+1,updated_at=?
+                   WHERE id=? AND state='creating'""", (codec.dump(error), now, standby_id))
+            await db.commit()
+
+    async def fail_standby(self, standby_id: str, error: NormalizedError, now: float) -> None:
+        """This preparation ended without a usable resource; only it is affected."""
+        async with get_db() as db:
+            failed = await db.execute(
+                """UPDATE standby_resources SET state='failed',error=?,attempts=attempts+1,updated_at=?
+                   WHERE id=? AND state='creating'""", (codec.dump(error), now, standby_id))
+            if failed.rowcount:
+                row = await db.fetchone("SELECT transfer_id,provider_id FROM standby_resources WHERE id=?", (standby_id,))
+                await journal(db, je.standby("failed", transfer_id=row["transfer_id"], standby_id=standby_id,
+                                             provider_id=row["provider_id"], error=error))
+            await db.commit()
+
+    async def promotable_standby(self, request_id: str, provider_id: str) -> tuple[str, ProviderResource] | None:
+        """The prepared resource ``provider_id`` already holds for this root, if
+        its own route may take it over now: a bound backup of that provider
+        whose resource is not known gone. ``(standby id, resource)``."""
+        async with get_db() as db:
+            row = await db.fetchone(
+                """SELECT s.id, r.payload FROM standby_resources s JOIN provider_resources r ON r.id=s.binding_id
+                   WHERE s.request_id=? AND s.provider_id=? AND s.state='bound' AND s.promoted_at IS NULL
+                     AND r.cleanup_authority IS NULL
+                     AND r.state NOT IN ('absent','expired') ORDER BY s.generation DESC LIMIT 1""",
+                (request_id, provider_id))
+        return (str(row["id"]), codec.resource(codec.load(row["payload"]))) if row else None
+
+    async def reclaimable_standbys(self, provider_id: str) -> tuple[dict, ...]:
+        """The backups ``provider_id`` holds that primary work may take back:
+        bound and never promoted, nothing already cleaning them up, their
+        resource not known gone, and DownloadPulse's to clean up under the
+        existing OWNED authority (it CREATED or ADOPTED them). Newest first:
+        the least prepared backup is given up first."""
+        async with get_db() as db:
+            rows = await db.fetchall(
+                """SELECT s.id, s.transfer_id, s.request_id, s.binding_id, r.payload
+                   FROM standby_resources s JOIN provider_resources r ON r.id=s.binding_id
+                   WHERE s.provider_id=? AND s.state='bound' AND s.promoted_at IS NULL
+                     AND r.cleanup_authority IS NULL AND r.state NOT IN ('absent','expired')
+                   ORDER BY s.created_at DESC, s.id DESC""", (provider_id,))
+        found = []
+        for row in rows:
+            resource = codec.resource(codec.load(row["payload"]))
+            if resource.ownership in {Ownership.CREATED, Ownership.ADOPTED}:
+                found.append({"id": str(row["id"]), "transfer_id": int(row["transfer_id"]),
+                              "request_id": str(row["request_id"]), "binding_id": str(row["binding_id"]),
+                              "resource": resource})
+        return tuple(found)
+
+    async def release_standby(self, standby_id: str, now: float) -> bool:
+        """A reclaimed backup whose resource cleanup has confirmed gone: the
+        claim no longer holds it and may prepare again through the ordinary
+        cadence. Only a binding that is actually absent is released."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone(
+                """SELECT r.state FROM standby_resources s JOIN provider_resources r ON r.id=s.binding_id
+                   WHERE s.id=? AND s.state='bound' AND s.promoted_at IS NULL""", (standby_id,))
+            if not row or row["state"] != ResourceState.ABSENT.value:
+                await db.rollback()
+                return False
+            await db.execute(
+                """UPDATE standby_resources SET state='deferred',binding_id=NULL,error=NULL,attempts=0,retry_at=?,
+                   updated_at=? WHERE id=?""", (now, now, standby_id))
+            await db.commit()
+        return True
+
+    async def promote_standby(self, standby_id: str, now: float) -> None:
+        """The root's own route takes its prepared resource over: from now on
+        the row is provenance, never a backup. The resource keeps its one
+        ``provider_resources`` binding, ownership and cleanup obligation."""
+        async with get_db() as db:
+            await db.execute("UPDATE standby_resources SET promoted_at=COALESCE(promoted_at, ?),updated_at=? WHERE id=?",
+                             (now, now, standby_id))
+            row = await db.fetchone("SELECT transfer_id,provider_id FROM standby_resources WHERE id=?", (standby_id,))
+            if row:
+                await journal(db, je.standby("promoted", transfer_id=row["transfer_id"], standby_id=standby_id,
+                                             provider_id=row["provider_id"]))
+            await db.commit()
+
+    async def primary_resolution_runnable(self, now: float) -> bool:
+        """Whether any root or member of a live, unpaused transfer is waiting
+        to be resolved now -- primary work a backup preparation yields to."""
+        async with get_db() as db:
+            row = await db.fetchone(
+                """SELECT 1 FROM transfer_requests r JOIN torrents t ON t.id=r.transfer_id
+                   LEFT JOIN transfer_pause_intents p ON p.torrent_id=t.id
+                   WHERE r.state='pending' AND r.retry_at<=?
+                     AND t.status NOT IN ('deleted','completed','consolidated','cancelled')
+                     AND COALESCE(p.paused,0)=0 LIMIT 1""", (now,))
+        return row is not None
+
+    async def accept_execution_total(self, artifact_id: int, handle, total_bytes: int) -> bool:
+        if (not isinstance(total_bytes, int) or isinstance(total_bytes, bool) or total_bytes <= 0 or handle is None):
+            return False
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone("""SELECT f.size_bytes,f.execution_attempt_id,e.executor_id,e.handle FROM download_files f LEFT JOIN execution_attempts e ON e.id=f.execution_attempt_id WHERE f.id=?""", (artifact_id,))
+            if (not row or row.get("execution_attempt_id") != handle.attempt_id or row.get("executor_id") != handle.executor_id or codec.load(row.get("handle")) != codec.load(codec.dump(handle)) or int(row.get("size_bytes") or 0) > 0):
+                await db.rollback(); return False
+            cursor = await db.execute("UPDATE download_files SET size_bytes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND execution_attempt_id=? AND COALESCE(size_bytes,0)<=0", (total_bytes, artifact_id, handle.attempt_id))
+            await db.commit()
+        return cursor.rowcount == 1
+
+    async def live_execution_handles(self) -> tuple:
+        """``(transfer id, artifact status, handle)`` of every live writer: an
+        authorized, nonterminal attempt still linked to its artifact, of a
+        live transfer -- bounded by the execution width, never by the size of
+        any decomposition (the fast observation, ``sample_throughput``)."""
+        async with get_db() as db:
+            rows = await db.fetchall("""SELECT e.transfer_id,f.status,e.handle FROM execution_attempts e
+                JOIN download_files f ON f.execution_attempt_id=e.id JOIN torrents t ON t.id=e.transfer_id
+                WHERE e.authorized=1 AND e.state IN ('queued','running','paused','unknown')
+                AND t.status NOT IN ('deleted','completed','consolidated','cancelled') ORDER BY e.id""")
+        return tuple((int(row["transfer_id"]), str(row["status"]), codec.handle(codec.load(row["handle"])))
+                     for row in rows)
+
+    def execution_writes(self, attempt_id: str) -> int:
+        """How many times this process has made an observation of the attempt
+        durable through ``execution`` -- read BEFORE observing, it is the
+        freshness an observation is persisted against (``expected_writes``).
+        Process-local by nature: no observation outlives its process."""
+        return self.__dict__.get("_execution_write_counts", {}).get(attempt_id, 0)
+
+    async def execution(self, observation, *, live_only: bool = False,
+                        expected_writes: int | None = None) -> bool | None:
+        """Persist execution evidence and reset recovery only on meaningful progress.
+
+        ``expected_writes`` (``execution_writes`` read before the observation
+        was obtained): when anything made a newer observation of the attempt
+        durable meanwhile, this one is stale and nothing is written -- ``None``.
+        Observations are ordered by when they were obtained, never by
+        comparing states, which move in both directions.
+
+        ``live_only`` (the fast observation's factual activity): persist only
+        while the attempt is still an authorized, nonterminal writer linked to
+        its artifact and the observation does not move its progress backwards
+        -- decided in this same transaction, so a late fast observation can
+        never overwrite what the reconcile cycle or a retirement recorded.
+        Returns whether anything was persisted."""
+        handle = observation.handle
+        accepted_total = None
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone("SELECT * FROM execution_attempts WHERE id=?", (handle.attempt_id,))
+            if not row or codec.load(row["handle"]) != codec.load(codec.dump(handle)):
+                await db.rollback()
+                raise TransferError(NormalizedError(Domain.LIFECYCLE, Category.OWNERSHIP_CONFLICT, Stage.RECONCILIATION))
+            if expected_writes is not None and self.execution_writes(handle.attempt_id) != expected_writes:
+                await db.rollback()
+                return None
+            if (not bool(row.get("authorized")) and row.get("state") in _TERMINAL_EXECUTION_STATES):
+                await db.rollback()
+                return False
+            if live_only and (not bool(row.get("authorized")) or row.get("state") in _TERMINAL_EXECUTION_STATES
+                              or row.get("state") == "prepared"
+                              or int(observation.progress.completed_bytes or 0)
+                              < int(TransferProgress(**codec.load(row["progress"], {})).completed_bytes or 0)
+                              or not await db.fetchone("SELECT 1 FROM download_files WHERE execution_attempt_id=?",
+                                                       (handle.attempt_id,))):
+                await db.rollback()
+                return False
+            if row.get("state") == ExecutionState.FAILED.value and observation.state == ExecutionState.ABSENT:
+                # A proven failure is higher-confidence truth than a later
+                # absence of the same attempt: the failed native object is
+                # merely no longer observable. The durable attempt keeps its
+                # FAILED state and native cause; the caller still holds the
+                # absence as runtime evidence.
+                await db.rollback()
+                return False
+            previous = TransferProgress(**codec.load(row["progress"], {}))
+            artifact = await db.fetchone(
+                "SELECT id,torrent_id,size_bytes,recovery_failures,recovery_refreshes FROM download_files WHERE id=?",
+                (row["artifact_id"],),
+            )
+            if not artifact:
+                await db.rollback()
+                raise KeyError(row["artifact_id"])
+            snapshot = await self._recovery_snapshot(db, int(artifact["id"]), row=artifact)
+            initialized = snapshot.get("progress_anchor") is not None
+            if not initialized:
+                snapshot["progress_anchor"] = int(previous.completed_bytes or 0)
+            completed = int(observation.progress.completed_bytes or 0)
+            if completed > int(previous.completed_bytes or 0):
+                anchor = int(snapshot.get("progress_anchor") or 0)
+                threshold = meaningful_progress_threshold(int(artifact.get("size_bytes") or 0))
+                meaningful = completed - anchor >= threshold
+                if meaningful:
+                    await db.execute(
+                        "UPDATE download_files SET recovery_failures=0,recovery_refreshes=0 WHERE id=?",
+                        (artifact["id"],),
+                    )
+                    apply_recovery_reset(snapshot, RecoveryResetAuthority.MEANINGFUL_PROGRESS)
+                    snapshot["progress_anchor"] = completed
+            else:
+                meaningful = False
+            # DP 1.0.12 recovery leveling, Section 14/18/20 (post-review
+            # correction): recovery-state is written ONLY for (a) the one-
+            # time-per-artifact initialization that durably anchors
+            # progress_anchor (needed so a later observation, even after a
+            # process restart, can still tell whether meaningful progress
+            # has occurred since), or (b) an actual meaningful-progress
+            # epoch advance. Ordinary byte advancement that does not cross
+            # the threshold causes ZERO writes to artifact_recovery_state --
+            # not merely a bounded/upserted write, none at all (Section 18's
+            # named regression,
+            # test_progress_observations_do_not_append_full_recovery_snapshot_each_tick).
+            # Byte progress itself is still durably persisted every call, in
+            # execution_attempts below -- that is its correct, always-was-
+            # correct home (Section 18: "ordinary byte progress belongs in
+            # execution progress state, not a full recovery-history snapshot").
+            if not initialized or meaningful:
+                await self._save_recovery_snapshot(db, int(artifact["torrent_id"]), int(artifact["id"]), snapshot)
+            if meaningful:
+                await self._append_recovery_audit(
+                    db, int(artifact["torrent_id"]), int(artifact["id"]), "meaningful_progress",
+                    recovery_epoch=snapshot.get("recovery_epoch"), progress_anchor=snapshot.get("progress_anchor"),
+                )
+
+            error = codec.dump(observation.error) if observation.error else None
+            revoked = observation.error is not None and observation.error.category == Category.OWNERSHIP_CONFLICT
+            acquiring = observation.state == ExecutionState.RUNNING and observation.activity.network_active
+            # The executor's contributor evidence is kept as first reported:
+            # an observation that reports none leaves it as it is.
+            contributors = (codec.dump(observation.contributors)
+                            if getattr(observation, "contributors", None) is not None else None)
+            await db.execute("""UPDATE execution_attempts SET state=?,progress=?,error=?,authorized=CASE WHEN ? THEN 0 ELSE authorized END,contributors=COALESCE(contributors,?),updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                             (observation.state, codec.dump(replace(observation.progress, acquiring=acquiring)), error,
+                              revoked, contributors, handle.attempt_id))
+            await db.execute("UPDATE execution_attempt_provenance SET outcome=?,updated_at=CURRENT_TIMESTAMP WHERE execution_attempt_id=?",
+                             (self._execution_outcome(observation.state), handle.attempt_id))
+            # Only an attempt's arrival at a failed, lost or stopped state is an
+            # occurrence; every other observation is a sample.
+            ended = str(observation.state)
+            if ended in {"failed", "absent", "cancelled"} and row.get("state") != ended:
+                await journal(db, je.execution_ended(
+                    ended, transfer_id=row["transfer_id"], artifact_id=row["artifact_id"],
+                    attempt_id=handle.attempt_id, executor_id=handle.executor_id, error=observation.error))
+            states = {ExecutionState.RUNNING: "downloading", ExecutionState.QUEUED: "queued", ExecutionState.PAUSED: "paused",
+                      ExecutionState.SUCCEEDED: "verifying", ExecutionState.FAILED: "error", ExecutionState.CANCELLED: "cancelled",
+                      ExecutionState.ABSENT: "lost", ExecutionState.UNKNOWN: "unknown"}
+            # A settled file (completed, or a duplicate standby) keeps its
+            # state: a later observation of the attempt that once wrote it --
+            # a restarted executor no longer knowing the finished job, a
+            # replayed success -- is the attempt's truth (recorded above),
+            # never the file's. Decided in this statement, so a file committed
+            # complete after this observation was taken is not reopened either
+            # (as ``detach_retired_writer`` does).
+            await db.execute("""UPDATE download_files SET status=?,normalized_error=?,updated_at=CURRENT_TIMESTAMP WHERE execution_attempt_id=? AND status NOT IN ('completed','duplicate') AND torrent_id IN (SELECT id FROM torrents WHERE status NOT IN ('deleted','consolidated','cancelled'))""",
+                             (states[observation.state], error, handle.attempt_id))
+            total = observation.progress.total_bytes
+            credible = (
+                observation.state in _RUNTIME_TOTAL_STATES
+                and isinstance(total, int) and not isinstance(total, bool) and total > 0
+                and isinstance(observation.progress.completed_bytes, int)
+                and not isinstance(observation.progress.completed_bytes, bool)
+                and 0 <= observation.progress.completed_bytes <= total
+                and int(artifact.get("size_bytes") or 0) <= 0
+            )
+            if credible:
+                accepted_total = (int(artifact["id"]), total)
+            # Counted before the commit yields: a concurrent writer's freshness
+            # check, made once it holds the database, already sees this write.
+            counts = self.__dict__.setdefault("_execution_write_counts", {})
+            counts[handle.attempt_id] = counts.get(handle.attempt_id, 0) + 1
+            await db.commit()
+        if accepted_total:
+            await self.accept_execution_total(accepted_total[0], handle, accepted_total[1])
+        return True
+
+    async def refine_execution_total(self, artifact_id: int, handle, total_bytes: int) -> bool:
+        # DP 1.0.12 canonical lifecycle/recovery/completion rework, Section
+        # 5.3: this is a durable size-truth sink -- it must reject a
+        # non-positive total exactly like ``accept_execution_total`` already
+        # does, since 0 here is absence of size knowledge, never affirmative
+        # evidence the artifact is genuinely empty.
+        if (not isinstance(total_bytes, int) or isinstance(total_bytes, bool) or total_bytes <= 0 or handle is None):
+            return False
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone("""SELECT f.size_bytes,f.execution_attempt_id,f.torrent_id,e.executor_id,e.handle,e.state,e.candidate FROM download_files f JOIN execution_attempts e ON e.id=f.execution_attempt_id WHERE f.id=?""", (artifact_id,))
+            candidate = None
+            if row and row.get("candidate"):
+                try:
+                    candidate = codec.candidate(codec.load(row["candidate"]))
+                except (TypeError, ValueError, KeyError):
+                    candidate = None
+            if (not row or row.get("execution_attempt_id") != handle.attempt_id or row.get("executor_id") != handle.executor_id or codec.load(row.get("handle")) != codec.load(codec.dump(handle)) or row.get("state") != "succeeded" or candidate is None or candidate.expected_bytes > 0):
+                await db.rollback(); return False
+            previous = int(row.get("size_bytes") or 0)
+            cursor = await db.execute("UPDATE download_files SET size_bytes=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND execution_attempt_id=?", (total_bytes, artifact_id, handle.attempt_id))
+            if cursor.rowcount and previous != total_bytes:
+                await journal(db, je.size_refined(transfer_id=row["torrent_id"], artifact_id=artifact_id,
+                                                  previous=previous, total=total_bytes))
+            await db.commit()
+        return cursor.rowcount == 1
+
+    async def transition_recovery(self, artifact_id: int, state: str, *, error=None,
+                                  retry_at: float = 0, selected: int | None = None,
+                                  expected_bytes: int | None = None,
+                                  reset_budget: bool = False,
+                                  quiescence_reason: str | None = None,
+                                  wake_condition: str | None = None,
+                                  clear_quiescence: bool = False,
+                                  candidate_switched: bool = False,
+                                  continuation_reservation_until: float | None = None,
+                                  activation_provenance: dict | None = None,
+                                  claim=None, fulfils_choice: str | None = None,
+                                  selected_candidate_id: str | None = None) -> bool:
+        """Atomically revoke terminal writer authority and persist recovery state.
+
+        DP 1.0.12 recovery leveling, Section 13: ``continuation_reservation_until``
+        is the ONLY way to durably hold a continuation-admission reservation
+        (transfers.candidate_activation.activate_candidate's commit, when the
+        writer it just retired was genuinely occupying a live slot). Every
+        other caller implicitly releases any reservation this artifact might
+        still be holding, by leaving the parameter at its default -- a
+        candidate switch is the sole transition allowed to carry one forward.
+
+        Section 26/29: ``activation_provenance``, when given, is written as
+        the durable ``candidate_activation`` audit record in this SAME
+        transaction as the candidate-selection commit itself -- not a
+        separate post-commit INSERT. This makes "the switch committed but its
+        provenance was lost" structurally impossible for a committed
+        activation: either both persist together, or (on any failure) neither
+        does and ``committed`` is correctly ``False``.
+
+        Gate 9 revision-7 rejection: an optional ``claim`` (a
+        ``RecoveryClaim``) additionally fences this mutation on the SAME
+        claim token/generation every other claim-scoped recovery mutation in
+        ``recovery_repository.py`` checks -- atomically, inside this same
+        transaction, using the snapshot already read below. Without it, the
+        pre-existing "no other active/mutating execution" check alone cannot
+        detect a concurrent claim fence (e.g. ``set_pause_and_fence``
+        advancing ``recovery_generation``) that leaves no trace in
+        ``execution_attempts`` -- exactly the gap that let a stale HOLD-
+        unpausable-executor park/settle transition commit after its
+        confirming ``_cancel_and_confirm_stopped`` call had already returned.
+        Callers that do not hold (or no longer trust) a claim may omit it,
+        preserving prior behavior exactly.
+
+        A committed candidate switch also decides the file's pending provider
+        choice (``transfers.provider_choice``) in this same transaction: the
+        landing of that choice (``fulfils_choice``) commits it -- and commits
+        nothing unless it is still the file's pending choice -- and any other
+        switch (the host selector, recovery failover) supersedes it, so a
+        later landing can never overwrite the newer selection.
+        """
+        if expected_bytes is not None and expected_bytes < 0:
+            return False
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone("""SELECT f.*,t.status AS transfer_status FROM download_files f JOIN torrents t ON t.id=f.torrent_id WHERE f.id=?""", (artifact_id,))
+            if not row or row["transfer_status"] in {"deleted", "completed", "consolidated", "cancelled"}:
+                await db.rollback(); return False
+            current_id = row.get("execution_attempt_id")
+            if current_id is not None:
+                current = await db.fetchone("SELECT state,authorized FROM execution_attempts WHERE id=? AND artifact_id=?", (current_id, artifact_id))
+                if not current or current["state"] not in _TERMINAL_EXECUTION_STATES:
+                    await db.rollback(); return False
+                await db.execute("UPDATE execution_attempts SET authorized=0,updated_at=CURRENT_TIMESTAMP WHERE id=?", (current_id,))
+            placeholders = ",".join("?" for _ in _MUTATING_EXECUTION_STATES)
+            active = await db.fetchone(f"SELECT id FROM execution_attempts WHERE artifact_id=? AND authorized=1 AND state IN ({placeholders}) LIMIT 1", (artifact_id, *_MUTATING_EXECUTION_STATES))
+            if active:
+                await db.rollback(); return False
+
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            if claim is not None and (
+                snapshot.get("recovery_claim_token") != claim.token
+                or int(snapshot.get("recovery_generation") or 0) != claim.generation
+            ):
+                await db.rollback(); return False
+            if fulfils_choice is not None:
+                target = selected if selected is not None else int(row["selected_candidate"] or 0)
+                stored_now = [codec.candidate(item) for item in codec.load(row["candidates"], [])]
+                if (selected_candidate_id is None or not 0 <= target < len(stored_now)
+                        # the index must still hold exactly the candidate the
+                        # activation resolved -- never another one at that index
+                        or str(stored_now[target].id) != str(selected_candidate_id)
+                        or not await self._fulfilment_valid(db, row, target, fulfils_choice)):
+                    # The landing of a pending provider choice whose target is no
+                    # longer exactly that choice's authorized result: refused --
+                    # nothing selected, the choice stays pending; the activation
+                    # releases the writer it stopped (candidate_activation
+                    # ._release_stopped_writer), as for any refused commit.
+                    await db.rollback(); return False
+            assignments = [
+                "status=?", "normalized_error=?", "retry_at=?", "execution_attempt_id=NULL",
+                "continuation_reservation_expires_at=?", "updated_at=CURRENT_TIMESTAMP",
+            ]
+            params = [state, codec.dump(error) if error else None, retry_at, continuation_reservation_until]
+            if selected is not None:
+                assignments.append("selected_candidate=?"); params.append(selected)
+            if expected_bytes is not None:
+                assignments.append("size_bytes=?"); params.append(expected_bytes)
+            if reset_budget:
+                assignments.extend(["retry_count=0", "recovery_failures=0", "recovery_refreshes=0"])
+                apply_recovery_reset(snapshot, RecoveryResetAuthority.CANDIDATE_ACTIVATION_BUDGET)
+            if candidate_switched:
+                assignments.extend(["recovery_failures=0", "recovery_refreshes=0"])
+                apply_recovery_reset(snapshot, RecoveryResetAuthority.CANDIDATE_SWITCHED)
+            if clear_quiescence:
+                snapshot["quiescence_reason"] = None; snapshot["wake_condition"] = None
+            if quiescence_reason is not None:
+                snapshot["quiescence_reason"] = str(quiescence_reason)
+                snapshot["wake_condition"] = str(wake_condition or "") or None
+            params.append(artifact_id)
+            cursor = await db.execute(f"UPDATE download_files SET {','.join(assignments)} WHERE id=?", tuple(params))
+            if cursor.rowcount and candidate_switched:
+                chosen = selected if selected is not None else int(row["selected_candidate"] or 0)
+                if not await self._settle_provider_choice(db, row, chosen, fulfils_choice):
+                    await db.rollback(); return False
+            if cursor.rowcount:
+                await self._save_recovery_snapshot(db, int(row["torrent_id"]), artifact_id, snapshot)
+                if activation_provenance is not None:
+                    record_id = await db.execute_returning_id(
+                        "INSERT INTO application_events(transfer_id,kind,detail) VALUES(?,?,?)",
+                        (int(row["torrent_id"]), "candidate_activation", codec.dump(activation_provenance)),
+                    )
+                    await self._journal_source_switch(db, activation_provenance, "switched", record_id)
+                elif candidate_switched:
+                    # Defensive fallback (Section 18/29): the canonical committed
+                    # path (transfers.candidate_activation.activate_candidate)
+                    # always supplies activation_provenance, whose atomic INSERT
+                    # above is already the meaningful audit record for this
+                    # transition. A non-canonical caller that sets
+                    # candidate_switched without activation_provenance still
+                    # gets a minimal sparse audit row rather than none at all.
+                    await self._append_recovery_audit(
+                        db, int(row["torrent_id"]), artifact_id, "candidate_switched",
+                        candidate_switches=snapshot.get("candidate_switches"), selected=selected,
+                    )
+                if reset_budget:
+                    await self._append_recovery_audit(db, int(row["torrent_id"]), artifact_id, "operator_retry")
+            await db.commit()
+        return cursor.rowcount == 1
+
+    @staticmethod
+    async def _journal_source_switch(db, provenance: dict, stage: str, record_id: int) -> None:
+        """The journal record of a committed source change, in its commit's
+        transaction: each side named by its provider and, where the canonical
+        binding holds one, its safe public host. ``record_id`` is the
+        candidate-activation record this same commit wrote -- the one identity
+        every committed activation has and no refused or rolled-back one
+        does."""
+        async def source(candidate_id, provider_id):
+            if not candidate_id:
+                return None
+            binding = await db.fetchone(
+                """SELECT source_scope,source_key FROM canonical_candidate_bindings
+                   WHERE canonical_artifact_id=? AND candidate_id=? ORDER BY id LIMIT 1""",
+                (int(provenance["artifact_id"]), str(candidate_id)))
+            host = safe_public_host(binding["source_key"]) if binding and binding["source_scope"] == "host" else None
+            return f"{provider_id} ({host})" if provider_id and host else (provider_id or host)
+
+        await journal(db, je.source_switch(
+            provenance, stage,
+            old_source=await source(provenance.get("old_candidate_id"), provenance.get("old_provider_id")),
+            new_source=await source(provenance.get("new_candidate_id"), provenance.get("new_provider_id")),
+            activation_record_id=record_id))
+
+    async def select_desired_source(self, artifact_id: int, writer, selected: int, *, activation_provenance: dict,
+                                    transition: dict, claim=None) -> bool:
+        """A durable desired-source transition of a PARKED writer: the
+        artifact's selected candidate becomes ``selected`` while ``writer``
+        stays its current, quiesced execution -- no native mutation, no new
+        writer authority, no discard. The canonical Resume completes it through
+        the one candidate activation (a fresh writer for the selected
+        candidate); selecting the
+        writer's own candidate again withdraws the transition. Refused unless
+        ``writer`` is still the artifact's current, authorized, observed-paused
+        attempt and the caller's recovery claim is current (a Pause/Resume
+        fence supersedes it). The switch provenance and the transition's
+        material audit are written in the same transaction."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await db.fetchone("""SELECT f.*,t.status AS transfer_status FROM download_files f
+                JOIN torrents t ON t.id=f.torrent_id WHERE f.id=?""", (artifact_id,))
+            attempt = await db.fetchone("SELECT state,authorized,handle FROM execution_attempts WHERE id=? AND artifact_id=?",
+                                        (writer.attempt_id, artifact_id))
+            candidates = codec.load(row.get("candidates"), []) if row else []
+            if (not row or row["transfer_status"] in {"deleted", "completed", "consolidated", "cancelled"}
+                    or row.get("execution_attempt_id") != writer.attempt_id or not attempt
+                    or not attempt["authorized"] or attempt["state"] != "paused"
+                    or codec.handle(codec.load(attempt["handle"])) != writer
+                    or not 0 <= int(selected) < len(candidates)):
+                await db.rollback(); return False
+            snapshot = await self._recovery_snapshot(db, artifact_id, row=row)
+            if claim is not None and (
+                snapshot.get("recovery_claim_token") != claim.token
+                or int(snapshot.get("recovery_generation") or 0) != claim.generation
+            ):
+                await db.rollback(); return False
+            await db.execute("UPDATE download_files SET selected_candidate=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                             (int(selected), artifact_id))
+            await self._settle_provider_choice(db, row, int(selected), None)
+            record_id = await db.execute_returning_id(
+                "INSERT INTO application_events(transfer_id,kind,detail) VALUES(?,?,?)",
+                (int(row["torrent_id"]), "candidate_activation", codec.dump(activation_provenance)))
+            await self._journal_source_switch(
+                db, activation_provenance,
+                "withdrawn" if activation_provenance.get("admission_decision") == "source_transition_withdrawn"
+                else "pending", record_id)
+            material = await db.fetchone("SELECT material_generation FROM artifact_material_state WHERE artifact_id=?",
+                                         (artifact_id,))
+            await self._material_audit(db, row["torrent_id"], artifact_id, "source_transition", **transition,
+                                       writer_attempt_id=writer.attempt_id,
+                                       material_generation=int(material["material_generation"]) if material else None)
+            await db.commit()
+        return True
+
+    async def _candidate_presentation(self, transfer_id: int) -> dict[int, dict]:
+        async with get_db() as db:
+            files = await db.fetchall("""SELECT f.id,f.candidates,f.selected_candidate,f.execution_attempt_id,f.status,r.quiescence_reason FROM download_files f LEFT JOIN artifact_recovery_state r ON r.artifact_id=f.id WHERE f.torrent_id=? AND f.request_id IS NOT NULL AND COALESCE(f.blocked,0)=0 AND COALESCE(f.mirror_state,'')!='standby' ORDER BY f.id""", (transfer_id,))
+            artifact_ids = [int(row["id"]) for row in files]
+            if not artifact_ids:
+                return {}
+            placeholders = ",".join("?" for _ in artifact_ids)
+            # Current bindings only: the non-current band (above
+            # ``CanonicalOwnership._NON_CURRENT_ORDER``) is the history a
+            # replacement or refresh kept -- never a source to choose.
+            bindings = await db.fetchall(f"""SELECT canonical_artifact_id,candidate_id,provider_id,source_scope,source_key,role,candidate_order FROM canonical_candidate_bindings WHERE canonical_artifact_id IN ({placeholders}) AND candidate_order<=100000 ORDER BY canonical_artifact_id,candidate_order,id""", tuple(artifact_ids))
+            attempts = await db.fetchall(f"""SELECT p.artifact_id,p.candidate_id,p.outcome,p.delivered,p.ordinal,p.execution_attempt_id,e.state,e.authorized FROM execution_attempt_provenance p LEFT JOIN execution_attempts e ON e.id=p.execution_attempt_id WHERE p.artifact_id IN ({placeholders}) ORDER BY p.artifact_id,p.ordinal,p.execution_attempt_id""", tuple(artifact_ids))
+        selected_ids = {}; current_attempt_ids = {}; has_durable_candidate = {}; switchable = {}
+        for row in files:
+            artifact_id = int(row["id"]); selected_id = None
+            switchable[artifact_id] = switch_eligible(row.get("status"), row.get("quiescence_reason"))
+            try:
+                candidates = [codec.candidate(value) for value in codec.load(row.get("candidates"), [])]
+                has_durable_candidate[artifact_id] = bool(candidates)
+                selected = int(row.get("selected_candidate") or 0)
+                if 0 <= selected < len(candidates): selected_id = str(candidates[selected].id)
+            except (TypeError, ValueError, KeyError, IndexError):
+                has_durable_candidate[artifact_id] = False
+            selected_ids[artifact_id] = selected_id; current_attempt_ids[artifact_id] = row.get("execution_attempt_id")
+        attempt_history = {}
+        for row in attempts:
+            candidate_id = str(row.get("candidate_id") or "").strip()
+            if candidate_id: attempt_history.setdefault((int(row["artifact_id"]), candidate_id), []).append(dict(row))
+        by_artifact = {}; group_by_artifact = {}; seen = {}
+        for row in bindings:
+            artifact_id = int(row["canonical_artifact_id"]); candidate_id = str(row["candidate_id"])
+            if candidate_id in seen.setdefault(artifact_id, set()): continue
+            seen[artifact_id].add(candidate_id); history = attempt_history.get((artifact_id, candidate_id), [])
+            delivered = any(bool(item.get("delivered")) for item in history); latest = history[-1] if history else None
+            failed = bool(latest and (str(latest.get("outcome") or "").strip().lower() in _FAILED_CANDIDATE_OUTCOMES or str(latest.get("state") or "").strip().lower() in _FAILED_CANDIDATE_OUTCOMES)) and not delivered
+            selected = selected_ids.get(artifact_id) == candidate_id
+            current = bool(latest and current_attempt_ids.get(artifact_id) == latest.get("execution_attempt_id"))
+            active = bool(current and latest and bool(latest.get("authorized")) and str(latest.get("state") or "").strip().lower() in _MUTATING_EXECUTION_STATES)
+            dispositions = []
+            if delivered: dispositions.append("Delivering")
+            elif failed: dispositions.append("Failed")
+            elif active: dispositions.append("Active")
+            elif selected: dispositions.append("Selected")
+            # The same facts as codes (1.0.14 localization): the interface words
+            # them in its language; the English fields stay for API clients.
+            disposition_code = ("delivering" if delivered else "failed" if failed else "active" if active
+                                else "selected" if selected else None)
+            by_artifact.setdefault(artifact_id, []).append({"candidate_id": candidate_id, "source_label": _safe_source_label(row.get("source_scope"), row.get("source_key")), "source_kind": _source_kind(row.get("source_scope"), row.get("source_key")), "provider_id": str(row.get("provider_id") or "").strip() or None, "relationship": "Original" if row.get("role") == "canonical" else "Consolidated", "relationship_code": "original" if row.get("role") == "canonical" else "consolidated", "dispositions": dispositions, "disposition_code": disposition_code, "is_selected": selected, "is_delivering": delivered,
+                # Read-side, provider/candidate-neutral switch-presentation
+                # eligibility (DP 1.0.12 Contextual Candidate Action Scope
+                # task, §6.1/§10.1): the exact same backend-owned
+                # switch_eligible rule the host-scoped
+                # ``source_candidates`` projection below already uses, so the
+                # generic per-file candidate UI (ui-detail-candidates.js) can
+                # consume it without recreating lifecycle policy in JS. False
+                # for the selected candidate. Never a live provider/executor
+                # check; the switch endpoint remains the sole mutation
+                # authority and re-validates everything itself.
+                "switch_eligible": (not selected) and switchable.get(artifact_id, False)})
+            # Ungated per-artifact canonical host projection for the transfer-level
+            # common-source group wrapper (never rendered by the per-file UI). Only
+            # host-scoped candidates carry a group identity; ``switch_eligible``
+            # mirrors the existing per-file semantics exactly.
+            group_host = _group_source_host(row.get("source_scope"), row.get("source_key"))
+            if group_host is not None:
+                group_by_artifact.setdefault(artifact_id, []).append({
+                    "source_host": group_host,
+                    "candidate_id": candidate_id,
+                    "is_selected": selected,
+                    "switch_eligible": (not selected) and switchable.get(artifact_id, False),
+                })
+        result = {}
+        for artifact_id in artifact_ids:
+            candidates = by_artifact.get(artifact_id, []); candidate_count = len(candidates)
+            if candidate_count == 0 and has_durable_candidate.get(artifact_id, False): candidate_count = 1
+            result[artifact_id] = {
+                "candidate_count": candidate_count,
+                "acquisition_candidates": candidates if candidate_count > 1 else [],
+                "source_candidates": group_by_artifact.get(artifact_id, []),
+            }
+        return result
+
+    async def _overlay_candidate_presentation(self, result: dict, transfer_id: int) -> None:
+        """Annotate every artifact row of a comprehensive (Details) projection
+        with its canonical candidate count and, when it has alternates, the
+        acquisition candidates. Called once, by ``presentation()`` in
+        ``transfers.presentation_repository`` -- the single owner of the
+        assembled projection."""
+        candidate_projection = await self._candidate_presentation(transfer_id)
+        for file_row in result.get("files", []):
+            artifact_id = int(file_row.get("id") or 0)
+            projection = candidate_projection.get(artifact_id)
+            file_row["candidate_count"] = projection["candidate_count"] if projection else 0
+            if projection is not None:
+                # Present on exactly the group-eligible artifacts (physical,
+                # unblocked, non-standby) — the set the common-source group
+                # intersects over. Never rendered by the per-file candidate UI.
+                file_row["source_candidates"] = projection["source_candidates"]
+            if projection and projection["candidate_count"] > 1:
+                file_row["acquisition_candidates"] = projection["acquisition_candidates"]
+
+    # -------------------------------------------------------------------------
+    # Universal file-selection manifest overlay (specification sections 13-38).
+    #
+    # The repository stores and atomically transitions durable facts; it never
+    # sources wall time for product timing. Core passes ``now`` and absolute
+    # deadlines derived from the injected engine clock. The
+    # Confirm-vs-materialization race is serialized entirely by SQLite
+    # ``BEGIN IMMEDIATE`` on the ``transfer_file_selections`` row; an in-memory
+    # lock is never the correctness authority.
+    #
+    # Selection provenance follows the provider resource that produced the file
+    # facts. Each row in ``transfer_file_selections`` is one selection
+    # *generation* keyed by (request_id, provider_resource_id). A request that is
+    # re-resolved onto a new provider resource gets a fresh generation; the prior
+    # generation stays as historical truth and is never inherited or overwritten.
+    # Every mutating/materializing operation binds to a specific generation, not
+    # merely to the durable request id.
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    async def _selection_generation(db, request_id: str, provider_resource_id: str):
+        return await db.fetchone(
+            "SELECT * FROM transfer_file_selections WHERE request_id=? AND provider_resource_id=?",
+            (request_id, provider_resource_id),
+        )
+
+    @staticmethod
+    async def _selection_required(db, record) -> bool:
+        """THE policy: does this root request need a file-selection generation?
+
+        Yes when the submitter explicitly opted into interactive selection
+        (``selection_mode == "interactive"``, never inferred from browser
+        presence), OR when the transfer already owns a durable generation on any
+        binding -- an earlier interactive submission, or a database that predates
+        ``selection_mode`` whose request now deserializes with the default
+        ``"all"``. In that second case a re-resolution onto a new provider
+        resource stays interactive and opens a fresh generation for the new
+        binding (specification section 13). Only an interactive generation says
+        so: every manifest root owns a decomposition generation, and one that
+        was decided ALL at creation never made the transfer interactive.
+        """
+        if getattr(record.request, "selection_mode", fs.SELECTION_MODE_ALL) == fs.SELECTION_MODE_INTERACTIVE:
+            return True
+        row = await db.fetchone(
+            "SELECT 1 FROM transfer_file_selections WHERE transfer_id=? AND interactive=1 LIMIT 1",
+            (record.transfer_id,))
+        return row is not None
+
+    async def ensure_selection_generation(
+        self, record, provider_id: str, resource, *, available: bool, file_manifest, now: float,
+    ) -> SelectionAuthority:
+        """THE one owner of "every binding of a manifest-capable root has its own
+        decomposition generation" -- and, for a root that needs interactive
+        selection, that generation is also its file selection.
+
+        Called by the engine for every root resource binding and, as the
+        fail-closed materialization guard, before every executable fan-out, so no
+        way of obtaining a binding (resolution, adoption, reuse, restart
+        reconciliation, recovery, failover, any future provider) can reach a
+        manifest without passing here. Idempotent: an existing generation is
+        preserved, never reset, and never inherited from another transfer (the
+        generation is keyed on this request and this transfer's binding id).
+
+        A generation is never inferred: it is created here, interactive when
+        ``_selection_required`` says so and otherwise decided ALL at creation;
+        when it cannot be created the result is ``held``, which callers must
+        treat as "do not materialize". Repeated observation of the same binding
+        finds the same generation and changes nothing.
+        """
+        binding_id = await self.resource_binding_id(record.transfer_id, resource.id)
+        async with get_db() as db:
+            exists = await self._selection_generation(db, record.id, binding_id) is not None
+            # A collection of independent members is the operator's to choose
+            # whatever the submission asked: never decided ALL at creation.
+            interactive = (bool(getattr(file_manifest, "independent_members", False))
+                           or await self._selection_required(db, record))
+        if not exists and await self.begin_file_selection_window(
+            record.id, record.transfer_id, binding_id, provider_id,
+            initially_available=available, now=now, interactive=interactive,
+        ) is None:
+            return SelectionAuthority(required=True)
+        if file_manifest is not None:
+            await self.record_file_manifest(record.id, binding_id, file_manifest, now=now)
+        await self._carry_predecessor_decision(record.id, binding_id, now)
+        return SelectionAuthority(required=True, binding_id=binding_id)
+
+    @staticmethod
+    async def _immediate_predecessor(db, request_id: str, binding_id: str) -> str | None:
+        """THE immediate committed predecessor of a new generation of this
+        root: its latest committed generation on another binding, whatever it
+        decided. Generations committed at the same instant are no determinable
+        predecessor at all. Recorded once, when the generation opens."""
+        rows = await db.fetchall(
+            """SELECT id, manifest_committed_at FROM transfer_file_selections
+               WHERE request_id=? AND provider_resource_id!=? AND manifest_committed_at IS NOT NULL
+               ORDER BY manifest_committed_at DESC LIMIT 2""", (request_id, binding_id))
+        if not rows or (len(rows) > 1 and rows[0]["manifest_committed_at"] == rows[1]["manifest_committed_at"]):
+            return None
+        return rows[0]["id"]
+
+    @staticmethod
+    async def _committed_predecessor(db, request_id: str, binding_id: str):
+        """The committed generation this binding's generation opened after
+        (its recorded ``predecessor_id``), or ``None``."""
+        row = await db.fetchone(
+            """SELECT p.* FROM transfer_file_selections s JOIN transfer_file_selections p ON p.id=s.predecessor_id
+               WHERE s.request_id=? AND s.provider_resource_id=? AND p.manifest_committed_at IS NOT NULL""",
+            (request_id, binding_id))
+        return row
+
+    @classmethod
+    async def _inherited_source(cls, db, request_id: str, binding_id: str):
+        """The explicit selection a new generation carries forward: its
+        immediate committed predecessor, only when that predecessor was an
+        explicit choice. A newer ALL is never skipped over to resurrect an
+        older subset, and nothing older than the immediate predecessor is ever
+        searched."""
+        predecessor = await cls._committed_predecessor(db, request_id, binding_id)
+        return predecessor if predecessor and predecessor["decision"] == "explicit" else None
+
+    async def _carry_predecessor_decision(self, request_id: str, binding_id: str, now: float) -> None:
+        """Any rebind that opens a new generation after a committed EXPLICIT
+        immediate predecessor carries that explicit subset (``INHERITED``);
+        ``commit_selected_manifest`` proves it against the new manifest with
+        the one existing matcher, failing closed when it cannot. Nothing older
+        than the immediate predecessor is ever read, so a newer ALL is never
+        skipped over to resurrect an older subset -- and an ALL predecessor is
+        not carried: such a generation keeps its own fresh selection window.
+        Only an undecided, uncommitted generation is touched."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            current = await self._selection_generation(db, request_id, binding_id)
+            predecessor = await self._committed_predecessor(db, request_id, binding_id)
+            if (not current or current["decision"] != "pending" or current["manifest_committed_at"] is not None
+                    or not predecessor or predecessor["decision"] != "explicit"):
+                await db.rollback()
+                return
+            await db.execute(
+                """UPDATE transfer_file_selections SET decision='explicit', decision_reason=?, decision_at=?,
+                   updated_at=? WHERE id=? AND decision='pending' AND manifest_committed_at IS NULL""",
+                (str(fs.DecisionReason.INHERITED), now, now, current["id"]))
+            await db.commit()
+
+    @staticmethod
+    async def _current_generation(db, transfer_id: int):
+        """The transfer's current selection generation: the newest interactive
+        one.
+
+        A re-resolution onto a new provider resource always creates a strictly
+        newer generation, so the newest row is the live selector; older
+        generations remain only as historical truth. A generation decided ALL
+        at creation was never a selection and is not one here.
+        """
+        return await db.fetchone(
+            """SELECT * FROM transfer_file_selections WHERE transfer_id=? AND interactive=1
+               ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (transfer_id,),
+        )
+
+    @classmethod
+    async def _selection_by_manifest(cls, db, transfer_id: int, manifest_id: str):
+        """Resolve the CURRENT selection generation only if it observed this
+        manifest. ``manifest_id`` is UUIDv5(provider-resource-id : digest), so a
+        stale browser tab holding an older generation's manifest id resolves to
+        nothing here and the caller returns a stale-manifest conflict — never a
+        re-interpretation against the newer generation.
+        """
+        current = await cls._current_generation(db, transfer_id)
+        if current is not None and str(current["manifest_id"] or "") == str(manifest_id):
+            return current
+        return None
+
+    @staticmethod
+    def _selection_state(row, file_count: int, *, resource_available: bool | None = None,
+                         explicit_only: bool = False) -> fs.SelectionWindowState:
+        available_at = row["available_at"]
+        if resource_available is None:
+            # Read-model / offer-list callers do not consult a live provider
+            # state; only ``evaluate_gate`` needs the fact and it is always
+            # passed one explicitly. The provenance flag is a safe default.
+            resource_available = bool(row["initially_available"])
+        return fs.SelectionWindowState(
+            decision=str(row["decision"]),
+            initially_available=bool(row["initially_available"]),
+            resource_available=bool(resource_available),
+            available_grace_until=(
+                float(available_at) + fs.POST_AVAILABLE_MANIFEST_GRACE_SECONDS
+                if available_at is not None else None
+            ),
+            hold_until=row["hold_until"],
+            manifest_id=row["manifest_id"],
+            manifest_file_count=int(file_count),
+            manifest_committed_at=row["manifest_committed_at"],
+            auto_offer_dismissed_at=row["auto_offer_dismissed_at"],
+            explicit_only=bool(explicit_only),
+        )
+
+    @staticmethod
+    async def _manifest_collection(db, manifest_id) -> dict:
+        """The bound manifest's collection facts: whether its members are
+        independent resources (authorized only explicitly), and -- separately
+        from the complete bounded manifest -- whether the source held more and
+        its stated total (``None``: unknown)."""
+        row = await db.fetchone(
+            "SELECT independent_members, source_truncated, source_total FROM transfer_file_manifests WHERE id=?",
+            (manifest_id,)) if manifest_id else None
+        return {"independent_members": bool((row or {}).get("independent_members")),
+                "source_truncated": bool((row or {}).get("source_truncated")),
+                "source_total": (row or {}).get("source_total")}
+
+    @staticmethod
+    async def _manifest_file_count(db, manifest_id) -> int:
+        if not manifest_id:
+            return 0
+        row = await db.fetchone(
+            "SELECT COUNT(*) AS n FROM transfer_file_manifest_entries WHERE manifest_id=?",
+            (manifest_id,),
+        )
+        return int((row or {}).get("n") or 0)
+
+    @staticmethod
+    async def _settle_selection_intent(db, row, now: float, *, entry_ids=None) -> None:
+        """THE settlement of a usable multi-file choice into the live
+        transfer's intent, in the settling transaction: the confirmed entries
+        (``entry_ids``), or -- ALL by Close/X or the decision timeout -- every
+        member of that manifest, as a concrete set. An intent once established
+        is never replaced by a later generation's settlement."""
+        if not row["manifest_id"] or await _selection_intent_in_db(db, row["request_id"]) is not None:
+            return
+        members = await db.fetchall(
+            "SELECT entry_id,relative_path,expected_bytes FROM transfer_file_manifest_entries WHERE manifest_id=?",
+            (row["manifest_id"],))
+        if entry_ids is not None:
+            wanted = {str(entry_id) for entry_id in entry_ids}
+            members = [member for member in members if member["entry_id"] in wanted]
+        await _set_selection_intent_in_db(
+            db, row["request_id"], row["transfer_id"],
+            [(member["relative_path"], int(member["expected_bytes"] or 0)) for member in members], now,
+            origin_selection_id=row["id"])
+
+    async def begin_file_selection_window(
+        self, request_id: str, transfer_id: int, provider_resource_id: str,
+        provider_id: str, *, initially_available: bool, now: float, interactive: bool = True,
+    ):
+        """Idempotently open the durable file-selection generation for
+        (request, provider resource).
+
+        A different provider resource for the same durable request creates a new
+        generation; it never overwrites the prior generation and never inherits
+        its explicit subset.
+
+        No submission-relative or creation-relative countdown is anchored here.
+        A generation that is created while the resource is already AVAILABLE
+        records ``available_at`` = ``now`` so the bounded post-AVAILABLE
+        manifest-acquisition grace can start; a generation created while the
+        resource is PREPARING leaves ``available_at`` NULL until the first
+        AVAILABLE observation anchors it (see :meth:`file_selection_gate`). The
+        factual initial-availability observation is captured once per
+        generation. A later call, an application restart, or a re-resolution
+        never resets any of these fields (``INSERT OR IGNORE``).
+
+        A non-``interactive`` generation is decided ALL at creation and never
+        offered. Every generation records its immediate committed predecessor
+        as it opens.
+        """
+        selection_id = fs.selection_identity(request_id, provider_resource_id)
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            parent = await db.fetchone("SELECT status FROM torrents WHERE id=?", (transfer_id,))
+            if not parent or parent["status"] in {"deleted", "completed", "consolidated", "cancelled"}:
+                await db.rollback()
+                return None
+            if not await db.fetchone("SELECT 1 FROM transfer_requests WHERE id=? AND transfer_id=?", (request_id, transfer_id)):
+                await db.rollback()
+                return None
+            if not await db.fetchone("SELECT 1 FROM provider_resources WHERE id=?", (provider_resource_id,)):
+                await db.rollback()
+                return None
+            # ``manifest_wait_until`` mirrors the post-AVAILABLE grace deadline:
+            # ``0.0`` while the grace has not started, an absolute deadline once
+            # it has. It is retired as a submission-relative window and is never
+            # read by the gate; the gate reads ``available_at``.
+            predecessor = await self._immediate_predecessor(db, request_id, provider_resource_id)
+            # Once the live transfer holds a selection intent, every new
+            # generation is born carrying it: never pending, never offered.
+            if await _selection_intent_in_db(db, request_id) is not None:
+                decision, reason, decided = "explicit", str(fs.DecisionReason.INHERITED), now
+            elif interactive:
+                decision, reason, decided = "pending", None, None
+            else:
+                decision, reason, decided = "all", str(fs.DecisionReason.DEFAULT_MATERIALIZATION), now
+            await db.execute(
+                """INSERT OR IGNORE INTO transfer_file_selections(
+                        id, request_id, transfer_id, provider_resource_id, provider_id,
+                        initially_available, manifest_wait_until, available_at, created_at, updated_at,
+                        interactive, predecessor_id, decision, decision_reason, decision_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (selection_id, request_id, transfer_id, provider_resource_id, str(provider_id),
+                 int(bool(initially_available)),
+                 fs.manifest_grace_deadline(now) if initially_available else 0.0,
+                 now if initially_available else None, now, now,
+                 int(bool(interactive)), predecessor, decision, reason, decided),
+            )
+            row = await self._selection_generation(db, request_id, provider_resource_id)
+            await db.commit()
+        return row
+
+    async def record_file_manifest(self, request_id: str, provider_resource_id: str, manifest, *, now: float):
+        """Validate and persist a neutral early manifest, then bind it to the
+        (request, provider resource) selection generation.
+
+        Returns the canonical manifest on success, or ``None`` when there is no
+        open generation for this resource, when mutation is already closed, or
+        when the optional early manifest is malformed. A malformed early manifest
+        is deliberately non-fatal before explicit confirmation: the selector
+        stays unavailable and default ALL keeps governing the full transfer.
+        """
+        def recordable(sel) -> bool:
+            # A pending generation, or one born carrying the transfer's intent:
+            # it still records its own manifest -- the proof and provenance of
+            # what it will authorize -- but never opens a decision.
+            return bool(sel) and sel["manifest_committed_at"] is None and (
+                sel["decision"] == "pending"
+                or (sel["decision"] == "explicit"
+                    and str(sel["decision_reason"] or "") == str(fs.DecisionReason.INHERITED)))
+
+        async with get_db() as db:
+            sel = await self._selection_generation(db, request_id, provider_resource_id)
+            if not recordable(sel):
+                return None
+            try:
+                canonical = fs.canonicalize_manifest(provider_resource_id, manifest)
+            except fs.ManifestInvalid:
+                return None
+            await db.execute("BEGIN IMMEDIATE")
+            sel = await self._selection_generation(db, request_id, provider_resource_id)
+            if not recordable(sel):
+                await db.rollback()
+                return None
+            explicit_only = bool(getattr(manifest, "independent_members", False))
+            source_total = getattr(manifest, "source_total", None)
+            await db.execute(
+                """INSERT OR IGNORE INTO transfer_file_manifests(
+                        id, transfer_id, request_id, provider_resource_id, provider_id,
+                        manifest_digest, observed_at, independent_members, source_truncated, source_total)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (canonical.manifest_id, sel["transfer_id"], request_id, provider_resource_id,
+                 sel["provider_id"], canonical.manifest_digest, now, int(explicit_only),
+                 int(bool(getattr(manifest, "source_truncated", False))),
+                 source_total if isinstance(source_total, int) and not isinstance(source_total, bool)
+                 and source_total >= 0 else None),
+            )
+            for entry in canonical.entries:
+                await db.execute(
+                    """INSERT OR IGNORE INTO transfer_file_manifest_entries(
+                            manifest_id, entry_id, ordinal, name, relative_path, expected_bytes)
+                        VALUES(?,?,?,?,?,?)""",
+                    (canonical.manifest_id, entry.entry_id, entry.ordinal, entry.name,
+                     entry.relative_path, entry.expected_bytes),
+                )
+            assignments = ["manifest_id=?", "updated_at=?"]
+            params = [canonical.manifest_id, now]
+            # The 120-second user-decision hold begins in this same durable
+            # transaction the moment the FIRST actionable multi-file manifest is
+            # bound — whether the provider resource is PREPARING or AVAILABLE,
+            # and regardless of how long provider preparation has taken
+            # (specification sections 4-5, 12, 13, 19). It is anchored once to
+            # this arrival and never restarted by a repeat observation, a
+            # duplicate manifest, a scheduler pass, a browser reconnect, or a
+            # restart. There is no submission-relative cutoff.
+            hold_until = sel["hold_until"]
+            pending = sel["decision"] == "pending"
+            # A collection of independent members has no decision deadline.
+            if pending and canonical.file_count > 1 and hold_until is None and not explicit_only:
+                hold_until = fs.decision_hold_deadline(now)
+                assignments.append("hold_until=?")
+                params.append(hold_until)
+                # A usable manifest now exists: the post-AVAILABLE grace no
+                # longer applies to this generation.
+                assignments.append("manifest_wait_until=?")
+                params.append(0.0)
+            # An offer is queued (and the durable browser event emitted, once)
+            # only when this manifest is genuinely auto-presentable now:
+            # multi-file, not previously dismissed, with an active decision
+            # hold. Repeated provider polls cannot re-queue it.
+            bound_state = fs.SelectionWindowState(
+                decision="pending", initially_available=bool(sel["initially_available"]),
+                resource_available=bool(sel["initially_available"]),
+                available_grace_until=None, hold_until=hold_until,
+                manifest_id=canonical.manifest_id, manifest_file_count=canonical.file_count,
+                manifest_committed_at=None, auto_offer_dismissed_at=sel["auto_offer_dismissed_at"],
+                explicit_only=explicit_only,
+            )
+            queue_offer = pending and sel["auto_offer_queued_at"] is None and fs.auto_offer_active(bound_state, now)
+            if queue_offer:
+                assignments.append("auto_offer_queued_at=?")
+                params.append(now)
+            params.append(sel["id"])
+            await db.execute(
+                f"UPDATE transfer_file_selections SET {','.join(assignments)} WHERE id=?",
+                tuple(params),
+            )
+            if queue_offer:
+                await db.execute(
+                    "INSERT INTO application_events(transfer_id,kind,detail,claimed) VALUES(?,?,?,0)",
+                    (sel["transfer_id"], "file_selection_available", None),
+                )
+                await journal(db, je.selection("offered", transfer_id=sel["transfer_id"], selection_id=sel["id"],
+                                               provider_id=sel["provider_id"]))
+            await db.commit()
+        return canonical
+
+    async def file_selection_gate(
+        self, request_id: str, provider_resource_id: str, *, now: float,
+        poll_interval: float | None = None, resource_available: bool | None = None,
+    ) -> str:
+        """Neutral gate: may executable child fan-out proceed for this
+        (request, provider resource)?
+
+        Gate authority and the scheduling of a wait produced by that gate are
+        transactionally coupled (specification section 8). One ``BEGIN
+        IMMEDIATE`` on the ``transfer_file_selections`` row:
+
+        1. loads the exact selection generation;
+        2. anchors the post-AVAILABLE manifest-acquisition grace exactly once,
+           the first time the resource is observed AVAILABLE while no usable
+           manifest and no decision hold exist;
+        3. evaluates the pure neutral gate;
+        4. settles a still-``pending`` timeout/single-file decision to durable
+           ALL with a neutral reason;
+        5. only for a genuine still-pending selection WAIT, and only when a
+           ``poll_interval`` is supplied by the engine, persists the next
+           selection-derived request retry time — never over a provider backoff
+           (specification sections 9, 22), and never after the same
+           transaction has just observed a settled EXPLICIT/ALL.
+
+        A stale WAIT can therefore never recreate ``retry_at`` after Confirm /
+        Close / timeout has settled the decision: a concurrent settle either
+        commits first (this transaction then sees EXPLICIT/ALL and schedules
+        nothing) or blocks on this row's write lock until this transaction
+        commits and then releases the wait itself.
+
+        ``resource_available`` is the live provider fact; the engine passes
+        ``True`` from its AVAILABLE branch. When omitted it is read from
+        ``provider_resources``.
+        """
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await self._selection_generation(db, request_id, provider_resource_id)
+            if not row:
+                await db.rollback()
+                return str(fs.SelectionGate.PROCEED)
+            if resource_available is None:
+                res = await db.fetchone(
+                    "SELECT state FROM provider_resources WHERE id=?", (provider_resource_id,))
+                resource_available = str((res or {}).get("state") or "").strip().lower() == "available"
+
+            # (2) Anchor the 60s post-AVAILABLE manifest-acquisition grace once.
+            # It never runs while PREPARING, and never applies once a usable
+            # decision hold exists. Legacy pre-correction rows have
+            # ``available_at`` NULL, so their grace also starts fresh here and a
+            # stale submission-relative ``manifest_wait_until`` can never settle
+            # ALL for an uncached transfer (correction section 14).
+            if (resource_available and row["available_at"] is None
+                    and str(row["decision"]) == "pending"
+                    and row["manifest_committed_at"] is None
+                    and row["hold_until"] is None):
+                await db.execute(
+                    "UPDATE transfer_file_selections "
+                    "SET available_at=?, manifest_wait_until=?, updated_at=? "
+                    "WHERE id=? AND available_at IS NULL",
+                    (now, fs.manifest_grace_deadline(now), now, row["id"]),
+                )
+                row = await self._selection_generation(db, request_id, provider_resource_id)
+
+            file_count = await self._manifest_file_count(db, row["manifest_id"])
+            explicit_only = (await self._manifest_collection(db, row["manifest_id"]))["independent_members"]
+            evaluation = fs.evaluate_gate(
+                self._selection_state(row, file_count, resource_available=bool(resource_available),
+                                      explicit_only=explicit_only), now,
+            )
+            if (evaluation.resolve_decision is not None and row["decision"] == "pending"
+                    and row["manifest_committed_at"] is None):
+                await db.execute(
+                    """UPDATE transfer_file_selections
+                       SET decision=?, decision_reason=?, decision_at=?, updated_at=?
+                       WHERE id=? AND decision='pending' AND manifest_committed_at IS NULL""",
+                    (str(evaluation.resolve_decision), str(evaluation.resolve_reason), now, now, row["id"]),
+                )
+                await journal(db, je.selection(
+                    "decided", transfer_id=row["transfer_id"], selection_id=row["id"], provider_id=row["provider_id"],
+                    detail=f"{evaluation.resolve_decision} ({str(evaluation.resolve_reason).replace('_', ' ')})"))
+                if evaluation.resolve_reason == fs.DecisionReason.DECISION_TIMEOUT:
+                    # The operator's decision window on a usable multi-file
+                    # manifest ran out: ALL, as the concrete member set it is.
+                    await self._settle_selection_intent(db, row, now)
+            elif (evaluation.gate != fs.SelectionGate.PROCEED and poll_interval is not None
+                    and str(row["decision"]) == "pending" and row["manifest_committed_at"] is None):
+                # (5) A genuine still-pending selection wait. Only a request that
+                # is ``state='waiting' AND error IS NULL`` — the exclusive
+                # signature of the file-selection gate wait / a benign PREPARING
+                # re-poll (correction §9, §9a) — is rescheduled to the selection
+                # poll cadence. A coexisting provider backoff always records a
+                # non-null ``error`` and a longer ``retry_at``; it is left
+                # entirely untouched (§9, §22): never shortened to a selection
+                # cadence, never stripped of its failure evidence.
+                await db.execute(
+                    "UPDATE transfer_requests SET retry_at=? "
+                    "WHERE id=? AND state='waiting' AND error IS NULL",
+                    (float(now) + float(poll_interval), request_id),
+                )
+            await db.commit()
+        return str(evaluation.gate)
+
+    @staticmethod
+    async def _release_selection_poll_wait(db, request_id: str, now: float) -> None:
+        """Atomically end the scheduler wait that the file-selection gate created.
+
+        §9a investigation — ``transfer_requests.retry_at`` is MULTI-PURPOSE. Two
+        code paths set it forward on a request that ends up ``state='waiting'``:
+
+          * the interactive file-selection gate wait (scheduled atomically
+            inside :meth:`file_selection_gate` when the gate WAITs for a
+            still-pending decision) and the generic ``poll_after()`` PREPARING
+            re-poll cadence. Neither records an ``error``.
+          * ``_repository_base.request_failure()`` (via
+            ``_engine_base._request_failure(..., waiting=True)``) — a provider
+            observation error / ABSENT / EXPIRED / reconciliation-exception
+            backoff, whose delay is ``policy.retry_resolution(error).retry_at``.
+            This path ALWAYS writes a non-null ``error`` blob and increments
+            ``attempts``.
+
+        A cross-transfer equivalence proof-retry also writes ``retry_at`` forward
+        (``cohorts.py``: ``UPDATE ... retry_at=? WHERE id=? AND
+        state='materializing'``) but only for ``state='materializing'`` rows,
+        never ``state='waiting'``.
+
+        The distinction the correction relies on is therefore
+        ``state='waiting' AND error IS NULL``: the file-selection gate wait, and
+        only it (or a benign PREPARING re-poll), leaves the request without an
+        error. A provider backoff on the same request keeps its longer,
+        legitimate ``retry_at`` because ``error IS NOT NULL``. The atomic gate
+        transaction upholds this both ways: it releases only an
+        ``error IS NULL`` selection wait, and it reschedules only an
+        ``error IS NULL`` selection wait.
+        """
+        await _release_selection_poll_wait_in_db(db, request_id, now)
+
+    async def confirm_file_selection(
+        self, transfer_id: int, manifest_id: str, entry_ids, *, now: float, expected_demand=None,
+    ) -> "fs.SelectionCommandResult":
+        """Durably commit an explicit file subset, or lose the race to materialization.
+
+        The selection generation is resolved from (transfer, manifest): the
+        manifest id is bound to exactly one provider resource, so a stale browser
+        tab holding an older manifest id cannot reach a newer generation. The
+        ``BEGIN IMMEDIATE`` write lock on ``transfer_file_selections`` is the sole
+        correctness authority for the Confirm-vs-materialization race. Confirm
+        never reports success once the executable manifest is committed.
+
+        ``expected_demand`` is the demand the choice was authorized against
+        (``None``: an Admin's unconditional act); demand that arrived since
+        refuses it under the same write lock, changing nothing.
+        """
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            if not await self.hold_demand(db, transfer_id, expected_demand):
+                await db.rollback()
+                raise DemandChanged(transfer_id)
+            row = await self._selection_by_manifest(db, transfer_id, str(manifest_id))
+            if not row:
+                await db.rollback()
+                return fs.SelectionCommandResult(str(fs.SelectionOutcome.CONFLICT), "stale_manifest")
+            if row["manifest_committed_at"] is not None:
+                await db.rollback()
+                return fs.SelectionCommandResult(
+                    str(fs.SelectionOutcome.CONFLICT), "materialization_committed",
+                    decision=str(row["decision"]), manifest_id=row["manifest_id"], committed=True,
+                )
+            if str(row["decision"]) == "all":
+                await db.rollback()
+                return fs.SelectionCommandResult(
+                    str(fs.SelectionOutcome.CONFLICT), "already_all",
+                    decision="all", manifest_id=row["manifest_id"],
+                )
+            known = {
+                r["entry_id"] for r in await db.fetchall(
+                    "SELECT entry_id FROM transfer_file_manifest_entries WHERE manifest_id=?", (manifest_id,))
+            }
+            requested, seen = [], set()
+            for value in (entry_ids or ()):
+                text = str(value)
+                if text in seen:
+                    await db.rollback()
+                    return fs.SelectionCommandResult(str(fs.SelectionOutcome.INVALID), "duplicate_selection")
+                seen.add(text)
+                requested.append(text)
+            if not requested:
+                await db.rollback()
+                return fs.SelectionCommandResult(str(fs.SelectionOutcome.INVALID), "empty_selection")
+            if len(requested) > fs.MAX_SELECTION_ENTRIES:
+                await db.rollback()
+                return fs.SelectionCommandResult(str(fs.SelectionOutcome.INVALID), "too_many_selected")
+            if not seen.issubset(known):
+                await db.rollback()
+                return fs.SelectionCommandResult(str(fs.SelectionOutcome.INVALID), "unknown_selection_entry")
+            existing = {
+                r["entry_id"] for r in await db.fetchall(
+                    "SELECT entry_id FROM transfer_file_selection_entries WHERE selection_id=?", (row["id"],))
+            }
+            if str(row["decision"]) == "explicit":
+                if existing != seen:
+                    await db.rollback()
+                    return fs.SelectionCommandResult(
+                        str(fs.SelectionOutcome.CONFLICT), "selection_superseded",
+                        decision="explicit", manifest_id=row["manifest_id"],
+                    )
+                # Idempotent same-subset Confirm — self-heal a scheduler wait that
+                # a crash/restart left in place after an earlier run persisted
+                # EXPLICIT but before it released the file-selection gate wait
+                # (§12). Never broadens the selection; still first-writer safe.
+                await self._release_selection_poll_wait(db, str(row["request_id"]), now)
+                await db.commit()
+                return fs.SelectionCommandResult(
+                    str(fs.SelectionOutcome.CONFIRMED), "idempotent",
+                    decision="explicit", manifest_id=row["manifest_id"],
+                )
+            for entry_id in requested:
+                await db.execute(
+                    "INSERT OR IGNORE INTO transfer_file_selection_entries(selection_id, manifest_id, entry_id) VALUES(?,?,?)",
+                    (row["id"], str(manifest_id), entry_id),
+                )
+            cursor = await db.execute(
+                """UPDATE transfer_file_selections
+                   SET decision='explicit', decision_reason=?, decision_at=?, updated_at=?
+                   WHERE id=? AND decision='pending' AND manifest_committed_at IS NULL""",
+                (str(fs.DecisionReason.CONFIRMED), now, now, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return fs.SelectionCommandResult(str(fs.SelectionOutcome.CONFLICT), "materialization_won")
+            await journal(db, je.selection("confirmed", transfer_id=row["transfer_id"], selection_id=row["id"],
+                                           provider_id=row["provider_id"],
+                                           detail=f"{len(requested)} file(s) selected"))
+            await self._settle_selection_intent(db, row, now, entry_ids=requested)
+            # The decision is settled; the 120s hold is no longer active. Release
+            # the file-selection gate wait in the SAME transaction so the next
+            # resolution cycle materialises the confirmed subset immediately —
+            # without waiting out the old decision deadline or the last provider
+            # poll timestamp. Only the selection-induced wait is released (§9a).
+            await self._release_selection_poll_wait(db, str(row["request_id"]), now)
+            await db.commit()
+        return fs.SelectionCommandResult(
+            str(fs.SelectionOutcome.CONFIRMED), "confirmed",
+            decision="explicit", manifest_id=str(manifest_id),
+        )
+
+    async def dismiss_file_selection(
+        self, transfer_id: int, manifest_id: str, *, now: float,
+    ) -> "fs.SelectionCommandResult":
+        """Record a Close/X. Releases an active cached hold immediately; otherwise
+        leaves default ALL and keeps the decision mutable for later Details use."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await self._selection_by_manifest(db, transfer_id, str(manifest_id))
+            if not row:
+                await db.rollback()
+                return fs.SelectionCommandResult(str(fs.SelectionOutcome.CONFLICT), "stale_manifest")
+            if row["manifest_committed_at"] is not None:
+                await db.rollback()
+                return fs.SelectionCommandResult(
+                    str(fs.SelectionOutcome.CONFLICT), "materialization_committed",
+                    decision=str(row["decision"]), committed=True,
+                )
+            if (str(row["decision"]) == "explicit"
+                    and str(row["decision_reason"] or "") == str(fs.DecisionReason.INHERITED)):
+                # This generation carries the live transfer's intent: a Close
+                # from an earlier offer can neither settle nor replace it.
+                await db.rollback()
+                return fs.SelectionCommandResult(
+                    str(fs.SelectionOutcome.CONFLICT), "selection_superseded",
+                    decision="explicit", manifest_id=row["manifest_id"],
+                )
+            file_count = await self._manifest_file_count(db, row["manifest_id"])
+            # Close/X on any live auto-presented multi-file hold settles ALL and
+            # releases immediately, whatever the resource's initial availability
+            # (specification section 6.5). A collection of independent members
+            # is never settled by Close: it stays pending, its offer closed.
+            explicit_only = (await self._manifest_collection(db, row["manifest_id"]))["independent_members"]
+            active_hold = (
+                file_count > 1 and not explicit_only
+                and row["hold_until"] is not None and str(row["decision"]) == "pending"
+            )
+            if active_hold:
+                cursor = await db.execute(
+                    """UPDATE transfer_file_selections
+                       SET decision='all', decision_reason=?, decision_at=?,
+                           auto_offer_dismissed_at=?, updated_at=?
+                       WHERE id=? AND decision='pending' AND manifest_committed_at IS NULL""",
+                    (str(fs.DecisionReason.CLOSED), now, now, now, row["id"]),
+                )
+                if cursor.rowcount == 1:
+                    await journal(db, je.selection("dismissed", transfer_id=row["transfer_id"], selection_id=row["id"],
+                                                   provider_id=row["provider_id"]))
+                    await self._settle_selection_intent(db, row, now)
+                    # Close/X settled the decision to default ALL; the 120s hold
+                    # is over. Release the file-selection gate wait in the same
+                    # transaction so ALL materialisation proceeds immediately
+                    # (§10). Only the selection-induced wait is released (§9a).
+                    await self._release_selection_poll_wait(db, str(row["request_id"]), now)
+            else:
+                await db.execute(
+                    """UPDATE transfer_file_selections
+                       SET auto_offer_dismissed_at=?, updated_at=?
+                       WHERE id=? AND manifest_committed_at IS NULL""",
+                    (now, now, row["id"]),
+                )
+            await db.commit()
+        return fs.SelectionCommandResult(
+            str(fs.SelectionOutcome.DISMISSED), "closed_hold" if active_hold else "dismissed",
+            decision="all" if active_hold else str(row["decision"]), manifest_id=str(manifest_id),
+        )
+
+    async def commit_selected_manifest(self, record, full_entries, *, now: float):
+        """Filter the full executable manifest to the authorized subset and durably
+        record the materialization-commit fact for this provider resource.
+
+        The selection generation is bound to ``(record.id, record.resource.id)``:
+        a replacement provider resource for the same durable request can never
+        consume a prior resource's selection rows. Returns the authorized
+        ``tuple[SourceEntry, ...]``:
+
+        * no selection generation for this resource, on a request that never
+          needed one (``_selection_required`` is false), or a settled ALL with
+          no durable intent / still-pending decision -> the full provider list;
+          a settled ALL the transfer owns as a concrete intent -> exactly that
+          intent, every member proven executable before it commits (fails
+          closed with the neutral reason otherwise). A request that DOES
+          require selection but has no generation for this binding fails closed
+          with ``RESOURCE_STATE_CONFLICT`` -- absence of a generation is never ALL;
+        * a confirmed EXPLICIT subset -> only the members proven to match the
+          executable manifest by normalized relative path and compatible size.
+
+        A confirmed explicit subset that can no longer be proven fails closed
+        with a neutral ``RESOURCE_STATE_CONFLICT`` and never broadens to ALL.
+
+        Before a generation of a root that already fanned out is committed, its
+        authorized members must be exactly the root's established logical
+        decomposition (``fs.decomposition_continuity``), decided in this same
+        transaction: proven, the generation commits ``proven``; not proven, it
+        records ``held`` with the bounded reason and commits nothing, and the
+        result is empty with ``.held`` set -- nothing may fan out, supersede,
+        retarget or start. A held generation is re-proven on every later pass,
+        so a manifest the provider was still completing can still prove.
+
+        ``manifest_committed_at`` marks that core has *authorized* materialization
+        for this generation and frozen mutation. The child-request fan-out
+        (``repository.manifest``) is a following idempotent transaction; a crash
+        between the two is recovered by the engine re-driving observation ->
+        gate PROCEED -> this call (idempotent) -> fan-out (INSERT OR IGNORE).
+
+        The returned value is a plain tuple by iteration/equality/``len()``, but
+        also carries ``.first_commitment`` -- whether THIS call is the one that
+        moved ``manifest_committed_at`` from NULL, derived from truth already
+        read inside this same transaction. Callers that only need the entries
+        (nearly everyone) never need to know this attribute exists.
+        """
+        full_entries = tuple(full_entries)
+        canonical_resource_id = record.resource.id if record.resource is not None else None
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            binding_id = (
+                await self._resolve_binding(db, record.transfer_id, canonical_resource_id)
+                if canonical_resource_id else None
+            )
+            row = (
+                await self._selection_generation(db, record.id, binding_id)
+                if binding_id else None
+            )
+            if not row:
+                required = await self._selection_required(db, record)
+                await db.rollback()
+                if required:
+                    raise TransferError(NormalizedError(
+                        Domain.LIFECYCLE, Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION))
+                return ManifestCommitResult(full_entries, first_commitment=False)
+            selection_id = row["id"]
+            already = row["manifest_committed_at"] is not None
+            if already and row["continuity"] == str(fs.Continuity.HELD):
+                await db.rollback()
+                return ManifestCommitResult((), first_commitment=False, selection_id=selection_id,
+                                            held=str(row["continuity_reason"] or fs.Continuity.HELD))
+            if (str(row["decision"]) != "explicit" and not already
+                    and (await self._manifest_collection(db, row["manifest_id"]))["independent_members"]):
+                # Fail closed: independent members are authorized only by an
+                # explicit choice -- never by pending, never by ALL.
+                await db.rollback()
+                return ManifestCommitResult((), first_commitment=False, selection_id=selection_id,
+                                            held="explicit_selection_required")
+            try:
+                authorized, recorded = await self._authorized_subset(db, record, row, binding_id, full_entries,
+                                                                     already=already)
+            except _CarryRefused as carry:
+                held = await self._continuity_refusal(
+                    db, record, row, carry.source, binding_id, carry.refused, now,
+                    migrated=carry.refused is not carry.exact and carry.source is not None and not already)
+                return ManifestCommitResult((), first_commitment=False, selection_id=selection_id, held=held)
+            except fs.SelectionUnprovable as refused:
+                await db.rollback()
+                raise TransferError(NormalizedError(
+                    Domain.LIFECYCLE, Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION,
+                    diagnostic=refused.reason)) from None
+            if str(row["decision"]) in ("pending", "all"):
+                if not already:
+                    held, provenance = await self._continuity(db, record, row, authorized, now)
+                    if held:
+                        return ManifestCommitResult((), first_commitment=False, selection_id=selection_id, held=held)
+                    reason = row["decision_reason"] or str(fs.DecisionReason.DEFAULT_MATERIALIZATION)
+                    await db.execute(
+                        """UPDATE transfer_file_selections
+                           SET decision='all',
+                               decision_reason=COALESCE(decision_reason, ?),
+                               decision_at=COALESCE(decision_at, ?),
+                               manifest_committed_at=?, continuity=?, continuity_reason=?, updated_at=?
+                           WHERE id=?""",
+                        (reason, now, now, str(fs.Continuity.PROVEN), provenance, now, row["id"]),
+                    )
+            else:
+                inherited = str(row["decision_reason"] or "") == str(fs.DecisionReason.INHERITED)
+                provenance = None
+                if not already:
+                    held, provenance = await self._continuity(db, record, row, authorized, now)
+                    if held:
+                        return ManifestCommitResult((), first_commitment=False, selection_id=selection_id, held=held)
+                if inherited and not already and row["manifest_id"]:
+                    # The carried subset, recorded against this generation's own
+                    # manifest -- at that manifest's own paths -- so it reads
+                    # like any explicit selection.
+                    for entry in recorded:
+                        entry_id = fs.entry_identity(binding_id, fs.normalize_relative_path(entry.relative_path))
+                        await db.execute(
+                            """INSERT OR IGNORE INTO transfer_file_selection_entries(selection_id,manifest_id,entry_id)
+                               SELECT ?, manifest_id, entry_id FROM transfer_file_manifest_entries
+                               WHERE manifest_id=? AND entry_id=?""",
+                            (row["id"], row["manifest_id"], entry_id))
+                if not already:
+                    await db.execute(
+                        """UPDATE transfer_file_selections SET manifest_committed_at=?, continuity=?,
+                           continuity_reason=?, updated_at=? WHERE id=?""",
+                        (now, str(fs.Continuity.PROVEN), provenance, now, row["id"]),
+                    )
+            await db.commit()
+        coordinates = ({native.relative_path: logical.relative_path for native, logical in zip(recorded, authorized)}
+                       if recorded is not authorized else {})
+        return ManifestCommitResult(authorized, first_commitment=not already, selection_id=selection_id,
+                                    coordinates=coordinates)
+
+    async def _authorized_subset(self, db, record, row, binding_id: str, full_entries, *, already: bool):
+        """THE selection proof of one generation, inside the caller's
+        transaction: ``(authorized, recorded)`` -- the members its decision
+        authorizes at their logical coordinates, and the same members at
+        ``full_entries``' own -- read from durable evidence only and never
+        written. ``commit_selected_manifest`` commits what it proves; a
+        provider that synchronizes the selection upstream
+        (``upstream_selection``) is handed exactly what it proves.
+
+        Raises ``fs.SelectionUnprovable`` for a selection that cannot be read
+        at all (its reason only), and ``_CarryRefused`` when an inherited
+        selection's whole-manifest proofs could not carry it onto this
+        replacement -- the caller's ``_continuity_refusal`` decides that."""
+        if str(row["decision"]) in ("pending", "all"):
+            # A settled ALL the live transfer owns as a concrete intent
+            # (Close/X or the decision timeout on a usable choice) is that
+            # member set, in this generation's own coordinates: every
+            # member must be executable before it commits, and nothing
+            # beyond it is authorized. Without an intent, ALL stays every
+            # executable member the provider exposes.
+            intent = (await _selection_intent_in_db(db, record.id)
+                      if str(row["decision"]) == "all" and not already else None)
+            if intent is None:
+                return full_entries, full_entries
+            fs.reconcile_executable_subset(intent, full_entries)
+            intended = {path for path, _size in intent}
+            authorized = tuple(entry for entry in full_entries
+                               if fs.normalize_relative_path(entry.relative_path) in intended)
+            return authorized, authorized
+        inherited = str(row["decision_reason"] or "") == str(fs.DecisionReason.INHERITED)
+        # An inherited generation proves the live transfer's intent; one
+        # of a transfer that predates the intent proves its committed
+        # explicit predecessor's selection, as before.
+        intent = await _selection_intent_in_db(db, record.id) if inherited else None
+        if intent is not None:
+            source = await self._committed_predecessor(db, record.id, binding_id)
+        elif inherited:
+            source = await self._inherited_source(db, record.id, binding_id)
+        else:
+            source = None
+        if inherited and source is None and intent is None:
+            raise fs.SelectionUnprovable("missing_inherited_predecessor")
+        if intent is not None:
+            # The intent's members at the committed predecessor's own
+            # coordinates (the one identity owner), never one it no
+            # longer holds; with no committed predecessor, the intent's
+            # own (logical) coordinates.
+            pairs = fs.intent_in_predecessor(
+                intent, await self._manifest_members(db, source["manifest_id"]) if source else [])
+        else:
+            selected = await db.fetchall(
+                """SELECT e.relative_path AS relative_path, e.expected_bytes AS expected_bytes
+                   FROM transfer_file_selection_entries s
+                   JOIN transfer_file_manifest_entries e
+                     ON e.manifest_id=s.manifest_id AND e.entry_id=s.entry_id
+                   WHERE s.selection_id=? ORDER BY e.ordinal""",
+                (source["id"] if inherited else row["id"],),
+            )
+            pairs = [(r["relative_path"], int(r["expected_bytes"] or 0)) for r in selected]
+        if not pairs:
+            raise fs.SelectionUnprovable("selection_empty")
+        established = await self._established_members(db, record) if inherited else []
+        try:
+            authorized = fs.reconcile_executable_subset(pairs, full_entries)
+            recorded = authorized
+            if established and not self._at_established_paths(authorized, established):
+                # Proven by exact path against a predecessor that itself
+                # held other paths than the established ones (an earlier
+                # migration's): the members stay where they live.
+                authorized = tuple(replace(entry, relative_path=path) for entry, path in zip(
+                    recorded, fs.established_logical_paths(pairs, established)))
+            return authorized, recorded
+        except fs.SelectionUnprovable as exc:
+            # Exact path is the proof. Only an inherited selection whose
+            # replacement reports a selected member under another path
+            # may still be carried -- by the whole-manifest proof alone.
+            try:
+                if not (inherited and exc.reason == "selected_path_missing"):
+                    raise exc
+                if source is None:
+                    raise fs.SelectionUnprovable("missing_inherited_predecessor")
+                migration = await self._inherited_migration(db, record, source, row, binding_id, pairs,
+                                                            full_entries, established, intent=intent)
+            except fs.SelectionUnprovable as refused:
+                raise _CarryRefused(refused, exc, source) from None
+            return migration.logical, migration.provenance
+
+    async def established_selection(self, record, *, manifest_entries: int | None = None
+                                    ) -> list[tuple[str, int]] | str | None:
+        """The root's ESTABLISHED file-selection decision, independent of any
+        provider binding: its live intent's members (``(logical path, size)``;
+        the one intent owner), or -- with no intent -- ``"all"`` for a
+        submission that asked for every file (``selection_mode="all"``) or
+        for a torrent whose content leaves nothing to choose (the one
+        singleton rule, ``fs.unambiguous_selection``: one of the root's own
+        generations settled it ``single_file``, or ``manifest_entries`` -- a
+        provider's manifest of the root -- has exactly one member), or
+        ``None`` while nothing is decided yet (an interactive choice of more
+        than one member still open). Never a subset of its own."""
+        async with get_db() as db:
+            intent = await _selection_intent_in_db(db, record.id)
+            single = intent is None and await db.fetchone(
+                "SELECT 1 FROM transfer_file_selections WHERE request_id=? AND decision=? AND decision_reason=? "
+                "LIMIT 1", (record.id, str(fs.SelectionDecision.ALL), str(fs.DecisionReason.SINGLE_FILE)))
+        if intent is not None:
+            return intent
+        mode = fs.normalize_selection_mode(getattr(record.request, "selection_mode", None))
+        if mode == fs.SELECTION_MODE_ALL or single:
+            return fs.SELECTION_MODE_ALL
+        if manifest_entries is not None and int(manifest_entries) > 0 and fs.unambiguous_selection(manifest_entries):
+            return fs.SELECTION_MODE_ALL
+        return None
+
+    async def standby_selection(self, record, file_manifest) -> tuple[FileManifestEntry, ...] | None:
+        """What a backup of ``record`` held by a provider that executes only
+        what is selected on its own resource (``contracts.UpstreamSelection``)
+        may be handed now, at that provider's own manifest coordinates: the
+        root's established decision (``established_selection``) -- every
+        member for ALL, or exactly the intent's members (mapped by the one
+        intent mapping, ``fs.intent_in_predecessor``; a subset stays that
+        subset) -- or ``None``: nothing decided, an empty or unmappable
+        decision, or no manifest yet. It creates no selection generation: a
+        backup is no route, and the route it may become proves its own."""
+        entries = tuple(getattr(file_manifest, "entries", None) or ())
+        if not entries:
+            return None
+        decision = await self.established_selection(record, manifest_entries=len(entries))
+        if decision is None:
+            return None
+        if decision == fs.SELECTION_MODE_ALL:
+            return entries
+        if not decision:
+            return None
+        listed = [(entry.relative_path, int(entry.expected_bytes or 0)) for entry in entries]
+        try:
+            chosen = fs.intent_in_predecessor(list(decision), listed)
+        except fs.SelectionUnprovable:
+            return None
+        by_member = {(entry.relative_path, int(entry.expected_bytes or 0)): entry for entry in entries}
+        members = tuple(by_member[item] for item in chosen if item in by_member)
+        return members if len(members) == len(chosen) else None
+
+    async def upstream_selection(self, record, binding_id: str, file_manifest=None, *, now: float):
+        """The members this binding's still-uncommitted generation authorizes,
+        at its provider's own manifest coordinates, for a provider that must
+        select them upstream before it can execute them
+        (``contracts.UpstreamSelection``) -- or ``None`` when there is nothing
+        to synchronize: no generation, a decision still open, a generation
+        already committed (its upstream selection was proven by its executable
+        manifest), or no complete provider manifest yet.
+
+        The one selection proof (``_authorized_subset``), evaluated against
+        the generation's recorded early manifest -- or, for an ALL decided at
+        creation that never recorded one, the provider's current
+        ``file_manifest`` -- so the provider is handed exactly what the commit
+        will authorize from its executable manifest, never a choice of its
+        own. A carried selection the proofs refuse is decided by the one
+        continuity owner (``_continuity_refusal``), exactly as at commit."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            row = await self._selection_generation(db, record.id, binding_id)
+            if (not row or row["manifest_committed_at"] is not None or str(row["decision"]) == "pending"
+                    or (await self._manifest_collection(db, row["manifest_id"]))["independent_members"]):
+                await db.rollback()
+                return None
+            if row["manifest_id"]:
+                members = [(entry["name"], entry["relative_path"], int(entry["expected_bytes"] or 0))
+                           for entry in await db.fetchall(
+                               "SELECT name,relative_path,expected_bytes FROM transfer_file_manifest_entries "
+                               "WHERE manifest_id=? ORDER BY ordinal", (row["manifest_id"],))]
+            elif str(row["decision"]) == "all" and file_manifest is not None:
+                members = [(entry.name, entry.relative_path, int(entry.expected_bytes or 0))
+                           for entry in file_manifest.entries]
+            else:
+                members = []
+            if not members:
+                await db.rollback()
+                return None
+            listed = tuple(SourceEntry(name, size, path, None) for name, path, size in members)
+            try:
+                _authorized, recorded = await self._authorized_subset(db, record, row, binding_id, listed,
+                                                                      already=False)
+            except _CarryRefused as carry:
+                await self._continuity_refusal(db, record, row, carry.source, binding_id, carry.refused, now,
+                                               migrated=carry.refused is not carry.exact and carry.source is not None)
+                return None
+            except fs.SelectionUnprovable as refused:
+                await db.rollback()
+                raise TransferError(NormalizedError(
+                    Domain.LIFECYCLE, Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION,
+                    diagnostic=refused.reason)) from None
+            await db.rollback()
+        return tuple(FileManifestEntry(entry.name, entry.relative_path, entry.expected_bytes) for entry in recorded)
+
+    @staticmethod
+    async def _manifest_members(db, manifest_id) -> list[tuple[str, int]]:
+        """``(path, size)`` of every entry of one recorded manifest."""
+        if not manifest_id:
+            return []
+        return [(entry["relative_path"], int(entry["expected_bytes"] or 0)) for entry in await db.fetchall(
+            "SELECT relative_path,expected_bytes FROM transfer_file_manifest_entries WHERE manifest_id=?",
+            (manifest_id,))]
+
+    @staticmethod
+    async def _established_members(db, record) -> list[tuple[str, int]]:
+        """``(recorded path, size)`` of every member the root has fanned out and
+        not set aside: its established logical decomposition. A member's
+        alternates are sibling children at its one path, so a path is one
+        member; siblings that disagree on its size leave it unknown (0)."""
+        sizes: dict[str, set] = {}
+        for path, size in await _established_children_in_db(db, record.id):
+            sizes.setdefault(path, set()).add(size)
+        return [(path, next(iter(values)) if len(values) == 1 else 0) for path, values in sizes.items()]
+
+    async def _continuity_refusal(self, db, record, row, source, binding_id: str, refused, now: float, *,
+                                  migrated: bool) -> str:
+        """THE outcome of a selection the whole-manifest proofs could not carry
+        onto this replacement, inside ``commit_selected_manifest``'s
+        transaction. Returns the held reason, or raises the normalized refusal
+        (the bounded reason only: never a path, name or payload).
+
+        Only a CONCLUSIVE refusal (``_refusal_conclusive``: durable evidence
+        positively contradicting the established identity) is final for this
+        route: on a route the operator chose it holds, visibly, and never
+        moves the route; on any other route it is raised as the permanent
+        continuity refusal that disqualifies this route alone
+        (``policy.continuity_disqualifying``). A refusal that only lacks
+        evidence, or that a later observation could still answer, stays the
+        ordinary retried refusal it always was."""
+        conclusive = migrated and await self._refusal_conclusive(db, record, source, binding_id)
+        if conclusive and await self._operator_chosen_route(db, record.id):
+            return await self._hold_generation(db, record, row, refused.reason, now)
+        await db.rollback()
+        raise TransferError(NormalizedError(
+            Domain.LIFECYCLE, Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION,
+            diagnostic=refused.reason,
+            **({"retryability": Retryability.NEVER, "permanence": Permanence.PERMANENT} if conclusive else {}),
+        )) from refused
+
+    async def _refusal_conclusive(self, db, record, source, binding_id: str) -> bool:
+        """Whether a refused continuation is CONCLUSIVE: durable evidence
+        positively contradicts that the replacement is the established
+        torrent -- its own provider reported exactly one info-hash for it, and
+        that hash differs from the one the established tree is bound to (the
+        root's validated hash, else the predecessor provider's single reported
+        hash). Those reports are durable resolution records of each bound
+        resource and never change for it.
+
+        Nothing else is conclusive. A manifest is re-recorded on every
+        observation until its generation commits, so agreeing current views
+        of a file list never prove it frozen; a missing fingerprint is absent
+        evidence, not a contradiction; and a file list that does not
+        correspond today may still be completing."""
+        from transfers.requests import bittorrent_root_hash
+
+        def attested(values) -> set[str]:
+            return {value.strip().casefold() for value in values if value.strip()}
+
+        replacement = attested(await self._binding_fingerprints(db, record.id, binding_id))
+        if len(replacement) != 1:
+            return False
+        digest = bittorrent_root_hash(record.request)
+        established = ({digest} if digest
+                       else attested(await self._binding_fingerprints(db, record.id, source["provider_resource_id"])))
+        return len(established) == 1 and replacement != established
+
+    @classmethod
+    async def _operator_chosen_route(cls, db, request_id: str) -> bool:
+        """Whether the root's current route is one the operator chose
+        explicitly (its latest route attempt opened by ``replace_root_route``
+        under ``operator_switch``)."""
+        latest = await db.fetchone(
+            """SELECT p.operation FROM route_attempt_provenance p
+               JOIN resolution_attempts a ON a.id=p.resolution_attempt_id
+               WHERE a.request_id=? AND a.state!='declined' ORDER BY p.ordinal DESC LIMIT 1""", (request_id,))
+        return bool(latest) and latest["operation"] == cls.OPERATOR_SWITCH
+
+    @staticmethod
+    def _at_established_paths(authorized, established) -> bool:
+        """Whether every authorized member already has an established
+        member's path -- the ordinary case, decided by path alone."""
+        try:
+            paths = {fs.normalize_relative_path(path) for path, _size in established}
+            return all(fs.normalize_relative_path(entry.relative_path) in paths for entry in authorized)
+        except fs.ManifestInvalid:
+            return False
+
+    async def _inherited_migration(self, db, record, source, row, binding_id: str, selected,
+                                   full_entries, established, *, intent=None) -> "fs.InheritedMigration":
+        """The whole-manifest proof that an inherited selection's members are
+        this replacement's, read inside ``commit_selected_manifest``'s
+        transaction, from durable evidence only.
+
+        First the existing strict proof, unchanged
+        (``fs.migrate_inherited_subset``: both bindings' own reported source
+        fingerprints, a unique basename/size bijection) -- accepted only when
+        the predecessor's selection reaches its origin through identity edges
+        (``_identity_lineage``), so an exact-path carry from a list it never
+        wholly matched lends it no authority. Only when that cannot prove:
+
+        * when the immediate predecessor attests no torrent hash, the
+          established tree's identity may still rest on the nearest attested
+          generation of the root's own proven lineage
+          (``_identity_anchor``), against which the selection is proven in the
+          approved order (``_carried_from_anchor``);
+        * otherwise -- or when that cannot prove -- the distinct bounded
+          coordinate-interpretation proof (``fs.coordinate_correspondence``)
+          against the immediate predecessor, only when the two are durably
+          bound to the same torrent (``_same_torrent_correspondence``).
+
+        Without any such binding the strict proof's own refusal stands."""
+        from transfers.requests import bittorrent_root_hash
+
+        predecessor = await self._manifest_members(db, source["manifest_id"])
+        replacement = await self._manifest_members(db, row["manifest_id"])
+        predecessor_fingerprints = await self._binding_fingerprints(db, record.id, source["provider_resource_id"])
+        replacement_fingerprints = await self._binding_fingerprints(db, record.id, binding_id)
+        digest = bittorrent_root_hash(record.request)
+        if digest and bittorrent_root_hash(record.resolvable) != digest:
+            digest = ""
+        try:
+            strict = fs.migrate_inherited_subset(
+                selected, predecessor, replacement, tuple(full_entries),
+                predecessor_fingerprints=predecessor_fingerprints,
+                replacement_fingerprints=replacement_fingerprints,
+                established=established)
+        except fs.SelectionUnprovable as unproven:
+            refusal = unproven
+        else:
+            # The bijection proves the two attested lists are one torrent; the
+            # selection it carries is the predecessor's, which vouches for it
+            # only through a lineage of identity edges back to its origin.
+            identity = digest or next(iter(_attested(predecessor_fingerprints)))
+            if await self._identity_lineage(db, record, source, identity):
+                return strict
+            refusal = fs.SelectionUnprovable("fallback_lineage_unproven")
+        if digest and intent is not None and not _attested(predecessor_fingerprints):
+            anchor = await self._identity_anchor(db, record, source, digest)
+            if anchor is not None:
+                try:
+                    return await self._carried_from_anchor(
+                        db, record, anchor, binding_id, intent, replacement, replacement_fingerprints,
+                        full_entries, established, digest, replacement_manifest_id=row["manifest_id"])
+                except fs.SelectionUnprovable as anchored:
+                    refusal = anchored
+        correspondence = await self._same_torrent_correspondence(
+            db, record, source, binding_id, predecessor, replacement, predecessor_fingerprints,
+            replacement_fingerprints, replacement_manifest_id=row["manifest_id"])
+        if correspondence is None:
+            raise refusal
+        return fs.migrate_by_correspondence(selected, predecessor, correspondence, tuple(full_entries),
+                                            established=established)
+
+    # How far back a root's generation lineage is followed for an identity
+    # anchor: a bound on the walk, never a policy -- a lineage longer than this
+    # anchors nothing.
+    _ANCHOR_LINEAGE_LIMIT = 64
+
+    async def _identity_anchor(self, db, record, start, digest: str):
+        """The nearest generation of this root's committed lineage whose own
+        provider attested exactly the root's validated info-hash, reached from
+        ``start`` (the immediate predecessor) only through generations that
+        legitimately carried the established selection -- or ``None``.
+
+        The anchor is the generation ``_nearest_attested`` reaches; it anchors
+        only when every generation crossed to reach it is its torrent as a
+        complete collection (``_bridged``) and its own identity reaches back
+        to where the selection was made (``_identity_lineage``). Durable rows
+        only: reproduced identically after a restart."""
+        found = await self._nearest_attested(db, record, start, digest, set())
+        if found is None:
+            return None
+        anchor, crossed = found
+        return anchor if (await self._bridged(db, anchor, crossed)
+                          and await self._identity_lineage(db, record, anchor, digest)) else None
+
+    async def _nearest_attested(self, db, record, start, digest: str, seen: set):
+        """``(anchor, crossed)``: the nearest generation from ``start`` whose
+        binding's own resolution of THIS root reported exactly ``digest``
+        (``_binding_fingerprints``), and the fingerprint-less generations
+        crossed on the way (nearest first) -- or ``None``.
+
+        Every generation walked is committed and ``proven`` with a recorded
+        complete manifest. A generation that attested nothing is crossed only
+        when it was born carrying the selection (``inherited``), was produced
+        for this very root (``_resolved_for_root``), is no legacy compatibility
+        reconstruction, and names a predecessor. Anything else ends the walk:
+        an uncommitted, held or never-proven generation, another root's, a
+        missing link, a generation already in ``seen`` (the caller's walk, so
+        no cycle is ever followed), a truncated manifest, or any other hash.
+
+        ``proven`` is SELECTION continuity -- a commit may have proven only the
+        selected members by exact path while the unselected ones differ -- so
+        reaching an anchor proves nothing by itself: the caller still requires
+        each crossed generation to correspond, as a whole collection, to it
+        (``_bridged``)."""
+        crossed, row = [], start
+        for _ in range(self._ANCHOR_LINEAGE_LIMIT):
+            if (row is None or row["id"] in seen or str(row["request_id"]) != str(record.id)
+                    or row["manifest_committed_at"] is None or row["continuity"] != str(fs.Continuity.PROVEN)
+                    or not row["manifest_id"]
+                    or (await self._manifest_collection(db, row["manifest_id"]))["source_truncated"]):
+                return None
+            attested = _attested(await self._binding_fingerprints(db, record.id, row["provider_resource_id"]))
+            if attested:
+                return (row, crossed) if attested == {digest} else None
+            if (str(row["decision_reason"] or "") != str(fs.DecisionReason.INHERITED) or not row["predecessor_id"]
+                    or row["continuity_reason"] == self.COMPATIBILITY_RECONSTRUCTION
+                    or not await self._resolved_for_root(db, record.id, row["provider_resource_id"])):
+                return None
+            seen.add(row["id"])
+            crossed.append(row)
+            row = await db.fetchone("SELECT * FROM transfer_file_selections WHERE id=?", (row["predecessor_id"],))
+        return None
+
+    async def _bridged(self, db, anchor, crossed) -> bool:
+        """Whether every crossed fingerprint-less generation (``crossed``,
+        nearest first) is the anchor's torrent as a COMPLETE collection: its
+        whole recorded list corresponds one-to-one, every member at its exact
+        size, under exactly one approved interpretation
+        (``fs.coordinate_correspondence``) to the whole list of the
+        generation it was carried from -- itself the anchor or an already
+        bridged generation -- or to the anchor's own. Walked from the anchor
+        outwards, so each edge rests on a proven one."""
+        anchor_members = await self._manifest_members(db, anchor["manifest_id"])
+        earlier = anchor_members
+        for row in reversed(crossed):
+            members = await self._manifest_members(db, row["manifest_id"])
+            if not (_corresponds(earlier, members) or _corresponds(anchor_members, members)):
+                return False
+            earlier = members
+        return True
+
+    async def _identity_lineage(self, db, record, row, digest: str) -> bool:
+        """Whether a committed generation's identity reaches back, edge by
+        edge, to where its root's selection was made -- so its tree may vouch
+        for the inherited selection it holds.
+
+        Walked through ``predecessor_id`` from ``row`` while each generation
+        was born carrying the selection (``inherited``); only a generation
+        whose selection was decided on its own list (confirmed, closed, timed
+        out, single file, ...) is an origin and ends the walk proven. An
+        inherited generation naming no predecessor has lost the provenance of
+        what it carries and vouches for nothing. Every generation on the way
+        is this root's, committed and ``proven`` -- never a legacy
+        compatibility reconstruction -- and attests no hash other than
+        ``digest``. Each step is an identity edge (``_identity_edge``) to its
+        predecessor -- or, where that predecessor attested no hash, to the
+        identity anchor beneath it (``_anchor_beneath``): exactly the
+        whole-collection proof the commit of an anchored generation rests on
+        (``_inherited_migration``), reconstructed, after which the walk goes
+        on from the anchor. An exact-path carry of the selected members alone
+        is continuity of the selection, never of the collection. Anything else
+        -- a missing, repeated or foreign link, a lineage longer than the
+        bound -- vouches for nothing. Reconstructed from durable rows and
+        frozen committed manifests only.
+
+        The bound is the commit's own, per proof: a walk follows at most
+        ``_ANCHOR_LINEAGE_LIMIT`` generations of direct edges; an anchor proof
+        crosses at most that many generations to its anchor, the anchor
+        included (``_nearest_attested``), and the anchor's lineage is that
+        proof's own walk under a fresh bound -- exactly what
+        ``_identity_anchor`` granted the commit being reconstructed, never
+        more. One ``seen`` across the whole reconstruction visits no
+        generation twice, so it is finite whatever the history."""
+        seen, steps = set(), 0
+        while steps < self._ANCHOR_LINEAGE_LIMIT:
+            steps += 1
+            if (row is None or row["id"] in seen or str(row["request_id"]) != str(record.id)
+                    or row["manifest_committed_at"] is None or row["continuity"] != str(fs.Continuity.PROVEN)
+                    or row["continuity_reason"] == self.COMPATIBILITY_RECONSTRUCTION or not row["manifest_id"]):
+                return False
+            seen.add(row["id"])
+            newer = _attested(await self._binding_fingerprints(db, record.id, row["provider_resource_id"]))
+            if newer and newer != {digest}:
+                return False
+            if str(row["decision_reason"] or "") != str(fs.DecisionReason.INHERITED):
+                return True
+            if not row["predecessor_id"]:
+                return False
+            older = await db.fetchone("SELECT * FROM transfer_file_selections WHERE id=?", (row["predecessor_id"],))
+            if older is None or not older["manifest_id"]:
+                return False
+            if not await self._identity_edge(db, record, older, row, digest):
+                older = await self._anchor_beneath(db, record, older, row, digest, seen)
+                steps = 0                       # the anchor's lineage: that proof's own walk
+            row = older
+        return False
+
+    async def _identity_edge(self, db, record, older, newer, digest: str) -> bool:
+        """THE identity edge between two generations of this root: both ends'
+        own providers attested exactly ``digest``, or both recorded lists are
+        complete (neither source truncated) and correspond as wholes
+        (``_corresponds``)."""
+        if (_attested(await self._binding_fingerprints(db, record.id, older["provider_resource_id"])) == {digest}
+                and _attested(await self._binding_fingerprints(db, record.id, newer["provider_resource_id"]))
+                == {digest}):
+            return True
+        if ((await self._manifest_collection(db, newer["manifest_id"]))["source_truncated"]
+                or (await self._manifest_collection(db, older["manifest_id"]))["source_truncated"]):
+            return False
+        return _corresponds(await self._manifest_members(db, older["manifest_id"]),
+                            await self._manifest_members(db, newer["manifest_id"]))
+
+    async def _anchor_beneath(self, db, record, older, newer, digest: str, seen: set):
+        """The identity anchor ``newer`` was proven against when its own
+        predecessor ``older`` attested no hash -- or ``None``.
+
+        The commit of such a generation (``_inherited_migration``) proves it
+        against the nearest attested generation of the root's lineage
+        (``_identity_anchor``), never against the fingerprint-less list it was
+        carried from; this is that same proof, reconstructed: the root's own
+        validated info-hash is ``digest``, ``newer`` was produced for this very
+        root, every generation crossed down to the anchor corresponds to it as
+        a complete collection (``_bridged``), and ``newer``'s complete
+        collection is the anchor's (``_identity_edge``). The crossing is
+        bounded exactly as ``_identity_anchor``'s; the anchor's own lineage is
+        the caller's walk to continue, under its own bound, sharing ``seen``."""
+        from transfers.requests import bittorrent_root_hash
+
+        root_hash = bittorrent_root_hash(record.request)
+        if (not root_hash or root_hash != digest or bittorrent_root_hash(record.resolvable) != root_hash
+                or _attested(await self._binding_fingerprints(db, record.id, older["provider_resource_id"]))
+                or not await self._resolved_for_root(db, record.id, newer["provider_resource_id"])):
+            return None
+        found = await self._nearest_attested(db, record, older, digest, seen)
+        if found is None:
+            return None
+        anchor, crossed = found
+        if not (await self._bridged(db, anchor, crossed)
+                and await self._identity_edge(db, record, anchor, newer, digest)):
+            return None
+        return anchor
+
+    async def _carried_from_anchor(self, db, record, anchor, binding_id: str, intent, replacement,
+                                   replacement_fingerprints, full_entries, established,
+                                   digest: str, *, replacement_manifest_id) -> "fs.InheritedMigration":
+        """The inherited selection proven against the root's identity anchor:
+        the transfer's intent in the anchor's own committed coordinates, then
+        the approved proofs in their order -- exact path, the existing strict
+        basename/size bijection (the anchor's and the replacement's own
+        reported hashes), and the bounded coordinate correspondence -- all of
+        them only for a replacement produced for this root that reports no
+        other hash.
+        Logical paths stay the established ones; the replacement's own entries
+        are the provenance. Raises the last proof's bounded refusal."""
+        # Every anchored proof is about a replacement produced for this very
+        # root that names no other torrent: a positive contradiction is never
+        # carried, whatever the paths say.
+        attested = _attested(replacement_fingerprints)
+        if attested and attested != {digest}:
+            raise fs.SelectionUnprovable("fallback_fingerprint_mismatch")
+        if not await self._resolved_for_root(db, record.id, binding_id):
+            raise fs.SelectionUnprovable("fallback_missing_fingerprint")
+        anchor_members = await self._manifest_members(db, anchor["manifest_id"])
+        pairs = fs.intent_in_predecessor(intent, anchor_members)
+        try:
+            recorded = fs.reconcile_executable_subset(pairs, full_entries)
+        except fs.SelectionUnprovable:
+            pass
+        else:
+            logical = recorded
+            if established and not self._at_established_paths(recorded, established):
+                logical = tuple(replace(entry, relative_path=path) for entry, path in zip(
+                    recorded, fs.established_logical_paths(pairs, established)))
+            return fs.InheritedMigration(tuple(logical), tuple(recorded))
+        try:
+            return fs.migrate_inherited_subset(
+                pairs, anchor_members, replacement, tuple(full_entries),
+                predecessor_fingerprints=await self._binding_fingerprints(db, record.id, anchor["provider_resource_id"]),
+                replacement_fingerprints=replacement_fingerprints, established=established)
+        except fs.SelectionUnprovable:
+            pass
+        if (await self._manifest_collection(db, replacement_manifest_id))["source_truncated"]:
+            raise fs.SelectionUnprovable("coordinate_replacement_truncated")    # no complete list to correspond
+        return fs.migrate_by_correspondence(pairs, anchor_members,
+                                            fs.coordinate_correspondence(anchor_members, replacement),
+                                            tuple(full_entries), established=established)
+
+    async def _same_torrent_correspondence(self, db, record, source, binding_id: str, predecessor, replacement,
+                                           predecessor_fingerprints, replacement_fingerprints, *,
+                                           replacement_manifest_id=None):
+        """The bounded coordinate correspondence between the predecessor's and
+        the replacement's COMPLETE file lists -- or ``None`` when DownloadPulse
+        holds no durable binding of both to one torrent identity (D1), in
+        which case nothing is proven here. Raises ``fs.SelectionUnprovable``
+        when the binding holds but no single interpretation corresponds.
+
+        The binding, every element durable and authored by DownloadPulse or a
+        provider, never by a display name or a path:
+
+        * the root's info-hash -- its admission fingerprint, reproduced from
+          the same row's persisted payload (``bittorrent_root_hash``), and the
+          one the root is resolved as;
+        * the replacement was produced for exactly that root: a resolution
+          attempt of THIS root request by the replacement's provider recorded
+          that resource (``resolution_attempts.request_id`` and its result's
+          resource id), and the replacement reports no other fingerprint;
+        * one side's tree is that torrent's: the predecessor's own provider
+          reported exactly that info-hash for the resource whose file list it
+          is (``_binding_fingerprints``) and that generation's identity
+          reaches back to where the selection was made (``_identity_lineage``:
+          never an exact-path carry from a list it does not wholly match); or
+          the replacement's own provider did, while the predecessor -- itself
+          produced for this root, committed, proven and of such a lineage --
+          reported none, so the complete
+          correspondence bridges the established selection onto the newly
+          attested tree (a later hash never attests the earlier files by
+          itself); or the root is an uploaded ``.torrent`` whose own verified
+          member tree both file lists correspond to. A provider's report is
+          its record of the torrent it holds, which DownloadPulse cannot verify
+          cryptographically.
+
+        Every branch corresponds COMPLETE lists only: a recorded list whose
+        source held more (``source_truncated``) refuses
+        (``coordinate_manifest_truncated``). Paths and sizes then identify
+        members; they never attest content."""
+        from transfers.requests import bittorrent_root_hash, torrent_member_tree
+
+        digest = bittorrent_root_hash(record.request)
+        if not digest or bittorrent_root_hash(record.resolvable) != digest:
+            return None
+        attested = _attested(replacement_fingerprints)
+        if attested and attested != {digest}:
+            return None
+        if not await self._resolved_for_root(db, record.id, binding_id):
+            return None
+        # A list whose source held more than it recorded is no complete list:
+        # no branch of this proof may correspond it.
+        complete = not ((await self._manifest_collection(db, source["manifest_id"]))["source_truncated"]
+                        or (await self._manifest_collection(db, replacement_manifest_id))["source_truncated"])
+        established = _attested(predecessor_fingerprints)
+        if established == {digest}:
+            if not await self._identity_lineage(db, record, source, digest):
+                return None
+            if not complete:
+                raise fs.SelectionUnprovable("coordinate_manifest_truncated")
+            return fs.coordinate_correspondence(predecessor, replacement)
+        if (attested == {digest} and not established and complete
+                and await self._resolved_for_root(db, record.id, source["provider_resource_id"])
+                and await self._identity_lineage(db, record, source, digest)):
+            return fs.coordinate_correspondence(predecessor, replacement)
+        payload = record.request.payload
+        tree = torrent_member_tree(payload) if isinstance(payload, (bytes, bytearray)) else None
+        if tree is None or tree.info_hash != digest:
+            return None
+        if not complete:
+            raise fs.SelectionUnprovable("coordinate_manifest_truncated")
+        return fs.compose_correspondences(fs.coordinate_correspondence(list(tree.members), predecessor),
+                                          fs.coordinate_correspondence(list(tree.members), replacement))
+
+    @staticmethod
+    async def _resolved_for_root(db, request_id: str, binding_id: str) -> bool:
+        """Whether the resource behind ``binding_id`` was produced for exactly
+        this root request: one of its provider's resolution attempts OF THIS
+        REQUEST recorded that resource (directly, or as the prepared backup
+        the request's route took over)."""
+        binding = await db.fetchone("SELECT provider_id,resource_key FROM provider_resources WHERE id=?",
+                                    (binding_id,))
+        if not binding:
+            return False
+        resource_key = binding["resource_key"] or binding_id
+        for attempt in await db.fetchall(
+                """SELECT result FROM resolution_attempts WHERE request_id=? AND provider_id=?
+                   AND state!='declined' AND result IS NOT NULL""", (request_id, binding["provider_id"])):
+            observation = (codec.load(attempt["result"], {}) or {}).get("observation") or {}
+            if (observation.get("resource") or {}).get("id") == resource_key:
+                return True
+        return False
+
+    @staticmethod
+    async def _binding_fingerprints(db, request_id: str, binding_id: str) -> frozenset[str]:
+        """The source fingerprints the provider itself reported for the
+        resource behind ``binding_id`` when it resolved ``request_id`` -- its
+        recorded route results' observations. Empty when none was reported."""
+        binding = await db.fetchone("SELECT resource_key FROM provider_resources WHERE id=?", (binding_id,))
+        resource_key = (binding["resource_key"] if binding and binding["resource_key"] else binding_id)
+        found = set()
+        for attempt in await db.fetchall(
+                "SELECT result FROM resolution_attempts WHERE request_id=? AND result IS NOT NULL", (request_id,)):
+            observation = (codec.load(attempt["result"], {}) or {}).get("observation") or {}
+            if (observation.get("resource") or {}).get("id") == resource_key and observation.get("fingerprint"):
+                found.add(str(observation["fingerprint"]))
+        return frozenset(found)
+
+    # The one compatibility crossing a pre-3a0 decomposition may make into the
+    # generation model (see ``_continuity``). Recorded as the committed
+    # generation's continuity provenance.
+    COMPATIBILITY_RECONSTRUCTION = "legacy_compatibility_reconstruction"
+    _COMPATIBLE_DISCONTINUITIES = frozenset({"established_member_missing", "unexplained_member"})
+
+    async def _continuity(self, db, record, row, authorized, now: float) -> tuple[str | None, str | None]:
+        """Inside ``commit_selected_manifest``'s transaction: may this
+        generation of a root that already fanned out commit? Returns
+        ``(held_reason, provenance)``.
+
+        The rule is strict continuity: ``authorized`` must be exactly the
+        root's established decomposition (``fs.decomposition_continuity``) --
+        every member the root's earlier fan-out created that no generation
+        superseded. Proven (or nothing established yet): ``(None, None)``.
+
+        One compatibility crossing exists, for a decomposition persisted before
+        decomposition-generation authority existed. It needs ALL of: the
+        immediate committed predecessor is ``legacy_established`` (a pre-3a0
+        compatibility lineage, never a claim about which coordinate model made
+        it); that predecessor carries an unconsumed terminal reacquisition;
+        the discontinuity is purely a different member set (no member at a
+        retained coordinate has an incompatible size, so no retained
+        coordinate's material is overwritten -- a member whose coordinate is
+        not in the new set leaves its material where it is, never adoptable at
+        a current coordinate); and no established member's writer is still
+        live. Then the existing generational supersede of the fan-out owner
+        reconstructs current executable state under the frozen collection
+        root, the generation commits as ordinary current-model state
+        (``legacy_established`` is never carried), and the transition is
+        consumed here, in the same transaction -- so it is never replayed.
+
+        Anything else is recorded ``held`` with the bounded reason (the
+        transaction commits only that) and nothing changes."""
+        established: dict[str, int] = {}
+        for path, size in await _established_children_in_db(db, record.id):
+            established[path] = max(established.get(path, 0), int(size or 0))
+        reason = fs.decomposition_continuity(list(established.items()), tuple(authorized)) if established else None
+        if reason is None:
+            return None, None
+        predecessor = await self._committed_predecessor(db, record.id, row["provider_resource_id"])
+        if (predecessor is not None and predecessor["legacy_established"]
+                and predecessor["reacquired_at"] is not None and predecessor["reacquisition_consumed_at"] is None
+                and reason in self._COMPATIBLE_DISCONTINUITIES and authorized):
+            live = await db.fetchone(
+                """SELECT 1 FROM transfer_requests c JOIN download_files f ON f.request_id=c.id
+                   JOIN execution_attempts e ON e.id=f.execution_attempt_id
+                   WHERE c.parent_id=? AND e.state IN ('prepared','queued','running','paused','unknown')""",
+                (record.id,))
+            if live:
+                reason = "compatibility_awaits_writer_retirement"
+            else:
+                await db.execute("UPDATE transfer_file_selections SET reacquisition_consumed_at=?,updated_at=? "
+                                 "WHERE id=?", (now, now, predecessor["id"]))
+                return None, self.COMPATIBILITY_RECONSTRUCTION
+        return await self._hold_generation(db, record, row, reason, now), None
+
+    @staticmethod
+    async def _hold_generation(db, record, row, reason: str, now: float) -> str:
+        """Record the uncommitted generation ``held`` with its bounded
+        ``reason`` and commit only that, inside the caller's transaction:
+        nothing fans out, supersedes or starts, and the generation is
+        re-proven on every later pass. Returns the reason."""
+        await db.execute(
+            """UPDATE transfer_file_selections SET continuity=?, continuity_reason=?, updated_at=?
+               WHERE id=? AND manifest_committed_at IS NULL""",
+            (str(fs.Continuity.HELD), reason, now, row["id"]))
+        # Re-proven on every pass while held: only the first hold, or a new
+        # reason, is an occurrence.
+        if row["continuity"] != str(fs.Continuity.HELD) or row["continuity_reason"] != reason:
+            await journal(db, je.selection("held", transfer_id=record.transfer_id, selection_id=row["id"],
+                                           provider_id=row["provider_id"], detail=str(reason).replace("_", " ")))
+        await db.commit()
+        return reason
+
+    # The route-attempt operation an operator's explicit root route
+    # replacement is recorded under, distinct from ordinary resolution
+    # (``resolve``) and from automatic failover (whose predecessor attempt
+    # carries the exhaustion that caused it).
+    OPERATOR_SWITCH = "operator_switch"
+    # The route-attempt operation an automatic readiness-driven yield of a
+    # still-preparing root to its prepared backup is recorded under
+    # (``TransferEngine._readiness_promotion``): never a failure of the
+    # released route, never an operator's choice.
+    READINESS_PROMOTION = "readiness_promotion"
+    # Root route replacements that pin the replaced root to their target
+    # until it resolves (``begin_pinned_resolution``): an operator's explicit
+    # choice and a readiness yield. Only a route a readiness yield itself
+    # opened is never yielded again (anti-flapping by route state, not by a
+    # counter, ``TransferEngine._readiness_promotion``); an operator's switch
+    # is a choice of route, not a lock against a later readiness yield.
+    READINESS_PINNED_OPERATIONS = frozenset({OPERATOR_SWITCH, READINESS_PROMOTION})
+
+    # A canonical artifact whose selected candidate still decides a root's
+    # relevance to a provider switch: actionable (``canonical_artifact_
+    # membership_sql``) and not finished, given up or a duplicate.
+    _ROUTE_SUBJECT_ARTIFACT = ("f.request_id IS NOT NULL AND COALESCE(f.blocked,0)=0 "
+                               "AND COALESCE(f.mirror_state,'')!='standby' "
+                               "AND f.status NOT IN ('completed','cancelled','duplicate')")
+
+    @classmethod
+    async def _artifact_route_roots(cls, db, transfer_ids) -> dict[int, str]:
+        """Inside the caller's session, set-oriented: for each unfinished
+        canonical artifact of ``transfer_ids``, the ONE root request that
+        produced its currently SELECTED candidate -- ``artifact id -> root
+        id`` -- read from durable provenance alone. An artifact with canonical
+        candidate bindings is attributed through the binding at its selected
+        position and that binding's origins; one without any, through its own
+        request. A request maps to its root (a member to the root that
+        decomposed it). An artifact whose selected candidate several roots
+        supply (a shared binding), a root of another transfer supplies
+        (cross-transfer consolidation), or no binding records is not
+        attributable and is absent: no root's provider switch may claim it.
+        One query for any number of transfers."""
+        ids = list(dict.fromkeys(int(item) for item in transfer_ids))
+        roots: dict[int, str] = {}
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            for row in await db.fetchall(
+                    f"""WITH chosen AS (
+                        SELECT f.id AS artifact_id,f.torrent_id AS transfer_id,f.request_id,
+                            (SELECT b.id FROM canonical_candidate_bindings b WHERE b.canonical_artifact_id=f.id
+                             AND b.candidate_order=COALESCE(f.selected_candidate,0)+1) AS binding_id,
+                            EXISTS(SELECT 1 FROM canonical_candidate_bindings b
+                                   WHERE b.canonical_artifact_id=f.id) AS bound
+                        FROM download_files f WHERE f.torrent_id IN ({marks}) AND {cls._ROUTE_SUBJECT_ARTIFACT}),
+                    producers AS (
+                        SELECT c.artifact_id,c.transfer_id,COALESCE(r.parent_id,r.id) AS root_id,
+                            r.transfer_id AS root_transfer_id
+                        FROM chosen c JOIN canonical_candidate_origins o ON o.binding_id=c.binding_id
+                        JOIN transfer_requests r ON r.id=o.request_id WHERE c.bound
+                        UNION ALL
+                        SELECT c.artifact_id,c.transfer_id,COALESCE(r.parent_id,r.id),r.transfer_id
+                        FROM chosen c JOIN transfer_requests r ON r.id=c.request_id WHERE NOT c.bound)
+                    SELECT artifact_id,MIN(root_id) AS root_id FROM producers GROUP BY artifact_id
+                    HAVING COUNT(DISTINCT root_id)=1 AND MIN(root_transfer_id)=MAX(root_transfer_id)
+                    AND MIN(root_transfer_id)=MIN(transfer_id)""", tuple(chunk)):
+                roots[int(row["artifact_id"])] = str(row["root_id"])
+        return roots
+
+    @classmethod
+    async def _root_alternate_sources(cls, db, transfer_ids) -> dict[str, list[dict]]:
+        """Inside the caller's session, set-oriented: by root id, every
+        CURRENT canonical candidate binding (``candidate_order <= 100000``:
+        never the replaced history band) of an unfinished canonical artifact
+        of ``transfer_ids`` (``_ROUTE_SUBJECT_ARTIFACT``) that is NOT the
+        artifact's selected candidate, attributed through its origins to the
+        root of the same transfer that issued it (a member to its root).
+        Canonical binding is the proof of equivalence: each is another
+        upstream source of that same file. Each entry: ``artifact_id``,
+        ``candidate_id``, ``provider_id`` (the binding's), ``order`` and the
+        provider of the artifact's selected candidate now
+        (``selected_provider_id``). One query for any number of transfers."""
+        ids = list(dict.fromkeys(int(item) for item in transfer_ids))
+        found: dict[str, list[dict]] = {}
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            for row in await db.fetchall(
+                    f"""SELECT DISTINCT f.id AS artifact_id,COALESCE(r.parent_id,r.id) AS root_id,b.candidate_id,
+                        b.provider_id,b.candidate_order,
+                        json_extract(f.candidates,'$['||COALESCE(f.selected_candidate,0)||'].provider_id')
+                            AS selected_provider_id
+                    FROM download_files f
+                    JOIN canonical_candidate_bindings b ON b.canonical_artifact_id=f.id AND b.candidate_order<=100000
+                        AND b.candidate_order!=COALESCE(f.selected_candidate,0)+1
+                    JOIN canonical_candidate_origins o ON o.binding_id=b.id
+                    JOIN transfer_requests r ON r.id=o.request_id AND r.transfer_id=f.torrent_id
+                    WHERE f.torrent_id IN ({marks}) AND {cls._ROUTE_SUBJECT_ARTIFACT}
+                    ORDER BY f.id,b.candidate_order""", tuple(chunk)):
+                found.setdefault(str(row["root_id"]), []).append({
+                    "artifact_id": int(row["artifact_id"]), "candidate_id": str(row["candidate_id"]),
+                    "provider_id": str(row["provider_id"] or ""), "order": int(row["candidate_order"]),
+                    "selected_provider_id": row["selected_provider_id"]})
+        return found
+
+    # THE identity of a pending provider choice's authorized result
+    # (``transfers.provider_choice``): a CURRENT binding of the choice's file
+    # whose provider is the requested one and whose candidate was issued -- by
+    # an attempt of that provider -- for the choice's source root (the root or
+    # one of its members) under the choice's own operator switch or a later
+    # route attempt of it: the origin that discovered exactly that candidate,
+    # never another origin of the same binding.
+    # Parameters: artifact id, provider id, source root id, switch attempt id.
+    # Every decision about a choice's target -- which candidate landed, whether
+    # the activation's target is it, whether the commit selects it -- reads
+    # exactly this.
+    _CHOICE_TARGET_SQL = """SELECT b.candidate_id FROM canonical_candidate_bindings b
+        JOIN canonical_candidate_origins o ON o.binding_id=b.id
+        JOIN transfer_requests r ON r.id=o.request_id
+        JOIN resolution_attempts a ON a.id=o.resolution_attempt_id
+        JOIN route_attempt_provenance op ON op.resolution_attempt_id=o.resolution_attempt_id
+        WHERE b.canonical_artifact_id=? AND b.candidate_order<=100000 AND b.provider_id=?
+        AND a.provider_id=b.provider_id AND o.discovered_candidate_id=b.candidate_id AND COALESCE(r.parent_id,r.id)=?
+        AND op.ordinal>=(SELECT ordinal FROM route_attempt_provenance WHERE resolution_attempt_id=?)"""
+
+    @classmethod
+    async def _choice_target(cls, db, choice, candidate_id: str | None = None) -> str | None:
+        """Inside the caller's session: the choice's authorized result -- the
+        first in canonical order, or exactly ``candidate_id`` when it is one --
+        else ``None`` (``_CHOICE_TARGET_SQL``)."""
+        sql = cls._CHOICE_TARGET_SQL
+        params = [int(choice["artifact_id"]), str(choice["provider_id"]), str(choice["source_root_id"]),
+                  str(choice["switch_attempt_id"])]
+        if candidate_id is not None:
+            sql += " AND b.candidate_id=?"
+            params.append(str(candidate_id))
+        found = await db.fetchone(sql + " ORDER BY b.candidate_order LIMIT 1", tuple(params))
+        return str(found["candidate_id"]) if found else None
+
+    async def provider_choice_target_current(self, choice_id: str, candidate_id: str) -> bool:
+        """Whether ``candidate_id`` is, now, the authorized result of the
+        still-pending choice ``choice_id`` (``_choice_target``): the activation
+        landing that choice checks this before it disturbs anything."""
+        async with get_db() as db:
+            choice = await db.fetchone("SELECT * FROM pending_provider_choices WHERE id=? AND state='pending'",
+                                       (str(choice_id),))
+            return choice is not None and await self._choice_target(db, choice, candidate_id) is not None
+
+    @classmethod
+    async def _fulfilment_valid(cls, db, row, chosen: int, choice_id: str) -> bool:
+        """Inside a transaction about to select candidate index ``chosen`` for
+        the file ``row`` (read before it): whether that selection is exactly the
+        fulfilment of pending choice ``choice_id`` -- still pending, the file
+        still selects what it selected when the choice was made, the choice's
+        switch is still its source root's latest operator switch, and the
+        candidate at ``chosen`` is the choice's authorized result
+        (``_choice_target``: identity, provider, root and switch generation)."""
+        stored = [codec.candidate(item) for item in codec.load(row["candidates"], [])]
+        if not 0 <= chosen < len(stored):
+            return False
+        prior = int(row["selected_candidate"] or 0)
+        prior_id = str(stored[prior].id) if 0 <= prior < len(stored) else None
+        choice = await db.fetchone(
+            """SELECT c.* FROM pending_provider_choices c WHERE c.id=? AND c.artifact_id=? AND c.state='pending'
+               AND c.expected_candidate_id=? AND c.switch_attempt_id=(
+                   SELECT p.resolution_attempt_id FROM route_attempt_provenance p WHERE p.request_id=c.source_root_id
+                   AND p.operation='operator_switch' ORDER BY p.ordinal DESC LIMIT 1)""",
+            (str(choice_id), int(row["id"]), prior_id))
+        return choice is not None and await cls._choice_target(db, choice, str(stored[chosen].id)) is not None
+
+    @classmethod
+    async def _settle_provider_choice(cls, db, row, chosen: int, fulfils_choice: str | None) -> bool:
+        """Inside a transaction committing the selection of candidate index
+        ``chosen`` for the file ``row`` (read before the commit), decide its
+        pending provider choice (``transfers.provider_choice``):
+
+        * ``fulfils_choice`` -- the choice's own landing: it commits only while
+          it is still pending, the file still selected what it selected when
+          the choice was made (``expected_candidate_id``) and the choice's
+          switch is still its source root's latest operator switch. ``False``
+          (the caller rolls back) otherwise, so a superseded choice never lands;
+        * any other selection (the host selector, recovery failover): the
+          pending choice is ``committed`` (``selected_directly``) when the
+          chosen candidate is exactly its authorized result
+          (``_choice_target``), else ``superseded`` (``selection_changed``).
+
+        The fulfilment additionally requires the newly selected candidate
+        itself to be the choice's authorized result (``_choice_target``): the
+        commit verifies the target's identity, provider, root and switch
+        generation, never only the selection it replaces."""
+        artifact_id = int(row["id"])
+        stored = [codec.candidate(item) for item in codec.load(row["candidates"], [])]
+        chosen_id = str(stored[chosen].id) if 0 <= chosen < len(stored) else None
+        prior = int(row["selected_candidate"] or 0)
+        prior_id = str(stored[prior].id) if 0 <= prior < len(stored) else None
+        now = time.time()
+        if fulfils_choice is not None:
+            # ``_fulfilment_valid`` decided, in this same transaction, that the
+            # candidate selected is exactly the choice's authorized result.
+            if not await cls._fulfilment_valid(db, row, chosen, fulfils_choice):
+                return False
+            fulfilled = await db.execute(
+                """UPDATE pending_provider_choices SET state='committed',reason='landed',committed_candidate_id=?,
+                   updated_at=? WHERE id=? AND artifact_id=? AND state='pending' AND expected_candidate_id=?
+                   AND switch_attempt_id=(SELECT p.resolution_attempt_id FROM route_attempt_provenance p
+                       WHERE p.request_id=pending_provider_choices.source_root_id AND p.operation='operator_switch'
+                       ORDER BY p.ordinal DESC LIMIT 1)""",
+                (chosen_id, now, str(fulfils_choice), artifact_id, prior_id))
+            return bool(fulfilled.rowcount)
+        for choice in await db.fetchall("SELECT * FROM pending_provider_choices WHERE artifact_id=? AND state='pending'",
+                                        (artifact_id,)):
+            direct = chosen_id is not None and await cls._choice_target(db, choice, chosen_id) is not None
+            await db.execute("""UPDATE pending_provider_choices SET state=?,reason=?,committed_candidate_id=?,
+                updated_at=? WHERE id=? AND state='pending'""",
+                ("committed", "selected_directly", chosen_id, now, choice["id"]) if direct
+                else ("superseded", "selection_changed", None, now, choice["id"]))
+        return True
+
+    @staticmethod
+    async def _choice_still_valid(db, root_id: str, choice: dict) -> bool:
+        """Inside the caller's transaction: the file still selects
+        ``expected_candidate_id``, is unfinished and of the same transfer, and
+        ``source_candidate_id`` is still one of its CURRENT bindings issued by
+        ``root_id`` (or a member of it) -- the canonical proof that root's link
+        is an equivalent source of this file."""
+        row = await db.fetchone(
+            """SELECT f.candidates,f.selected_candidate,f.status,f.torrent_id FROM download_files f
+               JOIN transfer_requests r ON r.id=? AND r.transfer_id=f.torrent_id
+               WHERE f.id=? AND COALESCE(f.mirror_state,'')!='standby'
+               AND f.status NOT IN ('completed','cancelled','duplicate')""",
+            (str(root_id), int(choice["artifact_id"])))
+        if not row:
+            return False
+        stored = [codec.candidate(item) for item in codec.load(row["candidates"], [])]
+        selected = int(row["selected_candidate"] or 0)
+        if not (0 <= selected < len(stored)) or str(stored[selected].id) != str(choice["expected_candidate_id"]):
+            return False
+        return await db.fetchone(
+            """SELECT 1 FROM canonical_candidate_bindings b JOIN canonical_candidate_origins o ON o.binding_id=b.id
+               JOIN transfer_requests r ON r.id=o.request_id
+               WHERE b.canonical_artifact_id=? AND b.candidate_id=? AND b.candidate_order<=100000
+               AND COALESCE(r.parent_id,r.id)=?""",
+            (int(choice["artifact_id"]), str(choice["source_candidate_id"]), str(root_id))) is not None
+
+    async def end_provider_choice(self, choice_id: str, state: str, reason: str) -> bool:
+        """Compare-and-set a pending choice to a terminal ``state`` (failed,
+        superseded or cancelled) with its ``reason``: ``False`` when it was no
+        longer pending."""
+        if state not in {"failed", "superseded", "cancelled"}:
+            raise ValueError(state)
+        async with get_db() as db:
+            cursor = await db.execute("""UPDATE pending_provider_choices SET state=?,reason=?,updated_at=?
+                WHERE id=? AND state='pending'""", (state, str(reason), time.time(), str(choice_id)))
+            await db.commit()
+        return bool(cursor.rowcount)
+
+    async def provider_choice_landing(self, choice: dict) -> dict:
+        """The durable facts a pending choice is decided from
+        (``transfers.provider_choice.reconcile``): the source root's latest
+        operator switch attempt and its committed route (latest route attempt,
+        its provider and state), the root request's state, the file's current
+        status and selected candidate, and the FIRST current binding of the
+        file (canonical order) issued by the requested provider for that root
+        -- the root or one of its members -- from the choice's own switch
+        attempt or a later one (``candidate_id``): only that can fulfil it."""
+        root_id, artifact_id = str(choice["source_root_id"]), int(choice["artifact_id"])
+        async with get_db() as db:
+            switch = await db.fetchone(
+                """SELECT p.resolution_attempt_id,p.ordinal FROM route_attempt_provenance p WHERE p.request_id=?
+                   AND p.operation='operator_switch' ORDER BY p.ordinal DESC LIMIT 1""", (root_id,))
+            route = await db.fetchone(
+                """SELECT a.id,a.provider_id,a.state FROM route_attempt_provenance p
+                   JOIN resolution_attempts a ON a.id=p.resolution_attempt_id
+                   WHERE p.request_id=? ORDER BY p.ordinal DESC LIMIT 1""", (root_id,))
+            root = await db.fetchone("SELECT state FROM transfer_requests WHERE id=?", (root_id,))
+            artifact = await db.fetchone(
+                """SELECT f.status,f.candidates,f.selected_candidate,f.mirror_state,t.status AS transfer_status
+                   FROM download_files f JOIN torrents t ON t.id=f.torrent_id WHERE f.id=?""", (artifact_id,))
+            landed = await self._choice_target(db, choice)
+        selected_id = None
+        if artifact:
+            stored = [codec.candidate(item) for item in codec.load(artifact["candidates"], [])]
+            selected = int(artifact["selected_candidate"] or 0)
+            selected_id = str(stored[selected].id) if 0 <= selected < len(stored) else None
+        return {"latest_switch_attempt_id": switch["resolution_attempt_id"] if switch else None,
+                "route_provider_id": route["provider_id"] if route else None,
+                "route_state": route["state"] if route else None,
+                "root_state": root["state"] if root else None,
+                "artifact_status": artifact["status"] if artifact else None,
+                "transfer_status": artifact["transfer_status"] if artifact else None,
+                "standby": bool(artifact and artifact["mirror_state"] == "standby"),
+                "selected_candidate_id": selected_id,
+                "landed_candidate_id": landed}
+
+    async def _root_route_facts_by_root(self, db, transfer_ids) -> dict[int, dict[str, dict]]:
+        """Inside the caller's session, set-oriented: for each transfer, the
+        facts every one of its ROOT requests' provider route is decided from,
+        by root id -- the root (``root_id``, its submitted ``kind``, its
+        ``resolvable``), its committed route provider (``current``, the one
+        rule of ``_bound_route_providers``), the providers that ``declined``
+        it or were ``exhausted`` for it, whether collection route authority
+        closed ``generic`` competition, whether the transfer's lifecycle is
+        ``terminal`` (``policy.TERMINAL_TRANSFER_STATES``: no work remains for
+        any route to do), whether the root was ever ``decomposed`` into
+        members, how many of them are CURRENT (``members``: its current
+        generation's, ``_current_member_ids``) and whether any member owns a
+        canonical artifact of its own (``member_owned``), and the unfinished ``artifacts`` whose selected candidate it alone
+        produced (``_artifact_route_roots``; ``relevant`` when there is one),
+        and the ``alternates`` it issued: the current, proven-equivalent
+        sources (``_root_alternate_sources``) of this transfer's unfinished
+        files that are not the file's selected one, and the
+        ``pending_choices`` (``transfers.provider_choice``) of the files whose
+        selected source it produced.
+        A bounded number of queries for any number of transfers; a transfer
+        with no root request is absent."""
+        ids = list(dict.fromkeys(int(item) for item in transfer_ids))
+        facts: dict[int, dict[str, dict]] = {}
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            roots = await db.fetchall(
+                f"""SELECT id,transfer_id,payload,interpretation FROM transfer_requests
+                WHERE parent_id IS NULL AND transfer_id IN ({marks}) ORDER BY transfer_id,ordinal,id""", tuple(chunk))
+            if not roots:
+                continue
+            root_ids = [str(row["id"]) for row in roots]
+            current = await self._bound_route_providers(db, root_ids)
+            competition: dict[str, dict[str, set[str]]] = {}
+            decomposed: set[str] = set()
+            members: dict[str, int] = {}
+            member_owned: set[str] = set()
+            produced: dict[str, list[int]] = {}
+            for root_start in range(0, len(root_ids), 500):
+                root_chunk = root_ids[root_start:root_start + 500]
+                root_marks = ",".join("?" * len(root_chunk))
+                for row in await db.fetchall(
+                        f"""SELECT DISTINCT request_id,provider_id,state FROM resolution_attempts
+                        WHERE request_id IN ({root_marks}) AND state IN ('declined','exhausted')""", tuple(root_chunk)):
+                    competition.setdefault(str(row["request_id"]), {}).setdefault(row["state"], set()).add(
+                        str(row["provider_id"]))
+                decomposed.update(str(row["parent_id"]) for row in await db.fetchall(
+                    f"SELECT DISTINCT parent_id FROM transfer_requests WHERE parent_id IN ({root_marks})",
+                    tuple(root_chunk)))
+                # Only the CURRENT generation's members are the root's files
+                # now (``_current_member_ids``, the decomposition admission's
+                # own rule); an earlier provider's copy is history.
+                current_members = await self._current_member_ids(db, root_chunk)
+                members.update((root, len(items)) for root, items in current_members.items())
+                # A member -- of ANY generation -- owning a canonical artifact of
+                # its own (a file of a directory, a media member, ...): the root
+                # expanded into files. Not limited to the current generation: a
+                # folder being rebound (a pending or held new generation) still
+                # owns its files. Superseded history is blocked
+                # (``_retire_superseded_children``), and a cloud copy's member
+                # owns no file -- its candidate serves the root's own.
+                member_owned.update(str(row["parent_id"]) for row in await db.fetchall(
+                    f"""SELECT DISTINCT r.parent_id FROM transfer_requests r JOIN download_files f ON f.request_id=r.id
+                    WHERE r.parent_id IN ({root_marks}) AND COALESCE(f.blocked,0)=0
+                    AND COALESCE(f.mirror_state,'')!='standby' AND f.status!='duplicate'""", tuple(root_chunk)))
+            for artifact_id, root_id in sorted((await self._artifact_route_roots(db, chunk)).items()):
+                produced.setdefault(root_id, []).append(artifact_id)
+            alternates = await self._root_alternate_sources(db, chunk)
+            pending: dict[str, list[dict]] = {}
+            for choice in await db.fetchall(
+                    f"""SELECT owning_root_id,artifact_id,provider_id,source_root_id FROM pending_provider_choices
+                    WHERE transfer_id IN ({marks}) AND state='pending' ORDER BY created_at,id""", tuple(chunk)):
+                pending.setdefault(str(choice["owning_root_id"]), []).append({
+                    "artifact_id": int(choice["artifact_id"]), "provider_id": str(choice["provider_id"]),
+                    "source_root_id": str(choice["source_root_id"])})
+            shared = await self._roots_shared_elsewhere(db, root_ids)
+            torrents = {int(row["id"]): row for row in await db.fetchall(
+                f"""SELECT id,status,collection_route_authority,collection_route_provider_id FROM torrents
+                WHERE id IN ({marks})""", tuple(chunk))}
+            authority = {transfer_id: bool(row.get("collection_route_authority"))
+                         or bool(str(row.get("collection_route_provider_id") or "").strip())
+                         for transfer_id, row in torrents.items()}
+            for row in roots:
+                transfer_id = int(row["transfer_id"])
+                request = codec.request(codec.load(row["payload"]))
+                interpretation = codec.request(codec.load(row["interpretation"])) if row.get("interpretation") else None
+                own = competition.get(str(row["id"]), {})
+                artifacts = tuple(produced.get(str(row["id"]), ()))
+                facts.setdefault(transfer_id, {})[str(row["id"])] = {
+                    "root_id": str(row["id"]), "kind": str(request.kind or "").strip().lower(),
+                    "resolvable": interpretation or request, "current": current.get(str(row["id"])),
+                    "declined": frozenset(own.get("declined", ())), "exhausted": frozenset(own.get("exhausted", ())),
+                    "generic_closed": authority.get(transfer_id, False),
+                    "terminal": transfer_id in torrents and torrents[transfer_id]["status"] in TERMINAL_TRANSFER_STATES,
+                    "decomposed": str(row["id"]) in decomposed, "members": members.get(str(row["id"]), 0),
+                    "member_owned": str(row["id"]) in member_owned,
+                    "artifacts": artifacts, "relevant": bool(artifacts),
+                    "alternates": tuple(alternates.get(str(row["id"]), ())),
+                    "pending_choices": tuple(pending.get(str(row["id"]), ())),
+                    "shared": str(row["id"]) in shared,
+                }
+        return facts
+
+    async def _root_route_facts(self, db, transfer_ids) -> dict[int, dict]:
+        """``_root_route_facts_by_root`` for the transfers of exactly ONE root
+        request, by transfer: that root's facts. Other transfers are absent."""
+        return {transfer_id: next(iter(roots.values()))
+                for transfer_id, roots in (await self._root_route_facts_by_root(db, transfer_ids)).items()
+                if len(roots) == 1}
+
+    async def root_route_facts(self, transfer_id: int) -> dict | None:
+        """``_root_route_facts`` for one transfer, in its own session."""
+        async with get_db() as db:
+            return (await self._root_route_facts(db, (int(transfer_id),))).get(int(transfer_id))
+
+    async def root_route_facts_by_root(self, transfer_id: int) -> dict[str, dict]:
+        """``_root_route_facts_by_root`` for one transfer, in its own session."""
+        async with get_db() as db:
+            return (await self._root_route_facts_by_root(db, (int(transfer_id),))).get(int(transfer_id), {})
+
+    async def latest_root_route(self, request_id: str) -> dict | None:
+        """The latest non-declined route attempt of a root request (the one
+        ``bound_route_provider`` reads): ``{id, provider_id, state,
+        operation}``."""
+        async with get_db() as db:
+            return await db.fetchone(
+                """SELECT a.id,a.provider_id,a.state,p.operation FROM route_attempt_provenance p
+                   JOIN resolution_attempts a ON a.id=p.resolution_attempt_id
+                   WHERE a.request_id=? AND a.state!='declined' ORDER BY p.ordinal DESC LIMIT 1""", (request_id,))
+
+    @staticmethod
+    async def _root_route_replacement(db, request_id: str, expected_attempt_id: str, expected_provider_id: str):
+        """THE root-state refusals of an operator root-route replacement, in
+        the caller's session: ``(refusal, root row, latest route attempt)``,
+        ``refusal`` being ``"gone"``, ``"busy"``, ``"stale"`` or ``None``.
+        ``replace_root_route`` decides through it inside its commit;
+        ``root_route_replacement_refusal`` reads it before anything is fenced."""
+        row = await db.fetchone(
+            """SELECT r.state,r.resource,r.transfer_id FROM transfer_requests r JOIN torrents t ON t.id=r.transfer_id
+               WHERE r.id=? AND r.parent_id IS NULL
+               AND t.status NOT IN ('deleted','completed','consolidated','cancelled')""", (request_id,))
+        if not row:
+            return "gone", None, None
+        if row["state"] in {"resolving", "materializing", "input_required"}:
+            return "busy", row, None
+        latest = await db.fetchone(
+            """SELECT a.id,a.provider_id,a.state FROM route_attempt_provenance p
+               JOIN resolution_attempts a ON a.id=p.resolution_attempt_id
+               WHERE a.request_id=? AND a.state!='declined' ORDER BY p.ordinal DESC LIMIT 1""", (request_id,))
+        if (not latest or str(latest["id"]) != str(expected_attempt_id)
+                or str(latest["provider_id"]) != str(expected_provider_id)
+                or latest["state"] in _ENDED_ROUTE_STATES):
+            return "stale", row, latest
+        return None, row, latest
+
+    async def root_route_replacement_refusal(self, request_id: str, *, expected_attempt_id: str,
+                                             expected_provider_id: str) -> str | None:
+        """Read-only: why ``replace_root_route`` would refuse right now for
+        the root's own state (never its writers, which a switch retires
+        only after this answered ``None``)."""
+        async with get_db() as db:
+            refusal, _row, _latest = await self._root_route_replacement(db, request_id, expected_attempt_id,
+                                                                        expected_provider_id)
+        return refusal
+
+    async def replace_root_route(self, request_id: str, *, expected_attempt_id: str, expected_provider_id: str,
+                                 target_provider_id: str, operation: str = OPERATOR_SWITCH,
+                                 expected_demand=None, retain_replaced: bool = False, now: float = 0.0,
+                                 claims=(), pending_choice: dict | None = None) -> str:
+        """THE operator root-route replacement, decided atomically.
+
+        The root's current route -- its latest route attempt, which must still
+        be ``expected_attempt_id`` by ``expected_provider_id`` and not ended --
+        ends ``released`` (never ``exhausted``: the provider did not fail), and
+        ``target_provider_id``'s route attempt is opened as the root's route
+        under ``operation`` -- ``operator_switch``, or ``readiness_promotion``
+        for the engine's automatic yield of a still-preparing root -- which
+        ordinary resolution then adopts (``begin_pinned_resolution``). Only the target's own earlier
+        exhaustion of this root is released (``released`` stays history);
+        no other provider's exhaustion and no other root is touched.
+
+        Losing the route is not a reason to give the replaced provider
+        resource back. When DownloadPulse owns it (CREATED or ADOPTED), it is
+        not already absent and nothing already owes its cleanup, the
+        replaced provider's own Prepare Backup Torrents policy decides
+        (``retain_replaced``, the caller's reading of
+        ``speculative_preparation_allowed`` for the root): allowed, it is kept
+        as that provider's backup of the root -- a new generation of its
+        (root, provider) preparation, ``bound`` to the SAME binding, in this
+        commit (``_retain_replaced``), so it is observed, taken over again
+        and reclaimed exactly as any backup, and never created again; not
+        allowed, it gets the ordinary owned cleanup intent the one cleanup
+        cadence drains. The released route still fences any NEW preparation
+        by that provider (``standby_fenced_providers``). The routes the
+        replaced root route gave its
+        members end with it (``released``, history kept). The root holds no
+        binding afterwards, so every
+        member of the old decomposition generation stops being runnable at
+        this commit (``_decomposition_admission``). Requires every writer of
+        the root's members to be terminal or detached first.
+
+        Returns ``"replaced"``, or why nothing changed: ``"gone"`` (not live
+        root work), ``"busy"`` (resolution in flight), ``"stale"`` (another
+        transition committed first), ``"writer_live"`` or ``"demand_changed"``
+        (outstanding demand is no longer ``expected_demand``, the demand the
+        switch was authorized against).
+
+        The automatic ``readiness_promotion`` is decided after provider I/O,
+        so its decisive conditions are re-read here, in this commit: a pause
+        of the transfer (any holder) or Pause All committed before it is
+        ``"paused"``, and a root that crossed its execution boundary
+        meanwhile is ``"stale"``. Operator controls serialize against this
+        transaction, so a control committed first always wins and one
+        committed after it applies to the new route. (An operator switch
+        holds its own pause fence here, so the pause re-read is the yield's
+        alone.)
+
+        ``claims`` (a root that is not the one root of a torrent transfer):
+        the switch's recovery claims on the artifacts whose selected candidate
+        this root alone produced -- the only writers its replacement affects;
+        every other artifact of the transfer keeps its writer. They are
+        re-verified current in this commit (``"busy"`` otherwise), each of
+        those artifacts must hold no live writer (``"writer_live"``), and the
+        commit is journaled naming the root, both providers and those
+        artifacts.
+
+        ``pending_choice`` (``transfers.provider_choice``): the replacement is
+        an operator's provider choice for ONE file this root supplies an
+        equivalent source of (``artifact_id``, ``source_candidate_id``,
+        ``expected_candidate_id``, ``owning_root_id``). That file is not
+        affected now: in this same commit -- only while it still selects
+        ``expected_candidate_id`` and the source is still one of its current
+        bindings issued by this root (``"stale"`` otherwise) -- its earlier
+        pending choice is superseded and the new one recorded against the
+        route attempt this commit opens."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            refusal, row, latest = await self._root_route_replacement(db, request_id, expected_attempt_id,
+                                                                      expected_provider_id)
+            if refusal:
+                await db.rollback()
+                return refusal
+            if operation == self.READINESS_PROMOTION:
+                if await db.fetchone(
+                        """SELECT 1 WHERE EXISTS(SELECT 1 FROM transfer_pause_intents WHERE torrent_id=? AND paused=1)
+                           OR EXISTS(SELECT 1 FROM transfer_controls WHERE key='paused' AND value='1')""",
+                        (int(row["transfer_id"]),)):
+                    await db.rollback()
+                    return "paused"
+                if await self._crossed_execution_boundary(db, request_id):
+                    await db.rollback()
+                    return "stale"
+            if not await self.hold_demand(db, int(row["transfer_id"]), expected_demand):
+                await db.rollback()
+                return "demand_changed"
+            if await db.fetchone(
+                    """SELECT 1 FROM transfer_requests c JOIN download_files f ON f.request_id=c.id
+                       JOIN execution_attempts e ON e.id=f.execution_attempt_id
+                       WHERE c.parent_id=? AND e.state IN ('prepared','queued','running','paused','unknown')""",
+                    (request_id,)):
+                await db.rollback()
+                return "writer_live"
+            affected = [int(claim.artifact_id) for claim in claims]
+            if (claims or pending_choice is not None) and await self._roots_shared_elsewhere(db, (request_id,)):
+                # Another transfer's artifact holds a candidate of this root
+                # (a consolidation that landed meanwhile): nothing changes.
+                await db.rollback()
+                return "shared"
+            for claim in claims:
+                if not await self.recovery_claim_current_in_db(db, claim, now=now):
+                    await db.rollback()
+                    return "busy"
+            if affected and await db.fetchone(
+                    f"""SELECT 1 FROM download_files f JOIN execution_attempts e ON e.id=f.execution_attempt_id
+                       WHERE f.id IN ({",".join("?" * len(affected))})
+                       AND e.state IN ('prepared','queued','running','paused','unknown')""", tuple(affected)):
+                await db.rollback()
+                return "writer_live"
+            transfer_id = int(row["transfer_id"])
+            if pending_choice is not None and not await self._choice_still_valid(db, request_id, pending_choice):
+                await db.rollback()
+                return "stale"
+            await db.execute("UPDATE resolution_attempts SET state='released',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                             (latest["id"],))
+            await db.execute("UPDATE route_attempt_provenance SET outcome='superseded',updated_at=CURRENT_TIMESTAMP "
+                             "WHERE resolution_attempt_id=? AND outcome IN ('started','resolved','unknown')",
+                             (latest["id"],))
+            await db.execute("UPDATE resolution_attempts SET state='released',updated_at=CURRENT_TIMESTAMP "
+                             "WHERE request_id=? AND provider_id=? AND state='exhausted'",
+                             (request_id, target_provider_id))
+            # Members continue the route that decomposed them: the routes the
+            # replaced root route gave them end with it (history kept), so the
+            # next fan-out routes them from the root's new provider.
+            await db.execute("""UPDATE resolution_attempts SET state='released',updated_at=CURRENT_TIMESTAMP
+                WHERE request_id IN (SELECT id FROM transfer_requests WHERE parent_id=?)
+                AND state NOT IN ('declined','exhausted','released')""", (request_id,))
+            pin = new_identity()
+            await db.execute("INSERT INTO resolution_attempts(id,request_id,provider_id,state) VALUES(?,?,?,'started')",
+                             (pin, request_id, target_provider_id))
+            await self._begin_route_provenance(db, pin, transfer_id, request_id, target_provider_id,
+                                               operation=operation)
+            if affected:
+                # The files whose own source this switch replaces: an earlier
+                # pending provider choice of theirs is no longer what the
+                # operator asked for (transfers.provider_choice).
+                await db.execute(
+                    f"""UPDATE pending_provider_choices SET state='superseded',reason='owning_root_switched',
+                    updated_at=? WHERE state='pending' AND artifact_id IN ({",".join("?" * len(affected))})""",
+                    (time.time(), *affected))
+            if pending_choice is not None:
+                now_ = time.time()
+                await db.execute("""UPDATE pending_provider_choices SET state='superseded',reason='new_choice',
+                    updated_at=? WHERE artifact_id=? AND state='pending'""", (now_, int(pending_choice["artifact_id"])))
+                await db.execute(
+                    """INSERT INTO pending_provider_choices(id,transfer_id,artifact_id,owning_root_id,source_root_id,
+                       source_candidate_id,provider_id,switch_attempt_id,expected_candidate_id,state,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,'pending',?,?)""",
+                    (str(pending_choice["id"]), transfer_id, int(pending_choice["artifact_id"]),
+                     str(pending_choice["owning_root_id"]), str(request_id), str(pending_choice["source_candidate_id"]),
+                     str(target_provider_id), pin, str(pending_choice["expected_candidate_id"]), now_, now_))
+            if claims or pending_choice is not None:
+                await journal(db, je.root_route_switched(
+                    transfer_id=transfer_id, request_id=request_id, attempt_id=pin, provider_id=target_provider_id,
+                    previous_provider_id=str(expected_provider_id), artifact_ids=sorted(affected)))
+            resource = codec.resource(codec.load(row["resource"])) if row["resource"] else None
+            if resource is not None and resource.ownership in {Ownership.CREATED, Ownership.ADOPTED}:
+                binding = await db.fetchone(
+                    "SELECT id,state,cleanup_authority,COALESCE(cleanup_abandoned,0) AS abandoned "
+                    "FROM provider_resources WHERE transfer_id=? "
+                    "AND (resource_key=? OR (resource_key IS NULL AND id=?))", (transfer_id, resource.id, resource.id))
+                if binding and binding["state"] != ResourceState.ABSENT.value:
+                    retained = (retain_replaced and binding["cleanup_authority"] is None and not binding["abandoned"]
+                                and await self._retain_replaced(db, transfer_id, request_id,
+                                                                str(expected_provider_id), str(binding["id"]), now))
+                    if not retained:
+                        await self.cleanup_intent(transfer_id, resource.id, CleanupAuthority.OWNED, db=db)
+            await db.execute("""UPDATE transfer_requests SET state='pending',resource=NULL,retry_at=0,error=NULL,
+                attempts=0,routing_decision=NULL WHERE id=?""", (request_id,))
+            await db.commit()
+        return "replaced"
+
+    @staticmethod
+    async def _retain_replaced(db, transfer_id: int, request_id: str, provider_id: str, binding_id: str,
+                               now: float) -> bool:
+        """Keep a replaced root route's resource as its provider's backup of
+        the root, in the replacement's own transaction: the NEXT generation of
+        the (root, provider) preparation, ``bound`` to the resource's one
+        existing binding and never promoted -- the row every backup owner
+        already reads (observation, takeover, capacity reclamation, terminal
+        cleanup). Nothing is created at the provider. Refused (``False``, the
+        caller gives the resource back instead) while that provider already
+        has a live preparation of the root (``creating`` or ``bound``, never
+        promoted): one live backup per root and provider, never two owners of
+        one resource."""
+        live = await db.fetchone(
+            """SELECT 1 FROM standby_resources WHERE request_id=? AND provider_id=? AND promoted_at IS NULL
+               AND state IN ('creating','bound')""", (request_id, provider_id))
+        if live:
+            return False
+        latest = await db.fetchone("SELECT MAX(generation) AS generation FROM standby_resources "
+                                   "WHERE request_id=? AND provider_id=?", (request_id, provider_id))
+        standby_id = new_identity()
+        await db.execute(
+            """INSERT INTO standby_resources(id,transfer_id,request_id,provider_id,generation,state,binding_id,
+               observed_at,created_at,updated_at) VALUES(?,?,?,?,?,'bound',?,?,?,?)""",
+            (standby_id, transfer_id, request_id, provider_id, int((latest or {}).get("generation") or 0) + 1,
+             binding_id, now, now, now))
+        await journal(db, je.standby("retained", transfer_id=transfer_id, standby_id=standby_id,
+                                     provider_id=provider_id))
+        return True
+
+    async def root_crossed_execution_boundary(self, request_id: str) -> bool:
+        """Whether a root has crossed the boundary after which no automatic
+        route change may replace it: any committed selection generation, any
+        member it fanned out, or any download of it or its members."""
+        async with get_db() as db:
+            return await self._crossed_execution_boundary(db, request_id)
+
+    @staticmethod
+    async def _crossed_execution_boundary(db, request_id: str) -> bool:
+        """``root_crossed_execution_boundary`` in the caller's session."""
+        return bool(await db.fetchone(
+            """SELECT 1 WHERE EXISTS(SELECT 1 FROM transfer_file_selections
+                   WHERE request_id=? AND manifest_committed_at IS NOT NULL)
+               OR EXISTS(SELECT 1 FROM transfer_requests WHERE parent_id=?)
+               OR EXISTS(SELECT 1 FROM download_files WHERE request_id=?
+                   OR request_id IN (SELECT id FROM transfer_requests WHERE parent_id=?))""",
+            (request_id, request_id, request_id, request_id)))
+
+    async def begin_pinned_resolution(self, request_id: str, provider_id: str) -> ResolutionAttempt | None:
+        """Adopt the root's open ``operator_switch`` or ``readiness_promotion``
+        route attempt for ``provider_id`` as its resolution attempt -- the
+        replacement's own attempt, never a second one. ``None`` when there is none to adopt
+        (then ordinary ``begin_resolution`` applies)."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            pinned = await db.fetchone(
+                """SELECT a.id,a.provider_id,a.state,p.operation FROM route_attempt_provenance p
+                   JOIN resolution_attempts a ON a.id=p.resolution_attempt_id
+                   JOIN transfer_requests r ON r.id=a.request_id JOIN torrents t ON t.id=r.transfer_id
+                   LEFT JOIN transfer_pause_intents i ON i.torrent_id=t.id
+                   WHERE a.request_id=? AND a.state!='declined' AND r.state='pending'
+                   AND t.status NOT IN ('deleted','completed','consolidated','cancelled') AND COALESCE(i.paused,0)=0
+                   ORDER BY p.ordinal DESC LIMIT 1""", (request_id,))
+            if (not pinned or pinned["operation"] not in self.READINESS_PINNED_OPERATIONS
+                    or pinned["state"] != "started"
+                    or str(pinned["provider_id"]) != str(provider_id)):
+                await db.rollback()
+                return None
+            await db.execute("UPDATE transfer_requests SET state='resolving',attempts=attempts+1,routing_decision=NULL "
+                             "WHERE id=?", (request_id,))
+            await db.commit()
+        return ResolutionAttempt(str(pinned["id"]), request_id, str(provider_id), "started")
+
+    async def record_terminal_reacquisition(self, transfer_id: int, now: float) -> None:
+        """Completed terminal work was reopened for reacquisition: record it,
+        durably, on the generation currently governing each of the transfer's
+        roots -- the generation whose successor that reacquisition opens. It
+        survives any restart until that successor commits (which consumes it)
+        and grants nothing on its own (``_continuity``)."""
+        async with get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            for root in await db.fetchall(
+                    "SELECT id,resource FROM transfer_requests WHERE transfer_id=? AND parent_id IS NULL", (transfer_id,)):
+                resource = codec.resource(codec.load(root["resource"])) if root["resource"] else None
+                binding = await self._resolve_binding(db, transfer_id, resource.id) if resource else None
+                if binding:
+                    await db.execute(
+                        """UPDATE transfer_file_selections SET reacquired_at=?,reacquisition_consumed_at=NULL,
+                           updated_at=? WHERE request_id=? AND provider_resource_id=?""",
+                        (now, now, root["id"], binding))
+            await db.commit()
+
+    async def materialization_authorization(self, artifact) -> MaterializationAdmission:
+        """Universal execution-admission decision for one artifact's dispatch:
+        whether its decomposition generation may run now. ``PROCEED`` (no
+        generation applies, or the member's generation is its root's current,
+        proven, committed generation on the root's current binding), ``HOLD``
+        (that generation is not yet committed, or its continuity is held) or
+        ``STALE`` (a newer generation, or another or no binding, superseded it:
+        the caller retires its writer through the existing canonical machinery
+        and lets ordinary re-resolution reconstruct current work). Decided by
+        the one owner, ``_decomposition_admission``, which ``prepare_execution``
+        also decides through inside its admitting transaction."""
+        async with get_db() as db:
+            return await self._decomposition_admission(db, artifact)
+
+    async def member_generation_current(self, record) -> bool:
+        """Whether a manifest member may be resolved now: its generation is its
+        root's current, proven, committed generation (the same decision as
+        ``materialization_authorization``). A member of a superseded, held or
+        not yet committed generation waits for its root's fan-out to advance it
+        -- resolving it would only rebuild work no generation authorizes."""
+        async with get_db() as db:
+            admission = await self._decomposition_admission(
+                db, SimpleNamespace(request_id=record.id, transfer_id=record.transfer_id))
+        return admission.kind == MaterializationAdmissionKind.PROCEED
+
+    async def file_selection_presentation(self, transfer_id: int, *, now: float):
+        """Safe core-only read model for one transfer's file selection.
+
+        Reads durable state only: no provider call, no executor handle, no
+        signed URL, no per-row Downloads-projection work.
+        """
+        async with get_db() as db:
+            row = await self._current_generation(db, transfer_id)
+            if row is None:
+                return None
+            file_count = await self._manifest_file_count(db, row["manifest_id"])
+            entries = []
+            if row["manifest_id"]:
+                entries = await db.fetchall(
+                    """SELECT entry_id, name, relative_path, expected_bytes, ordinal
+                       FROM transfer_file_manifest_entries WHERE manifest_id=? ORDER BY ordinal""",
+                    (row["manifest_id"],),
+                )
+            selected = [
+                r["entry_id"] for r in await db.fetchall(
+                    "SELECT entry_id FROM transfer_file_selection_entries WHERE selection_id=?", (row["id"],))
+            ]
+            collection = await self._manifest_collection(db, row["manifest_id"])
+            # The generation's own root request kind, read exactly as the bounded
+            # list reads it (``fs.awaits_manifest``).
+            root = await db.fetchone("SELECT json_extract(payload, '$.kind') AS kind FROM transfer_requests WHERE id=?",
+                                     (row["request_id"],))
+        root_kind = root["kind"] if root else None
+        state = self._selection_state(row, file_count, explicit_only=collection["independent_members"])
+        return {
+            "eligible": True,
+            "mutable": fs.selection_mutable(state),
+            "selection_id": row["id"],
+            "request_id": row["request_id"],
+            "provider_resource_id": row["provider_resource_id"],
+            "manifest_id": row["manifest_id"],
+            "decision": str(row["decision"]),
+            "file_selection_affordance": fs.file_selection_affordance(
+                row["manifest_id"], str(row["decision"]), row["manifest_committed_at"], file_count,
+                awaiting_manifest=fs.awaits_manifest(root_kind), explicit_only=collection["independent_members"],
+            ),
+            "decision_reason": row["decision_reason"],
+            # A collection of independent members: chosen only explicitly, from
+            # a complete bounded snapshot whose source may hold more.
+            "explicit_only": collection["independent_members"],
+            "source_truncated": collection["source_truncated"],
+            "source_total": collection["source_total"],
+            "file_count": file_count,
+            "total_size_bytes": sum(int(e["expected_bytes"] or 0) for e in entries),
+            "entries": [
+                {"entry_id": e["entry_id"], "name": e["name"],
+                 "relative_path": e["relative_path"], "size_bytes": int(e["expected_bytes"] or 0)}
+                for e in entries
+            ],
+            "selected_entry_ids": selected,
+            "auto_offer": fs.auto_offer_active(state, now),
+            # The selector auto-presents for exactly the life of the active
+            # user-decision hold; there is no separate pre-hold window.
+            "auto_offer_until": row["hold_until"] if str(row["decision"]) == "pending" else None,
+            # The 120s decision deadline is current control authority ONLY while
+            # the decision is still pending. Once Confirm/Close/timeout settles it
+            # the durable ``hold_until`` is retained as historical evidence but is
+            # never presented as an active deadline (§11).
+            "decision_deadline": row["hold_until"] if str(row["decision"]) == "pending" else None,
+            "initially_available": bool(row["initially_available"]),
+            "server_now": float(now),
+        }
+
+    async def active_file_selection_offers(self, *, now: float) -> list:
+        """Bounded list of currently auto-presentable multi-file offers."""
+        async with get_db() as db:
+            rows = await db.fetchall(
+                """SELECT s.*,
+                          (SELECT COUNT(*) FROM transfer_file_manifest_entries e
+                           WHERE e.manifest_id=s.manifest_id) AS file_count,
+                          (SELECT m.independent_members FROM transfer_file_manifests m
+                           WHERE m.id=s.manifest_id) AS independent_members
+                   FROM transfer_file_selections s
+                   JOIN torrents t ON t.id=s.transfer_id
+                   WHERE s.manifest_committed_at IS NULL AND s.decision='pending'
+                     AND s.manifest_id IS NOT NULL AND s.auto_offer_dismissed_at IS NULL
+                     AND t.status NOT IN ('deleted','completed','consolidated','cancelled')
+                   ORDER BY s.transfer_id LIMIT 500""",
+            )
+        offers = []
+        for row in rows:
+            file_count = int(row["file_count"] or 0)
+            explicit_only = bool(row["independent_members"])
+            if file_count <= 1 and not explicit_only:
+                continue
+            if fs.auto_offer_active(self._selection_state(row, file_count, explicit_only=explicit_only), now):
+                offers.append({
+                    "transfer_id": int(row["transfer_id"]),
+                    "selection_id": row["id"],
+                    "request_id": row["request_id"],
+                    "manifest_id": row["manifest_id"],
+                    "file_count": file_count,
+                    "decision_deadline": row["hold_until"],
+                    "auto_offer_until": row["hold_until"],
+                })
+        return offers

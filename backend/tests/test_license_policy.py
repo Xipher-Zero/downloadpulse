@@ -1,0 +1,244 @@
+import json
+import re
+from importlib.metadata import distribution
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _normalized_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).casefold()
+
+
+def _locked_packages(path: Path) -> dict[str, str]:
+    """Parse a pip-compile lock file's ``name==version`` lines.
+
+    DP 1.0.12 leveling remediation (DEP-001): the runtime lock
+    (``backend/requirements.txt``) is now hash-pinned, so a package line ends
+    with a ``\\`` continuation into its ``--hash=sha256:...`` lines instead of
+    ending the line outright -- strip that trailing continuation the same
+    way an environment marker (``;``) is already stripped."""
+    packages: dict[str, str] = {}
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", "--")):
+            continue
+        name, version = line.split("==", 1)
+        version = version.split(";", 1)[0].strip()
+        version = version.removesuffix("\\").strip()
+        packages[_normalized_name(name)] = version
+    return packages
+
+
+def _locked_runtime_packages() -> dict[str, str]:
+    return _locked_packages(REPO_ROOT / "backend/requirements.txt")
+
+
+def _runtime_license_manifest() -> dict:
+    return json.loads(
+        (REPO_ROOT / "licenses/python-runtime.json").read_text()
+    )
+
+
+def test_runtime_license_inventory_matches_lock_exactly():
+    manifest = _runtime_license_manifest()
+    inventoried = {
+        _normalized_name(item["name"]): item["version"]
+        for item in manifest["packages"]
+    }
+    assert inventoried == _locked_runtime_packages()
+
+
+def test_dev_lock_contains_every_exact_runtime_dependency():
+    runtime = _locked_runtime_packages()
+    development = _locked_packages(REPO_ROOT / "backend/requirements-dev.txt")
+    assert {name: development.get(name) for name in runtime} == runtime
+
+
+def test_human_runtime_license_inventory_covers_machine_manifest_exact_versions():
+    manifest = _runtime_license_manifest()
+    human_inventory = (REPO_ROOT / "docs/DEPENDENCY_LICENSES.md").read_text()
+    for item in manifest["packages"]:
+        expected_row_prefix = f'| {item["name"]} | {item["version"]} |'
+        assert expected_row_prefix in human_inventory, (
+            f"Human dependency inventory missing {item['name']} {item['version']}"
+        )
+
+
+# Copyleft runtime dependencies that are KNOWN AND RECORDED, each pinned to the
+# exact licence expression it was inventoried under. asyncssh (DP 1.0.13 SFTP
+# evidence) is dual-licensed and used under GPL-2.0-or-later, the project's own
+# licence. sabctools, hachoir and guessit arrive with the bundled Usenet
+# acquisition service (SABnzbd, itself GPL-2.0-or-later): DownloadPulse imports
+# none of them and reaches that service over a private loopback HTTP API.
+#
+# This list is an inventory control, NOT a legal conclusion: it records what
+# ships so that a silent upstream relicense fails this test instead of shipping
+# unnoticed. Whether the combined work may be distributed on these terms is a
+# project/licence judgment that lives in the copyleft section of
+# docs/DEPENDENCY_LICENSES.md and is explicitly marked as still requiring
+# review.
+_REVIEWED_COPYLEFT = {
+    "asyncssh": "EPL-2.0 OR GPL-2.0-or-later",
+    "sabctools": "GPL-2.0-or-later",
+    "hachoir": "GPL-2.0-only",
+    "guessit": "LGPL-3.0-or-later",
+}
+
+
+def test_runtime_inventory_has_no_unknown_or_unreviewed_copyleft_license():
+    manifest = _runtime_license_manifest()
+    for item in manifest["packages"]:
+        license_id = item["license"].upper()
+        assert "UNKNOWN" not in license_id
+        assert "AGPL" not in license_id
+        if _REVIEWED_COPYLEFT.get(_normalized_name(item["name"])) == item["license"]:
+            continue
+        assert "GPL" not in license_id
+
+
+def test_v1_license_and_upstream_notice_are_present():
+    license_text = (REPO_ROOT / "LICENSE").read_text()
+    notice = (REPO_ROOT / "NOTICE").read_text()
+    upstream_mit = (REPO_ROOT / "LICENSES/MIT.txt").read_text()
+
+    assert "GNU GENERAL PUBLIC LICENSE" in license_text
+    assert "Version 2, June 1991" in license_text
+    assert "Copyright (C) 2026 Chris Moore" in notice
+    assert "c0f7a5bfeba4f259fb2acc62ac6eed27e8ac4d5c" in notice
+    assert "Copyright (c) 2026 kroeberd" in upstream_mit
+
+
+def test_bencode2_notice_and_machine_readable_inventory_ship_in_image():
+    bencode_notice = (REPO_ROOT / "licenses/bencode2-MIT.txt").read_text()
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+
+    assert "Copyright (c) 2024 trim21" in bencode_notice
+    assert "Permission is hereby granted, free of charge" in bencode_notice
+    assert "COPY licenses/ /app/licenses/" in dockerfile
+
+
+def test_installed_runtime_packages_retain_license_or_notice_files():
+    manifest = _runtime_license_manifest()
+    explicit_notices = {
+        "bencode2": REPO_ROOT / "licenses/bencode2-MIT.txt",
+        # Ships no license file at all; the upstream statement and the CPython
+        # provenance are reproduced in the bundled notice instead.
+        "sgmllib3k": REPO_ROOT / "licenses/sgmllib3k-BSD.txt",
+    }
+
+    for item in manifest["packages"]:
+        name = _normalized_name(item["name"])
+        if name in explicit_notices:
+            assert explicit_notices[name].is_file()
+            continue
+        files = distribution(item["name"]).files or ()
+        license_files = [
+            path
+            for path in files
+            if any(
+                part.casefold().startswith(("license", "copying", "notice"))
+                for part in Path(str(path)).parts
+            )
+        ]
+        assert license_files, f"{item['name']} {item['version']} has no packaged license notice"
+
+
+def test_current_project_surfaces_state_the_downloadpulse_gpl_identity():
+    readme = (REPO_ROOT / "README.md").read_text()
+    landing_page = (REPO_ROOT / "index.html").read_text()
+    notice = (REPO_ROOT / "NOTICE").read_text()
+    source_offer = (REPO_ROOT / "SOURCE_OFFER.md").read_text()
+
+    assert "DownloadPulse" in readme
+    assert "GPL-2.0-or-later" in readme
+    assert "DownloadPulse · GPL-2.0-or-later" in landing_page
+    assert "MIT License" not in landing_page
+    assert notice.startswith("DownloadPulse — Universal Transfer Manager")
+    assert "GNU General Public License" in notice
+    assert "issues/new?template=source_request.yml" in source_offer
+
+
+
+def test_authentication_docs_cover_new_runtime_security_dependencies():
+    readme = (REPO_ROOT / "README.md").read_text()
+    auth_docs = (REPO_ROOT / "docs/authentication.md").read_text()
+    dependency_licenses = (REPO_ROOT / "docs/DEPENDENCY_LICENSES.md").read_text()
+
+    assert "Settings → Authentication" in readme
+    assert "Argon2id" in auth_docs
+    assert "Authorization Code" in auth_docs
+    assert "PKCE" in auth_docs
+    assert "API bearer token" in auth_docs
+    assert "authlib" in dependency_licenses
+    assert "cryptography" in dependency_licenses
+    assert "httpx" in dependency_licenses
+    assert "joserfc" in dependency_licenses
+
+
+def test_container_runtime_declares_trixie_and_rar_codec_notices():
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    dependency_licenses = (REPO_ROOT / "docs/DEPENDENCY_LICENSES.md").read_text()
+
+    # DP 1.0.12 leveling remediation (DEP-001): the base image is now pinned
+    # by verified manifest digest (docs/SUPPLY_CHAIN_POLICY.md), so the tag
+    # is followed by "@sha256:..." rather than ending the line outright.
+    # The runtime stage is the pinned Trixie base; the stages before it are
+    # DownloadPulse's aria2 and FFmpeg package artifacts (``AS aria2-packages``,
+    # ``AS ffmpeg-packages``), each consumed by its multi-arch manifest digest,
+    # never by a tag (SUPPLY_CHAIN_POLICY 4a, 4b).
+    stages = re.findall(r"^FROM (\S+)(?: AS (\S+))?$", dockerfile, re.M)
+    assert len(stages) == 3
+    assert re.fullmatch(r"ghcr\.io/xipher-zero/(?:downloadpulse|debridpulse)-aria2@sha256:[0-9a-f]{64}", stages[0][0])
+    assert stages[0][1] == "aria2-packages"
+    assert re.fullmatch(r"ghcr\.io/xipher-zero/(?:downloadpulse|debridpulse)-ffmpeg@sha256:[0-9a-f]{64}", stages[1][0])
+    assert stages[1][1] == "ffmpeg-packages"
+    assert re.fullmatch(r"python:3\.12\.14-slim-trixie@sha256:[0-9a-f]{64}", stages[2][0])
+    assert stages[2][1] == ""
+    # FFmpeg ships only as that package, verified where it is installed.
+    assert "/tmp/ffmpeg/ffmpeg_*.deb" in dockerfile and "mkvtoolnix" not in dockerfile
+    assert 'bash /usr/share/downloadpulse/ffmpeg/verify-features.sh "${FFMPEG_PACKAGE_VERSION}"' in dockerfile
+    assert "Components: main non-free" in dockerfile
+    assert "    7zip" in dockerfile
+    assert "    7zip-rar" in dockerfile
+    assert "path-include=/usr/share/doc/7zip-rar/copyright" in dockerfile
+    assert "path-include=/usr/share/doc/7zip-rar/unRarLicense.txt" in dockerfile
+    assert "7zip-rar" in dependency_licenses
+    assert "UnRAR restricted freeware" in dependency_licenses
+    assert "/usr/share/doc/7zip-rar/unRarLicense.txt" in dependency_licenses
+
+
+def test_every_directly_installed_debian_package_is_in_the_inventory():
+    """Each package the image installs by name has its own row in the direct
+    package table (WS8 PA-PKG-1: ``par2`` and ``unrar`` shipped unlisted)."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    dependency_licenses = (REPO_ROOT / "docs/DEPENDENCY_LICENSES.md").read_text()
+    installs = re.findall(r"apt-get install -y --no-install-recommends \\\n((?:[^\n]*\\\n)+)", dockerfile)
+    # The direct install is the one that also installs DownloadPulse's own
+    # aria2 and FFmpeg packages; the other only upgrades base packages.
+    direct = next(block for block in installs if "/tmp/aria2/" in block).split("&&", 1)[0]
+    named = {word for line in direct.splitlines() for word in line.replace("\\", " ").split()
+             if not word.startswith("/") and re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", word)}
+    table = set(re.findall(r"^\| ([a-z0-9][a-z0-9+.-]*) \|", dependency_licenses.split("| Direct package |")[1],
+                           re.M))
+    assert {"par2", "unrar", "rsync", "7zip-rar"} <= named
+    assert named <= table, sorted(named - table)
+    assert "| par2 | GPL-2.0-or-later" in dependency_licenses
+    assert "| unrar | Debian non-free" in dependency_licenses and "unrar-nonfree" in dependency_licenses
+    assert "/usr/share/doc/par2/copyright" in dependency_licenses
+    assert "path-include=/usr/share/doc/unrar/copyright" in dockerfile
+    assert "/usr/share/doc/unrar/copyright" in dependency_licenses
+
+
+def test_deno_is_recorded_as_a_native_runtime_whose_embedded_notices_are_not_established():
+    """WS8 PA-PKG-2: Deno's MIT declaration is not an inventory of what its
+    executable embeds, and the document says so instead of supplying notices."""
+    dependency_licenses = (REPO_ROOT / "docs/DEPENDENCY_LICENSES.md").read_text()
+    note = dependency_licenses.split("### Deno: a native runtime", 1)[1].split("\n## ", 1)[0]
+    for statement in ("V8 `15.0.245.2`", "TypeScript `6.0.3`",
+                      "https://github.com/denoland/deno/blob/v2.9.8/LICENSE.md",
+                      "https://chromium.googlesource.com/v8/v8/+/refs/tags/15.0.245.2/LICENSE",
+                      "have not been\nindependently established", "does not record the\nexecutable as MIT-covered"):
+        assert statement in note, statement
+    assert "| deno | 2.9.8 | MIT |" in dependency_licenses

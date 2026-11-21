@@ -1,0 +1,134 @@
+/* DownloadPulse v1.0.11 Settings completion pass.
+ *
+ * This layer finishes final Settings geometry without changing the persisted
+ * transfer semantics owned by ui-settings-page.js.
+ */
+
+/* Boolean/action controls use a different grammar from text fields: title and
+   explanation form one text block and the compact control sits just to its
+   right, vertically centered against that complete block. */
+
+/* The Downloads tuning regions -- Network Sources, Usenet and Safety &
+   Recovery -- are compact bounded cells on the ONE reusable tuning-cell line
+   owned by ui-settings-page.css. Their boolean cells, their File Allocation
+   selector and their number fields are all cells of that same shape, so
+   nothing about their geometry is declared here: the retired
+   `dp-settings-engine-tuning-grid` matrix, the separate File Allocation band
+   and the boolean's own text-block grammar were all competing visual systems
+   for the same controls, and they are gone rather than merely unused. */
+
+/* Safety & Recovery's hard-coded 3-over-2 matrix is retired: its five controls
+   are cells of the one tuning-cell collection, which decides how many fit per
+   row from the width alone. Nothing here names a column count. */
+
+/* AllDebrid Additional Settings used to mirror Safety & Recovery here, as a
+   six-column inverted pyramid of full-width fields. DP 1.0.13's final
+   interaction pass made that region tuning-only, presented as compact bounded
+   cells by the reusable tuning grid in ui-settings-page.css -- which is now its
+   ONE owner. Nothing is declared for it here: a `display: grid` on the body
+   would place that whole centred line inside a single 1fr track. */
+
+/* ── Automatic Extraction ───────────────────────────────────────────── */
+/* The card's header is the hinted Settings card header (ui-settings-page.css,
+   fitHeaderHints): identity, the purpose hint on the header's own midpoint
+   while it fits, and the rail -- Help, then Enable. Only the hint's type is
+   stated here. */
+#view-settings .dp-settings-extraction-header-copy {
+  display: block;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+#view-settings .dp-settings-extraction-enable {
+  min-width: 0;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+/* ── The Extraction behaviour group ───────────────────────────────────────
+   Delete Archives After Extraction and Concurrent Extractions are ONE group,
+   not two cards and not two controls floating in a band: a single subtle
+   outline around a two-lane form that uses the width deliberately rather than
+   clustering both controls in the middle.
+
+   The group states the three rows -- label, control, help -- once, and each
+   lane is a `subgrid` of them, so the two lanes align on all three whatever
+   either one's text wraps to. Nothing is measured and neither lane knows about
+   the other. */
+#view-settings .dp-settings-extraction-behavior {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 18px 44px;
+  /* Content-bounded and CENTRED in the card body: an intentional control
+     cluster, not a band stretched across whatever width happens to exist and
+     not anchored to one edge. The max width is what keeps the two settings
+     breathing without letting the island span the card. */
+  width: max-content;
+  max-width: min(100%, 880px);
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px var(--dp-island-padding-inline, 22px) 17px;
+}
+
+/* Each setting is the shared inline field; the island only says how the two
+   sit beside one another. */
+#view-settings .dp-settings-extraction-behavior > .dp-settings-inline-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+/* Restrained: a job count needs room for a number, not for a sentence. */
+#view-settings .dp-settings-extraction-concurrency-field .input {
+  width: 84px;
+  min-width: 0;
+  flex: 0 0 auto;
+  text-align: center;
+}
+
+/* The informational stacks may wrap their hint, but not into a column of
+   single words. */
+#view-settings .dp-settings-extraction-behavior .dp-settings-inline-field-info {
+  max-width: 300px;
+}
+
+#view-settings .dp-settings-extraction-password-field {
+  margin-top: 26px !important;
+}
+
+/* The actual textarea remains the field's authoritative control -- the one the
+   canonical persistence owner commits -- but is visually replaced by a
+   line-aware editor so only the active password need be revealed. */
+#view-settings .dp-settings-extraction-password-source {
+  display: none !important;
+}
+
+/* The archive-password editor -- its bounded list region, its reserved footer
+   row, its entry material and its column separators -- has ONE geometry owner:
+   ui-settings-archive-passwords.css. It used to be stated here as well, and the
+   two disagreed through `!important`, which is exactly the split this removed. */
+
+
+#view-settings .dp-settings-password-eye-open {
+  display: none;
+}
+
+#view-settings .dp-settings-password-eye.is-open .dp-settings-password-eye-closed {
+  display: none;
+}
+
+#view-settings .dp-settings-password-eye.is-open .dp-settings-password-eye-open {
+  display: block;
+}

@@ -1,0 +1,1461 @@
+"""Canonical values crossing source, executor and post-processing boundaries."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import ClassVar, Mapping
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+from transfers.errors import NormalizedError
+from transfers.size_evidence import positive_size
+from transfers.staged_input import StagedPayload
+from core.localization import CodedValueError
+
+
+def new_identity() -> str:
+    return uuid4().hex
+
+
+class Capability(StrEnum):
+    RESOLVE = "resolve"
+    AVAILABILITY = "availability"
+    METADATA = "metadata"
+    FILE_MANIFEST = "file_manifest"
+    REFRESH = "refresh"
+    ALTERNATES = "alternates"
+    RESOURCE_CREATION = "resource_creation"
+    RESOURCE_LOOKUP = "resource_lookup"
+    INVENTORY = "inventory"
+    CLEANUP = "cleanup"
+    HEALTH = "health"
+    INTEGRITY = "integrity"
+
+
+class InputReason(StrEnum):
+    AUTH_REQUIRED = "auth_required"
+    # The operator must confirm an observed server identity before the
+    # execution may continue. A security interaction, not a protocol.
+    SERVER_IDENTITY_REQUIRED = "server_identity_required"
+
+
+class InputOrigin(StrEnum):
+    PROVIDER = "provider"
+    # Pre-writer evidence acquisition for one resolved candidate: no artifact
+    # exists yet, and the sampling capability (never a provider) owns the input.
+    EVIDENCE = "evidence"
+    EXECUTOR = "executor"
+
+
+class InputMethod(StrEnum):
+    USERNAME_PASSWORD = "username_password"
+    USERNAME_PRIVATE_KEY = "username_private_key"
+    # Confirm an observed server identity and supply nothing else: offered
+    # only when the authentication-input owner already holds usable
+    # credentials for that scope. Identity and credentials stay separate facts.
+    SERVER_IDENTITY = "server_identity"
+
+
+class InputField(StrEnum):
+    USERNAME = "username"
+    PASSWORD = "password"
+    PRIVATE_KEY = "private_key"
+    PASSPHRASE = "passphrase"
+
+
+@dataclass(frozen=True)
+class InputFieldDescriptor:
+    name: InputField
+    required: bool
+
+
+@dataclass(frozen=True)
+class InputMethodDescriptor:
+    method: InputMethod
+    fields: tuple[InputFieldDescriptor, ...]
+
+    def __post_init__(self):
+        actual = {item.name: item.required for item in self.fields}
+        if len(actual) != len(self.fields):
+            raise ValueError("Authentication field descriptors must be unique")
+        if self.method == InputMethod.USERNAME_PASSWORD:
+            expected = {InputField.USERNAME: True, InputField.PASSWORD: True}
+        elif self.method == InputMethod.USERNAME_PRIVATE_KEY:
+            expected = {InputField.USERNAME: True, InputField.PRIVATE_KEY: True, InputField.PASSPHRASE: False}
+        elif self.method == InputMethod.SERVER_IDENTITY:
+            expected = {}
+        else:
+            raise ValueError("Unsupported authentication method")
+        if actual != expected:
+            raise ValueError("Authentication method fields do not match the canonical contract")
+
+
+class InputFactName(StrEnum):
+    SERVER_HOST = "server_host"
+    SERVER_IDENTITY_ALGORITHM = "server_identity_algorithm"
+    SERVER_IDENTITY_FINGERPRINT = "server_identity_fingerprint"
+
+
+@dataclass(frozen=True)
+class InputFact:
+    """One durable, public, non-secret fact the operator needs to decide."""
+    name: InputFactName
+    value: str
+
+    def __post_init__(self):
+        if not isinstance(self.name, InputFactName):
+            raise TypeError("Input fact names must be canonical")
+        if (not isinstance(self.value, str) or not self.value or len(self.value) > 1024
+                or any(ord(char) < 32 or ord(char) == 127 for char in self.value)):
+            raise ValueError("Input fact values must be bounded printable text")
+
+
+# Exactly the facts each neutral reason carries.
+_REASON_FACTS = {
+    InputReason.AUTH_REQUIRED: frozenset(),
+    InputReason.SERVER_IDENTITY_REQUIRED: frozenset({
+        InputFactName.SERVER_HOST,
+        InputFactName.SERVER_IDENTITY_ALGORITHM,
+        InputFactName.SERVER_IDENTITY_FINGERPRINT,
+    }),
+}
+
+
+def canonical_authority(value) -> str:
+    """THE canonical form of an input authority: the bare origin
+    ``scheme://host[:port]`` -- scheme and host lower-cased, an IPv6 host
+    bracketed, a port only when one was given. Path, query and fragment are
+    never part of it, so no address-bearing capability (a signed path or
+    token) can reach a question or its durable row. Userinfo, a missing
+    scheme or host, or an invalid port is refused. ``""`` stays ``""``."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        raise ValueError("An input authority is a credential-free absolute origin") from None
+    host = str(parts.hostname or "").rstrip(".").casefold()
+    if (not parts.scheme or not host or port == 0 or parts.username is not None
+            or parts.password is not None or any(ord(char) <= 32 or ord(char) == 127 for char in raw)):
+        raise ValueError("An input authority is a credential-free absolute origin")
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return f"{parts.scheme.casefold()}://{netloc}"
+
+
+@dataclass(frozen=True)
+class InputRequirement:
+    reason: InputReason
+    methods: tuple[InputMethodDescriptor, ...]
+    facts: tuple[InputFact, ...] = ()
+    # The server that asked, when it is NOT the subject's own (a server the
+    # subject's address moved to); ``""`` is the subject's own authority. The
+    # authentication-input owner scopes the question, and every answer to it,
+    # to exactly that authority. Always a bare origin (``canonical_authority``).
+    authority: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "authority", canonical_authority(self.authority))
+        if self.reason not in _REASON_FACTS:
+            raise ValueError("Unsupported input-required reason")
+        if not self.methods or len({item.method for item in self.methods}) != len(self.methods):
+            raise ValueError("Authentication challenges require unique accepted methods")
+        names = [fact.name for fact in self.facts]
+        if len(set(names)) != len(names) or set(names) != _REASON_FACTS[self.reason]:
+            raise ValueError("Input challenge facts do not match the canonical reason contract")
+
+
+@dataclass(frozen=True)
+class InputChallenge:
+    id: str
+    transfer_id: int
+    generation: int
+    reason: InputReason
+    origin: InputOrigin
+    integration_id: str
+    operation_id: str
+    methods: tuple[InputMethodDescriptor, ...]
+    request_id: str | None = None
+    artifact_id: int | None = None
+    facts: tuple[InputFact, ...] = ()
+    # ``InputRequirement.authority`` of the question asked (a bare origin).
+    authority: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "authority", canonical_authority(self.authority))
+
+    @property
+    def requirement(self) -> InputRequirement:
+        return InputRequirement(self.reason, self.methods, self.facts, self.authority)
+
+
+class ResourceState(StrEnum):
+    PREPARING = "preparing"
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    ABSENT = "absent"
+    EXPIRED = "expired"
+    UNKNOWN = "unknown"
+
+
+class CachePresence(StrEnum):
+    """Provider-neutral torrent-cache presence, as observed when a provider
+    accepted the request (DP 1.0.12 canonical torrent cache fact).
+
+    Orthogonal to ``ResourceState``: ``AVAILABLE`` says a resource is usable
+    now, never that it was already cached when first asked for. ``HIT`` /
+    ``MISS`` are set only from a provider's own authoritative statement at the
+    observation itself; they are never derived from later readiness, status
+    codes, speed, completion time, or endpoint identity. ``UNKNOWN`` means the
+    provider gave no trustworthy fact, and is what every observation persisted
+    before this fact existed decodes to.
+    """
+    HIT = "hit"
+    MISS = "miss"
+    UNKNOWN = "unknown"
+
+
+class AvailabilityState(StrEnum):
+    """Whether a provider can deliver a request NOW without beginning any
+    productive remote acquisition -- a live, read-only answer asked before
+    routing (``AvailabilitySource``), never the historical admission-time
+    ``CachePresence``.
+
+    ``READY`` / ``NOT_READY`` come only from the provider's own authoritative
+    read-only statement. ``UNKNOWN`` is everything else: no such statement
+    exists, the read failed or timed out, or the request carries nothing the
+    provider can be asked about. ``UNKNOWN`` is never a miss.
+    """
+    READY = "ready"
+    NOT_READY = "not_ready"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ActiveCapacity:
+    """A provider's concurrent active-resource capacity for one request class,
+    as the provider itself states it (``ActiveCapacitySource``).
+
+    ``maximum`` is the effective ceiling -- the provider/account maximum,
+    lowered by the operator's own ceiling when one is set, never raised by it
+    -- or ``None`` when no maximum can be known ahead of a refusal.
+    ``occupancy`` is how much of it is in use now across the whole account
+    (including activity outside DownloadPulse), or ``None`` when unknown. Never
+    a count of DownloadPulse's own records standing in for the provider's."""
+    maximum: int | None = None
+    occupancy: int | None = None
+
+
+class DeliveryKind(StrEnum):
+    """Whether a candidate's endpoint IS the requested source or a
+    provider-issued delivery capability for it.
+
+    A provider-issued endpoint is an execution capability, not the logical
+    source route. ``DIRECT`` is also what candidates persisted before this
+    fact existed decode to: their presentation is left unchanged rather than
+    guessed from the endpoint or provider.
+    """
+    DIRECT = "direct"
+    PROVIDER_ISSUED = "provider_issued"
+
+
+class TransferState(StrEnum):
+    ACCEPTED = "pending"
+    RESOLVING = "processing"
+    INPUT_REQUIRED = "input_required"
+    READY = "ready"
+    QUEUED = "queued"
+    TRANSFERRING = "downloading"
+    PAUSED = "paused"
+    VERIFYING = "verifying"
+    POST_PROCESSING = "extracting"
+    COMPLETED = "completed"
+    CONSOLIDATED = "consolidated"
+    FAILED = "error"
+    CANCELLED = "cancelled"
+    DELETED = "deleted"
+
+
+class ExecutionState(StrEnum):
+    """Neutral executor lifecycle. ``RUNNING`` means only that executor work is
+    currently active; network activity, bandwidth need and stall expectations
+    are separate ``ExecutionActivity`` facts."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    PAUSED = "paused"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+class Ownership(StrEnum):
+    CREATED = "created"
+    OBSERVED = "observed"
+    ADOPTED = "adopted"
+
+
+class CleanupAuthority(StrEnum):
+    OWNED = "owned"
+    USER_REQUEST = "user_request"
+
+
+class OutcomeKind(StrEnum):
+    OBSERVATION = "observation"
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
+
+
+class CancellationInitiator(StrEnum):
+    USER = "user"
+    POLICY = "policy"
+    PROVIDER = "provider"
+    EXECUTOR = "executor"
+
+
+@dataclass(frozen=True)
+class SubmissionDemand:
+    """One accepted submission's demand for its transfer's work.
+
+    ``account_id`` is the authenticated submitter that owns the demand;
+    ``credential_id`` identifies the credential that carried it (an Integration
+    token), for attribution only. ``id`` is chosen by the admission edge so it
+    can name the demand it submitted."""
+    account_id: str | None
+    credential_id: str | None = None
+    id: str = field(default_factory=new_identity)
+
+
+@dataclass(frozen=True)
+class TransferRequest:
+    kind: str
+    # A request's input. Small inputs are carried inline. A large one is carried
+    # as a ``StagedPayload`` -- a durable reference owned by
+    # ``transfers.staged_input`` -- so the bytes never enter request or
+    # candidate JSON. Core neither interprets nor dereferences it; the edge that
+    # produced the input and the edge that consumes it do.
+    payload: "str | bytes | StagedPayload" = field(repr=False)
+    name: str = ""
+    fingerprint: str = ""
+    preferred_provider: str | None = None
+    # Neutral per-submission policy: "all" (default) or "interactive". Governs
+    # only whether the interactive file-selection lifecycle is entered; it is
+    # NOT part of source identity and is excluded from the dedupe fingerprint
+    # (which keys on ``fingerprint``, the BitTorrent infohash).
+    selection_mode: str = "all"
+    # The operator's per-submission consent to connect THIS explicitly entered
+    # source to a private-LAN (RFC1918) address, recorded at admission (the
+    # per-transfer confirmation, or the global skip-confirmation setting). Not
+    # identity; never a global permission; never inherited by anything the
+    # source's provider returns for another host.
+    local_network_consent: bool = False
+    # The operator's explicit answer for a request that names one item inside
+    # an enclosing collection (``ProviderApplicability.acquisition_scopes``):
+    # ``"item"`` or ``"collection"``; empty when no choice was asked. Recorded
+    # at admission, never inferred; not identity.
+    acquisition_scope: str = ""
+    # Whether ``name`` is the input's own declared file name (an uploaded
+    # file's filename, or the file name a fetched link was served under or
+    # names in its path); a name DownloadPulse made up is not. Recorded at
+    # admission, never inferred later; not identity.
+    name_supplied: bool = False
+
+
+# BitTorrent-class request kinds: a magnet URI, or a torrent metainfo upload
+# ("torrent"; "torrent_file"/"file" are stored/legacy spellings). A provider
+# may materialize either into HTTP(S) descendants, but the root's class wins.
+TORRENT_FILE_REQUEST_KINDS = frozenset({"torrent", "torrent_file", "file"})
+BITTORRENT_REQUEST_KINDS = frozenset({"magnet", *TORRENT_FILE_REQUEST_KINDS})
+
+
+@dataclass(frozen=True)
+class IntegrationDescriptor:
+    id: str
+    name: str
+    capabilities: frozenset[Capability]
+    request_types: frozenset[str] = frozenset()
+    enabled: bool = True
+    priority: int = 0
+    # ``(request kind, priority)`` pairs that replace ``priority`` when
+    # providers already admitted to one competition are ordered for a request
+    # of that kind -- for example a provider's own option to be tried before
+    # another for one kind only. Empty (the default) orders every kind by
+    # ``priority``, exactly as before. It decides no eligibility.
+    request_priority: tuple[tuple[str, int], ...] = ()
+
+    def priority_for(self, kind: str) -> int:
+        """The ordering priority for a request of ``kind``."""
+        return next((value for named, value in self.request_priority if named == kind), self.priority)
+
+
+@dataclass(frozen=True)
+class ProviderResource:
+    provider_id: str
+    context: Mapping[str, object] = field(repr=False)
+    ownership: Ownership = Ownership.OBSERVED
+    id: str = field(default_factory=new_identity)
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    scheme: str
+    address: str = field(repr=False)
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False)
+    # Execution material only: a provider-issued capability (for example a
+    # link that embeds the account credential) valid for one execution. It is
+    # never durable -- persistence keeps only the fact (``codec``) -- and the
+    # bound provider's ordinary refresh regenerates it from the candidate's
+    # durable refresh identity immediately before each execution.
+    transient: bool = False
+
+
+@dataclass(frozen=True)
+class IntegrityMetadata:
+    algorithm: str
+    digest: str
+
+
+@dataclass(frozen=True)
+class SourceIdentity:
+    """Comparable source scope supplied by the resolver, without source secrets."""
+    scope: str
+    key: str
+
+
+class MaterializationKind(StrEnum):
+    """Neutral shape of one logical acquisition: one final file, or a
+    collection of final files beneath one dedicated directory boundary."""
+    FILE = "file"
+    COLLECTION = "collection"
+
+
+class FingerprintKind(StrEnum):
+    """Provider-neutral strength of bounded remote content evidence."""
+    FULL_CONTENT_SAMPLE = "full_content_sample"
+    PREFIX_CONTENT_SAMPLE = "prefix_content_sample"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class ArtifactFingerprint:
+    total_bytes: int
+    signature: str
+    kind: FingerprintKind = FingerprintKind.FULL_CONTENT_SAMPLE
+    reason: str = ""
+    prefix_signature: str = ""
+
+
+@dataclass(frozen=True)
+class TransferCandidate:
+    """One executable acquisition option.
+
+    ``relative_path`` is the collection-root-relative member path a manifest
+    child was stamped with (see :class:`SourceEntry`); core prepends the durable
+    transfer root exactly once in
+    ``transfers._engine_base.TransferEngine._materialize``.
+    """
+    name: str
+    endpoints: tuple[Endpoint, ...]
+    expected_bytes: int = 0
+    relative_path: str = ""
+    provider_id: str = ""
+    resource: ProviderResource | None = None
+    refresh_request: TransferRequest | None = field(default=None, repr=False)
+    context: Mapping[str, object] = field(default_factory=dict, repr=False)
+    expires_at: float | None = None
+    integrity: tuple[IntegrityMetadata, ...] = ()
+    priority: int = 0
+    id: str = field(default_factory=new_identity)
+    source_identity: SourceIdentity | None = None
+    resolver_identity_evidence: ResolverArtifactIdentityEvidence | None = None
+    delivery: DeliveryKind = DeliveryKind.DIRECT
+    # Neutral transient-input methods an executor may request for this
+    # candidate. Never carries a secret, an executor identity or a native name.
+    accepted_input_methods: tuple[InputMethod, ...] = ()
+    # Non-secret content evidence retained because transient operator input
+    # proved this candidate when it joined a canonical artifact. It stands in
+    # for a live acquisition only when that acquisition would need input the
+    # deciding request does not hold (the proving input itself is never kept).
+    content_evidence: ArtifactFingerprint | None = None
+    # The canonical request class this candidate was resolved for. Stamped by
+    # core from the owning request (never chosen by a provider); an executor
+    # may claim a subject from it without any URL endpoint.
+    request_kind: str = ""
+    # Provider-declared neutral acquisition shape; core derives the
+    # materialization plan from it without knowing the eventual executor.
+    materialization: MaterializationKind = MaterializationKind.FILE
+    # Core-stamped lineage fact (never provider-chosen): every endpoint of this
+    # candidate is exactly the host the operator explicitly submitted with
+    # local-network consent. Only such a candidate may reach an RFC1918
+    # address, and only while the global Local Network Connections policy is
+    # on -- enforced at the connection boundary, never by this flag alone.
+    private_network_grant: bool = False
+
+    def __post_init__(self):
+        if not isinstance(self.materialization, MaterializationKind):
+            raise ValueError("Candidate materialization must be a canonical kind")
+        methods = self.accepted_input_methods
+        if (not isinstance(methods, tuple) or any(not isinstance(item, InputMethod) for item in methods)
+                or len(set(methods)) != len(methods)):
+            raise ValueError("Accepted input methods must be unique canonical input methods")
+
+
+@dataclass(frozen=True)
+class TransferProgress:
+    total_bytes: int = 0
+    completed_bytes: int = 0
+    bytes_per_second: int = 0
+    # Acquisition work units, for an acquisition with no exact byte total:
+    # authoritative counts of COMPLETED units (e.g. media segments) out of a
+    # defensible total -- never bytes, never an estimate. ``None`` = not known.
+    completed_units: int | None = None
+    total_units: int | None = None
+    # Stamped by core when it persists an observation (never by an executor):
+    # whether the writer was acquiring then (``ExecutionActivity
+    # .network_active`` while RUNNING), so a writer in repair, unpack, remux or
+    # finalization has no acquisition percentage. ``None`` = recorded before
+    # this fact existed.
+    acquiring: bool | None = None
+    # An executor's BEST-EFFORT percentage (0-100) of its whole execution,
+    # where neither exact bytes nor authoritative units cover all of it --
+    # e.g. a media plan whose later stream has only an approximate size.
+    # Presentation only: never bytes, never units, never DP material, never
+    # read by recovery, stall detection or checkpointing. ``None`` = none.
+    estimated_percentage: float | None = None
+
+    @property
+    def percentage(self) -> float:
+        return min(100.0, max(0.0, self.completed_bytes / self.total_bytes * 100)) if self.total_bytes > 0 else 0.0
+
+
+@dataclass(frozen=True)
+class FileManifestEntry:
+    """One neutral file fact for human selection: safe name, relative path, size.
+
+    Carries no URL, endpoint, signed token, header, credential, provider-native
+    decision, selection flag, timeout, or executor information.
+
+    ``relative_path`` is the member path INSIDE the transfer collection root and
+    never contains the root itself (``Disc 1/track01.flac``, never
+    ``Album/Disc 1/track01.flac``). Interpreting a provider-native collection
+    wrapper is the provider translation boundary's job; core owns the canonical
+    root (``torrents.name``) and applies it exactly once when it allocates a
+    child FILE target.
+    """
+    name: str
+    relative_path: str
+    expected_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class FileManifest:
+    """A complete provider-neutral file-level tree observed for one resource.
+
+    A provider reports ``None`` until it has a complete authoritative tree;
+    partial trees are never exposed as a selectable manifest.
+
+    ``independent_members``: every entry is an independently identified
+    resource of a collection (each fans out as its own request), not a file of
+    one payload. Core then authorizes members only by the operator's explicit
+    choice -- never ALL by default, by Close or by a decision timeout.
+
+    ``source_truncated`` / ``source_total``: for such a collection the manifest
+    is the complete BOUNDED selection universe the provider observed; the
+    source itself may hold more (``source_truncated``), and ``source_total`` is
+    its authoritative entry count only when the source stated one (``None``:
+    unknown). Neither ever makes the bounded manifest partial or the source
+    complete.
+    """
+    entries: tuple[FileManifestEntry, ...]
+    independent_members: bool = False
+    source_truncated: bool = False
+    source_total: int | None = None
+
+
+@dataclass(frozen=True)
+class ProviderObservation:
+    resource: ProviderResource
+    state: ResourceState
+    name: str = ""
+    fingerprint: str = ""
+    progress: TransferProgress = field(default_factory=TransferProgress)
+    error: NormalizedError | None = None
+    request: TransferRequest | None = field(default=None, repr=False)
+    file_manifest: FileManifest | None = None
+    cache_presence: CachePresence = CachePresence.UNKNOWN
+
+
+@dataclass(frozen=True)
+class DiscoveryDepth:
+    """How far below a discovered directory DP wants regular files enumerated.
+
+    What DP wants, never how a protocol expresses it: ``levels`` subdirectory
+    levels (``0``, ``CURRENT``: the directory's immediate regular files only),
+    or every reachable level (``None``, ``UNLIMITED``). The executor that
+    lists owns the translation into its transport and enforces the bound
+    itself; an executor that cannot enumerate exactly this depth refuses the
+    discovery rather than answer with more or less.
+
+    Enumeration policy only: it never reaches a candidate, execution work,
+    continuation or materialization."""
+    levels: int | None = 0
+
+    CURRENT: ClassVar[DiscoveryDepth]
+    UNLIMITED: ClassVar[DiscoveryDepth]
+
+    def __post_init__(self):
+        if self.levels is not None and (
+                isinstance(self.levels, bool) or not isinstance(self.levels, int) or self.levels < 0):
+            raise CodedValueError("A discovery depth is a non-negative number of subdirectory levels, or unlimited", code="tuning.discovery_depth_invalid")
+
+    @classmethod
+    def of(cls, levels: int) -> DiscoveryDepth:
+        return cls(levels)
+
+    @property
+    def unlimited(self) -> bool:
+        return self.levels is None
+
+    def descends(self, level: int) -> bool:
+        """Whether enumeration enters the subdirectories of a directory that
+        lies ``level`` subdirectory levels below the discovered one (the
+        discovered directory itself is level ``0``)."""
+        return self.levels is None or level < self.levels
+
+
+DiscoveryDepth.CURRENT = DiscoveryDepth(0)
+DiscoveryDepth.UNLIMITED = DiscoveryDepth(None)
+
+
+@dataclass(frozen=True)
+class DiscoveryLimits:
+    """How much enumeration a provider accepts from one discovery.
+
+    ``max_files``: the most regular files a directory may contain for the
+    listing to be a result -- one with more FAILS, it is never truncated into
+    a listing that looks complete. ``timeout_seconds``: how long the whole
+    enumeration may take before it fails as unavailable. ``None`` leaves the
+    lister's own bounds, which a provider's limit can only tighten, never
+    raise. An executor that cannot enforce a requested limit refuses the
+    discovery.
+
+    Enumeration policy only, exactly like ``DiscoveryDepth``: it never reaches
+    a candidate, execution work, retry, continuation or materialization."""
+    max_files: int | None = None
+    timeout_seconds: float | None = None
+
+    def __post_init__(self):
+        if self.max_files is not None and (
+                isinstance(self.max_files, bool) or not isinstance(self.max_files, int) or self.max_files < 1):
+            raise CodedValueError("A file limit is a positive number of files", code="tuning.file_limit_invalid")
+        if self.timeout_seconds is not None and (
+                isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, (int, float))
+                or not self.timeout_seconds > 0):
+            raise CodedValueError("A discovery timeout is a positive number of seconds", code="tuning.discovery_timeout_invalid")
+
+
+@dataclass(frozen=True)
+class DiscoveryRequest:
+    """A provider's request that core list ONE remote directory for it.
+
+    ``endpoint`` names the directory in the transport that would execute its
+    members; core runs the listing read-only through the executor that claims
+    it, under the one authentication-input and server-identity owner, and
+    hands the neutral result back to the provider. A provider never opens the
+    connection itself.
+
+    ``depth``: how far below a directory the provider's source semantics
+    select regular files (``DiscoveryDepth``). An executor that cannot
+    enumerate exactly that depth refuses the discovery; it never answers with
+    a flatter or deeper listing. ``limits``: how many files and how much time
+    the provider accepts from that enumeration (``DiscoveryLimits``); an
+    executor that cannot enforce them refuses the discovery.
+
+    ``alternate``: the SAME operator request read another way, when the
+    provider's source semantics admit one (never a second candidate). Core
+    tries it only after discovering ``endpoint`` positively establishes that
+    this interpretation does not provide the resource
+    (``transfers.policy.interpretation_absent``); once reached, it durably
+    becomes the request's interpretation (``RequestRecord.interpretation``).
+    An alternate's own resolution never names a further alternate.
+
+    ``content_limit``: the provider needs the complete content of the regular
+    file ``endpoint`` names -- at most this many bytes -- rather than a
+    listing (a small resource whose bytes describe the request, such as a
+    descriptor document). The answer is a FILE carrying ``content``; a larger
+    one fails the discovery, it is never truncated. A hard bound the provider
+    sets, never an operator tuning. An executor that cannot read it refuses."""
+    endpoint: Endpoint
+    accepted_input_methods: tuple[InputMethod, ...] = ()
+    depth: DiscoveryDepth = DiscoveryDepth.CURRENT
+    alternate: TransferRequest | None = None
+    limits: DiscoveryLimits = DiscoveryLimits()
+    content_limit: int | None = None
+
+    def __post_init__(self):
+        if self.content_limit is not None and (
+                isinstance(self.content_limit, bool) or not isinstance(self.content_limit, int)
+                or self.content_limit < 1):
+            raise CodedValueError("A content limit is a positive number of bytes", code="tuning.content_limit_invalid")
+
+
+@dataclass(frozen=True)
+class DiscoveredEntry:
+    """One regular file found inside a discovered directory. ``relative_path``
+    is its path below that directory when a deeper-than-``CURRENT`` discovery
+    found it in a subdirectory (``""`` means the file lies directly inside it,
+    at ``name``)."""
+    name: str
+    expected_bytes: int = 0
+    relative_path: str = ""
+
+
+class RemoteObjectKind(StrEnum):
+    """What authoritative remote evidence proved a discovered path to be.
+
+    ``OPAQUE``: the server answered definitively, but describes the path
+    through no discovery semantics at all -- it proved neither a file nor a
+    directory. A positive protocol fact, never a failure; only the provider
+    that asked decides what it means (``ResolutionResult.declined``)."""
+    FILE = "file"
+    DIRECTORY = "directory"
+    OPAQUE = "opaque"
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """Authoritative remote facts about one discovered path.
+
+    A DIRECTORY carries its immediate regular-file members -- or, for a deeper
+    discovery, every regular file within the requested ``DiscoveryDepth``, each
+    at its ``relative_path`` (a server whose top level is a set of named roots
+    lists each root as the first path segment); never directories, symbolic links or
+    special files, and never remote-browser state. Only a complete listing is a
+    result: anything the server refused to list fails the discovery. ``directory``
+    is the concrete absolute path they were listed in, as the server resolved
+    it -- so a home-relative request reaches execution as a canonical path. A
+    regular FILE carries no members, only its size when the server reports it
+    (``expected_bytes``). ``location`` is the address the server finally
+    described the path at when it moved it (a followed redirect), ``""`` when
+    it answered at the requested address itself. ``content`` is the file's
+    complete content when the discovery asked for it
+    (``DiscoveryRequest.content_limit``), else ``None``."""
+    entries: tuple[DiscoveredEntry, ...] = ()
+    directory: str = ""
+    kind: RemoteObjectKind = RemoteObjectKind.DIRECTORY
+    expected_bytes: int = 0
+    location: str = field(default="", repr=False)
+    content: bytes | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class ResolutionResult:
+    """Candidates are alternatives for one request; manifests describe members."""
+    state: ResourceState
+    candidates: tuple[TransferCandidate, ...] = ()
+    observation: ProviderObservation | None = None
+    error: NormalizedError | None = None
+    input_required: InputRequirement | None = None
+    # Core-run remote discovery the provider needs before it can describe the
+    # resource (``DiscoveryResolution.resolve_discovered`` receives the result).
+    discovery: DiscoveryRequest | None = None
+    # Positive post-probe non-applicability: the discovery this provider asked
+    # for proved the resource is not its interpretation (never a failure, and
+    # carrying nothing else). Only a provider whose claim on the request was
+    # conditional (``ProviderApplicability.conditional``) may say it, and only
+    # before it has resolved the request; core then continues the same
+    # established provider competition without it.
+    declined: bool = False
+
+
+@dataclass(frozen=True)
+class SourceEntry:
+    """Metadata for an unresolved manifest member; never dispatched as a candidate.
+
+    ``relative_path`` uses the same collection-root-relative coordinate system as
+    :class:`FileManifestEntry` -- the two must agree exactly, or explicit file
+    selection cannot reconcile an early choice against the executable manifest
+    (``transfers.file_selection.reconcile_executable_subset``).
+
+    ``alternates``: further ordinary requests for this SAME member, after
+    ``request`` in the provider's order of preference. Core fans each one out
+    as a sibling child of the member, routed like any other request; whether
+    their candidates are one artifact is decided by the existing same-transfer
+    cohort and canonical owners, exactly as for several submitted links.
+    ``integrity``: whole-member integrity the provider declares; core stamps it
+    onto every candidate resolved for the member, as it does
+    ``expected_bytes``, so evidence and final verification use it.
+    ``whole_resource``: core-owned, never set by a provider. Core stamps it at
+    fan-out when the executable manifest's one and only member is the resource
+    itself -- its member path is exactly the resource's authoritative name, as
+    a single-file torrent's is. Such a member is a FILE, not a collection
+    member, so materialization places it at ``<download-root>/<name>`` instead
+    of beneath a collection folder of the same name.
+    """
+    name: str
+    expected_bytes: int
+    relative_path: str
+    request: TransferRequest = field(repr=False)
+    alternates: tuple[TransferRequest, ...] = field(default=(), repr=False)
+    integrity: tuple[IntegrityMetadata, ...] = ()
+    whole_resource: bool = False
+
+
+@dataclass(frozen=True)
+class ResourceSnapshot:
+    observations: tuple[ProviderObservation, ...]
+    complete: bool = False
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionSubject:
+    """What an executor is asked to claim, before any output target exists.
+
+    Canonical request/candidate facts only: no executor choice, no native
+    option or identity, no core routing/recovery decision, no transient secret.
+    """
+    request_kind: str
+    candidate: TransferCandidate
+
+    @classmethod
+    def of(cls, candidate: TransferCandidate) -> "ExecutionSubject":
+        return cls(candidate.request_kind, candidate)
+
+
+@dataclass(frozen=True)
+class MaterializationPlan:
+    """Core-owned output policy. ``FILE``: ``target`` is the exact final file
+    and ``root`` the allowed boundary. ``COLLECTION``: ``root`` is a dedicated
+    core-authorized directory and ``target`` is ``None``."""
+    kind: MaterializationKind
+    root: str
+    target: str | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.kind, MaterializationKind) or not self.root:
+            raise ValueError("Materialization plans require a canonical kind and a root")
+        if (self.kind == MaterializationKind.FILE) != (self.target is not None):
+            raise ValueError("Only a FILE plan names an exact target")
+
+
+@dataclass(frozen=True)
+class ExecutionWork:
+    """A subject after core allocated its materialization boundary.
+
+    ``attempt_id`` is the durable execution attempt this work belongs to, when
+    core has allocated one. It exists so an executor whose native transient
+    material is scoped to a single attempt can name that material accurately in
+    ``footprint()``; without it such an executor could only report material
+    shared between attempts, and cleaning one attempt would destroy another's.
+
+    ``None`` means core has not allocated an attempt yet, which is not a gap:
+    before an attempt exists, that attempt's transient material cannot exist
+    either, so there is nothing for it to report.
+    """
+    subject: ExecutionSubject
+    materialization: MaterializationPlan
+    attempt_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecutorClaim:
+    """An executor's pure applicability answer; ordering stays core-owned."""
+    supported: bool
+
+
+class ContinuationCapability(StrEnum):
+    """What an executor can honor when core hands it existing artifact
+    material. Declarations only: which of them a replacement uses is decided
+    by the one core planner (``transfers.continuation``), never here."""
+    FULL_RESTART = "full_restart"
+    CONTIGUOUS_FROM_OFFSET = "contiguous_from_offset"
+    ARBITRARY_RANGE_FETCH = "arbitrary_range_fetch"
+    IMPORT_EXISTING_MATERIAL = "import_existing_material"
+    # Observations carry the exact final-file ranges written so far
+    # (``ExecutionObservation.material``); the only way uncommitted work can
+    # ever become DownloadPulse-valid before completion.
+    EXPORT_MATERIAL_RANGES = "export_material_ranges"
+    SOURCE_SEGMENT_TO_FINAL_RANGE = "source_segment_to_final_range"
+    # The executor reconstructs an equivalent artifact using the existing
+    # destination as its basis, without collapsing DP-valid material to a
+    # contiguous prefix: it never mutates the destination until it installs a
+    # complete replacement, so an interrupted attempt leaves every retained
+    # range exactly as it was. Its in-flight work is never DP material before
+    # that verified completion.
+    DESTINATION_AWARE_CONTINUATION = "destination_aware_continuation"
+    # A FRESH native job can be given arbitrary DP-valid material -- every
+    # whole geometry chunk (``material.CHUNK_BYTES``, or the executor's coarser
+    # ``continuation_alignment``) DownloadPulse holds valid, anywhere in a FILE of
+    # KNOWN total size -- and acquires only the rest, never rewriting what it
+    # was given. The executor states the trust in its own native terms and
+    # refuses a total or geometry it cannot state; the material itself is
+    # exactly as trusted as a retained prefix.
+    IMPORT_SPARSE_MATERIAL = "import_sparse_material"
+    # A natively quiesced job keeps its own private acquisition state and
+    # continues exactly where it stopped when resumed (``PauseResume.resume``).
+    # Disposable acceleration only: never DownloadPulse material truth.
+    NATIVE_PRIVATE_RESUME = "native_private_resume"
+    # ``PauseResume.pause`` stops acquisition gracefully so the final completed
+    # work can be checkpointed before the writer is fenced. An optimization:
+    # lacking it never prevents a DownloadPulse Pause.
+    NATIVE_QUIESCE = "native_quiesce"
+    # ``transfers.contracts.ContinuationBoundaryDiscovery``: the executor can
+    # answer, for concrete source data, the largest offset at or below the
+    # DP-valid prefix where it can continue exactly (e.g. where decoded source
+    # segments begin). Data-dependent, unlike ``continuation_alignment``.
+    BOUNDARY_DISCOVERY = "boundary_discovery"
+
+
+class ContinuationStrategy(StrEnum):
+    FULL_RESTART = "full_restart"
+    CONTIGUOUS_FROM_OFFSET = "contiguous_from_offset"
+    # Historical only: a writer that inherited the previous writer's native
+    # object for another source (retired; a source switch is always a fresh
+    # writer). Kept so recorded plans still decode; no executor starts one.
+    NATIVE_STATE_HANDOFF = "native_state_handoff"
+    # ``DESTINATION_AWARE_CONTINUATION``: every DP-valid range is retained in
+    # place as the new writer's basis; the writer commits nothing before it
+    # installs the complete, verified replacement of the whole payload.
+    DESTINATION_AWARE = "destination_aware"
+    # ``IMPORT_SPARSE_MATERIAL``: every retained range (whole chunks of the
+    # known total) is handed to a fresh job, which writes only the rest.
+    SPARSE_IMPORT = "sparse_import"
+
+
+@dataclass(frozen=True)
+class ContinuationPlan:
+    """The one authorization a writer receives for an artifact's material.
+
+    Produced only by ``transfers.continuation.plan_continuation`` and bound to
+    the material generation it was computed against: an executor may reject a
+    plan it cannot honor, but never retains more than ``retained`` nor writes
+    outside ``authorized``. Ranges are ``[start, end)`` final-file offsets."""
+    artifact_id: int
+    material_generation: int
+    geometry_version: int
+    candidate_id: str
+    executor_id: str
+    strategy: ContinuationStrategy
+    boundary: int
+    retained: tuple[tuple[int, int], ...]
+    discarded: tuple[tuple[int, int], ...]
+    authorized: tuple[tuple[int, int], ...]
+    expected_size: int | None
+    reason: str
+    # Provenance: the selected executor's declared continuation capabilities
+    # (and alignment) this decision was made from.
+    capabilities: tuple[str, ...] = ()
+    alignment: int = 1
+    # COLLECTION artifacts: per member file (relative path), the retained
+    # contiguous boundary and what is reclassified. A member not listed keeps
+    # nothing and may be written from 0; a listed member from its boundary.
+    member_boundaries: tuple[tuple[str, int], ...] = ()
+    member_discarded: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] = ()
+    # DP-valid material the selected executor cannot consume (a capability
+    # limitation, stated as such). Distinct from ``discarded``: only what this
+    # writer will actually rewrite leaves VALID at admission.
+    unusable: tuple[tuple[int, int], ...] = ()
+
+    def member_boundary(self, member: str) -> int:
+        return dict(self.member_boundaries).get(member, 0)
+
+    @property
+    def retained_bytes(self) -> int:
+        return (sum(end - start for start, end in self.retained)
+                + sum(boundary for _member, boundary in self.member_boundaries))
+
+    @property
+    def unusable_bytes(self) -> int:
+        return sum(end - start for start, end in self.unusable)
+
+    @property
+    def discarded_bytes(self) -> int:
+        return (sum(end - start for start, end in self.discarded)
+                + sum(end - start for _member, ranges in self.member_discarded for start, end in ranges))
+
+    def as_dict(self) -> dict:
+        return {
+            "artifact_id": self.artifact_id, "material_generation": self.material_generation,
+            "geometry_version": self.geometry_version, "candidate_id": self.candidate_id,
+            "executor_id": self.executor_id, "strategy": self.strategy.value, "boundary": self.boundary,
+            "retained": [list(item) for item in self.retained], "discarded": [list(item) for item in self.discarded],
+            "authorized": [list(item) for item in self.authorized], "expected_size": self.expected_size,
+            "reason": self.reason, "capabilities": list(self.capabilities), "alignment": self.alignment,
+            "member_boundaries": [[member, boundary] for member, boundary in self.member_boundaries],
+            "member_discarded": [[member, [list(item) for item in ranges]] for member, ranges in self.member_discarded],
+            "unusable": [list(item) for item in self.unusable],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping) -> "ContinuationPlan":
+        def ranges(key):
+            return tuple((int(start), int(end)) for start, end in value.get(key) or ())
+        return cls(int(value["artifact_id"]), int(value["material_generation"]), int(value["geometry_version"]),
+                   str(value["candidate_id"]), str(value["executor_id"]), ContinuationStrategy(value["strategy"]),
+                   int(value["boundary"]), ranges("retained"), ranges("discarded"), ranges("authorized"),
+                   None if value.get("expected_size") is None else int(value["expected_size"]), str(value["reason"]),
+                   tuple(str(item) for item in value.get("capabilities") or ()), int(value.get("alignment") or 1),
+                   tuple((str(member), int(boundary)) for member, boundary in value.get("member_boundaries") or ()),
+                   tuple((str(member), tuple((int(start), int(end)) for start, end in ranges))
+                         for member, ranges in value.get("member_discarded") or ()),
+                   ranges("unusable"))
+
+
+@dataclass(frozen=True)
+class ExecutorCapabilities:
+    """Static semantic guarantees an executor implementation declares.
+
+    Each flag promises the matching neutral operation exists (validated at
+    registration); none of them states that it is available right now --
+    that is ``ExecutorHealth.available_runtime_capabilities``."""
+    candidate_sampling: bool = False
+    per_execution_pause: bool = False
+    acquisition_gate: bool = False
+    aggregate_bandwidth_ceiling: bool = False
+    # The smallest positive bytes/second the executor can enforce as an
+    # aggregate ceiling (with ``aggregate_bandwidth_ceiling``); core never
+    # assigns a finite cap below it.
+    minimum_bandwidth_ceiling: int = 1
+    native_assisted_retry: bool = False
+    transient_input: bool = False
+    # Read-only listing of one remote directory before any candidate exists,
+    # behind the same trust and authentication the executor applies to
+    # execution (``transfers.contracts.RemoteDiscovery``).
+    remote_discovery: bool = False
+    materialization_kinds: frozenset[MaterializationKind] = frozenset({MaterializationKind.FILE})
+    # Material-continuation declarations (``ContinuationCapability``). Every
+    # executor can at least restart from zero. ``continuation_alignment`` is
+    # the byte grain at which this executor can begin continuing (1 = any
+    # offset); the planner derives the maximal mutually safe boundary from it.
+    continuation: frozenset[ContinuationCapability] = frozenset({ContinuationCapability.FULL_RESTART})
+    continuation_alignment: int = 1
+
+    def __post_init__(self):
+        kinds = self.materialization_kinds
+        if (not isinstance(kinds, frozenset) or not kinds
+                or any(not isinstance(item, MaterializationKind) for item in kinds)):
+            raise ValueError("Executors must declare canonical materialization kinds")
+        continuation = self.continuation
+        if (not isinstance(continuation, frozenset)
+                or any(not isinstance(item, ContinuationCapability) for item in continuation)
+                or ContinuationCapability.FULL_RESTART not in continuation):
+            raise ValueError("Executors must declare canonical continuation capabilities, FULL_RESTART included")
+        if isinstance(self.continuation_alignment, bool) or int(self.continuation_alignment) < 1:
+            raise ValueError("Continuation alignment is a positive byte count")
+        if isinstance(self.minimum_bandwidth_ceiling, bool) or int(self.minimum_bandwidth_ceiling) < 1:
+            raise ValueError("The minimum bandwidth ceiling is a positive byte rate")
+
+
+class ExecutorRuntimeCapability(StrEnum):
+    ACQUISITION_GATE = "acquisition_gate"
+    AGGREGATE_BANDWIDTH_CEILING = "aggregate_bandwidth_ceiling"
+    NATIVE_ASSISTED_RETRY = "native_assisted_retry"
+
+
+@dataclass(frozen=True)
+class ExecutorHealth:
+    """Current executor truth. Runtime availability may only narrow the
+    statically declared capabilities, never extend them."""
+    reachable: bool
+    ready: bool
+    available_runtime_capabilities: frozenset[ExecutorRuntimeCapability] = frozenset()
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class ExecutorRuntimeControlResult:
+    """Outcome of an assigned aggregate ceiling: ``effective`` is confirmed
+    executor truth, ``None`` when it could not be proven."""
+    requested_bytes_per_second: int
+    effective_bytes_per_second: int | None
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class PauseIntent:
+    """The durable pause intent: the global Pause, each non-terminal
+    transfer's own pause, and -- for a pause that is an external client's
+    advisory hold -- that hold's ``(holder, generation)``, which its fenced
+    release must still match."""
+    globally_paused: bool
+    transfers: Mapping[int, bool]
+    holds: Mapping[int, tuple[str, int]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExecutorGateResult:
+    """Outcome of an executor-wide acquisition gate; ``effective_paused`` is
+    confirmed truth, ``None`` when it could not be proven."""
+    requested_paused: bool
+    effective_paused: bool | None
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionHandle:
+    """Durable execution identity.
+
+    ``executor_id`` and ``attempt_id`` are core identities. ``correlation`` is
+    executor-owned, persisted before any native mutation and immutable;
+    ``native`` is executor-owned, may be bound once (``None`` -> value) after
+    native acceptance and is immutable afterwards. Core copies and compares
+    both maps and never interprets them. Both are durable non-secret facts."""
+    executor_id: str
+    attempt_id: str
+    correlation: Mapping[str, object] = field(repr=False)
+    native: Mapping[str, object] | None = field(default=None, repr=False)
+
+    def binds(self, bound: "ExecutionHandle") -> bool:
+        """Whether ``bound`` is this prepared handle's one legal native binding."""
+        return (self.native is None and bound.native is not None and bound.executor_id == self.executor_id
+                and bound.attempt_id == self.attempt_id and bound.correlation == self.correlation)
+
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    work: ExecutionWork
+    attempt_id: str
+    paused: bool = False
+    # The core continuation plan this writer is authorized under. ``None``
+    # authorizes no existing material at all (a restart from zero).
+    continuation: ContinuationPlan | None = None
+
+    def __post_init__(self):
+        # One attempt identity, never two. Once a request exists its attempt is
+        # allocated, so work that names a different attempt -- or none at all --
+        # would make ``footprint()`` and ``start()`` disagree about which
+        # attempt's native material is being planned.
+        if self.work.attempt_id != self.attempt_id:
+            raise ValueError("Execution work must belong to this execution attempt")
+
+
+@dataclass(frozen=True)
+class ExecutionFootprint:
+    """Native transient material an executor may create beside or inside the
+    core plan (and later resume from or clean). Never final material.
+
+    ``transient_paths`` are single native files (a resume/control file);
+    ``transient_trees`` are native directories whose whole subtree is
+    transient (a partial-transfer directory). Core validates both inside
+    download storage, excludes both from materialization, and removes them
+    only under the execution's durable material ownership."""
+    transient_paths: tuple[str, ...] = ()
+    transient_trees: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExecutionActivity:
+    """Facts independent of lifecycle state.
+
+    ``network_active``: network acquisition is observed now.
+    ``bandwidth_reservation_required``: the executor may consume download
+    bandwidth for this execution without another core admission transition.
+    ``progress_expected``: acquisition progress is expected (stall detection)."""
+    network_active: bool = False
+    bandwidth_reservation_required: bool = False
+    progress_expected: bool = False
+
+
+class ExecutionControl(StrEnum):
+    PAUSE = "pause"
+    RESUME = "resume"
+
+
+@dataclass(frozen=True)
+class MaterializedEntry:
+    relative_path: str
+    bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class MaterializationResult:
+    """What a succeeded execution reports it produced, relative to its plan."""
+    kind: MaterializationKind
+    entries: tuple[MaterializedEntry, ...]
+
+
+@dataclass(frozen=True)
+class ExecutionContributor:
+    """One source an executor itself reports this execution's data came from.
+
+    ``identity``: the integration's canonical id for that source, or ``""``
+    when the executor's report could not be attributed to exactly one.
+    ``label``: the source's name as reported. ``reported``: the executor's own
+    figure for what that source delivered, verbatim. ``approximate_bytes``:
+    that figure in bytes, as precise as the report (``None`` when the report
+    carries no amount). Evidence only: never configuration, preference or a
+    mere attempt."""
+    identity: str
+    label: str
+    reported: str = ""
+    approximate_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionObservation:
+    handle: ExecutionHandle
+    state: ExecutionState
+    progress: TransferProgress = field(default_factory=TransferProgress)
+    error: NormalizedError | None = None
+    activity: ExecutionActivity = field(default_factory=ExecutionActivity)
+    # Controls valid for this execution now (static capability permitting).
+    controls: frozenset[ExecutionControl] = frozenset()
+    # Supplied only with SUCCEEDED; core verifies it before trusting it.
+    materialization: MaterializationResult | None = None
+    # ``EXPORT_MATERIAL_RANGES``: exact ``[start, end)`` final-file ranges this
+    # writer reports completely written. Evidence for a core checkpoint only --
+    # it never becomes DownloadPulse-valid by being reported (``None`` = the
+    # executor reports none).
+    material: tuple[tuple[int, int], ...] | None = None
+    # The same evidence for a COLLECTION: per member file (relative path to
+    # the collection root), the exact ranges completely written.
+    member_material: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] | None = None
+    # The sources the executor reports this execution's data came from:
+    # ``None`` when it reports nothing (unknown), ``()`` when it reports that
+    # no source delivered any.
+    contributors: tuple[ExecutionContributor, ...] | None = None
+
+    @property
+    def reports_material(self) -> bool:
+        return self.material is not None or self.member_material is not None
+
+    @property
+    def resumable(self) -> bool:
+        """Native work exists and has not reached a terminal state."""
+        return self.state in {ExecutionState.QUEUED, ExecutionState.RUNNING, ExecutionState.PAUSED}
+
+    @property
+    def stopped(self) -> bool:
+        """Positively observed truth that the native writer is not running."""
+        return self.state in {ExecutionState.SUCCEEDED, ExecutionState.FAILED, ExecutionState.CANCELLED,
+                              ExecutionState.ABSENT}
+
+
+@dataclass(frozen=True)
+class ExecutionSnapshot:
+    observations: tuple[ExecutionObservation, ...]
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class TransferOutcome:
+    kind: OutcomeKind
+    error: NormalizedError | None = None
+    cancellation_initiator: CancellationInitiator | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class PostProcessOutcome(TransferOutcome):
+    """A post-processor's outcome with the transfer's FINAL file set it left
+    behind: every absolute path, beneath the download root, that is a regular
+    file once it finished -- the delivered inputs it kept and the files it
+    created (never found by walking a shared directory). Persisted with the
+    outcome (``postprocess_attempts.outcome``) so delivery can name what a
+    finalized transfer consists of; an outcome without it records none."""
+    outputs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CleanupDirective:
+    resource: ProviderResource
+    authority: CleanupAuthority = CleanupAuthority.OWNED
+
+
+@dataclass(frozen=True)
+class HealthObservation:
+    healthy: bool
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class Transfer:
+    id: int
+    name: str
+    state: TransferState
+    fingerprint: str = ""
+    source: str = ""
+    priority: int = 0
+    paused: bool = False
+    # DP-valid completion percentage; ``None`` while any unfinished artifact's
+    # size is unknown (unavailable, never a fabricated 0%).
+    progress: float | None = 0.0
+    error: NormalizedError | None = None
+    epoch: int = 0
+    # In-flight execution progress that is not DP material (a destination-aware
+    # reconstruction), as a percentage; ``None`` when there is none. Activity
+    # only -- ``progress`` alone is completion. ``active_execution_basis``
+    # (``active_execution_projection``): what that percentage counts --
+    # ``"bytes"`` or ``"units"`` -- or ``"processing"`` when the writers are
+    # past acquisition (no percentage); ``None`` when there is none.
+    active_execution_progress: float | None = None
+    active_execution_basis: str | None = None
+    # The collection folder its members live under, frozen at its first
+    # committed fan-out (``None`` before); never a later provider-reported
+    # name. ``collection_root_conflict``: existing placement implied no single
+    # folder, so none is assumed.
+    collection_root: str | None = None
+    collection_root_conflict: bool = False
+
+
+@dataclass(frozen=True)
+class RequestRecord:
+    id: str
+    transfer_id: int
+    request: TransferRequest
+    state: str
+    parent_id: str | None = None
+    resource: ProviderResource | None = None
+    attempts: int = 0
+    retry_at: float = 0
+    error: NormalizedError | None = None
+    entry: SourceEntry | None = None
+    # The provider's alternate reading of ``request`` that discovery
+    # established (``DiscoveryRequest.alternate``); ``request`` stays exactly
+    # what the operator submitted.
+    interpretation: TransferRequest | None = None
+    # The explicit alternative-source group this root belongs to
+    # (``transfer_requests.alternative_group``); ``None`` for every ordinary
+    # request.
+    alternative_group: int | None = None
+
+    @property
+    def resolvable(self) -> TransferRequest:
+        """The request as the provider resolves it: its established
+        interpretation when it has one, otherwise the request itself."""
+        return self.interpretation if self.interpretation is not None else self.request
+
+
+class SizeKnowledge(StrEnum):
+    """Canonical payload-size-knowledge fact (DP 1.0.12 canonical
+    lifecycle/recovery/completion rework, Section 3.3): ``SIZE_UNKNOWN``,
+    ``SIZE_KNOWN(0)`` and ``SIZE_KNOWN(N>0)`` are three distinct facts. ``0``
+    must never simultaneously mean "no size evidence" and "affirmatively
+    zero bytes" -- see ``transfers.filesystem.size_knowledge`` for the one
+    canonical resolver that produces this fact from candidate/executor
+    evidence.
+    """
+    UNKNOWN = "unknown"
+    KNOWN_ZERO = "known_zero"
+    KNOWN_POSITIVE = "known_positive"
+
+    @classmethod
+    def durable(cls, expected_bytes, stored=None) -> "SizeKnowledge":
+        """The ONE interpretation of an artifact's durable size storage.
+
+        Durable size truth is stored as a byte count plus a nullable
+        size-knowledge column, and this is the only function that turns that
+        pair back into the canonical fact. The two are not independent
+        authorities: the byte count is the authority whenever it is positive,
+        and the column is consulted only for the case a number genuinely
+        cannot express -- whether a non-positive value means "no size
+        evidence" or "affirmatively zero bytes".
+
+        * positive byte count => ``KNOWN_POSITIVE``, whatever the column says,
+          so positive evidence can never be downgraded by stale or defaulted
+          bookkeeping;
+        * otherwise an explicit durable ``known_zero`` => ``KNOWN_ZERO``. Only
+          a verified completion whose trusted affirmative-zero evidence the
+          stable local payload proved ever writes that value;
+        * otherwise ``UNKNOWN`` -- which is exactly what every row written
+          before this column existed reads as, since they are all ``NULL``.
+          A historical numeric ``0`` is therefore never reinterpreted as a
+          legitimate empty payload, and nothing backfills one.
+        """
+        if positive_size(expected_bytes) is not None:
+            return cls.KNOWN_POSITIVE
+        return cls.KNOWN_ZERO if stored == cls.KNOWN_ZERO.value else cls.UNKNOWN
+
+
+class MaterializationAdmissionKind(StrEnum):
+    """Universal execution-admission decision for one artifact's dispatch.
+
+    Derived from durable file-selection generation/commitment/membership facts
+    (``transfers.file_selection`` / ``transfers.repository
+    .materialization_authorization``). Never a transfer-global mutable
+    ``selection_authorized`` flag -- always recomputed from the same durable
+    facts the selection lifecycle already owns.
+    """
+    PROCEED = "proceed"
+    HOLD = "hold"
+    STALE = "stale"
+
+
+@dataclass(frozen=True)
+class MaterializationAdmission:
+    kind: MaterializationAdmissionKind
+    # The selection-generation id (``transfer_file_selections.id``) this
+    # decision was evaluated against, when a generation applies. ``None`` for
+    # PROCEED decisions with no applicable generation (never interactive).
+    authority_generation: str | None = None
+
+
+@dataclass(frozen=True)
+class ResolverArtifactIdentityEvidence:
+    """Neutral resolver/provider-asserted identity fact about a candidate.
+
+    States only what a resolver reported -- never a duplicate/equivalence
+    decision (``transfers.mirrors`` owns that). ``resolved_name`` must be the
+    name the provider's resolution response itself asserted, never a
+    submitted-URL basename or other non-resolver fallback; ``""`` when the
+    provider asserts none.
+
+    ``object_coordinate`` is the authoritative remote coordinate of the
+    candidate within its server scope (``transfers.requests
+    .remote_object_coordinate``), stated by the provider from the facts its
+    classification established. It is an address, not immutable identity (a
+    server may replace the contents at one path): equal coordinates only make
+    two SAME-source candidates pairable for ordinary material proof.
+    """
+    resolved_name: str
+    exact_bytes: int
+    object_coordinate: str = ""
+
+
+@dataclass(frozen=True)
+class Artifact:
+    id: int
+    transfer_id: int
+    request_id: str
+    name: str
+    target: str
+    expected_bytes: int
+    state: str
+    candidates: tuple[TransferCandidate, ...] = field(repr=False)
+    selected: int = 0
+    execution: ExecutionHandle | None = None
+    retries: int = 0
+    retry_at: float = 0
+    error: NormalizedError | None = None
+    # The canonical durable size fact this artifact's persisted size means,
+    # reconstructed on load by ``SizeKnowledge.durable`` from the byte count and
+    # the nullable durable column. Never set by hand: ``UNKNOWN`` is the correct
+    # value for an artifact whose size nothing has affirmatively established.
+    size_knowledge: SizeKnowledge = SizeKnowledge.UNKNOWN
+
+
+@dataclass(frozen=True)
+class ResolutionAttempt:
+    id: str
+    request_id: str
+    provider_id: str
+    state: str
+    error: NormalizedError | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionAttempt:
+    handle: ExecutionHandle
+    transfer_id: int
+    artifact_id: int
+    state: str
+    progress: TransferProgress = field(default_factory=TransferProgress)
+    error: NormalizedError | None = None
+    candidate: TransferCandidate | None = field(default=None, repr=False)

@@ -1,0 +1,626 @@
+/* DownloadPulse v1.0.11 shared detail-modal scroll contract.
+ * The outer modal owns the rounded frame; only the body scrolls.
+ */
+
+#modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden !important;
+}
+
+#modal .modal-hdr {
+  flex: 0 0 auto;
+}
+
+#modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color:
+    color-mix(in srgb, var(--dp-text-muted) 58%, var(--dp-accent-purple) 42%)
+    color-mix(in srgb, var(--dp-surface-3) 82%, transparent);
+}
+
+/* Desktop pointer target: deliberately thicker than the browser's compact
+   scrollbar so it is easy to acquire with a mouse. The modal frame clips the
+   track inside its lower radius rather than allowing it to escape the panel. */
+#modal .modal-body::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+/* Chromium/WebKit may expose native increment/decrement buttons at either end
+   of the custom scrollbar. Details needs only the track + thumb. */
+#modal .modal-body::-webkit-scrollbar-button,
+#modal .modal-body::-webkit-scrollbar-button:single-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+#modal .modal-body::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--dp-surface-3) 82%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--dp-border-subtle) 72%, transparent);
+}
+
+#modal .modal-body::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--dp-text-muted) 58%, var(--dp-accent-purple) 42%),
+      color-mix(in srgb, var(--dp-text-muted) 58%, var(--dp-accent-purple) 42%)
+    ) padding-box;
+}
+
+#modal .modal-body::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(
+      color-mix(in srgb, var(--dp-text-secondary) 54%, var(--dp-accent-purple-bright) 46%),
+      color-mix(in srgb, var(--dp-text-secondary) 54%, var(--dp-accent-purple-bright) 46%)
+    ) padding-box;
+}
+
+/* ── Canonical Details card material / composition ───────────────────── */
+/* The Details overlay is a modal presentation of the same card language used
+   by Dashboard, Downloads and Activity. The universal dp-card primitives own
+   the material; this layer supplies only dialog geometry and scoped composition. */
+#overlay {
+  padding: 24px;
+  background: var(--dp-chrome-scrim);
+  backdrop-filter: blur(8px) saturate(.92);
+}
+body.light #overlay {
+  background: var(--dp-chrome-scrim);
+  backdrop-filter: blur(8px) saturate(.88);
+}
+
+#modal.dp-detail-modal {
+  width: 90%;
+  max-width: 620px;
+  max-height: 82vh;
+  margin: 0;
+  border: 1px solid transparent !important;
+  border-radius: var(--dp-radius-lg) !important;
+  /* Every dialog takes the theme picker's surface (ui-theme-picker.css), which
+     each palette sets; the panel gradient is each palette's near-black. */
+  background: var(--dp-surface-overlay) !important;
+  box-shadow:
+    var(--dp-panel-shadow),
+    0 24px 70px rgba(0, 0, 12, .42) !important;
+}
+body.light #modal.dp-detail-modal {
+  box-shadow:
+    var(--dp-panel-shadow),
+    0 22px 58px rgba(45, 39, 68, .18) !important;
+}
+
+#modal .modal-hdr.dp-card__header {
+  min-height: 58px;
+  padding: 0 17px;
+  border-bottom-color: var(--dp-panel-header-border);
+  background: var(--dp-panel-header-surface);
+}
+#modal .modal-title.dp-card__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#modal .dp-detail-close.btn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  flex: 0 0 34px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--dp-text-secondary);
+}
+#modal .dp-detail-close .dp-utility-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+#modal .dp-detail-close:hover {
+  color: var(--dp-text-primary);
+}
+/* Transfer Trace Log: a Details-only header action, left of Close. */
+#modal .dp-detail-trace.btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+#modal:not([data-dp-modal-mode="details"]) .dp-detail-trace {
+  display: none;
+}
+
+#modal .modal-body.dp-card__body {
+  padding: var(--dp-card-padding);
+  background: transparent;
+}
+#modal .detail-grid {
+  gap: 14px 22px;
+  margin-bottom: 18px;
+}
+#modal .dk {
+  margin-bottom: 4px;
+  color: var(--dp-text-secondary);
+  font-family: var(--dp-font-sans);
+  font-size: 10px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: .09em;
+}
+#modal .dv {
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+#modal .dp-detail-section-card {
+  margin: 0 0 14px;
+  /* A card a step above its dialog, in every palette: the raised surface. */
+  background: var(--dp-surface-2) !important;
+}
+#modal .dp-detail-section-card:last-child {
+  margin-bottom: 0;
+}
+#modal .dp-detail-section-card > .card-header {
+  min-height: 44px;
+}
+#modal .dp-detail-section-card > .card-header .card-title {
+  font-size: 13px;
+  letter-spacing: .02em;
+}
+
+#modal .dp-detail-table-wrap {
+  overflow-x: auto;
+  background: transparent;
+}
+#modal .dp-detail-files-card .t-table {
+  background: transparent;
+}
+#modal .dp-detail-files-card .dp-detail-filename {
+  font-family: var(--dp-font-mono);
+  font-size: 11px;
+}
+
+#modal .dp-detail-events-list {
+  background: transparent;
+}
+#modal .dp-detail-events-list .event-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  margin: 0;
+  padding: 9px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--dp-table-row-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--dp-text-primary);
+  box-shadow: none;
+}
+#modal .dp-detail-events-list .event-item:last-child {
+  border-bottom: 0;
+}
+#modal .dp-detail-events-list .event-item:hover {
+  background: var(--dp-table-row-hover);
+}
+#modal .dp-detail-events-list .emsg {
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: 12px;
+  line-height: 1.35;
+}
+#modal .dp-detail-events-list .etime {
+  color: var(--dp-text-muted);
+  font-family: var(--dp-font-mono);
+  font-size: 10px;
+}
+
+@media (max-width: 779px) {
+  #overlay { padding: 12px; }
+  #modal.dp-detail-modal { width: 100%; max-height: 90vh; }
+}
+
+/* ── Application dialog shell ─────────────────────────────────────────────
+   One neutral contract, built only by ui-settings-modal.js (the canonical
+   dialog owner) and shared by confirmation, directory browsing and the
+   authentication-required dialog's shell classes. Clients extend it with their
+   own scoped class (e.g. .dp-settings-directory-dialog); nothing here is
+   confirmation-private. ─────────────────────────────────────────────────── */
+body.dp-modal-open {
+  overflow: hidden;
+}
+
+.dp-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 8, 20, .74);
+  backdrop-filter: blur(8px) saturate(.92);
+}
+
+body.light .dp-modal-overlay {
+  background: rgba(42, 34, 60, .28);
+  backdrop-filter: blur(8px) saturate(.88);
+}
+
+.dp-modal-dialog {
+  width: min(520px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: var(--dp-radius-lg);
+  background: var(--dp-surface-overlay);   /* the theme picker's surface, as #modal.dp-detail-modal */
+  box-shadow: var(--dp-panel-shadow), 0 24px 70px rgba(0, 0, 12, .42);
+}
+
+body.light .dp-modal-dialog {
+  box-shadow: var(--dp-panel-shadow), 0 22px 58px rgba(45, 39, 68, .18);
+}
+
+.dp-modal-dialog[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--dp-state-caution) 48%, var(--dp-border-subtle));
+}
+
+.dp-modal-dialog[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--dp-state-error) 52%, var(--dp-border-subtle));
+}
+
+.dp-modal-header {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--dp-panel-header-border);
+  background: var(--dp-panel-header-surface);
+}
+
+.dp-modal-dialog[data-tone="warning"] .dp-modal-header {
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--dp-state-caution) 74%, transparent);
+}
+
+.dp-modal-dialog[data-tone="danger"] .dp-modal-header {
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--dp-state-error) 78%, transparent);
+}
+
+.dp-modal-title {
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: 15px;
+  line-height: 1.25;
+  font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A title hint (`titleHint`): one short reading directly beneath the title. */
+.dp-modal-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dp-modal-title-hint {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-family: var(--dp-font-sans);
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 500;
+}
+
+/* The header's far end (`headerEnd`): its client's one control, right
+   aligned; the title and its hint take what is left and reflow. */
+.dp-modal-header-end {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  padding-inline-start: 12px;
+}
+
+/* A title icon (`titleIcon`): the title's own mark, on its line. */
+.dp-modal-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dp-modal-title-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.dp-modal-title-icon > * {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.dp-modal-title-icon[hidden],
+.dp-modal-title-hint[hidden] {
+  display: none;
+}
+
+/* A header top (`headerTop`): its client's reading above the title line. */
+.dp-modal-header-top {
+  min-width: 0;
+}
+
+/* A title action (`placement: 'title'`): the compact icon control right after
+   the title, in the established pencil treatment (the Usenet server name's). */
+.dp-modal-title-action.btn {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+.dp-modal-title-action[hidden] {
+  display: none;
+}
+
+.dp-modal-title-action img {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/* The optional upper-right close control (`closeControl`): the cancel slot's
+   settlement in its conventional header placement. */
+.dp-modal-close.btn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  flex: 0 0 34px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--dp-text-secondary);
+}
+
+.dp-modal-close svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+}
+
+.dp-modal-close:hover {
+  color: var(--dp-text-primary);
+}
+
+.dp-modal-body {
+  display: grid;
+  gap: 18px;
+  padding: 20px 20px 18px;
+}
+
+.dp-modal-message {
+  margin: 0;
+  color: var(--dp-text-secondary);
+  font-family: var(--dp-font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* An explanatory line centred on the dialog frame. */
+.dp-modal-message--center {
+  text-align: center;
+}
+
+/* A literal value the dialog is about (a submitted link): shown whole,
+   wrapped anywhere, never truncated into something else. */
+.dp-modal-code {
+  font-family: var(--dp-font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.dp-modal-typed {
+  display: grid;
+  gap: 7px;
+}
+
+.dp-modal-typed[hidden] {
+  display: none;
+}
+
+/* The canonical single-text-field dialog body (DPSettingsModal.prompt): the
+   same field material Settings uses, inside the shared dialog shell. */
+.dp-modal-field {
+  display: block;
+}
+
+.dp-modal-field > .form-label {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.dp-modal-field > .input {
+  width: 100%;
+}
+
+.dp-modal-typed .input {
+  width: 100%;
+}
+
+/* The non-dismissible progress shape (`progress: true`): no header, no
+   footer, only a status presentation centred on the dialog's own centreline.
+   The primary line alone breathes; the explanation beneath it is static. */
+.dp-modal-progress .dp-modal-body {
+  justify-items: center;
+  gap: 16px;
+  padding: 44px 32px 46px;
+  text-align: center;
+}
+
+.dp-modal-progress-status {
+  margin: 0;
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 700;
+  animation: dp-modal-progress-pulse 2.4s ease-in-out infinite;
+}
+
+.dp-modal-progress-detail {
+  display: grid;
+  gap: 10px;
+  color: var(--dp-text-secondary);
+  font-family: var(--dp-font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dp-modal-progress-detail p {
+  margin: 0;
+}
+
+@keyframes dp-modal-progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-modal-progress-status {
+    animation: none;
+  }
+}
+
+.dp-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--dp-border-subtle);
+}
+
+.dp-modal-footer .btn {
+  min-width: 104px;
+}
+
+/* A footer control the dialog has withdrawn (handle.setActionHidden). */
+.dp-modal-footer .btn[hidden] {
+  display: none;
+}
+
+/* A destructive cancel slot (cancelTone: 'danger') leads the footer; the
+   actions keep the far end. Leading actions (placement: 'leading') take the
+   far start the same way, together: only the last one shown opens the gap. */
+.dp-modal-footer :is(.dp-modal-cancel-leading,
+  .dp-modal-action-leading:not(:has(~ .dp-modal-action-leading:not([hidden])))) {
+  margin-right: auto;
+}
+
+@media (max-width: 620px) {
+  .dp-modal-overlay {
+    padding: 12px;
+  }
+
+  .dp-modal-footer {
+    flex-direction: column-reverse;
+  }
+
+  .dp-modal-footer .btn {
+    width: 100%;
+  }
+}
+
+/* ── Base modal geometry/material (DP 1.0.12 canonical flattening: migrated
+   from the retired ui-legacy-foundation.css; background/backdrop-filter are
+   not repeated here since the #overlay rule above already owns them) ────── */
+#overlay { position: fixed; inset: 0;
+  z-index: 500; display: none; align-items: center; justify-content: center; }
+#overlay.open { display: flex; }
+#modal { background: linear-gradient(180deg, var(--surface2), var(--surface)); border: 1px solid var(--border); border-radius: var(--radius);
+  width: 90%; max-width: 620px; max-height: 82vh; overflow-y: auto; }
+.modal-hdr { padding: 18px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.modal-title { flex: 1; font-size: 15px; font-weight: 700; }
+.modal-close { cursor: pointer; color: var(--text2); font-size: 20px; line-height: 1; }
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 20px; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
+.dk { font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text2); margin-bottom: 3px; }
+.dv { font-size: 13px; font-family: var(--mono); word-break: break-all; }
+@media (max-width: 779px) {
+  #modal { width: 95vw !important; max-height: 85vh; }
+}
+
+/* ── Fullscreen modal entry and exit (ui-motion.js) ─────────────────────────
+   Every fullscreen modal fades in place: its overlay -- the backdrop's own
+   dimming and blur, and the panel within it -- rises from transparent from
+   its first frame and falls away when closing, with no movement or scaling.
+   Closing (`is-closing`, DPMotion.leave) keeps the overlay covering the page
+   until it has faded; its owner then removes or hides it. A panel re-rendered
+   or hydrated inside an open overlay does not fade again. */
+#overlay.open,
+.dp-modal-overlay,
+.dp-backdrop {
+  transition: opacity var(--dp-modal-enter) ease-out;
+}
+
+@starting-style {
+  #overlay.open,
+  .dp-modal-overlay,
+  .dp-backdrop {
+    opacity: 0;
+  }
+}
+
+#overlay.is-closing {
+  display: flex;
+}
+
+/* Opened while one of its kind was still fading out: the backdrop simply
+   continues (DPMotion.enter). */
+.dp-modal-overlay.is-continued,
+.dp-backdrop.is-continued {
+  transition: none;
+}
+
+#overlay.is-closing:not(.open),
+.dp-modal-overlay.is-closing,
+.dp-backdrop.is-closing {
+  opacity: 0;
+  transition: opacity var(--dp-modal-exit) ease-in;
+}
+
+/* Transfer Details awaiting its content: the backdrop is up, the shell
+   appears with its content (or, if that is slow, with a loading line). */
+#modal {
+  transition: opacity var(--dp-modal-enter) ease-out;
+}
+
+#modal[data-dp-modal-pending] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #overlay.open,
+  #overlay.is-closing:not(.open),
+  .dp-modal-overlay,
+  .dp-modal-overlay.is-closing,
+  .dp-backdrop,
+  .dp-backdrop.is-closing,
+  #modal {
+    transition: none;
+  }
+}

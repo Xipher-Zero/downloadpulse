@@ -1,0 +1,1370 @@
+"""Application commands over the single universal lifecycle owner.
+
+This module is usable with any registry. It knows no concrete integrations,
+native job identifiers, response formats, or integration error codes.
+"""
+from __future__ import annotations
+
+import asyncio
+import errno
+import logging
+from contextlib import aclosing, asynccontextmanager
+from pathlib import PurePosixPath
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from application import dispatch_admission
+from core.logging_utils import sanitize_exception
+from services.event_bus import publish
+from services.maintenance_gate import ApplicationMaintenanceGate
+from transfers import file_selection
+from transfers.contracts import Manifest
+from transfers.applicability import AcquisitionScope
+from transfers.errors import (
+    Category, Confidence, Domain, EvidenceBasis, NormalizedError, Origin, Retryability, Stage, TransferError,
+)
+from transfers.filesystem import safe_name
+from transfers.manual_queue_move import move_in_queue
+from transfers._repository_base import DemandChanged
+from transfers.models import TransferRequest, TransferState
+from transfers.runtime_telemetry import acquisition_eta_payload
+from transfers.requests import (
+    direct_link_collection_name, direct_link_filename, extract_hash,
+    direct_link_host, normalize_direct_links, torrent_identity,
+)
+from services.network_safety import names_private_lan
+from transfers.staged_input import StagedInputError
+from transfers.storage import StorageDomain
+from core.localization import CodedValueError, CodedRuntimeError, code_of, fact, known
+
+
+
+
+
+logger = logging.getLogger("downloadpulse.application")
+
+# What fetching an NZB link can fail with, in the one in-process HTTP owner's
+# vocabulary (services.artifact_sampling), as the submission failure it is:
+# (domain, category, retryability, origin, HTTP status). No provider has been
+# selected when any of these occur, so none is named.
+_NZB_LINK_FAILURES = {
+    "unsupported_scheme": (Domain.REQUEST, Category.INVALID_REQUEST, Retryability.NEVER, Origin.USER, 400),
+    "destination_rejected": (Domain.SECURITY, Category.DESTINATION_BLOCKED, Retryability.NEVER, Origin.SECURITY_POLICY,
+                             400),
+    "too_large": (Domain.REQUEST, Category.INVALID_REQUEST, Retryability.NEVER, Origin.USER, 413),
+    "dns_failure": (Domain.NETWORK, Category.DNS_FAILURE, Retryability.BACKOFF, Origin.REMOTE_SOURCE, 502),
+    "connection_refused": (Domain.NETWORK, Category.CONNECTION_REFUSED, Retryability.BACKOFF, Origin.REMOTE_SOURCE,
+                           502),
+    "connection_failed": (Domain.NETWORK, Category.CONNECTION_FAILED, Retryability.BACKOFF, Origin.REMOTE_SOURCE, 502),
+    "tls_failure": (Domain.NETWORK, Category.TLS_FAILURE, Retryability.NEVER, Origin.REMOTE_SOURCE, 502),
+    "timeout": (Domain.NETWORK, Category.READ_TIMEOUT, Retryability.BACKOFF, Origin.REMOTE_SOURCE, 504),
+    "redirect": (Domain.NETWORK, Category.PROTOCOL_ERROR, Retryability.NEVER, Origin.REMOTE_SOURCE, 502),
+    "authentication_required": (Domain.RESOLUTION, Category.AUTHENTICATION_FAILED, Retryability.AFTER_REAUTH,
+                                Origin.REMOTE_SOURCE, 502),
+    "permission_denied": (Domain.RESOLUTION, Category.AUTHORIZATION_FAILED, Retryability.AFTER_RESOURCE_CHANGE,
+                          Origin.REMOTE_SOURCE, 502),
+    "not_found": (Domain.RESOLUTION, Category.SOURCE_NOT_FOUND, Retryability.NEVER, Origin.REMOTE_SOURCE, 502),
+    "rate_limited": (Domain.RESOLUTION, Category.RATE_LIMITED, Retryability.BACKOFF, Origin.REMOTE_SOURCE, 502),
+    "server_error": (Domain.RESOLUTION, Category.SOURCE_TEMPORARILY_UNAVAILABLE, Retryability.BACKOFF,
+                     Origin.REMOTE_SOURCE, 502),
+}
+_NZB_LINK_UNAVAILABLE = (Domain.RESOLUTION, Category.SOURCE_UNAVAILABLE, Retryability.NEVER, Origin.REMOTE_SOURCE, 502)
+
+
+def _submission_failure(domain, category, retryability, origin, status, diagnostic: object = "") -> TransferError:
+    """A normalized submission failure carrying the HTTP status the API
+    answers it with. Never names an integration."""
+    failure = TransferError(NormalizedError(
+        domain, category, Stage.SUBMISSION, retryability, origin=origin, diagnostic=str(diagnostic or ""),
+        confidence=Confidence.HIGH, evidence_basis=EvidenceBasis.STRUCTURED))
+    failure.status_code = status
+    return failure
+
+
+class LocalNetworkConfirmationRequired(Exception):
+    """A submission names private-LAN hosts and the operator has not allowed
+    this submission to reach them yet. Nothing was admitted."""
+
+    def __init__(self, hosts: tuple[str, ...]):
+        super().__init__("local network connection requires confirmation")
+        self.hosts = tuple(hosts)
+
+class AcquisitionScopeRequired(Exception):
+    """Links of a submission each name one item inside an enclosing collection,
+    and the submission chose no acquisition scope for them. Nothing was
+    admitted. ``links``: each such link's position in the submission with the
+    choices its claimant offers, in submission order."""
+
+    def __init__(self, links: tuple[dict, ...]):
+        super().__init__("an acquisition scope must be chosen")
+        self.links = tuple(links)
+
+
+class IntegrationStopFailed(RuntimeError):
+    """At least one integration failed to stop. Every integration was asked to
+    stop; ``stopped`` are those that did, ``failures`` the exception of each
+    one that did not, in stop order."""
+
+    def __init__(self, stopped, failures=()):
+        self.failures = tuple(failures)
+        super().__init__(f"{len(self.failures) or 1} integration(s) failed to stop")
+        self.stopped = tuple(stopped)
+
+
+class ApplicationService:
+    def __init__(self, engine, *, configure=None, lifecycle=(), admins=None, capacity=None,
+                 staged_input=None, nzb_reader=None):
+        self.engine = engine
+        # The one NZB reader, injected by the composition root (the only place
+        # a concrete integration is named): ``reader(stream, fallback_name=)``
+        # names a valid posting and raises ``ValueError`` for anything else.
+        self.nzb_reader = nzb_reader
+        # The one owner of durable, large submitted request input. Held here
+        # because it is an application resource, not a provider's or an
+        # executor's: the edge stages into it, both of them only read from it,
+        # and its reclamation is driven from application maintenance.
+        self.staged_input = staged_input
+        self.repository = engine.repository
+        self._configure = configure
+        self.lifecycle = tuple(lifecycle)
+        self.admins = admins or {}
+        # Canonical-namespace -> integration-owned configuration appliers,
+        # discovered generically by composition.
+        self.configuration_appliers = {}
+        self._admission = ApplicationMaintenanceGate()
+        # Operator pause control is one serialized boundary: per-transfer
+        # Pause/Resume, Pause All/Resume All, the maintenance pause-intent
+        # record/restore and a provider route switch (whose writer fence is a
+        # temporary pause it owns) never interleave, so no control can clear
+        # a pause intent another control set meanwhile.
+        self.operator_controls = asyncio.Lock()
+        self.capacity = capacity
+        self.observability = None
+        self.resolution_wakeup = asyncio.Event()
+        self.integration_wakeup = asyncio.Event()
+        self.execution_wakeup = asyncio.Event()
+        self.execution_poll_interval = 1
+        # The estimated times remaining the last progress batch published
+        # (``_publish_active_changes``): what a change is detected against,
+        # never a source of an estimate.
+        self._published_etas: dict[int, tuple] = {}
+        # Incremental candidate readiness (``TransferEngine.candidate_publication``):
+        # transfers whose committed candidate set changed and are due one
+        # publication, drained by at most one task -- a burst on one transfer
+        # is one publication, and the first one is never held for the rest.
+        self._candidate_publications: set[int] = set()
+        self._candidate_drain: asyncio.Task | None = None
+        engine.candidate_publication = self._queue_candidate_publication
+        self.definitions = ()
+        # The one in-flight integration startup (``begin_integrations``).
+        self._integration_startup: asyncio.Task | None = None
+
+    def notify_applicability_changed(self, _integration_id: str) -> None:
+        """Wake canonical maintenance and route resolution after neutral fact changes."""
+        self.resolution_wakeup.set()
+        self.integration_wakeup.set()
+
+    async def refresh_account_entitlement(self, integration_id: str) -> bool:
+        """Explicit operator refresh of one integration's account truth.
+
+        Integration-neutral: every account-truth component the registered
+        implementation owns (``integrations.definition.AccountRefresh``) fetches
+        now, whatever its passive freshness says; an integration without one is
+        a no-op. Never changes enablement or credentials, and a failed fetch is
+        the owner's own last-known-good business -- it never fails the caller's
+        operation. True when at least one component refreshed."""
+        from integrations.definition import AccountRefresh, lifecycle_components
+        registry = self.engine.registry
+        implementation = registry.providers.get(integration_id) or registry.executors.get(integration_id)
+        refreshed = False
+        for component in lifecycle_components(implementation):
+            if not isinstance(component, AccountRefresh):
+                continue
+            try:
+                await component.refresh_now()
+                refreshed = True
+            except Exception as exc:
+                logger.warning("Account refresh failed for %s: %s", integration_id, sanitize_exception(exc))
+        return refreshed
+
+    async def notify_status_changed(self) -> None:
+        """Tell live presentation that an integration's runtime status changed.
+
+        Called by an integration-owned lifecycle component at a runtime
+        transition it owns (a managed service observed unhealthy, (re)started,
+        stopped). The event is an invalidation and carries nothing: the
+        integration's own status endpoint stays the one authority, and the
+        browser re-observes it rather than trusting anything sent here.
+        """
+        await publish("integration_status_changed", {})
+
+    def application_storage_permitted(self) -> bool:
+        capacity = self.capacity
+        return capacity is None or bool(getattr(capacity, "application_storage_permitted", True))
+
+    def download_storage_permitted(self) -> bool:
+        capacity = self.capacity
+        return capacity is None or bool(getattr(capacity, "download_work_permitted", True))
+
+    def _require_application_storage(self) -> None:
+        if self.capacity is not None and hasattr(self.capacity, "require_application_storage"):
+            self.capacity.require_application_storage()
+
+    def _record_application_storage_fault(self, exc: BaseException):
+        if self.capacity is None or not hasattr(self.capacity, "report_application_exception"):
+            return None
+        return self.capacity.report_application_exception(exc)
+
+    def _record_download_storage_fault(self, error: NormalizedError | None):
+        """Feed neutral local-resource failures into the canonical storage owner."""
+        if (
+            self.capacity is None
+            or not hasattr(self.capacity, "report_fault")
+            or error is None
+            or error.domain != Domain.LOCAL_RESOURCE
+        ):
+            return None
+        category = error.category
+        if category in {Category.DISK_FULL, Category.LOCAL_RESOURCE_EXHAUSTED, Category.DOWNLOAD_STORAGE_FULL}:
+            code = errno.ENOSPC
+        elif category == Category.QUOTA_EXCEEDED:
+            code = getattr(errno, "EDQUOT", errno.ENOSPC)
+        elif category == Category.DOWNLOAD_STORAGE_READ_ONLY:
+            code = errno.EROFS
+        elif category in {Category.LOCAL_IO_FAILURE, Category.DOWNLOAD_STORAGE_UNAVAILABLE}:
+            code = errno.EIO
+        elif category == Category.PERMISSION_DENIED:
+            code = errno.EACCES
+        elif category == Category.PATH_UNAVAILABLE:
+            code = errno.ENOENT
+        else:
+            return None
+        return self.capacity.report_fault(StorageDomain.DOWNLOAD, OSError(code, category.value))
+
+    async def _contain_download_storage_faults(self, transfers) -> None:
+        """Close dispatch and retain the same logical transfer after executor storage failure."""
+        for transfer in transfers:
+            for artifact in await self.repository.artifacts(transfer.id):
+                if artifact.state != "queued" or artifact.error is None:
+                    continue
+                fault = self._record_download_storage_fault(artifact.error)
+                if fault is None:
+                    continue
+                self.engine.dispatch_permitted = False
+                # The universal retry policy already kept this artifact
+                # nonterminal. Replace its generic LOCAL_RESOURCE diagnostic with
+                # the stable download-storage semantic while preserving retry_at.
+                if artifact.error.category != fault.error.category:
+                    await self.repository.artifact_state(
+                        artifact.id,
+                        "queued",
+                        error=fault.error,
+                        retry_at=artifact.retry_at,
+                    )
+
+    @asynccontextmanager
+    async def _storage_checked_admission(self, *, maintenance: bool):
+        """Contain DB-backed work without consulting the failed database itself."""
+        self._require_application_storage()
+        admission = self._admission.maintenance() if maintenance else self._admission.operation()
+        async with admission:
+            self._require_application_storage()
+            try:
+                yield
+            except Exception as exc:
+                fault = self._record_application_storage_fault(exc)
+                if fault is not None:
+                    raise fault from exc
+                raise
+
+    def configuration_admission(self):
+        return self._storage_checked_admission(maintenance=True)
+
+    async def validate_configuration(self, previous, current):
+        from integrations.configuration import normalize_settings
+        previous = normalize_settings(previous, self.definitions)
+        for definition in self.definitions:
+            old = previous.integrations[definition.id].options
+            new = current.integrations[definition.id].options
+            if any(old.get(key) != new.get(key) for key in definition.ownership_fields):
+                if await self.repository.has_integration_references(definition.owned_identities):
+                    raise CodedValueError(f"Finish or remove existing {definition.name} resources before changing its connection", code="integration.resources_block_connection", params={"integration": fact(definition.name)})
+        for definition in self.definitions:
+            # An option only an entitled account can use is refused, when it
+            # is turned on, while the connected account's own truth proves it
+            # is not entitled.
+            old = previous.integrations[definition.id].options
+            new = current.integrations[definition.id].options
+            for gated in definition.entitlement_options:
+                if new.get(gated.option) is True and old.get(gated.option) is not True:
+                    state = self.option_availability(definition)[gated.option]
+                    if not state["available"]:
+                        raise ValueError(state["requirement"])
+        download_folder_changed = previous.download_folder != current.download_folder
+        if download_folder_changed and await self.repository.has_integration_references():
+            raise CodedValueError("Finish or remove existing resources before changing the download folder", code="settings.resources_block_download_folder")
+        # Only a Download Folder change is a candidate-save operation. Runtime
+        # recovery owns active-path re-probing, so a degraded current Download
+        # Folder cannot block unrelated Settings changes.
+        if (
+            download_folder_changed
+            and self.capacity is not None
+            and hasattr(self.capacity, "require_download_path")
+        ):
+            await asyncio.to_thread(
+                self.capacity.require_download_path,
+                current.download_folder,
+                apply_if_active=True,
+            )
+
+    async def deliver_events(self):
+        if self.observability:
+            await self.observability.deliver()
+
+    async def check_resources(self):
+        if self.capacity is None:
+            result = {"enabled": False, "active": False}
+        else:
+            # Filesystem probes may block on a degraded remote mount. Keep them
+            # off the event loop while retaining one synchronous canonical owner.
+            result = await asyncio.to_thread(self.capacity.check)
+        # Dispatch requires both safe durable application state and usable
+        # download storage. This runtime gate is independent of global Pause.
+        self.engine.dispatch_permitted = self.application_storage_permitted() and not result["active"]
+        return result
+
+    async def storage_health(self):
+        """Return a fresh, SQLite-independent storage-health snapshot."""
+        return await self.check_resources()
+
+    def application_operation(self):
+        return self._storage_checked_admission(maintenance=False)
+
+    def database_wipe_admission(self):
+        return self._storage_checked_admission(maintenance=True)
+
+    def state_replacement_admission(self):
+        return self._storage_checked_admission(maintenance=True)
+
+    def seal_admission(self) -> None:
+        """No further application work in this process (an unresolved restore)."""
+        self._admission.seal()
+
+    async def execution_runtime_limits(self) -> dict:
+        """Neutral configured/effective global runtime limits, converged by the
+        core runtime owner; ``effective`` is what is proven enforced across the
+        reserved executor set, ``None`` when it cannot be proven."""
+        status = await self.engine.converge_runtime_limits()
+        return {
+            "ok": status.ok,
+            "configured": {"max_download_bytes_per_second": status.configured},
+            "effective": {"max_download_bytes_per_second": status.effective},
+            "last_apply_error": status.last_apply_error,
+        }
+
+    async def _publish_active_changes(self, before, *, stats=True):
+        """Publish what changed in the small active projection since ``before``
+        (the reconcile cycle and the fast observation of live writers). The
+        fast observation runs at presentation cadence and sends no
+        ``stats_changed``: the browser already reloads statistics, throttled,
+        after progress patches, and fully after a status change."""
+        # Periodic progress publication is a list/read concern, not a reason
+        # to reconstruct canonical transfer truth once per active transfer.
+        # Re-read the small durable active projection once, publish one batch,
+        # and let status transitions request one authoritative lightweight
+        # collection refresh in the browser.
+        after = await self.repository.active()
+        after_by_id = {transfer.id: transfer for transfer in after}
+        # The same estimate the list projects (``TransferEngine.acquisition_etas``),
+        # for the transfers acquiring now; a changed one is published like a
+        # changed progress figure, and one that ended is published as none.
+        # The memo is read and replaced with no await between, so concurrent
+        # publishers (the reconcile cycle and the fast observation) each
+        # compare against what was last published, whichever finished last.
+        etas = await self.engine.acquisition_etas(
+            [transfer.id for transfer in after
+             if str(getattr(transfer.state, "value", transfer.state)) == "downloading" and not transfer.paused])
+        published, self._published_etas = self._published_etas, etas
+        updates = []
+        for previous in before:
+            current = after_by_id.get(previous.id)
+            if current is None:
+                updates.append(self._active_overlay_item(previous, status_changed=True))
+                continue
+            previous_state = str(getattr(previous.state, "value", previous.state))
+            current_state = str(getattr(current.state, "value", current.state))
+            previous_progress = (previous.progress, previous.active_execution_progress,
+                                 previous.active_execution_basis, published.get(previous.id))
+            current_progress = (current.progress, current.active_execution_progress,
+                                current.active_execution_basis, self._published_etas.get(current.id))
+            if current_state != previous_state or current_progress != previous_progress:
+                updates.append(
+                    self._active_overlay_item(
+                        current,
+                        status_changed=current_state != previous_state,
+                        eta=self._published_etas.get(current.id),
+                    )
+                )
+
+        if updates:
+            await publish("torrent_updated", {"progress_only": True, "items": updates})
+            if stats:
+                await publish("stats_changed", {})
+
+    async def observe_live_executions(self):
+        """The fast observation of live writers (``TransferEngine.sample_throughput``):
+        it persists factual activity, so it is admitted like every other
+        DB-backed operation and drained by maintenance."""
+        async with self.application_operation():
+            before = await self.repository.active()
+            await self.engine.sample_throughput()
+            await self._publish_active_changes(before, stats=False)
+
+    async def execution_throughput(self) -> dict:
+        """The volatile speed facts alone, read from memory.
+
+        ``download_bytes_per_second`` is the core throughput meter (sampled
+        at presentation cadence by its owner), ``sustained_peak_bytes_per_second``
+        the same meter's highest validated sustained rate (``None`` before the
+        first) and ``max_download_bytes_per_second`` the configured runtime
+        limit. None awaits anything, so the speed an operator sees is never
+        serialized behind a slower repository-backed runtime fact
+        (``execution_runtime_status``'s occupancy)."""
+        engine = self.engine
+        peak = engine.throughput.sustained_peak
+        return {
+            "download_bytes_per_second": int(engine.throughput.current()),
+            "sustained_peak_bytes_per_second": int(peak) if peak else None,
+            "max_download_bytes_per_second": int(engine.runtime.configured),
+        }
+
+    async def execution_runtime_status(self) -> dict:
+        """The neutral live runtime facts the operator-facing shell consumes.
+
+        Every value is a read PROJECTION of exactly one existing owner -- none
+        of them is a second authority, and none of them is executor-specific:
+
+        * ``download_bytes_per_second`` -- the core throughput meter, which
+          aggregates every currently acquiring executor through one counting
+          rule and settles to 0 when nothing is measurable;
+        * ``active_execution_slots`` -- the canonical execution-admission
+          occupancy, never a native queue count;
+        * ``max_download_bytes_per_second`` -- the configured value held by the
+          core runtime-limit owner that ``PATCH /execution/runtime-limits``
+          writes.
+        """
+        engine = self.engine
+        return {
+            "download_bytes_per_second": int(engine.throughput.current()),
+            "active_execution_slots": int(await self.repository.occupied_execution_slots(engine.clock())),
+            "max_download_bytes_per_second": int(engine.runtime.configured),
+        }
+
+    async def apply_integration_configuration(self, namespace: str):
+        """Drive the integration-owned application of one canonical namespace.
+
+        The ONE path from a persisted configuration mutation to the native
+        integration service's own configuration transaction. Such a service is
+        external to the transfer core's implementation, yet inside DownloadPulse
+        product ownership -- DownloadPulse may run it, own its whole
+        configuration and never expose it -- so it is named for what it is
+        rather than as somebody else's endpoint. Returns ``None`` when the
+        namespace has no applier, so callers can stay integration-neutral.
+        """
+        appliers = (self.configuration_appliers or {}).get(str(namespace)) or ()
+        if not appliers:
+            return None
+        from integrations.definition import ConfigurationApplication
+        results = [await applier.apply_configuration() for applier in appliers]
+        failed = [item for item in results if not item.ok]
+        if not failed:
+            return ConfigurationApplication(True, "configuration applied")
+        return ConfigurationApplication(
+            False, "; ".join(item.detail for item in failed if item.detail),
+            tuple(name for item in failed for name in item.failures))
+
+    def integration_admin(self, identity):
+        try:
+            return self.admins[identity]
+        except KeyError:
+            raise CodedValueError("Integration administration is unavailable", code="integration.administration_unavailable") from None
+
+    async def require(self, transfer_id):
+        transfer = await self.repository.get(transfer_id)
+        if transfer is None:
+            raise KeyError(transfer_id)
+        return transfer
+
+    async def _publish(self, transfer_id):
+        item = await self.repository.presentation(
+            transfer_id,
+            capacity_only_blocked_ids=dispatch_admission.capacity_only_blocked_ids(self.engine),
+        )
+        if item:
+            await publish("torrent_updated", item)
+        await publish("stats_changed", {})
+        return item
+
+    @staticmethod
+    def _active_overlay_item(transfer, *, status_changed=False, eta=None):
+        """Project only mutable list fields needed by live browser updates."""
+        state = getattr(transfer.state, "value", transfer.state)
+        return {
+            "id": int(transfer.id),
+            "status": str(state),
+            "progress": None if transfer.progress is None else float(transfer.progress),
+            # In-flight execution activity, never completion (``Transfer``).
+            "active_execution_progress": (None if transfer.active_execution_progress is None
+                                          else float(transfer.active_execution_progress)),
+            "active_execution_basis": transfer.active_execution_basis,
+            "acquisition_eta": acquisition_eta_payload(eta),
+            "status_changed": bool(status_changed),
+        }
+
+    async def submit(self, requests, **options):
+        async with self.application_operation():
+            transfer = await self.engine.submit(tuple(requests), **options)
+            self.resolution_wakeup.set()
+            return await self._publish(transfer.id)
+
+    @staticmethod
+    def magnet_request(magnet, *, selection_mode="all") -> TransferRequest:
+        """The request one magnet submits, or ``ValueError``: the magnet
+        owner's whole admissibility rule, usable before anything is admitted."""
+        selection_mode = file_selection.normalize_selection_mode(selection_mode)
+        fingerprint = extract_hash(magnet)
+        if not fingerprint or urlsplit(magnet).scheme != "magnet":
+            raise CodedValueError("A valid BitTorrent magnet is required", code="submit.magnet_invalid")
+        name = parse_qs(urlsplit(magnet).query).get("dn", [fingerprint])[0]
+        return TransferRequest("magnet", magnet, name=name, fingerprint=fingerprint,
+                               selection_mode=selection_mode)
+
+    async def submit_magnet(self, magnet, *, source="manual", selection_mode="all", demand=None):
+        request = self.magnet_request(magnet, selection_mode=selection_mode)
+        return await self.submit((request,), name=request.name, source=source, demand=demand)
+
+    async def submit_torrent(self, data, filename, *, source="manual_file", selection_mode="all", demand=None):
+        selection_mode = file_selection.normalize_selection_mode(selection_mode)
+        # Validated before anything is admitted: an unidentifiable or v2-only
+        # metainfo is refused with its actionable reason (a ValueError), never
+        # given an invented v1 identity.
+        identity = torrent_identity(data)
+        fingerprint = identity.info_hash
+        # The transfer is named by the torrent itself (its validated
+        # ``info.name``) -- the name every provider later reports for it and
+        # the collection root its first fan-out freezes -- never by the
+        # uploaded file's name, which only names the input artifact. That
+        # stays the request's own name (what providers receive the upload
+        # as), and names the transfer only when the torrent declares none.
+        name = safe_name(identity.name) if identity.name else filename.rsplit(".", 1)[0]
+        return await self.submit(
+            (TransferRequest("torrent", data, name=filename, fingerprint=fingerprint,
+                             selection_mode=selection_mode),),
+            name=name, source=source, demand=demand)
+
+    async def submit_nzb(self, data, filename, *, source="manual_file", demand=None, validate=False):
+        """Admit one uploaded NZB through the canonical submission seam.
+
+        The application layer deliberately does not interpret the posting: the
+        Usenet provider owns NZB validation and normalization, and does it
+        during resolution like every other provider. This only refuses an empty
+        upload, which needs no format knowledge. Routing stays with core.
+
+        ``data`` is either the manifest bytes or an async iterable of byte
+        chunks. A stream is staged straight through to durable storage and the
+        request carries the reference, so a large manifest is never assembled
+        in memory here or persisted into the request row.
+
+        ``validate``: a submitter that must learn before admission whether the
+        upload is a posting (an external client, which is told success only
+        once its job is admitted) has it staged and read by the existing NZB
+        reader first, exactly as an NZB link is; a refused posting is discarded
+        and raises ``ValueError`` with nothing admitted.
+        """
+        name = str(filename or "").rsplit(".", 1)[0] or "usenet-download"
+        if isinstance(data, (bytes, bytearray)) and not validate:
+            payload = bytes(data)
+            if not payload:
+                raise CodedValueError("NZB file is empty", code="submit.nzb_empty")
+        else:
+            if self.staged_input is None or (validate and self.nzb_reader is None):
+                raise CodedValueError("Durable input storage is unavailable", code="submit.staging_unavailable")
+            try:
+                payload = (self.staged_input.stage_bytes(bytes(data)) if isinstance(data, (bytes, bytearray))
+                           else await self.staged_input.stage(data))
+            except StagedInputError as exc:
+                # The refusal keeps the cause's words and, where it names one, its code.
+                raise CodedValueError(str(exc), code=code_of(exc)[0], params=code_of(exc)[1]) from None
+            if validate:
+                try:
+                    await self._read_staged_nzb(payload, fallback_name=str(filename or "upload.nzb"))
+                except StagedInputError as exc:
+                    # The refusal keeps the cause's words and, where it names one, its code.
+                    raise CodedValueError(str(exc), code=code_of(exc)[0], params=code_of(exc)[1]) from None
+        return await self.submit(
+            (TransferRequest("nzb", payload, name=filename or f"{name}.nzb", name_supplied=bool(filename)),),
+            name=name, source=source, demand=demand)
+
+    async def submit_nzb_link(self, url, *, source="direct_link", allow_local_network=False, demand=None):
+        """Admit the NZB an explicitly submitted link names, as the SAME
+        canonical ``nzb`` request an uploaded NZB becomes.
+
+        The link is how the posting reaches DownloadPulse, never a request kind:
+        it is fetched here, before any provider is chosen, so no provider,
+        executor or route ever sees it. One guarded read
+        (``artifact_sampling.http_body``: every hop and redirect target judged
+        by the one network-safety owner; the link's query, which an indexer
+        uses as its capability, sent as given) streams straight into the one
+        staged-input owner -- never held whole, never a side file -- under its
+        one ceiling. The existing NZB reader then decides whether the staged
+        bytes are a posting, and names it; extension, MIME type and status say
+        nothing about that. Anything refused is discarded before admission and
+        fails with a normalized submission error; nothing is admitted unless it
+        is valid.
+        """
+        from services.artifact_sampling import HttpReadRefused, http_body
+
+        try:
+            address = normalize_direct_links([url])[0]
+        except ValueError as exc:
+            raise _submission_failure(Domain.REQUEST, Category.INVALID_REQUEST, Retryability.NEVER, Origin.USER,
+                                      400, exc) from None
+        if self.staged_input is None or self.nzb_reader is None:
+            raise _submission_failure(Domain.LOCAL_RESOURCE, Category.PATH_UNAVAILABLE, Retryability.BACKOFF,
+                                      Origin.LOCAL_SYSTEM, 503, "durable input storage is unavailable")
+        parts = urlsplit(address)
+        if parts.username is not None or parts.password is not None:
+            # A credential written into the link is USER_SUPPLIED material,
+            # which only the transfer admission boundary may take over; this
+            # fetch happens before any transfer exists, so it is refused.
+            raise _submission_failure(Domain.REQUEST, Category.INVALID_REQUEST, Retryability.NEVER, Origin.USER,
+                                      400, "an NZB link cannot carry a username or password")
+        consented = await self._local_network_consent([address], allow_local_network=allow_local_network)
+        # The fallback name comes from the link's path alone: its query may be
+        # an indexer's key, and a name is persisted.
+        path_name = safe_name(unquote(PurePosixPath(parts.path).name))
+        request_name = path_name or "usenet-download.nzb"
+        served: dict = {}
+        try:
+            async with aclosing(http_body(
+                    address, max_bytes=self.staged_input.max_bytes,
+                    private_lan=direct_link_host(address) in consented, facts=served)) as body:
+                payload = await self.staged_input.stage(body)
+        except HttpReadRefused as exc:
+            raise _submission_failure(*_NZB_LINK_FAILURES.get(exc.reason, _NZB_LINK_UNAVAILABLE),
+                                      exc.reason) from None
+        except StagedInputError as exc:
+            raise _submission_failure(Domain.REQUEST, Category.INVALID_REQUEST, Retryability.NEVER, Origin.USER,
+                                      400, exc) from None
+        except OSError as exc:
+            raise _submission_failure(Domain.LOCAL_RESOURCE, Category.LOCAL_IO_FAILURE, Retryability.BACKOFF,
+                                      Origin.LOCAL_SYSTEM, 507, exc) from None
+
+        try:
+            manifest = await self._read_staged_nzb(payload, fallback_name=request_name)
+        except (ValueError, StagedInputError) as exc:
+            raise _submission_failure(Domain.REQUEST, Category.INVALID_REQUEST, Retryability.NEVER,
+                                      Origin.USER, 400, exc) from None
+        # From here on the payload is admitted exactly as an uploaded one is,
+        # and reclaimed by the same owner (``reclaim_staged_input``) if
+        # admission never completes.
+        # The NZB's own file name, when the link declares one: the name it was
+        # served under (Content-Disposition, as indexers answer), else the
+        # ``.nzb`` file its path names. That names it as an upload's filename
+        # does; a link that declares none keeps the posting's name.
+        declared = safe_name(PurePosixPath(str(served.get("filename") or "").replace("\\", "/")).name)
+        supplied = next((item for item in (declared, path_name) if item.casefold().endswith(".nzb")), "")
+        if supplied:
+            request_name = supplied
+        name = (supplied[:-4] if supplied else "") or safe_name(manifest.name) or request_name.rsplit(".", 1)[0] \
+            or "usenet-download"
+        return await self.submit((TransferRequest("nzb", payload, name=request_name, name_supplied=bool(supplied)),),
+                                 name=name, source=source, demand=demand)
+
+    async def _read_staged_nzb(self, payload, *, fallback_name: str):
+        """The existing NZB reader's verdict on a staged payload, before
+        anything owns it: the posting's manifest, or the reader's
+        ``ValueError`` (or a ``StagedInputError``) with the payload discarded."""
+        def validated():
+            with self.staged_input.opened(payload) as stream:
+                return self.nzb_reader(stream, fallback_name=fallback_name)
+
+        try:
+            return await asyncio.to_thread(validated)
+        except BaseException:
+            # Refused (or abandoned) before anything could own it.
+            self.staged_input.discard(payload)
+            raise
+
+    async def submit_meta4(self, data, filename, *, source="manual_file", selection_mode="all", demand=None):
+        """Admit one uploaded Metalink4 descriptor through the canonical
+        submission seam. As for an NZB, the application does not interpret
+        it: the Multimeta provider reads it during resolution. The stream is
+        staged straight through the neutral durable-input owner."""
+        selection_mode = file_selection.normalize_selection_mode(selection_mode)
+        name = str(filename or "").rsplit(".", 1)[0] or "Multimeta"
+        if self.staged_input is None:
+            raise CodedValueError("Durable input storage is unavailable", code="submit.staging_unavailable")
+        try:
+            payload = await self.staged_input.stage(data)
+        except StagedInputError as exc:
+            # The refusal keeps the cause's words and, where it names one, its code.
+            raise CodedValueError(str(exc), code=code_of(exc)[0], params=code_of(exc)[1]) from None
+        if not payload.byte_length:
+            self.staged_input.discard(payload)
+            raise CodedValueError("Metalink file is empty", code="submit.meta4_empty")
+        return await self.submit(
+            (TransferRequest("meta4", payload, name=filename or f"{name}.meta4", selection_mode=selection_mode),),
+            name=name, source=source, demand=demand)
+
+    async def reclaim_staged_input(self) -> int:
+        """Reclaim every staged input no live request still references.
+
+        The single cleanup owner for every terminal path -- success, permanent
+        failure, cancellation, deletion, retry -- and for a crash that staged an
+        input before any transfer owned it. Survivors are derived from the
+        durable reference set rather than from per-path callbacks, which is what
+        makes it impossible either to miss a path or to reclaim an input that is
+        still needed.
+        """
+        if self.staged_input is None:
+            return 0
+        referenced = await self.repository.referenced_staged_inputs()
+        return self.staged_input.sweep(referenced)
+
+    async def submit_links(self, links, *, selection_mode="all", allow_local_network=False, acquisition_scopes=None,
+                           demand=None):
+        # DP 1.0.12 corrective: one Quick Add batch is one user submission
+        # and admits as ONE durable transfer owning N independent root
+        # requests -- submission scope is not the same thing as equivalence
+        # scope. Each request still keeps its own durable lineage, route/
+        # resolution attempts, candidate/source identity and provenance,
+        # and sibling requests within this one transfer may still safely
+        # converge onto one canonical artifact/candidate set through the
+        # existing intra-transfer machinery (transfers/cohorts.py
+        # coordinate_collection(), transfers/canonical.py
+        # CanonicalOwnership.attach()) -- that machinery is keyed on request
+        # identity, not transfer identity, so it already treats same-transfer
+        # siblings and cross-transfer contributors uniformly. A later,
+        # genuinely separately admitted transfer proven equivalent still
+        # converges through the same cross-transfer path, unaffected by this.
+        #
+        # An item given as a tuple is ONE logical member with explicit
+        # alternate sources, in the operator's order of preference (a Quick
+        # Add row of TAB-separated links): its roots share one durable
+        # alternative group, which core admits one source at a time. A plain
+        # link -- the only thing a link file or an API list of links carries
+        # -- is an ordinary root, exactly as before. Grouping is submission
+        # intent, never equivalence evidence.
+        selection_mode = file_selection.normalize_selection_mode(selection_mode)
+        groups = None
+        if any(isinstance(item, tuple) for item in links):
+            rows = [item if isinstance(item, tuple) else (item,) for item in links]
+            urls = normalize_direct_links([url for row in rows for url in row])
+            if len(urls) != sum(len(row) for row in rows):
+                raise CodedValueError("A link may be listed in only one row", code="submit.link_listed_twice")
+            groups = tuple(group if len(row) > 1 else None
+                           for group, row in enumerate(rows, 1) for _url in row)
+            members = [row[0] for row in rows]
+        else:
+            urls = members = normalize_direct_links(links)
+        scopes = self._acquisition_scopes(urls, groups, acquisition_scopes)
+        consented = await self._local_network_consent(urls, allow_local_network=allow_local_network)
+        requests = tuple(TransferRequest(urlsplit(url).scheme.lower(), url, name=direct_link_filename(url, index),
+                                         selection_mode=selection_mode,
+                                         local_network_consent=direct_link_host(url) in consented,
+                                         acquisition_scope=scopes.get(url, ""))
+                         for index, url in enumerate(urls, 1))
+        item = await self.submit(requests, name=direct_link_collection_name([], members), source="direct_link",
+                                 deduplicate=False, demand=demand, **({"alternative_groups": groups} if groups else {}))
+        return {"ok": True, "id": item["id"], "torrent_id": item["id"], "accepted": len(urls), "items": [item], **item}
+
+
+    def _acquisition_scopes(self, urls, groups, answers) -> dict[str, str]:
+        """Admission's acquisition-scope decision for one submission: the scope
+        the operator chose for each link that names one item inside an
+        enclosing collection (``IntegrationRegistry.scope_choices``).
+
+        ``answers`` maps a link, as submitted, to ``"item"`` or
+        ``"collection"`` -- one answer per link, never a submission-wide
+        default. A link that asks and has no answer refuses the whole
+        submission (``AcquisitionScopeRequired``, nothing admitted) so the
+        operator answers each one; an answer no link asked for, or one outside
+        the link's own choices, is invalid. A collection is never an alternate
+        source of another item."""
+        given = {}
+        for link, scope in dict(answers or {}).items():
+            normalized = normalize_direct_links([str(link)])[0]
+            if normalized in given:
+                raise CodedValueError("A link may be given only one acquisition scope", code="submit.scope_given_twice")
+            given[normalized] = str(scope)
+        registry = getattr(self.engine, "registry", None)
+        scopes, missing = {}, []
+        for index, url in enumerate(urls):
+            choices = registry.scope_choices(TransferRequest(urlsplit(url).scheme.lower(), url)) if registry else ()
+            if not choices:
+                if url in given:
+                    raise CodedValueError(f"Link {index + 1} has no acquisition scope to choose", code="submit.link_no_scope", params={"number": fact(index + 1)})
+                continue
+            answer = given.pop(url, None)
+            if answer is None:
+                # ``index``: the link's position among every link submitted,
+                # alternates included, in submission order -- the caller's own
+                # input is never echoed back.
+                missing.append({"index": index,
+                                "choices": [{"scope": scope, "label": label} for scope, label in choices]})
+            elif answer not in {scope for scope, _label in choices}:
+                raise CodedValueError(f"Link {index + 1} has no acquisition scope {answer!r}", code="submit.link_scope_missing",
+                                      # The scope is interpolated only when it is one DownloadPulse defines:
+                                      # free-form caller text is never a parameter (``known``).
+                                      params={"number": fact(index + 1),
+                                              "scope": fact(repr(answer)) if known(answer, AcquisitionScope) else repr(answer)})
+            elif answer == "collection" and groups and groups[index] is not None:
+                raise CodedValueError(f"Link {index + 1} is an alternate source and cannot be a collection", code="submit.alternate_not_collection", params={"number": fact(index + 1)})
+            else:
+                scopes[url] = answer
+        if given:
+            raise CodedValueError("An acquisition scope names a link that is not in this submission", code="submit.scope_link_unknown")
+        if missing:
+            raise AcquisitionScopeRequired(tuple(missing))
+        return scopes
+
+    async def _local_network_consent(self, urls, *, allow_local_network: bool) -> frozenset[str]:
+        """Admission's private-LAN decision for one submission: the hosts it
+        consents to connect to on the operator's LAN.
+
+        Local Network Connections off: nothing is consented (the connection
+        boundary keeps refusing private destinations, as before). On, with
+        Skip Local Connection Confirmation on: the explicitly entered LAN hosts
+        are consented. On without it: nothing is admitted until the operator
+        allows THIS submission; that answer is recorded on its requests only
+        and never changes a setting. ``allow_local_network`` is that answer,
+        and the HTTP boundary passes it only from a caller who may operate
+        transfers (``api.routes._local_network_answer``): an Integration token
+        cannot consent for itself."""
+        policy = self.engine.policy
+        if not policy.private_lan_connections:
+            return frozenset()
+        hosts = {host for host in (direct_link_host(url) for url in urls) if host}
+        lan = frozenset([host for host in sorted(hosts) if await names_private_lan(host)])
+        if lan and not (policy.skip_private_lan_confirmation or allow_local_network):
+            raise LocalNetworkConfirmationRequired(tuple(sorted(lan)))
+        return lan
+
+    async def submit_input(self, transfer_id, *, challenge_id, method, values):
+        async with self.application_operation():
+            challenge = await self.engine.submit_input(transfer_id, challenge_id, method, values)
+            self.resolution_wakeup.set()
+            self.execution_wakeup.set()
+            await self._publish(transfer_id)
+            return {"ok": True, "accepted": True, "id": transfer_id, "challenge_id": challenge.id}
+
+    async def cancel(self, transfer_id, *, expected_demand=None):
+        async with self.application_operation():
+            await self.require(transfer_id)
+            errors = await self.engine.cancel(transfer_id, expected_demand=expected_demand)
+            await self._publish(transfer_id)
+            return {
+                "ok": not errors,
+                "cancelled": True,
+                "cleanup_errors": [error.as_dict() for error in errors],
+            }
+
+    async def cancel_artifact(self, transfer_id, artifact_id):
+        """Terminate ONE artifact's execution through the canonical owner.
+
+        The engine owns the whole act: cancelling the native writer, requiring
+        OBSERVED stop truth before the attempt is released, recording the
+        cancellation outcome against that attempt and re-aggregating the parent.
+        This is the application-level command for it, so every caller -- an
+        operator action, an administration surface -- performs the same one
+        act under the same admission and publishes the same way.
+        """
+        async with self.application_operation():
+            await self.require(transfer_id)
+            await self.engine.cancel_artifact(transfer_id, artifact_id)
+            self.execution_wakeup.set()
+            await self._publish(transfer_id)
+            return {"ok": True, "transfer_id": transfer_id, "artifact_id": artifact_id}
+
+    async def pause(self, transfer_id):
+        async with self.operator_controls, self.application_operation():
+            await self.require(transfer_id)
+            errors = await self.engine.pause(transfer_id)
+            self.execution_wakeup.set()
+            await self._publish(transfer_id)
+            return self._control_result(errors)
+
+    async def resume(self, transfer_id):
+        async with self.operator_controls, self.application_operation():
+            await self.require(transfer_id)
+            errors = await self.engine.resume(transfer_id)
+            self.resolution_wakeup.set()
+            self.execution_wakeup.set()
+            await self._publish(transfer_id)
+            return self._control_result(errors)
+
+    async def adjudicated_control(self, transfer_id, decide):
+        """An external client's advisory pause/resume (``external.service``).
+        ``decide()`` reads current demand and control state and returns its
+        decision; when that decision carries ``apply`` -- ``("pause",
+        holder)`` or ``("release", (holder, generation))`` -- the one core
+        transition is applied here (``engine.pause`` with that holder, or the
+        fenced ``engine.resume(held_by=...)``). Both happen on the same
+        serialized operator-control boundary as Pause and Resume, so no
+        operator control interleaves between what was read and what was
+        done. The result carries ``applied`` (the engine's answer; ``None``
+        for a refused release) and ``hold`` (the pause owner's intent
+        afterwards). Never an operator route under an external identity."""
+        async with self.operator_controls, self.application_operation():
+            decision = await decide()
+            action = decision.pop("apply", None)
+            if action is not None:
+                kind, value = action
+                if kind == "pause":
+                    decision["applied"] = await self.engine.pause(int(transfer_id), holder=value)
+                elif kind == "release":
+                    decision["applied"] = await self.engine.resume(int(transfer_id), held_by=value)
+                else:
+                    raise ValueError(f"unknown advisory control {kind!r}")
+                decision["hold"] = await self.repository.pause_hold(int(transfer_id))
+            self.resolution_wakeup.set()
+            self.execution_wakeup.set()
+            await self._publish(int(transfer_id))
+            return decision
+
+    async def move_in_queue(self, transfer_id=None, *, before_id=None, after_id=None, top=(), reaffirm=False,
+                            confirm_restart=()):
+        """One operator queue move, Move to Top (``top``: the transfers it
+        names) or reaffirmation (``transfers.manual_queue_move``), on the same
+        serialized operator-control boundary as Pause and Resume."""
+        async with self.operator_controls, self.application_operation():
+            if not top:
+                await self.require(transfer_id)
+            moved = await move_in_queue(self.engine, None if top else int(transfer_id), before_id=before_id,
+                                        after_id=after_id, top=frozenset(int(item) for item in top),
+                                        reaffirm=reaffirm, confirmed=frozenset(confirm_restart))
+            if moved.moved or moved.preempting:
+                self.resolution_wakeup.set()
+                self.execution_wakeup.set()
+                for member in moved.members:
+                    await self._publish(member)
+            return moved
+
+    @staticmethod
+    def _control_result(errors):
+        if errors:
+            raise TransferError(errors[0])
+        return {"ok": True}
+
+    async def pause_all(self):
+        async with self.operator_controls, self.application_operation():
+            results = await self.engine.pause_all()
+            await publish("stats_changed", {})
+            return {"ok": not any(results.values()), "paused": await self.repository.globally_paused(), "count": len(results), "failed": sum(bool(errors) for errors in results.values())}
+
+    async def resume_all(self):
+        async with self.operator_controls, self.application_operation():
+            results = await self.engine.resume_all()
+            self.resolution_wakeup.set()
+            self.execution_wakeup.set()
+            await publish("stats_changed", {})
+            return {"ok": not any(results.values()), "paused": await self.repository.globally_paused(), "count": len(results), "failed": sum(bool(errors) for errors in results.values())}
+
+    async def pause_intent(self):
+        return await self.engine.pause_intent()
+
+    async def record_pause_intent(self, intent):
+        async with self.operator_controls, self.application_operation():
+            await self.engine.record_pause_intent(intent)
+
+    async def restore_pause_intent(self, intent):
+        async with self.operator_controls, self.application_operation():
+            results = await self.engine.restore_pause_intent(intent)
+            self.resolution_wakeup.set()
+            self.execution_wakeup.set()
+            await publish("stats_changed", {})
+            return results
+
+    async def retry(self, transfer_id):
+        async with self.application_operation():
+            transfer = await self.require(transfer_id)
+            accepted = await self.engine.retry(transfer_id, reacquire=transfer.state in {TransferState.COMPLETED, TransferState.DELETED})
+            if not accepted:
+                raise TransferError(NormalizedError(Domain.RECONCILIATION, Category.RECOVERY_FAILED, Stage.RECONCILIATION))
+            self.resolution_wakeup.set()
+            self.execution_wakeup.set()
+            return {"ok": True, **await self._publish(transfer_id)}
+
+    async def withdraw_demand(self, demand_ids, *, by: str, retire_unclaimed: bool = False) -> dict:
+        """Withdraw submitter demand through the canonical engine, which
+        decides each affected transfer's fate by its remaining demand.
+
+        ``retire_unclaimed``: a transfer these demands served that is then
+        cancelled and needed by nobody is also removed from the ordinary
+        transfer lists, by the canonical delete (its soft-delete tombstone:
+        history and provenance stay). The delete is authorized against NO
+        outstanding demand and checks that in its own commit, so demand
+        admitted or consolidated meanwhile keeps the transfer. Only DP's own
+        incomplete material is reclaimed, never a completed file; at a
+        provider, every resource DownloadPulse created or adopted for it -- the
+        route's and each prepared backup's -- is removed, durably and
+        retryably, never one it only observed or one another transfer
+        still holds."""
+        async with self.application_operation():
+            settled = await self.engine.withdraw_demand(tuple(demand_ids), by=by)
+            retired = []
+            if retire_unclaimed:
+                for transfer_id in await self.repository.served_transfers(demand_ids):
+                    transfer = await self.repository.get(transfer_id)
+                    if transfer is None or transfer.state != TransferState.CANCELLED:
+                        continue
+                    try:
+                        await self.engine.delete(transfer_id, remote=False, expected_demand=frozenset(),
+                                                 owned_cleanup=True)
+                    except DemandChanged:
+                        continue
+                    retired.append(transfer_id)
+            for transfer_id in sorted({*settled, *retired}):
+                await self._publish(transfer_id)
+            return {"ok": True, "cancelled_transfers": settled, "retired_transfers": retired}
+
+    async def settle_withdrawn_demand(self) -> list[int]:
+        """Apply demand that was withdrawn elsewhere (an account disabled or
+        deleted) now, rather than at the next resolution cycle."""
+        async with self.application_operation():
+            settled = await self.engine.settle_withdrawn_demand()
+            for transfer_id in settled:
+                await self._publish(transfer_id)
+            return settled
+
+    async def delete(self, transfer_id, *, remote=True, expected_demand=None):
+        async with self.application_operation():
+            await self.require(transfer_id)
+            await self.engine.delete(transfer_id, remote=remote, expected_demand=expected_demand)
+            await self._publish(transfer_id)
+            return {"ok": True}
+
+    async def select_artifact(self, transfer_id, artifact_id, *, selected, expected_demand=None):
+        async with self.application_operation():
+            await self.engine.select_artifact(transfer_id, artifact_id, selected=selected,
+                                              expected_demand=expected_demand)
+            self.execution_wakeup.set()
+            await self._publish(transfer_id)
+            return {"ok": True, "file_id": artifact_id, "blocked": not selected}
+
+    # -- Universal file selection (specification sections 34-40) ---------------
+    # Neutral commands over the durable core selection state. No provider or
+    # executor is ever contacted here; the engine already owns provider I/O and
+    # the 60s/120s timing through its injected clock.
+
+    async def file_selection(self, transfer_id):
+        await self.require(transfer_id)
+        return await self.repository.file_selection_presentation(
+            transfer_id, now=self.engine.clock(),
+        )
+
+    async def file_selection_offers(self):
+        return await self.repository.active_file_selection_offers(now=self.engine.clock())
+
+    async def confirm_file_selection(self, transfer_id, manifest_id, entry_ids, *, expected_demand=None):
+        async with self.application_operation():
+            await self.require(transfer_id)
+            result = await self.repository.confirm_file_selection(
+                transfer_id, manifest_id, entry_ids, now=self.engine.clock(), expected_demand=expected_demand,
+            )
+            if result.outcome == "confirmed":
+                # The repository transaction settled the decision and, in the same
+                # BEGIN IMMEDIATE, released the file-selection gate's scheduler
+                # wait. Re-drive the ordinary resolution wakeup so the confirmed
+                # subset materialises on the next cycle rather than after the old
+                # decision deadline or provider-poll timestamp.
+                self.resolution_wakeup.set()
+                await self._publish(transfer_id)
+            return result
+
+    async def dismiss_file_selection(self, transfer_id, manifest_id):
+        async with self.application_operation():
+            await self.require(transfer_id)
+            result = await self.repository.dismiss_file_selection(
+                transfer_id, manifest_id, now=self.engine.clock(),
+            )
+            if result.outcome == "dismissed" and result.detail == "closed_hold":
+                # Close/X settled the decision to default ALL and the repository
+                # released the gate's scheduler wait in the same transaction;
+                # wake the resolution loop so ALL materialises immediately.
+                self.resolution_wakeup.set()
+                await self._publish(transfer_id)
+            return result
+
+    async def preview(self, transfer_id):
+        await self.require(transfer_id)
+        item = await self.repository.presentation(transfer_id, details=True)
+        if item["files"]:
+            return {"source": "local", "files": item["files"]}
+        files = []
+        # A backup still held in reserve is not this transfer's file set.
+        reserve = {item["resource"].id for item in await self.repository.standbys(transfer_id)
+                   if item["resource"] is not None and not item.get("promoted_at")}
+        for resource, _state, _pending in await self.repository.resources(transfer_id):
+            if resource.id in reserve:
+                continue
+            provider = self.engine.registry.providers.get(resource.provider_id)
+            if isinstance(provider, Manifest):
+                entries = await provider.manifest(resource)
+                files.extend({"filename": entry.relative_path or entry.name, "size_bytes": entry.expected_bytes} for entry in entries)
+        return {"source": "provider", "files": files}
+
+    def _queue_candidate_publication(self, transfer_id: int) -> None:
+        """A materialization decision committed a changed candidate set for
+        ``transfer_id``: publish it through the one targeted semantic
+        publisher as soon as possible, coalesced per transfer."""
+        self._candidate_publications.add(int(transfer_id))
+        if self._candidate_drain is None or self._candidate_drain.done():
+            self._candidate_drain = asyncio.create_task(self._drain_candidate_publications())
+
+    async def _drain_candidate_publications(self) -> None:
+        while self._candidate_publications:
+            transfer_id = min(self._candidate_publications)
+            self._candidate_publications.discard(transfer_id)
+            try:
+                await self._publish(transfer_id)
+            except Exception as exc:
+                logger.warning("Candidate publication failed: %s", sanitize_exception(exc))
+
+    async def _settle_candidate_publications(self) -> None:
+        """Every due candidate publication is sent before the operation that
+        caused it returns: none outlives its admitted operation."""
+        while self._candidate_drain is not None and not self._candidate_drain.done():
+            await asyncio.shield(self._candidate_drain)
+
+    async def resolve_pending(self):
+        async with self.application_operation():
+            # Route resolution/readiness is independent of Download Storage.
+            # The universal execution gate owns storage-consuming dispatch, so
+            # readiness may bind truthful provider provenance while dispatch is
+            # contained and the same durable request can execute after recovery.
+            try:
+                affected_ids = await self.engine.resolve_pending()
+            finally:
+                await self._settle_candidate_publications()
+            self.execution_wakeup.set()
+            # A selected-manifest commitment (e.g. the file-selection Choose
+            # File affordance becoming permanently unavailable) is a semantic
+            # transition the browser cannot infer from progress polling alone.
+            # Reuse the existing targeted semantic publisher for exactly the
+            # transfers the engine reports crossed that boundary this cycle --
+            # never every active transfer, never a repository-layer publish.
+            for transfer_id in affected_ids or ():
+                await self._publish(transfer_id)
+
+    async def reconcile_executions(self):
+        async with self.application_operation():
+            # Execution reconciliation consumes the in-memory storage state; the
+            # dedicated disk guard owns periodic recovery probes. This prevents a
+            # fast executor loop from erasing a just-observed ENOSPC/EDQUOT/EROFS
+            # transition before the bounded recovery cadence.
+            self.engine.dispatch_permitted = self.application_storage_permitted() and self.download_storage_permitted()
+            before = await self.repository.active()
+            # The canonical convergence owner reports what THIS cycle's recovery
+            # wake actually applied. The ordinary scheduler cadence ignores it;
+            # an operator-triggered broad recovery pass reports it.
+            recovery = await self.engine.reconcile_executions()
+            await self._contain_download_storage_faults(before)
+
+            await self._publish_active_changes(before)
+            return recovery
+
+    async def process_postprocessors(self):
+        async with self.application_operation():
+            if not self.download_storage_permitted():
+                return
+            await self.engine.process_postprocessors()
+
+    async def reconcile_inventory(self):
+        async with self.application_operation():
+            before = {item.id for item in await self.repository.active()}
+            # A backup the scan finds newly AVAILABLE wakes the coordinator
+            # as soon as that write commits, so readiness promotion is
+            # evaluated now -- not at its next resource poll, and not after
+            # the rest of the scan.
+            errors = await self.engine.reconcile_inventory(on_readiness=self.resolution_wakeup.set)
+            after = await self.repository.active()
+            return {"imported": sum(item.id not in before for item in after), "updated": len(after), "errors": [error.as_dict() for error in errors]}
+
+    async def recover(self):
+        """The broad operator-triggered recovery effort.
+
+        It examines all currently non-terminal/recoverable work and asks the
+        CANONICAL owners to make whatever progress is legal right now: the
+        inventory reconciler, the pending-resolution pass and the convergence
+        engine's own recovery wake. It is an effort, not an override -- every
+        one of them applies exactly the policy it always applies, so pause
+        intent, INPUT_REQUIRED, retry backoff, exhaustion, storage admission,
+        materialization authority, recovery claims and provider/executor
+        availability all hold. No trigger is upgraded, no authority is granted
+        and no streak or budget is reset by the act of asking.
+
+        The result states real canonical outcomes -- how many recoveries were
+        APPLIED and what actually failed -- never how much work exists.
+        """
+        async with self.application_operation():
+            inventory = await self.reconcile_inventory()
+            await self.resolve_pending()
+            recovery = await self.reconcile_executions()
+            errors = [*inventory["errors"], *[error.as_dict() for error in getattr(recovery, "errors", ())]]
+            return {
+                "ok": not errors,
+                # Canonical recovery outcomes: what the recovery owner applied,
+                # and what inventory reconciliation adopted.
+                "recovered": int(getattr(recovery, "applied", 0)),
+                "imported": inventory["imported"],
+                "actions": int(getattr(recovery, "applied", 0)) + int(inventory["imported"]),
+                "errors": errors,
+            }
+
+    async def drain_executions(self):
+        """Whole-state quiescence (restore, database wipe): no native execution
+        owned by the current state may outlive it. Durable global pause stops
+        new admission and quiesces and checkpoints every writer; the engine then
+        releases whatever Pause left parked through the same writer retirement.
+        Nothing is logically cancelled. Raises unless zero executions of the
+        current state remain live."""
+        live_before = len(await self.repository.live_executions())
+        await self.pause_all()
+        residue = await self.engine.release_writers("state_replacement")
+        if residue:
+            raise CodedRuntimeError("Could not prove every native execution stopped", code="maintenance.executions_not_stopped")
+        return {"live_before": live_before, "live_after": len(await self.repository.live_executions())}
+
+    def configure(self):
+        if self._configure:
+            self._configure(self)
+
+    async def start_integrations(self, only=None):
+        """Start every integration, or -- given ``only`` -- exactly those
+        (what a refused whole-state replacement stopped).
+
+        Each integration converges independently: one that is slow to start
+        never delays another's start, and one whose start fails degrades that
+        integration alone -- it is logged, it stays non-ready by its own
+        canonical status, and its maintenance keeps owning it.
+        """
+        async def start(integration):
+            try:
+                await integration.start()
+            except Exception as exc:
+                logger.warning("Integration startup failed: %s", sanitize_exception(exc))
+
+        await asyncio.gather(*(start(integration) for integration in self.lifecycle
+                               if only is None or integration in only))
+
+    def begin_integrations(self) -> None:
+        """Start every integration OFF the control-plane critical path.
+
+        Provider and executor readiness are never prerequisites of serving:
+        the application lifetime owner begins this and goes on, and each
+        integration converges -- reporting its own truthful non-ready status
+        meanwhile -- while DownloadPulse is already usable. This service is the
+        one creator, tracker and canceller of that work: work that needs
+        started integrations waits on ``integrations_started``, and
+        ``stop_integrations`` cancels and drains it, so it never outlives the
+        application it belongs to.
+        """
+        if self._integration_startup is None or self._integration_startup.done():
+            self._integration_startup = asyncio.create_task(self.start_integrations())
+
+    def integrations_starting(self) -> bool:
+        """Whether integration startup is still in flight: nothing an
+        executor must verify can be judged absent yet."""
+        startup = self._integration_startup
+        return startup is not None and not startup.done()
+
+    async def integrations_started(self) -> None:
+        """Return once no integration startup is in flight. Its outcome is
+        observed by ``start_integrations``; waiting here never cancels it."""
+        startup = self._integration_startup
+        if startup is not None and not startup.done():
+            await asyncio.wait((startup,))
+
+    async def stop_integrations(self):
+        """Stop integrations in reverse order and return the ones stopped.
+        Every integration is asked to stop, whatever another's stop did; if
+        any failed, ``IntegrationStopFailed`` is raised once all were asked,
+        naming those stopped and every failure. A startup
+        still in flight is cancelled and drained first, so no start races the
+        stops or outlives this application."""
+        startup = self._integration_startup
+        if startup is not None and not startup.done():
+            startup.cancel()
+            await asyncio.wait((startup,))
+        # Clean executor shutdown is a forced material checkpoint boundary:
+        # what live writers proved written becomes durable before they stop.
+        try:
+            await self.engine.checkpoint_live_material("executor_shutdown")
+        except Exception as exc:
+            logger.warning("Material checkpoint before shutdown failed: %s", type(exc).__name__)
+        stopped, failures = [], []
+        for integration in reversed(self.lifecycle):
+            try:
+                await integration.stop()
+            except Exception as exc:
+                failures.append(exc)
+                continue
+            stopped.append(integration)
+        if failures:
+            raise IntegrationStopFailed(stopped, failures) from failures[0]
+        return tuple(stopped)
+
+    async def maintain_integrations(self):
+        async with self.application_operation():
+            for integration in self.lifecycle:
+                await integration.maintain()
+        # After the application operation: the canonical configuration write
+        # converge_entitled_options makes takes its own.
+        await self.converge_entitled_options()
+
+    def option_availability(self, definition) -> dict[str, dict]:
+        """``integrations.account_entitlement.option_availability`` of the
+        registered implementation of ``definition``."""
+        from integrations.account_entitlement import option_availability
+        if not definition.entitlement_options:
+            return {}
+        registry = self.engine.registry
+        implementation = registry.providers.get(definition.id) or registry.executors.get(definition.id)
+        return option_availability(definition, implementation)
+
+    async def converge_entitled_options(self) -> tuple[str, ...]:
+        """An option only an entitled account can use never stays saved once
+        the connected account's own truth proves it is not entitled (a plan
+        that no longer includes it): it is turned off through THE canonical
+        scoped configuration mutation (``mutate_integration_configuration``,
+        the owner beneath the HTTP route) -- validated, normalized, saved,
+        applied and reconfigured exactly as an operator's change, never a
+        second writer -- so the integration stops offering what its account cannot
+        do instead of staying degraded by an impossible setting. Woken by the
+        account owner's announcement of changed truth
+        (``notify_applicability_changed``). The integrations converged."""
+        from core.config import get_settings
+        from integrations.configuration_mutation import mutate_integration_configuration
+        settings, converged = get_settings(), []
+        for definition in self.definitions:
+            availability = self.option_availability(definition)
+            entry = settings.integrations.get(definition.id)
+            if entry is None or not availability:
+                continue
+            stale = {gated.option: False for gated in definition.entitlement_options
+                     if entry.options.get(gated.option) is True and not availability[gated.option]["available"]}
+            if not stale:
+                continue
+            try:
+                await mutate_integration_configuration(self, definition, options=stale)
+            except Exception as exc:
+                logger.warning("%s: could not turn off %s: %s", definition.name, ", ".join(sorted(stale)),
+                               sanitize_exception(exc))
+                continue
+            logger.info("%s: %s turned off -- the connected account is not entitled to it",
+                        definition.name, ", ".join(sorted(stale)))
+            converged.append(definition.id)
+        if converged:
+            await self.notify_status_changed()
+        return tuple(converged)

@@ -1,0 +1,695 @@
+/* The setup wizard (ui-setup-wizard.js): its pages inside the canonical
+   dialog shell (ui-modal-contract.css). Layout only. Logical properties
+   throughout, so right-to-left languages mirror without a rule of their own. */
+/* One shell for every page and every provider view: a portrait dialog whose
+   outer size is fixed for the viewport -- the same on a short page as on a
+   Usenet configuration with several servers -- bounded by what the overlay
+   leaves (its 24px padding, 12px at 620px and below). Its four regions, in
+   order: the Connected Page Progress Indicator and the heading (the dialog
+   owner's header: `headerTop`, title icon, title, hint), the page body -- the
+   one region that scrolls -- and the footer, anchored at the bottom. */
+.dp-modal-dialog.dp-setup-dialog {
+  inline-size: min(480px, calc(100vw - 48px));
+  block-size: min(760px, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
+}
+.dp-modal-dialog.dp-setup-dialog > .dp-modal-header,
+.dp-modal-dialog.dp-setup-dialog > .dp-modal-footer {
+  flex: 0 0 auto;
+}
+.dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body > * {
+  flex-shrink: 0;
+}
+
+/* Every page of the wizard (.dp-setup-main, set by paint for the six pages,
+   never for a view of one -- the language list, the folder browser, a
+   provider's configuration stay content-first) shares one composition: one
+   separation row, the page's explanation (centred) at the top, and the
+   page's own controls as one group, centred vertically in the rest of the
+   body. The page takes the body's whole height; the room above the group
+   (.dp-setup-room) and the room below it (the page's ::after) are equal
+   flexible spaces, so the group sits midway between the explanation and the
+   body's end, its own layout untouched. With no room to spare both are
+   nothing: the page simply scrolls, never clipped. The row is the body's
+   spare height, not a fixed block: a tenth of the viewport height beyond
+   560px, up to 20px -- nothing on a short phone (about 375x560), 20px on a
+   desktop. */
+.dp-modal-dialog.dp-setup-dialog {
+  --dp-setup-row: clamp(0px, calc((100dvh - 560px) * .1), 20px);
+}
+.dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body > .dp-setup-main {
+  flex-grow: 1;
+  margin-block: var(--dp-setup-row) 0;
+}
+.dp-setup-main::after {
+  content: "";
+  flex: 1 1 0;
+  min-block-size: 0;
+}
+
+/* The room above the page's controls (paint: .dp-setup-room, after the
+   explanation), as tall as the room below them: nothing when there is no
+   room to spare (its negative margins return the gap it would otherwise
+   add). A room only: it holds nothing and draws nothing. */
+.dp-setup-main > .dp-setup-room {
+  flex: 1 1 0;
+  min-block-size: 0;
+  margin-block: -5px;
+  pointer-events: none;
+}
+
+/* The wizard body's environment, behind everything it holds.
+   Its diffusion is the application canvas's own (--dp-chrome-canvas,
+   ui-language-tokens.css): two broad, soft blooms -- the palette's purple
+   high at the start, its blue low at the end -- over the dialog's surface,
+   in the palette and theme in force. */
+.dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body {
+  background:
+    radial-gradient(ellipse 95% 70% at 12% 0%, color-mix(in srgb, var(--dp-chrome-signal-purple) 10%, transparent), transparent 72%),
+    radial-gradient(ellipse 90% 75% at 95% 100%, color-mix(in srgb, var(--dp-chrome-signal-blue) 8%, transparent), transparent 74%);
+}
+body.light .dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body {
+  background:
+    radial-gradient(ellipse 95% 70% at 12% 0%, color-mix(in srgb, var(--dp-chrome-signal-purple) 7%, transparent), transparent 72%),
+    radial-gradient(ellipse 90% 75% at 95% 100%, color-mix(in srgb, var(--dp-chrome-signal-blue) 6%, transparent), transparent 74%);
+}
+
+/* A turn of the body (ui-setup-wizard.js move, DPMotion.slide): what moves
+   is the content, and its still copy (.dp-motion-still) carries none of
+   the body's environment -- the blooms stay where they are, under both. */
+.dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body.dp-motion-still {
+  background: none;
+}
+
+/* Each page's own line art (paint: .dp-setup-art, data-art = the page):
+   one non-repeating composition (icons/dp/setup-art-<page>.svg) drawn
+   across the page's whole area, to the body's padding edges, and scrolling
+   with the page. It is a mask over the signal field's palette tokens, so it
+   takes the theme in force, and an absolutely placed layer beneath the
+   page's content (the page is its own stacking context): it takes no part
+   in the layout, is never under the pointer and is never focused. A second,
+   soft mask eases it gently toward the page's middle and upper part, and
+   every block of the page's own content (its explanation, each control and
+   group) carries a feathered halo of the dialog's own surface colour
+   (--dp-panel-end): the art is quietest exactly beneath the words and
+   controls -- wherever a page puts them -- and fully drawn in the gaps,
+   edges and corners, with no edge or box of its own anywhere. Background
+   only: the halo takes no part in the layout. */
+.dp-modal-dialog.dp-setup-dialog .dp-modal-body.dp-setup-body > .dp-setup-main {
+  position: relative;
+  isolation: isolate;
+}
+.dp-setup-main > .dp-setup-art {
+  position: absolute;
+  inset: calc(-1 * (var(--dp-setup-row) + 20px)) -20px -18px;
+  z-index: -1;
+  pointer-events: none;
+  opacity: .291;
+  background: linear-gradient(160deg, var(--dp-chrome-signal-purple-bright), var(--dp-chrome-signal-blue-bright) 70%, var(--dp-chrome-signal-blue));
+  -webkit-mask-image: var(--dp-setup-art), radial-gradient(ellipse 72% 62% at 50% 48%, rgba(0, 0, 0, .55) 0%, rgba(0, 0, 0, .75) 45%, #000 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, .8) 0%, rgba(0, 0, 0, .8) 28%, #000 52%);
+  -webkit-mask-size: cover, 100% 100%, 100% 100%;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-image: var(--dp-setup-art), radial-gradient(ellipse 72% 62% at 50% 48%, rgba(0, 0, 0, .55) 0%, rgba(0, 0, 0, .75) 45%, #000 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, .8) 0%, rgba(0, 0, 0, .8) 28%, #000 52%);
+  mask-size: cover, 100% 100%, 100% 100%;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-composite: intersect;
+}
+body.light .dp-setup-main > .dp-setup-art {
+  opacity: .23;
+}
+.dp-setup-main > :not(.dp-setup-art, .dp-setup-room) {
+  background-image: radial-gradient(closest-side, color-mix(in srgb, var(--dp-panel-end) 94%, transparent) 62%,
+    color-mix(in srgb, var(--dp-panel-end) 62%, transparent) 84%, transparent 100%);
+  background-size: calc(100% + 48px) calc(100% + 40px);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-origin: border-box;
+}
+.dp-setup-art[data-art="welcome"] { --dp-setup-art: url("/icons/dp/setup-art-welcome.svg?v=3"); }
+.dp-setup-art[data-art="deployment"] { --dp-setup-art: url("/icons/dp/setup-art-deployment.svg?v=3"); }
+.dp-setup-art[data-art="download_directory"] { --dp-setup-art: url("/icons/dp/setup-art-directory.svg?v=3"); }
+.dp-setup-art[data-art="administrator"] { --dp-setup-art: url("/icons/dp/setup-art-administrator.svg?v=3"); }
+.dp-setup-art[data-art="premium_services"] { --dp-setup-art: url("/icons/dp/setup-art-premium.svg?v=3"); }
+.dp-setup-art[data-art="getting_started"] { --dp-setup-art: url("/icons/dp/setup-art-getting-started.svg?v=3"); }
+@media (max-width: 620px) {
+  /* The dialog owner stacks footer controls full-width here, so a footer is as
+     tall as its controls. The wizard's footer keeps one footprint -- its
+     pages' three stacked slots (Back, Close, Next: three control heights,
+     the owner's two 10px gaps, its 14px/18px padding and 1px top border; the
+     box is border-box) -- in a provider view with two, so the body and the
+     footer's top never move. */
+  .dp-modal-dialog.dp-setup-dialog > .dp-modal-footer {
+    min-block-size: calc(3 * var(--dp-control-height-md) + 2 * 10px + 14px + 18px + 1px);
+  }
+  /* The mandatory first run has no Close: Back and Next (or Finish), or a
+     view's two, at most -- two slots. */
+  .dp-modal-dialog.dp-setup-dialog.dp-setup-mandatory > .dp-modal-footer {
+    min-block-size: calc(2 * var(--dp-control-height-md) + 10px + 14px + 18px + 1px);
+  }
+  .dp-modal-dialog.dp-setup-dialog {
+    inline-size: calc(100vw - 24px);
+    block-size: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* The header: progress above a centred heading. The heading's reading (the
+   page's tagline, or a view's own reading) takes the lines its words need --
+   one for a tagline, more for a longer reading or language, never clipped --
+   and the header's own bottom padding is the one space between its last line
+   and the body. Behind it lies a hazy starfield (decoration only, below). */
+.dp-modal-dialog.dp-setup-dialog > .dp-modal-header {
+  position: relative;
+  overflow: hidden;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  padding: 18px 18px 14px;
+}
+.dp-setup-dialog > .dp-modal-header > .dp-modal-heading,
+.dp-setup-header-top > .dp-setup-progress,
+.dp-setup-header-top > .dp-setup-badge-slot {
+  position: relative;
+  z-index: 1;
+}
+.dp-setup-dialog .dp-modal-heading {
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+.dp-setup-dialog .dp-modal-title-line {
+  justify-content: center;
+}
+.dp-setup-dialog .dp-modal-title {
+  font-size: 17px;
+}
+.dp-setup-dialog .dp-modal-title-icon {
+  width: 22px;
+  height: 22px;
+}
+/* Welcome's mark, the product logo (<dp-logo>, coloured by ui-logo.css): a
+   little larger than a glyph, as its square leaves a margin, without making
+   the title line taller than any other page's. */
+.dp-setup-dialog .dp-modal-title-icon:has(> dp-logo) {
+  width: 28px;
+  height: 28px;
+  margin-block: -3px;
+}
+.dp-setup-dialog .dp-modal-title-icon > dp-logo > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The header's top region: the indicator, then the badge slot, which takes
+   room only while its badge shows (Premium Services' Optional). The badge
+   has the header's own gap on both sides: 14px beneath the indicator, as
+   between it and the title. Without a badge the slot is absent, so the
+   heading stands the header's one gap beneath the indicator and the body
+   keeps the height recovered. */
+.dp-setup-header-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.dp-setup-badge-slot {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  block-size: 22px;
+  margin: 0;
+}
+.dp-setup-badge-slot:not(:has(> .dp-setup-optional:not([hidden]))),
+.dp-setup-optional[hidden] {
+  display: none;
+}
+.dp-setup-dialog .dp-modal-title-hint {
+  max-inline-size: 40ch;
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+}
+/* Premium Services' Help (the Settings card's own chip, in the dialog
+   owner's header end): at the header's lower inline end, out of the
+   header's flow, so no heading moves; the reading keeps the chip's width
+   clear on both sides while it shows, so it stays centred and never runs
+   under it. */
+.dp-modal-dialog.dp-setup-dialog > .dp-modal-header > .dp-modal-header-end {
+  position: absolute;
+  inset-inline-end: 12px;
+  inset-block-end: 10px;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+}
+.dp-setup-help[hidden] {
+  display: none;
+}
+.dp-setup-dialog:has(.dp-setup-help:not([hidden])) .dp-modal-title-hint {
+  max-inline-size: min(40ch, 100% - 84px);
+}
+
+/* The header's artwork: a quiet, hazy starfield (.dp-setup-stars,
+   icons/dp/setup-stars.svg), drawn as the body's line art is -- a mask over
+   the signal field's palette tokens, so it takes the theme and palette in
+   force -- across the whole header, behind the indicator, the badge, the
+   heading and Help, and fading into the body at its foot. Still: nothing
+   in it moves. Decoration only: hidden from assistive technology, never
+   under the pointer, clipped by the header. As on the body, it is
+   quietest exactly beneath what is read and used: each of the header's
+   contents (the indicator, a shown badge, the title line, the reading and
+   Help) carries a feathered halo of the dialog's own surface colour at the
+   header's height (--dp-panel-start), easing to nothing past its edges,
+   with no edge or box of its own. The halos are each content's own
+   ::before, behind that content inside its own stacking layer, so they
+   follow it wherever it stands and however many lines it takes, and take
+   no part in the layout. */
+.dp-setup-header-top > .dp-setup-stars {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .62;
+  background: linear-gradient(160deg, var(--dp-chrome-signal-purple-bright), var(--dp-chrome-signal-blue-bright) 70%, var(--dp-chrome-signal-blue));
+  -webkit-mask-image: url("/icons/dp/setup-stars.svg?v=1"), linear-gradient(180deg, #000 72%, transparent 100%);
+  -webkit-mask-size: cover, 100% 100%;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-image: url("/icons/dp/setup-stars.svg?v=1"), linear-gradient(180deg, #000 72%, transparent 100%);
+  mask-size: cover, 100% 100%;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-composite: intersect;
+}
+body.light .dp-setup-header-top > .dp-setup-stars {
+  opacity: .5;
+}
+.dp-setup-dialog .dp-modal-title-line,
+.dp-setup-dialog .dp-modal-title-hint {
+  position: relative;
+}
+.dp-setup-header-top > .dp-setup-progress::before,
+.dp-setup-header-top > .dp-setup-badge-slot:has(> .dp-setup-optional:not([hidden]))::before,
+.dp-setup-dialog .dp-modal-title-line::before,
+.dp-setup-dialog .dp-modal-title-hint:not(:empty)::before,
+.dp-modal-dialog.dp-setup-dialog > .dp-modal-header > .dp-modal-header-end:has(> .dp-setup-help:not([hidden]))::before {
+  content: "";
+  position: absolute;
+  inset: -12px -30px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--dp-panel-start) 94%, transparent) 50%,
+    color-mix(in srgb, var(--dp-panel-start) 60%, transparent) 78%, transparent 100%);
+}
+.dp-modal-dialog.dp-setup-dialog > .dp-modal-header > .dp-modal-header-end:has(> .dp-setup-help:not([hidden]))::before {
+  inset: -14px;
+}
+
+/* The Connected Page Progress Indicator (ui-setup-wizard.js paintProgress):
+   numbered bubbles on one string that meets each bubble's border. Completed:
+   the completion green (--dp-state-success), a check and the normal glow.
+   Incomplete: the theme accent (--accent) at reduced intensity -- the same
+   on its border and on every unfinished string. Each bubble carries its own
+   state colour (--dp-setup-state); the current page only intensifies that
+   colour's glow -- green around a completed page, the accent around an
+   incomplete one -- and moves no string. Strings follow the two pages they
+   join: green between completed pages, one gradient from green into the
+   unfinished accent at the completion boundary, the unfinished accent
+   between incomplete pages. */
+.dp-setup-progress {
+  --dp-setup-bubble: 28px;
+  --dp-setup-link: clamp(14px, 5vw, 40px);
+  --dp-setup-unfinished: color-mix(in srgb, var(--accent) 70%, transparent);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dp-setup-progress-step {
+  display: flex;
+  align-items: center;
+}
+.dp-setup-progress-link {
+  inline-size: var(--dp-setup-link);
+  block-size: 3px;
+  background: var(--dp-setup-unfinished);
+}
+.dp-setup-progress-link[data-link="done"] {
+  background: var(--dp-state-success);
+  box-shadow: var(--dp-glow-success);
+}
+.dp-setup-progress-link[data-link="boundary"] {
+  /* In oklch: the hue turns from the green to the accent, never through grey. */
+  background: linear-gradient(to right in oklch, var(--dp-state-success), var(--dp-setup-unfinished));
+}
+[dir="rtl"] .dp-setup-progress-link[data-link="boundary"] {
+  background: linear-gradient(to left in oklch, var(--dp-state-success), var(--dp-setup-unfinished));
+}
+.dp-setup-progress-bubble {
+  --dp-setup-state: var(--accent);
+  display: grid;
+  place-items: center;
+  inline-size: var(--dp-setup-bubble);
+  block-size: var(--dp-setup-bubble);
+  border: 2px solid var(--dp-setup-unfinished);
+  border-radius: 50%;
+  background: var(--dp-panel-surface);
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  box-sizing: border-box;
+}
+.dp-setup-progress-bubble svg {
+  inline-size: 15px;
+  block-size: 15px;
+  stroke-width: 3;
+}
+[data-state="done"] > .dp-setup-progress-bubble {
+  --dp-setup-state: var(--dp-state-success);
+  border-color: var(--dp-state-success);
+  background: var(--dp-state-success-bg);
+  color: var(--dp-state-success-mark);
+  box-shadow: var(--dp-glow-success);
+}
+[aria-current="step"] > .dp-setup-progress-bubble {
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--dp-setup-state) 34%, transparent),
+    0 0 18px 5px color-mix(in srgb, var(--dp-setup-state) 60%, transparent);
+}
+[aria-current="step"][data-state="todo"] > .dp-setup-progress-bubble {
+  color: var(--dp-text-primary);
+}
+@media (max-width: 620px) {
+  .dp-setup-progress {
+    --dp-setup-bubble: 24px;
+    --dp-setup-link: clamp(12px, 5vw, 26px);
+  }
+}
+
+.dp-setup-page {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-inline-size: 0;
+}
+.dp-setup-hint,
+.dp-setup-label {
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+.dp-setup-hint {
+  color: var(--dp-text-muted);
+  font-size: 12px;
+}
+.dp-setup-label {
+  font-weight: 600;
+}
+.dp-setup-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.dp-setup-error[hidden] {
+  display: none;
+}
+/* A page's explanation, at the top of its body, centred (its controls keep
+   their own alignment). */
+.dp-setup-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dp-setup-copy p {
+  margin: 0;
+  text-align: center;
+  color: var(--dp-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+
+/* Welcome: the language row beneath the explanation -- one rule above it,
+   none beneath -- its title and hint at the start, the language button at
+   the end, the button beneath them where the row is too narrow for both. */
+.dp-setup-language-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  margin-block-start: 6px;
+  padding-block-start: 14px;
+  border-block-start: 1px solid var(--dp-border-default);
+}
+.dp-setup-language-copy {
+  flex: 1 1 13rem;
+  min-inline-size: 0;
+}
+.dp-setup-language-button {
+  flex: 0 0 auto;
+}
+
+/* Deployment: two described choices, one radio group -- each its name, its
+   mark, then what it means, centred; side by side where both fit, stacked
+   where they would be too narrow. */
+.dp-setup-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  gap: 10px;
+}
+.dp-setup-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 12px 16px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: 8px;
+  background: transparent;
+  /* Transparent over the page's art: what shows through is blurred, so the
+     art stays a soft wash behind the button and its edge and words read. */
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.dp-setup-choice[aria-checked="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.dp-setup-choice:disabled {
+  cursor: default;
+  opacity: .7;
+}
+.dp-setup-choice-name {
+  font-weight: 650;
+}
+.dp-setup-choice-glyph {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.dp-setup-choice-glyph svg {
+  inline-size: 34px;
+  block-size: 34px;
+  stroke-width: 1.6;
+}
+.dp-setup-choice-text {
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Download Directory: the field and its Browse control on one row, the
+   control beneath the field when the row is too narrow for both. */
+.dp-setup-directory-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dp-setup-directory-row > .input {
+  flex: 1 1 14rem;
+  min-inline-size: 0;
+}
+
+/* Administrator Setup (a rerun's guidance): its reading above Open Users &
+   Access, centred like the page and its full-width button. */
+.dp-setup-administrator > .dp-setup-hint {
+  text-align: center;
+}
+
+/* Administrator Setup: the notes beneath the fields, centred. */
+.dp-setup-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+}
+
+/* Getting Started: the three numbered steps, then -- where Finish signs the
+   Administrator in again -- the sign-in note, apart from the steps: both are
+   the page's bottom content (.dp-setup-main), the note last, just above the
+   footer. */
+.dp-setup-steps {
+  counter-reset: dp-setup-step;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+}
+/* One step: its number in a circle -- the sidebar's active rail (its
+   gradient and glow, --dp-chrome-nav-rail) -- then its title (the message's
+   bold lead sentence) on its own line, 40px from the step's start, and the
+   rest of the step beneath it, indented 16px farther than the title on every
+   line it takes: the step's content column starts at the description, and
+   the title alone reaches back to 40px. Logical properties, so the indent
+   follows the reading direction. The list stays a list (role="list"), and
+   the number is said once, before the step's words. */
+.dp-setup-steps > li {
+  counter-increment: dp-setup-step;
+  position: relative;
+  padding-inline-start: 56px;
+  color: var(--dp-text-secondary);
+}
+.dp-setup-steps > li::before {
+  content: counter(dp-setup-step);
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0;
+  display: grid;
+  place-items: center;
+  inline-size: 26px;
+  block-size: 26px;
+  border-radius: 50%;
+  background: var(--dp-chrome-nav-rail);
+  box-shadow: var(--dp-chrome-nav-rail-glow);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.dp-setup-steps > li > b {
+  display: block;
+  margin-block: 3px 3px;
+  margin-inline-start: -16px;
+  color: var(--dp-text-primary);
+  font-weight: 650;
+}
+.dp-setup-sign-in-note {
+  margin: 4px 0 0;
+  padding-block-start: 12px;
+  border-block-start: 1px solid var(--dp-border-default);
+  color: var(--dp-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+  overflow-wrap: break-word;
+}
+
+/* Premium Services: the six services, one row each -- the service's own
+   artwork, then its name over what the server says it is (configured,
+   verified, disabled), on one line wherever the row is wide enough. */
+.dp-setup-services {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.dp-setup-service {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-inline-size: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: 8px;
+  background: transparent;
+  /* As a choice above: the art behind it blurred. */
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.dp-setup-service:disabled {
+  cursor: default;
+  opacity: .55;
+}
+.dp-setup-service-art {
+  display: grid;
+  flex: 0 0 auto;
+}
+.dp-setup-service-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-inline-size: 0;
+}
+.dp-setup-service-name {
+  font-weight: 650;
+}
+.dp-setup-service-state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+}
+.dp-setup-service-fact[data-fact="verified"] { color: var(--green); }
+.dp-setup-service-fact[data-fact="unverified"] { color: var(--amber, var(--dp-state-caution)); }
+
+/* A provider's configuration in place of the list: its Settings card, drawn
+   by its Settings owner (DPSettingsPage.mountProvider), across the body's
+   whole width (its islands take the narrow, full-width form there:
+   ui-settings-page.css). The body's own padding is the only space above and
+   below it, the same for every service. */
+.dp-setup-provider-slot {
+  min-inline-size: 0;
+}
+
+/* TEMPORARY, development only (WS3b): Test First-Run Wizard on the rerun's
+   Welcome, and the preview's standing note. Removed with the final wizard
+   cleanup. */
+.dp-setup-preview-entry {
+  display: flex;
+  justify-content: center;
+  padding-block-start: 4px;
+}
+.dp-setup-preview-note {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--dp-border-default);
+  border-radius: 6px;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}

@@ -1,0 +1,80 @@
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+
+
+def read(name: str) -> str:
+    return (STATIC / name).read_text(encoding="utf-8")
+
+
+def test_downloads_desktop_filter_contract_and_details_are_directly_owned():
+    index = read("index.html")
+    # DP 1.0.12 canonical flattening: ui-downloads.js is the sole Downloads
+    # owner -- app.js no longer carries this markup/logic.
+    downloads = read("ui-downloads.js")
+    expected = (
+        'data-dp-status=""', 'data-dp-status="downloading"', 'data-dp-status="paused"',
+        'data-dp-status="processing"', 'data-dp-status="ready"',
+        'data-dp-status="completed"', 'data-dp-status="error"',
+    )
+    for fragment in expected:
+        assert fragment in index
+    assert "function setFilter(" in downloads
+    assert "dp-downloads-detail-row" in downloads
+    assert "showDetail(${t.id})" in downloads
+    assert 'draggable="true"' not in downloads
+
+def test_downloads_desktop_column_rebalance_preserves_provider_identity_and_progress():
+    # DP 1.0.12 canonical flattening: folded into ui-downloads-page.css.
+    # 1.0.14 unified table: the tracks are named by their columns (no
+    # positional selectors); Added keeps its 178px, Actions its 72px button
+    # slots and 7px gap, and the layout stays fixed.
+    css = read("ui-downloads-page.css")
+    assert "--dp-downloads-date-track: 178px;" in css
+    assert "--dp-downloads-action-slot: 72px;" in css
+    # The 28px outer allowance is a parameter only the handheld's narrowest
+    # table reduces (test_ui_downloads_final_contract.py); its default stands.
+    assert "(var(--dp-downloads-action-slots) - 1) * 7px + var(--dp-downloads-action-allowance, 28px)" in css
+    assert "table-layout: fixed" in css
+    assert "nth-child(6)" not in css and "nth-child(7)" not in css
+
+
+def test_provider_subscription_is_one_centered_crown_and_copy_unit():
+    css = read("ui-shell-provider-status.css")
+    assert not (STATIC / "ui-shell-provider-status-v2.css").exists()
+    assert "display: flex !important" in css
+    assert "justify-content: center !important" in css
+    assert "gap: 5px !important" in css
+    assert "flex: 0 0 36px !important" in css
+    assert "width: 36px !important" in css
+    assert "margin: 0 -8px !important" in css
+    assert "background-size: 36px 36px !important" in css
+    assert "width: max-content !important" in css
+    assert "transform: none !important" in css
+    assert ".dp-provider-premium-days" in css
+    assert "white-space: nowrap !important" in css
+
+def test_detail_modal_scrolls_inside_frame_with_thicker_scrollbar():
+    css = read("ui-modal-contract.css")
+    assert "#modal {" in css
+    assert "overflow: hidden !important" in css
+    assert ".modal-body {" in css
+    assert "overflow-y: auto" in css
+    assert "scrollbar-gutter: stable" in css
+    assert "::-webkit-scrollbar" in css
+    assert "width: 14px" in css
+
+
+def test_new_contract_layers_live_in_correct_cascade_sections():
+    style = read("style.css")
+    modal = style.index("ui-modal-contract.css?v=29")
+    shell = style.index("ui-shell.css?v=24")
+    provider = style.index("ui-shell-provider-status.css?v=25")
+    downloads_base = style.index("ui-downloads-page.css?v=30")
+    transfer = style.index("ui-transfer-contract.css?v=33")
+    assert modal < shell < provider
+    assert downloads_base < transfer
+    assert "ui-downloads-desktop.css" not in style
+    assert "ui-shell-provider-status-v2.css" not in style
+    assert style.count("ui-shell-provider-status.css") == 1

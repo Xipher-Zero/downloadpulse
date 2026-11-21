@@ -1,0 +1,587 @@
+# PR regression and security validation.
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+      - 'audit/**'
+    tags:
+      - 'v*'
+      - 'internal-v*'
+  pull_request:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+  workflow_dispatch:
+    inputs:
+      anchor_sha:
+        description: 'Optional qualification anchor commit SHA (defaults to the candidate first parent)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # One job definition, one full-suite invocation, one layer shard per matrix
+  # entry (docs/QUALIFICATION_DETERMINISM.md section 11). The contract layer is
+  # every deterministic test; the runtime layer is every test that drives a real
+  # executable, against the product's supported runtime. Each layer is
+  # partitioned by test node id across independent runners, so each collected
+  # test runs in exactly one entry and no two entries share a machine.
+  test:
+    name: ${{ matrix.layer }} ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    # The blocking budget is 20 minutes; this only stops a severe regression.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Contract shards are weighted by measured duration (.github/qualification/
+          # pytest_seconds.json, read by tests/conftest.py); shard 1/8 holds only the
+          # isolated transfer-595 scenario, so it also carries the static checks and
+          # the test inventory.
+          - {layer: contract, shard: 1/8, select: not real_runtime, static: true}
+          - {layer: contract, shard: 2/8, select: not real_runtime, static: false}
+          - {layer: contract, shard: 3/8, select: not real_runtime, static: false}
+          - {layer: contract, shard: 4/8, select: not real_runtime, static: false}
+          - {layer: contract, shard: 5/8, select: not real_runtime, static: false}
+          - {layer: contract, shard: 6/8, select: not real_runtime, static: false}
+          - {layer: contract, shard: 7/8, select: not real_runtime, static: false}
+          - {layer: contract, shard: 8/8, select: not real_runtime, static: false}
+          - {layer: runtime, shard: 1/3, select: real_runtime, static: false}
+          - {layer: runtime, shard: 2/3, select: real_runtime, static: false}
+          - {layer: runtime, shard: 3/3, select: real_runtime, static: false}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PYTEST_LAYER: ${{ matrix.select }}
+      DP_TEST_SHARD: ${{ matrix.shard }}
+      LAYER_ID: ${{ matrix.layer }}-${{ strategy.job-index }}
+      # The shard counts of the two layers (the matrix above): the test inventory
+      # assigns every collected test to exactly one of them.
+      CONTRACT_SHARDS: 8
+      RUNTIME_SHARDS: 3
+      # The product's rsync executor requires rsync >= 3.4.0. The runtime layer
+      # builds exactly the supported release the shipped image carries,
+      # verified against its published digest, rather than the runner's own.
+      RSYNC_VERSION: 3.4.1
+      RSYNC_SHA256: 2924bcb3a1ed8b551fc101f740b9f0fe0a202b115027647cf69850d65fd88c52
+
+    steps:
+      # First, before anything that can fail (it needs no checkout): every
+      # attempt of a shard leaves evidence, so a re-run that dies before its
+      # results is judged as unfinished rather than letting an earlier
+      # attempt's results stand in for it.
+      - name: Record this shard's identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/qualification/candidate/full"
+          printf '%s %s %s\n' "${LAYER_ID%-*}" "$DP_TEST_SHARD" "$LAYER_ID" > "$RUNNER_TEMP/qualification/candidate/full/shard.txt"
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+            backend/requirements-qa.txt
+
+      - name: Resolve qualification anchor and publish identity
+        env:
+          QUALIFICATION_EVENT: ${{ github.event_name }}
+          QUALIFICATION_BEFORE: ${{ github.event.before }}
+          QUALIFICATION_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QUALIFICATION_INPUT_ANCHOR: ${{ inputs.anchor_sha }}
+        run: |
+          set -euo pipefail
+          classifier=.github/qualification/failure_classifier.py
+          mkdir -p "$RUNNER_TEMP/qualification"
+          python "$classifier" budget >> "$GITHUB_ENV"
+          set +e
+          resolved="$(python "$classifier" resolve-anchor \
+            --event "$QUALIFICATION_EVENT" \
+            --candidate-sha "$GITHUB_SHA" \
+            --before "$QUALIFICATION_BEFORE" \
+            --pr-base-sha "$QUALIFICATION_PR_BASE_SHA" \
+            --input-anchor "$QUALIFICATION_INPUT_ANCHOR")"
+          set -e
+          anchor_sha="$(printf '%s\n' "$resolved" | sed -n 's/^QUALIFICATION_ANCHOR_SHA=//p')"
+          anchor_reason="$(printf '%s\n' "$resolved" | sed -n 's/^QUALIFICATION_ANCHOR_REASON=//p')"
+          {
+            echo "CANDIDATE_SHA=$GITHUB_SHA"
+            echo "QUALIFICATION_ANCHOR_SHA=$anchor_sha"
+            echo "QUALIFICATION_ANCHOR_REASON=$anchor_reason"
+          } >> "$GITHUB_ENV"
+          python "$classifier" metadata \
+            --candidate-sha "$GITHUB_SHA" \
+            --anchor-sha "$anchor_sha" \
+            --anchor-reason "$anchor_reason" \
+            --event "$QUALIFICATION_EVENT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --workflow Tests \
+            --output-json "$RUNNER_TEMP/qualification/qualification-metadata.json" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload qualification metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-qualification-metadata-${{ github.sha }}-${{ env.LAYER_ID }}
+          path: ${{ runner.temp }}/qualification/qualification-metadata.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # The patched aria2 packages and the rsync build are cached by everything
+      # they are built from: the exact aria2 source package (.dsc name and
+      # SHA-256) the runner's archive serves, packaging/aria2/, the OS release,
+      # and the verified rsync release and this workflow (its configure flags).
+      # A miss rebuilds and verifies exactly as before; a hit is verified by
+      # the same prerequisite assertions before any test runs.
+      - name: Resolve the supported runtime's build inputs (runtime layer)
+        id: runtime_inputs
+        if: matrix.layer == 'runtime'
+        run: |
+          set -euo pipefail
+          for sources in /etc/apt/sources.list.d/*.sources; do
+            if [ -e "$sources" ]; then sudo sed -ri 's/^Types: deb$/Types: deb deb-src/' "$sources"; fi
+          done
+          if [ -e /etc/apt/sources.list ]; then sudo sed -ri 's/^# ?deb-src /deb-src /' /etc/apt/sources.list; fi
+          sudo apt-get update
+          dsc="$(apt-get source --only-source --print-uris aria2 | awk '$2 ~ /^aria2_.*\.dsc$/ && !found {print $2 "-" $4; found = 1}')"
+          test -n "$dsc"
+          . /etc/os-release
+          {
+            echo "aria2_source=$(printf '%s' "$dsc" | tr -c 'A-Za-z0-9._+-' '_')"
+            echo "os_release=${ID}-${VERSION_ID}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore the built aria2 packages (runtime layer)
+        id: aria2_cache
+        if: matrix.layer == 'runtime'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/aria2
+          key: aria2-dp-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime_inputs.outputs.os_release }}-${{ steps.runtime_inputs.outputs.aria2_source }}-${{ hashFiles('packaging/aria2/**') }}
+
+      - name: Restore the built rsync (runtime layer)
+        id: rsync_cache
+        if: matrix.layer == 'runtime'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/rsync
+          key: rsync-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime_inputs.outputs.os_release }}-${{ env.RSYNC_VERSION }}-${{ env.RSYNC_SHA256 }}-${{ hashFiles('.github/workflows/tests.yml') }}
+
+      - name: Provide the supported runtime (runtime layer)
+        if: matrix.layer == 'runtime'
+        env:
+          ARIA2_CACHED: ${{ steps.aria2_cache.outputs.cache-hit }}
+          RSYNC_CACHED: ${{ steps.rsync_cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          # aria2 is the runner distribution's own aria2 source package rebuilt
+          # by the ONE build script the published package image uses
+          # (packaging/aria2/build-package.sh; docs/SUPPLY_CHAIN_POLICY.md
+          # section 4a): the same CONNECT exact-read patch, BitTorrent compiled
+          # out and the same +dp2 suffix, so the runtime layer exercises the
+          # binary DownloadPulse ships; the published image's own packages are
+          # qualified separately by Candidate Runtime Qualification.
+          # deb-src and the package index were prepared by the build-inputs step.
+          sudo apt-get install -y --no-install-recommends openssl dpkg-dev build-essential fakeroot patch
+          # ffmpeg/ffprobe, the Media Downloads executor's one local lossless
+          # finalizer: the exact package the image ships, taken from the same
+          # published package image by the same digest the Dockerfile pins
+          # (docs/SUPPLY_CHAIN_POLICY.md section 4b), never rebuilt here.
+          ffmpeg_image="$(sed -n 's/^FROM \(ghcr\.io\/xipher-zero\/debridpulse-ffmpeg@sha256:[0-9a-f]*\) AS ffmpeg-packages$/\1/p' "$GITHUB_WORKSPACE/Dockerfile")"
+          test -n "$ffmpeg_image"
+          carrier="$(docker create --platform linux/amd64 "$ffmpeg_image" /carrier)"
+          docker cp "$carrier:/packages" "$RUNNER_TEMP/ffmpeg"
+          docker cp "$carrier:/VERSION" "$RUNNER_TEMP/ffmpeg/VERSION"
+          docker rm "$carrier"
+          sudo apt-get install -y --no-install-recommends "$RUNNER_TEMP"/ffmpeg/ffmpeg_*.deb
+          echo "FFMPEG_PACKAGE_VERSION=$(cat "$RUNNER_TEMP/ffmpeg/VERSION")" >> "$GITHUB_ENV"
+          if [ "$ARIA2_CACHED" != true ]; then
+            sudo apt-get build-dep -y --no-install-recommends aria2
+            bash "$GITHUB_WORKSPACE/packaging/aria2/build-package.sh" "$RUNNER_TEMP/aria2-src" "$RUNNER_TEMP/aria2" > "$RUNNER_TEMP/aria2-build.log" 2>&1 \
+              || { tail -60 "$RUNNER_TEMP/aria2-build.log"; exit 1; }
+          fi
+          aria2_version="$(cat "$RUNNER_TEMP/aria2/VERSION")"
+          sudo apt-get install -y --no-install-recommends "$RUNNER_TEMP"/aria2/packages/*.deb
+          echo "ARIA2_PATCHED_VERSION=$aria2_version" >> "$GITHUB_ENV"
+          src="$RUNNER_TEMP/rsync-src"; prefix="$RUNNER_TEMP/rsync"
+          if [ "$RSYNC_CACHED" != true ]; then
+            mkdir -p "$src"
+            curl -sSfL -o "$src/rsync.tar.gz" "https://download.samba.org/pub/rsync/src/rsync-$RSYNC_VERSION.tar.gz"
+            echo "$RSYNC_SHA256  $src/rsync.tar.gz" | sha256sum -c -
+            tar -xzf "$src/rsync.tar.gz" -C "$src"
+            (cd "$src/rsync-$RSYNC_VERSION" && ./configure --prefix="$prefix" --disable-md2man --disable-xxhash \
+               --disable-zstd --disable-lz4 --disable-openssl --with-included-popt --with-included-zlib > /dev/null \
+             && make -j"$(nproc)" > /dev/null && make install > /dev/null)
+          fi
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          # rsync's own default ports (873 daemon, 22 SSH) are part of what the
+          # runtime layer proves; loopback binding of them needs no root, and the
+          # hosted runner's own SSH server must not hold 22 (the next step proves
+          # both ports are free before any test runs).
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=22
+          sudo systemctl stop ssh.socket ssh.service || true
+
+      - name: Assert the runtime layer prerequisites
+        if: matrix.layer == 'runtime'
+        run: |
+          set -euo pipefail
+          test "$(command -v rsync)" = "$RUNNER_TEMP/rsync/bin/rsync"
+          rsync --version | head -1 | grep -q "rsync  version $RSYNC_VERSION "
+          case "$ARIA2_PATCHED_VERSION" in *+dp2) ;; *) exit 1 ;; esac
+          test "$(command -v aria2c)" = /usr/bin/aria2c
+          bash "$GITHUB_WORKSPACE/packaging/aria2/verify-features.sh" "$ARIA2_PATCHED_VERSION"
+          openssl version
+          bash "$GITHUB_WORKSPACE/packaging/ffmpeg/verify-features.sh" "$FFMPEG_PACKAGE_VERSION"
+          python3 - <<'PY'
+          import socket
+
+          def bind(port):
+              probe = socket.socket()
+              probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              probe.bind(("127.0.0.1", port))
+              probe.close()
+
+          list(map(bind, (873, 22)))
+          print("loopback 873 and 22 bindable")
+          PY
+
+      - name: Save the built aria2 packages (runtime layer)
+        if: matrix.layer == 'runtime' && steps.aria2_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/aria2
+          key: ${{ steps.aria2_cache.outputs.cache-primary-key }}
+
+      - name: Save the built rsync (runtime layer)
+        if: matrix.layer == 'runtime' && steps.rsync_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/rsync
+          key: ${{ steps.rsync_cache.outputs.cache-primary-key }}
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements-dev.txt -r requirements-qa.txt
+
+      - name: Check undefined Python names
+        if: matrix.static
+        run: |
+          cd backend
+          ruff check api application auth core db executors integrations postprocessors providers services transfers main.py --select F821,F822,F823
+
+      - name: Inventory every test and the shard that owns it
+        if: matrix.static
+        run: |
+          set -euo pipefail
+          inventory="$RUNNER_TEMP/inventory"
+          mkdir -p "$inventory"
+          cd backend
+          env -u DP_TEST_SHARD python -m pytest tests/ --collect-only -q -p no:cacheprovider -m "not real_runtime" \
+            | grep '::' > "$inventory/contract.txt"
+          env -u DP_TEST_SHARD python -m pytest tests/ --collect-only -q -p no:cacheprovider -m real_runtime \
+            | grep '::' > "$inventory/runtime.txt"
+          python "$GITHUB_WORKSPACE/.github/qualification/shard_inventory.py" pytest-manifest --backend . \
+            --contract "$inventory/contract.txt" --contract-shards "$CONTRACT_SHARDS" \
+            --runtime "$inventory/runtime.txt" --runtime-shards "$RUNTIME_SHARDS" \
+            --out "$inventory/manifest.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the test inventory
+        if: matrix.static
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-inventory-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/inventory/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Run this layer of the suite
+        id: full_pytest
+        # Below the job's 25 minutes, so a run that hangs still leaves time for the
+        # always() uploads of pytest.log; a test running past 300 s dumps every
+        # thread's stack into that log first and goes on (QUAL-001 diagnostics; the
+        # suite's own --stall-dump, which reads the stacks holding the GIL --
+        # faulthandler_timeout reads them without it and can SIGSEGV the run).
+        timeout-minutes: 22
+        run: |
+          set -uo pipefail
+          full="$RUNNER_TEMP/qualification/candidate/full"
+          mkdir -p "$full"
+          cd backend
+          set +e
+          started=$(date +%s)
+          # Stopped by its own deadline inside the step's 22 minutes: SIGABRT makes faulthandler
+          # dump every thread's stack into the log and ends the process even if a thread would
+          # block its exit, so the evidence uploads still run (exit 124: never a pass). No core
+          # file: the stacks are the evidence.
+          ulimit -c 0
+          timeout --signal=ABRT --kill-after=10 1290 python -m pytest tests/ -m "$PYTEST_LAYER" --stall-dump=300 -v --tb=short --durations=25 -o junit_family=xunit1 --junitxml="$full/results.xml" 2>&1 | tee "$RUNNER_TEMP/pytest.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo $(( $(date +%s) - started )) > "$full/elapsed_seconds.txt"
+          echo "$status" > "$full/exit_code.txt"
+          cp "$RUNNER_TEMP/pytest.log" "$full/pytest.log"
+          echo "full pytest run exited with status $status; the classification step decides the gate"
+
+      - name: Classify full pytest run (candidate vs anchor)
+        id: classify_pytest
+        run: |
+          set -uo pipefail
+          set +e
+          classifier="$GITHUB_WORKSPACE/.github/qualification/failure_classifier.py"
+          q="$RUNNER_TEMP/qualification"
+          cand="$q/candidate"
+          anch="$q/anchor"
+          anchor_src="$q/anchor-src"
+          mkdir -p "$cand/isolated" "$anch/isolated" "$anchor_src"
+          deadline=$(( $(date +%s) + MAX_CLASSIFICATION_WALL_TIME_SECONDS ))
+
+          python "$classifier" plan --domain pytest --candidate-results "$cand" \
+            --output-json "$cand/plan.json" --output-tsv "$cand/plan.tsv"
+          plan_rc=$?
+
+          # run_nodes <backend-dir> <python> <results-dir> <plan.tsv> <stage>
+          # Runs ONLY the failing node id(s): stage 1 is ISOLATED_RUNS_PER_REF runs each; stage d is
+          # the single bounded discriminator stage of DISCRIMINATOR_RUNS_PER_REF runs each.
+          run_nodes() {
+            local dir="$1" py="$2" out="$3" plan="$4" stage="$5" slug nodeid i count tag remaining
+            if [ "$stage" = d ]; then count="$DISCRIMINATOR_RUNS_PER_REF"; tag=d; else count="$ISOLATED_RUNS_PER_REF"; tag=; fi
+            while IFS=$'\t' read -r slug nodeid; do
+              for i in $(seq 1 "$count"); do
+                remaining=$(( deadline - $(date +%s) ))
+                if [ "$remaining" -le 0 ]; then
+                  echo "wall-time budget exhausted" > "$out/budget_exhausted.txt"
+                  return 0
+                fi
+                (
+                  cd "$dir" || exit 1
+                  timeout "$remaining" env -u DP_TEST_SHARD "$py" -m pytest "$nodeid" -q --tb=short -p no:cacheprovider \
+                    -o junit_family=xunit1 --junitxml="$out/$slug.$tag$i.xml" \
+                    < /dev/null > "$out/$slug.$tag$i.log" 2>&1
+                )
+              done
+            done < "$plan"
+          }
+
+          if [ "$plan_rc" -eq 11 ]; then
+            # Bounded isolated runs of ONLY the failing node ids on the candidate.
+            run_nodes "$GITHUB_WORKSPACE/backend" python "$cand/isolated" "$cand/plan.tsv" 1
+
+            # The anchor: an isolated snapshot of the exact anchor commit, its own
+            # dependency manifests in its own environment, and its own tests.
+            anchor_infra() { printf '%s\n' "$1" > "$anch/isolated/infrastructure_failure.txt"; }
+            install_budget=$(( deadline - $(date +%s) ))
+            [ "$install_budget" -ge 1 ] || install_budget=1
+            if ! git -C "$GITHUB_WORKSPACE" archive "$QUALIFICATION_ANCHOR_SHA" | tar -x -C "$anchor_src"; then
+              anchor_infra "could not check out anchor $QUALIFICATION_ANCHOR_SHA"
+            elif ! python -m venv "$q/anchor-venv"; then
+              anchor_infra "could not create the anchor virtual environment"
+            elif ! timeout "$install_budget" "$q/anchor-venv/bin/pip" install --quiet \
+                -r "$anchor_src/backend/requirements-dev.txt" > "$anch/pip-install.log" 2>&1; then
+              anchor_infra "could not install the anchor dependency manifest (see pip-install.log)"
+            else
+              run_nodes "$anchor_src/backend" "$q/anchor-venv/bin/python" "$anch/isolated" "$cand/plan.tsv" 1
+            fi
+
+            # Single bounded second stage. Only when the first stage could not discriminate candidate
+            # from anchor, and only for the affected node id(s); the classifier owns that decision.
+            python "$classifier" discriminate --domain pytest \
+              --candidate-sha "$CANDIDATE_SHA" --anchor-sha "$QUALIFICATION_ANCHOR_SHA" \
+              --candidate-results "$cand" --anchor-results "$anch" \
+              --registry .github/qualification/known_flakes.json --output-tsv "$q/discriminate.tsv"
+            if [ "$?" -eq 14 ]; then
+              run_nodes "$GITHUB_WORKSPACE/backend" python "$cand/isolated" "$q/discriminate.tsv" d
+              run_nodes "$anchor_src/backend" "$q/anchor-venv/bin/python" "$anch/isolated" "$q/discriminate.tsv" d
+            fi
+          fi
+
+          python "$classifier" classify --domain pytest \
+            --candidate-sha "$CANDIDATE_SHA" --anchor-sha "$QUALIFICATION_ANCHOR_SHA" \
+            --candidate-results "$cand" --anchor-results "$anch" \
+            --registry .github/qualification/known_flakes.json \
+            --output-json "$q/pytest-classification.json" --output-summary "$q/pytest-classification.md"
+          rc=$?
+          cat "$q/pytest-classification.md" >> "$GITHUB_STEP_SUMMARY"
+          classification="$(jq -r .classification "$q/pytest-classification.json")"
+          echo "pytest classification: $classification (exit $rc)"
+          case "$rc" in
+            0) exit 0 ;;
+            10)
+              echo "::warning title=KNOWN_FLAKE::Non-blocking known flake matched an active registry entry and reproduced on the anchor. See the step summary."
+              exit 0
+              ;;
+            *)
+              echo "::error title=Backend qualification::$classification (classifier exit $rc). See the step summary and the pytest classification artifact."
+              exit "$rc"
+              ;;
+          esac
+
+      - name: Upload pytest qualification output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-qualification-${{ github.sha }}-${{ env.LAYER_ID }}
+          path: ${{ runner.temp }}/pytest.log
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the tests this shard ran
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-executed-${{ github.sha }}-${{ env.LAYER_ID }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/qualification/candidate/full/shard.txt
+            ${{ runner.temp }}/qualification/candidate/full/results.xml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload pytest classification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-classification-${{ github.sha }}-${{ env.LAYER_ID }}
+          path: |
+            ${{ runner.temp }}/qualification/candidate
+            ${{ runner.temp }}/qualification/anchor
+            ${{ runner.temp }}/qualification/pytest-classification.json
+            ${{ runner.temp }}/qualification/pytest-classification.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Account for this layer
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/qualification/candidate/full" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import os, sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+          full = Path(sys.argv[1])
+          cases = list(ET.parse(full / "results.xml").getroot().iter("testcase"))
+          skipped = [case for case in cases if case.find("skipped") is not None]
+          elapsed = (full / "elapsed_seconds.txt").read_text().strip()
+          print(f"### Layer {os.environ['LAYER_ID']} ({os.environ['PYTEST_LAYER']})")
+          print(f"- tests: {len(cases)}; skipped: {len(skipped)}; summed test time: "
+                f"{sum(float(case.get('time', 0)) for case in cases):.0f}s; layer wall time: {elapsed}s")
+          slowest = sorted(cases, key=lambda case: -float(case.get("time", 0)))[:15]
+          print("- slowest:")
+          print("\n".join(f"  - {float(case.get('time', 0)):.1f}s {case.get('classname')}::{case.get('name')}"
+                          for case in slowest))
+          print("\n".join(f"  - SKIPPED {case.get('classname')}::{case.get('name')}: "
+                          f"{case.find('skipped').get('message')}" for case in skipped))
+          # A skip here is coverage that silently did not run: every layer
+          # runs in the environment its tests require, so none may skip.
+          sys.exit(1 if skipped else 0)
+          PY
+
+      - name: Check Python syntax
+        if: matrix.static
+        run: |
+          cd backend
+          python -m compileall -q .
+          echo "All Python modules compile"
+
+      - name: Check frontend JavaScript syntax
+        if: matrix.static
+        run: |
+          find frontend/static -maxdepth 1 -name '*.js' -print0 | sort -z | xargs -0 -n1 node --check
+          node --check frontend/browser/playwright.config.js
+          find frontend/browser -maxdepth 1 -name '*.spec.js' -print0 | sort -z | xargs -0 -n1 node --check
+
+  # Every required test ran exactly once, in the shard that owns it: the
+  # inventory taken by the static shard against every shard's own results
+  # (their latest attempt). Missing evidence fails it; it never passes by default.
+  inventory:
+    runs-on: ubuntu-latest
+    needs: test
+    if: ${{ !cancelled() }}
+    # The run's artifacts are listed through the REST API (github-token + run-id
+    # below), which returns every attempt's artifacts: after "Re-run failed jobs"
+    # the shards that passed earlier keep their evidence, and each shard's latest
+    # attempt is the one judged.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download the test inventory
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pytest-inventory-${{ github.sha }}-attempt-*
+          path: ${{ runner.temp }}/inventory
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
+
+      - name: Download every shard's results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pytest-executed-${{ github.sha }}-*
+          path: ${{ runner.temp }}/executed
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
+
+      - name: Every required test ran exactly once
+        run: |
+          python3 .github/qualification/shard_inventory.py pytest-verify \
+            --manifest "$RUNNER_TEMP/inventory" --executed "$RUNNER_TEMP/executed" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+  # Runs beside the test matrix: its checks and conclusion are its own.
+  security:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-qa.txt
+
+      - name: Install dependencies + audit tools
+        run: |
+          cd backend
+          # Leveling remediation (DEP-001): requirements.txt is now
+          # hash-pinned, which makes pip auto-enable --require-hashes mode for
+          # the WHOLE install the moment any file in it carries a hash.
+          # requirements-qa.txt is deliberately not hash-pinned (dev/CI-only
+          # tooling, never shipped in the runtime image -- see
+          # docs/SUPPLY_CHAIN_POLICY.md section 5), so it must be installed in
+          # a separate invocation rather than mixed into the same command.
+          pip install -r requirements.txt
+          pip install -r requirements-qa.txt
+
+      - name: pip-audit (known CVEs in dependencies)
+        run: |
+          cd backend
+          pip-audit -r requirements.txt --progress-spinner off
+
+      - name: bandit (Python security linting)
+        run: |
+          cd backend
+          bandit -r . --exclude ./tests --severity-level high --confidence-level high -f txt

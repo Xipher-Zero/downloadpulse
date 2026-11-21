@@ -1,0 +1,323 @@
+/* DownloadPulse v1.0.11 Settings visual chrome.
+ *
+ * The clean Settings page owns structure in ui-settings-page.css. This layer is
+ * deliberately presentation-only: page-header artwork, centered tab chrome,
+ * section identity, and action glyphs. It does not redefine shared card/input
+ * material or the Settings scroll/layout contract.
+ */
+
+/* ── Master header identity and true-centered navigation ─────────────── */
+/* A trailing space that grows exactly as the copy does centres the tab strip
+   in the header while the copy fits beside it (to within half the row gap:
+   the copy's side also holds the gap before the strip); when the copy does
+   not fit, the space yields first and the strip keeps its full width
+   (ui-settings-page.css owns the row itself). The space takes no room of its
+   own -- its negative margin gives back the gap before it -- so it never
+   decides whether the strip fits, nor starts a line of its own. The compact
+   navigator (ui-section-nav.css) takes exactly the strip's place. */
+#view-settings .dp-settings-master-header::after {
+  content: '';
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: -16px;
+}
+
+/* The supplied Settings feature artwork owns its own rounded-square visual
+   frame. Render the complete asset at the shared 51px feature footprint; the
+   feature-icon contract supplies the same external glow as other page headers.
+   The query generation deliberately evicts the previously cached synthetic
+   Settings glyph without changing the authoritative asset path. */
+#view-settings .dp-settings-header-icon {
+  color: transparent;
+  font-size: 0;
+  background-image: url('/icons/dp/settings-header.svg?v=2');
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 51px 51px;
+}
+
+/* Temporary copy marker requested for this review cycle. Final page copy is a
+   separate cleanup pass. */
+#view-settings .dp-settings-header-subtitle {
+  font-size: 0;
+}
+
+#view-settings .dp-settings-header-subtitle::after {
+  content: 'To Be Determined';
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* ── Settings section tabs ───────────────────────────────────────────── */
+#view-settings .dp-settings-tabs .stab {
+  --dp-settings-tab-color: var(--dp-accent-purple-bright);
+  position: relative;
+  gap: 7px;
+  padding-inline: 10px;
+}
+
+/* Where the compact navigator could not otherwise hold an end section and
+   its neighbour whole, the tabs give up some side padding
+   (--dp-section-nav-trim, ui-section-nav.js's). */
+@media (min-width: 780px), (max-width: 779px) {
+  #view-settings .dp-settings-master-header[data-presentation='compact'] .dp-settings-tabs .stab {
+    padding-inline: calc(10px - var(--dp-section-nav-trim, 0px));
+  }
+}
+
+/* The dark-theme selected state is intentionally bright on a dark accent
+   surface. In light theme the same inherited bright text washed out against
+   the pale lavender selected surface, so the active tab label uses the
+   canonical primary text token while the accent surface/icon retain selection
+   identity. Sidebar contrast remains owned by ui-shell.css. */
+body.light #view-settings .dp-settings-tabs .stab[aria-selected='true'] {
+  color: var(--dp-text-primary);
+}
+
+#view-settings .dp-settings-tab-chip {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--dp-settings-tab-color) 44%, #31313d);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dp-settings-tab-color) 20%, #111119);
+}
+
+/* Glow belongs to the Lucide artwork, not to the chip. Dark mode receives a
+   mild/moderate lift; light mode receives the stronger correction required to
+   keep the colored stroke alive against the pale Settings header. */
+#view-settings .dp-settings-tab-glyph {
+  width: 13px;
+  height: 13px;
+  display: block;
+  object-fit: contain;
+  filter:
+    saturate(1.5)
+    contrast(1.05)
+    drop-shadow(0 0 2px color-mix(in srgb, var(--dp-settings-tab-color) 76%, transparent))
+    drop-shadow(0 0 5px color-mix(in srgb, var(--dp-settings-tab-color) 38%, transparent));
+}
+
+body.light #view-settings .dp-settings-tab-glyph {
+  filter:
+    saturate(2.15)
+    contrast(1.14)
+    drop-shadow(0 0 2px color-mix(in srgb, var(--dp-settings-tab-color) 94%, transparent))
+    drop-shadow(0 0 5px color-mix(in srgb, var(--dp-settings-tab-color) 68%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--dp-settings-tab-color) 34%, transparent));
+}
+
+/* The Settings family colours (the same datums as each family's card icons,
+   ui-settings-card-icons.css). */
+#view-settings .dp-settings-tabs .stab[data-tab='sources'] {
+  --dp-settings-tab-color: #D657FF;
+}
+#view-settings .dp-settings-tabs .stab[data-tab='downloads'] {
+  --dp-settings-tab-color: #2563EB;
+}
+#view-settings .dp-settings-tabs .stab[data-tab='extraction'] {
+  --dp-settings-tab-color: #FF9D00;
+}
+#view-settings .dp-settings-tabs .stab[data-tab='notifications'] {
+  --dp-settings-tab-color: #04D7FE;
+}
+#view-settings .dp-settings-tabs .stab[data-tab='authentication'] {
+  --dp-settings-tab-color: #1DDB69;
+}
+#view-settings .dp-settings-tabs .stab[data-tab='users'] {
+  --dp-settings-tab-color: #1DDB69;
+}
+#view-settings .dp-settings-tabs .stab[data-tab='maintenance'] {
+  --dp-settings-tab-color: #6366F1;
+}
+
+/* ── Services / Download Engine identity ─────────────────────────────── */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-title--with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Keep provider/engine disclosures visually subordinate to their primary rows:
+   labels are inset from the card datum, chevrons remain immediately after the
+   label, and revealed controls step in one level farther. */
+#view-settings .dp-settings-additional > summary {
+  justify-content: flex-start;
+  gap: 8px;
+  padding-left: 16px;
+}
+
+#view-settings .dp-settings-additional > summary::after {
+  margin-left: 2px;
+}
+
+#view-settings .dp-settings-additional-body {
+  padding: 8px 0 4px 28px;
+}
+
+
+
+/* ── The premium provider identity chips ──────────────────────────────────
+ *
+ * One chip grammar for all five, the protocol chip's (ui-settings-card-icons.css):
+ * border, surface and glow derive from ONE per-provider datum,
+ * --dp-provider-color; each provider contributes that colour and its own
+ * shipped mark, nothing else. */
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) :is(.dp-settings-provider-chip--alldebrid, .dp-settings-provider-chip--debridlink,
+                   .dp-settings-provider-chip--premiumize, .dp-settings-provider-chip--realdebrid,
+                   .dp-settings-provider-chip--torbox) {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--dp-provider-color) 66%, #000);
+  border-radius: 9px;
+  background: linear-gradient(145deg,
+    color-mix(in srgb, var(--dp-provider-color) 16%, #000) 0%,
+    color-mix(in srgb, var(--dp-provider-color) 30%, #000) 52%,
+    color-mix(in srgb, var(--dp-provider-color) 52%, #000) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--dp-provider-color) 34%, transparent),
+    inset 0 -1px 0 rgba(0,0,0,.34),
+    0 1px 3px rgba(0,0,0,.18);
+}
+
+body.light :is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) :is(.dp-settings-provider-chip--alldebrid, .dp-settings-provider-chip--debridlink,
+                              .dp-settings-provider-chip--premiumize, .dp-settings-provider-chip--realdebrid,
+                              .dp-settings-provider-chip--torbox) {
+  border-color: color-mix(in srgb, var(--dp-provider-color) 58%, #000);
+  background: linear-gradient(145deg,
+    color-mix(in srgb, var(--dp-provider-color) 78%, #fff) 0%,
+    color-mix(in srgb, var(--dp-provider-color) 92%, #fff) 54%,
+    color-mix(in srgb, var(--dp-provider-color) 72%, #000) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent),
+    inset 0 -1px 0 rgba(0,0,0,.16),
+    0 1px 3px rgba(0,0,0,.14);
+}
+
+/* Debrid-Link's mark is a single deep navy, so its chip keeps a light face of
+   its colour in both themes for the mark to stay legible. */
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--debridlink,
+body.light :is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--debridlink {
+  border-color: var(--dp-provider-color);
+  background: linear-gradient(145deg,
+    color-mix(in srgb, var(--dp-provider-color) 14%, #fff) 0%,
+    color-mix(in srgb, var(--dp-provider-color) 30%, #fff) 54%,
+    color-mix(in srgb, var(--dp-provider-color) 48%, #fff) 100%);
+}
+
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--alldebrid { --dp-provider-color: var(--dp-identity-alldebrid); }
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--debridlink { --dp-provider-color: var(--dp-identity-debridlink); }
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--premiumize { --dp-provider-color: var(--dp-identity-premiumize); }
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--realdebrid { --dp-provider-color: var(--dp-identity-realdebrid); }
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-chip--torbox { --dp-provider-color: var(--dp-identity-torbox); }
+
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-logo--alldebrid {
+  width: 34px;
+  height: 34px;
+  display: block;
+  object-fit: contain;
+  transform: translateY(1px);
+  filter:
+    saturate(1.08)
+    drop-shadow(0 0 3px color-mix(in srgb, var(--dp-provider-color) 92%, transparent))
+    drop-shadow(0 0 7px color-mix(in srgb, var(--dp-provider-color) 52%, transparent));
+}
+
+body.light :is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-logo--alldebrid {
+  filter:
+    saturate(1.12)
+    contrast(1.06)
+    drop-shadow(0 0 3px color-mix(in srgb, var(--dp-provider-color) 96%, transparent))
+    drop-shadow(0 0 8px color-mix(in srgb, var(--dp-provider-color) 62%, transparent));
+}
+
+
+
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-logo--realdebrid {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+}
+
+
+
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-logo--torbox {
+  width: 26px;
+  height: 26px;
+  display: block;
+  object-fit: contain;
+}
+
+
+
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-logo--debridlink {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+}
+
+
+
+:is(#view-settings, .dp-setup-provider-surface, .dp-setup-services) .dp-settings-provider-logo--premiumize {
+  width: 28px;
+  height: 28px;
+  display: block;
+  object-fit: contain;
+}
+
+/* The provider-test control uses the same chip-before-copy grammar as tabs,
+   and remains a secondary action within its card's header rail. The treatment
+   belongs to the CONTROL, so every provider-level Test renders identically and
+   no provider has styling of its own. */
+:is(#view-settings, .dp-setup-provider-surface) button.dp-settings-provider-test {
+  --dp-settings-action-color: #b866f5;
+  position: relative;
+  gap: 7px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-action-chip {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--dp-settings-action-color) 44%, #31313d);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dp-settings-action-color) 20%, #111119);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-action-glyph {
+  width: 13px;
+  height: 13px;
+  display: block;
+  object-fit: contain;
+  filter:
+    saturate(1.5)
+    contrast(1.05)
+    drop-shadow(0 0 2px color-mix(in srgb, var(--dp-settings-action-color) 76%, transparent))
+    drop-shadow(0 0 5px color-mix(in srgb, var(--dp-settings-action-color) 38%, transparent));
+}
+
+body.light :is(#view-settings, .dp-setup-provider-surface) .dp-settings-action-glyph {
+  filter:
+    saturate(2.15)
+    contrast(1.14)
+    drop-shadow(0 0 2px color-mix(in srgb, var(--dp-settings-action-color) 94%, transparent))
+    drop-shadow(0 0 5px color-mix(in srgb, var(--dp-settings-action-color) 68%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--dp-settings-action-color) 34%, transparent));
+}
+
+/* Same cache-eviction rule for the Test glyph: the SVG now carries the exact
+   Sources & Providers purple rather than the previous darker purple. */
+:is(#view-settings, .dp-setup-provider-surface) button.dp-settings-provider-test .dp-settings-action-glyph {
+  content: url('/icons/lucide/flask-conical.svg?v=2');
+}

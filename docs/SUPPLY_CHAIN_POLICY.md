@@ -1,0 +1,448 @@
+# Supply-Chain / Release Artifact Policy
+
+This document is the explicit artifact-authority and build-input-hardening
+policy. It makes the release contract precise, and it deliberately does **not**
+claim bit-identical rebuilds.
+
+## 1. Authoritative release artifact
+
+> One publishable candidate artifact exists per full Git source SHA. Its
+> `sha-<40-char-git-sha>` tag is write-once: it is created on first
+> publication and is never overwritten. After publication the exact immutable
+> OCI manifest digest is the authoritative runtime and attestation identity.
+> A candidate is not a release until that digest has passed the required
+> qualification workflows.
+
+The rule, exactly as implemented:
+
+- **The source commit identifies one candidate.** The full 40-character Git
+  SHA of the pushed commit is the only authoritative description of "what changed."
+  A branch name, tag, or file diff is a pointer to a SHA, never a substitute
+  for it. No short-SHA identity is used anywhere in the publication,
+  qualification, or promotion chain.
+- **The source-SHA tag is write-once.** `Image`'s `publish` job (a push,
+  or an authorized publishing dispatch) first runs the same build and smoke
+  qualification as `build-and-smoke-test` -- the same steps, by YAML alias, on
+  its own runner -- and fails before any registry login if it does not pass.
+  It then derives exactly one tag,
+  `ghcr.io/xipher-zero/downloadpulse:sha-<full-git-sha>`, and before building
+  anything to publish it checks whether that tag already exists:
+  - **absent** — the job builds and pushes the multi-architecture image once;
+  - **present, recorded `org.opencontainers.image.revision` equals the exact
+    `GITHUB_SHA`, both linux platform children present** — the job reuses the
+    existing candidate: it builds nothing, pushes nothing, and carries the
+    existing digest into verification;
+  - **present but the recorded revision is anything else, or the registry
+    check cannot be answered conclusively** — the job fails closed. It never
+    overwrites the tag and never guesses.
+
+  The check happens *before* publication; the job does not push first and
+  detect replacement afterwards.
+- **Runs for one source SHA are serialized.** `Image` declares a
+  workflow-level concurrency group keyed on the full `github.sha` with
+  `cancel-in-progress: false`, so two runs for the same commit (for example a
+  branch push and a tag push at one commit) cannot race through the
+  existence check and publication. The second run reaches the existence check
+  only after the first has finished, finds a valid candidate, and reuses it.
+  GHCR offers no conditional tag write, so this serialization plus the
+  pre-publish check is the enforcement mechanism for write-once.
+- **A rerun is idempotent.** Re-running `Image` for a SHA that already
+  has a candidate reuses that candidate and reports its existing digest.
+- **A new candidate requires a new source SHA.** A change that should
+  produce a different image — a base-image refresh (§3), a package-set change
+  (§4), a dependency refresh (§5), any Dockerfile change — is a new source
+  commit, which is a new candidate under its own `sha-<full-git-sha>` tag.
+  "Same Git SHA, different image digest" is never a second candidate under
+  one source identity.
+- **Manifest-list digest authority.** The `sha256:...` manifest-list (index)
+  digest behind the `sha-<full-git-sha>` tag is the authoritative identity
+  of the candidate once published — not the tag string, which exists only to
+  locate it.
+- **Per-architecture child qualification.** `Container Security` and
+  `Candidate Runtime Qualification` resolve
+  `${IMAGE_NAME}:sha-${GITHUB_SHA}`, verify the index records the full
+  source revision, resolve the `amd64` and `arm64` child digests, and qualify
+  each child individually by digest (vulnerability scan, non-root runtime,
+  health, integration behavior, archive round-trip). A candidate is not
+  qualified until both children pass.
+- **SBOM / provenance / attestation.** `Image` publishes with
+  `provenance: mode=max` and an SBOM; `Container Security` and `Candidate
+  Runtime Qualification` each write and sign an in-registry attestation
+  (`container-security/v1`, `candidate-runtime/v1`) bound to the exact
+  digest they qualified. `release-promotion.yml` re-verifies both
+  attestations target that same digest before promoting.
+- **Mutable release tags only point to previously qualified digests.**
+  `release-promotion.yml` requires a full 40-character `candidate_sha`,
+  derives `source_tag=sha-<candidate_sha>`, resolves the immutable source
+  digest, verifies the recorded revision, verifies both attestations against
+  that digest, and only then runs `docker buildx imagetools create` to move
+  `latest` (or a `v*`/`internal-v*` tag) onto it. Promotion never triggers a
+  build. A fix needed at promotion time is a new source commit and therefore
+  a new candidate that must independently clear every required gate first.
+
+## 2. Rebuilds are not assumed reproducible
+
+Building the exact same Dockerfile against the exact same Git SHA at a later
+time is **not** assumed to produce an identical digest, because:
+
+- Debian package repositories (`apt-get install`) serve whatever package
+  versions are current on the mirror at build time, not a snapshot pinned to
+  the Dockerfile's authoring date.
+- The base image digest, once refreshed (see §3), changes the base
+  filesystem candidate for every subsequent build until refreshed again.
+- Even with a hash-pinned Python lock (§5) and a digest-pinned base image
+  (§3), OS-level package drift alone is enough to change layer digests
+  between two builds of the identical source tree on different days.
+
+This is why the write-once rule in §1 exists: the workflow never rebuilds a
+SHA that already has a candidate, so the drift described here cannot move a
+published `sha-<full-git-sha>` tag to a different artifact. This policy does
+not attempt to eliminate the drift itself with vendored/mirrored Debian
+package snapshots — that would be a materially larger, separate change.
+Instead, it accepts the drift explicitly and compensates with the per-digest
+qualification model in §1: **every published candidate is qualified as
+itself**, never assumed equivalent to a build of the same source made at a
+different time.
+
+## 3. Base image digest
+
+The Dockerfile pins the Python base image by verified multi-architecture
+manifest-list digest:
+
+```dockerfile
+FROM python:3.12.14-slim-trixie@sha256:<verified manifest-list digest>
+```
+
+The pinned digest must resolve to a **manifest list / OCI index** (not a
+single-architecture child manifest) containing at least `linux/amd64` and
+`linux/arm64`, verified with a trusted registry inspection command, e.g.:
+
+```bash
+docker buildx imagetools inspect python:3.12.14-slim-trixie
+```
+
+or an equivalent registry API query. Never hand-type or guess a digest.
+
+**Base-image digest refresh procedure:**
+
+1. Re-resolve the current manifest-list digest for the intended tag
+   (`python:3.12.14-slim-trixie`, or a newer patch/minor tag when
+   deliberately upgrading Python).
+2. Update the `FROM` line's digest.
+3. Push to a branch the `Image` workflow publishes (`main` or `1.0.0`).
+   This produces a new source SHA and therefore a new
+   candidate, which must clear every required qualification gate (§1) before
+   any promotion.
+4. Never edit only the digest without also expecting and running full
+   requalification — a base refresh is exactly the kind of change §1's
+   "a new candidate requires a new source SHA" rule exists for.
+
+## 4. Debian package refresh policy
+
+`apt-get install --no-install-recommends` installs whatever package versions
+the pinned base image's configured repositories currently serve. This
+Dockerfile does **not** run a blanket `apt-get upgrade` — the base image
+digest (§3) already fixes the base filesystem candidate, and an unbounded
+upgrade would reintroduce exactly the kind of undeclared drift this policy
+exists to make explicit.
+
+Security freshness for the apt-installed layer (`aria2` -- see §4a --, `curl`, `gosu`,
+`zstd`, `7zip`, `7zip-rar`) is enforced by:
+
+- deliberate, periodic base-image digest refresh (§3), which picks up
+  whatever patched packages the new base snapshot carries;
+- the existing `Container Security` Trivy scan (fixable HIGH/CRITICAL fails
+  the gate) on every qualification cycle, plus its weekly scheduled rerun
+  against the currently-promoted digest;
+- requalification of the resulting new digest before any promotion.
+
+There is no separate "pin exact apt package versions" mechanism in this
+policy; that would require vendoring or mirroring Debian's package pool,
+which is out of scope for this policy. If a specific package needs an
+explicit floor (a CVE fix not yet in the pinned base's repository snapshot),
+address it as its own scoped change, not as a policy-wide requirement.
+
+**Observed in practice:** the first exact-SHA `Container Security` run after
+removing the blanket `apt-get upgrade` found the pinned
+base digest already carried fixable HIGH/CRITICAL CVEs in base-layer packages
+this Dockerfile never explicitly installs (`gzip`, `libpcre2-8-0`,
+`libsqlite3-0`, `perl-base`) — re-querying the registry confirmed no newer
+manifest-list digest existed yet for the pinned tag. The gate is working as
+designed (§2: "every published candidate is qualified as itself"); the correct
+response is exactly the scoped floor described above: a deliberate, NAMED
+`apt-get install --only-upgrade <exact packages>` line for only the packages
+Trivy flagged, not a reversion to blanket upgrade and not a version pin
+(Debian's repository remains a moving target regardless — §2). Drop that
+line once a base-digest refresh (§3) already carries the fix, rather than
+accumulating named-package upgrades indefinitely.
+
+## 4a. Explicitly patched Debian package: aria2
+
+`aria2` (and the `libaria2-0` library it is built around) is the one
+runtime package the image does not take from the archive as built. It is
+still Debian's package, rebuilt from Debian's own source with exactly two
+repo-owned changes, so dpkg, the SBOM and vulnerability scanning keep seeing
+it as Debian's `aria2`. It is its own immutable supply-chain artifact, with
+one explicit chain:
+
+```
+packaging/aria2/  (Debian source version, patch, build configuration, base)
+        |  aria2 Package workflow: native amd64 + arm64 builds, qualified
+        v
+ghcr.io/xipher-zero/debridpulse-aria2@sha256:<multi-arch manifest digest>
+        |  application Dockerfile: FROM ...@sha256 AS aria2-packages
+        v
+DownloadPulse image digest  (Image -> Container Security -> Candidate
+                           Runtime Qualification -> Release Promotion)
+```
+
+- **Source:** Debian source package `aria2` at the version named by
+  `ARIA2_SOURCE_VERSION` in `packaging/aria2/Dockerfile` (`1.37.0+debian-3`,
+  the version Trixie serves for the pinned base), fetched with
+  `apt-get source` from the same signed Debian repository configuration the
+  base image uses. apt verifies the `.dsc`, orig and debian tarballs against
+  the signed Sources index; no upstream tarball, Git branch or vendored
+  source tree is involved.
+- **Changes (exactly two, both in `packaging/aria2/`):**
+  - `connect-tunnel-exact-read.patch` (DEP-3 header), appended to the
+    package's own `debian/patches/series` after Debian's patches. aria2
+    1.37.0 read a CONNECT response with one buffered `recv` and discarded
+    every byte after its header, so a server-first tunnelled protocol -- an
+    FTP greeting, an SSH banner -- that arrived in the same read was lost
+    and the transfer timed out. The patch reads a tunnel's response no
+    further than its header; ordinary HTTP responses are read exactly as
+    before.
+  - `disable-bittorrent.rules.patch`, applied to Debian's `debian/rules`
+    with fuzz 0: aria2 is configured `--disable-bittorrent`. DownloadPulse
+    resolves magnets and `.torrent` files through providers; its aria2
+    executor fetches only HTTP(S), FTP and SFTP and is never a BitTorrent
+    client. Upstream's switch removes the BitTorrent implementation (peer
+    wire, trackers, DHT, PEX, LPD, seeding) and every BitTorrent option,
+    including the upload limit; Metalink and every other feature are left
+    exactly as Debian configures them.
+- **One build script:** `packaging/aria2/build-package.sh` owns the patch
+  set, the configuration and the `+dpN` suffix. The package image and the
+  hosted runtime test layer (`tests.yml`, which rebuilds the runner
+  distribution's own aria2 source the same way) both run it; neither
+  restates any of it.
+- **Version:** the rebuilt packages carry `ARIA2_PACKAGE_VERSION`
+  (`1.37.0+debian-3+dp2`; `+dp1` was the CONNECT patch alone), which sorts
+  after the archive version it derives from, so version-based advisories
+  still resolve against it.
+- **Qualification (one verifier):** `packaging/aria2/verify-features.sh`
+  checks the INSTALLED packages, from the binary's own feature report
+  rather than the build command: the exact package version, BitTorrent not
+  an enabled feature and no BitTorrent option defined, and HTTPS, SFTP and
+  Metalink enabled. It runs in the package build, in the application
+  image build, in the Image smoke test, in Candidate Runtime
+  Qualification (both architectures) and in the hosted runtime test layer.
+  The real-runtime suite additionally proves the daemon options DownloadPulse
+  passes start the binary, every BitTorrent input (magnet, `.torrent`,
+  `aria2.addTorrent`) is refused, and the CONNECT same-read FTP greeting and
+  SSH banner cases pass.
+- **Artifact:** `packaging/aria2/Dockerfile` builds the packages on the
+  pinned Trixie base and publishes a `scratch` package carrier -- not an
+  aria2 runtime -- holding `/packages/` (the two `.deb` files), `/source/`
+  (Debian's source package as fetched plus both DownloadPulse patches: the
+  complete corresponding source of the shipped binaries), `/VERSION`,
+  `/SHA256SUMS`, `/aria2c-version.txt` and `/verify-features.sh`. The aria2
+  Package workflow builds it natively on `ubuntu-24.04` and
+  `ubuntu-24.04-arm` (no emulation) with provenance and SBOM, and publishes
+  the multi-arch manifest write-once as
+  `ghcr.io/xipher-zero/downloadpulse-aria2:<version with + as ->`, annotated
+  with a hash of every tracked file under `packaging/aria2/`. A published
+  version is never rebuilt: changed inputs without a version bump fail
+  closed, and the publish job refuses to create over an existing tag.
+- **Consumption:** the application Dockerfile names the artifact by its
+  manifest DIGEST, never its tag, copies only the two packages, `VERSION`
+  and the verifier (to `/usr/share/downloadpulse/aria2/`), installs the
+  packages in its single apt transaction -- so their runtime dependencies
+  resolve from the Debian archive exactly as the archive package's would --
+  and runs the verifier. No compiler, build dependency or aria2 source tree
+  reaches the application image, and application builds never compile
+  aria2.
+- **Licensing:** aria2 is GPL-2.0-or-later; the rebuilt package ships
+  Debian's own `copyright` file, and the artifact carries the complete
+  corresponding source beside the binaries, which is also published in
+  this repository and Debian's archive (`SOURCE_OFFER.md`).
+- **Refresh:** when Trixie publishes a newer aria2 source (a security
+  update), or the patch set, configuration or base changes, bump
+  `ARIA2_SOURCE_VERSION` and/or the `+dpN` package version in
+  `packaging/aria2/` in the same change, confirm both patches still apply,
+  let the aria2 Package workflow publish the new artifact, pin its new
+  digest in the application Dockerfile, and requalify the new image digest
+  (§6). Drop the rebuild entirely once the archive package carries an
+  equivalent CONNECT fix and DownloadPulse no longer needs BitTorrent removed
+  at build time.
+
+## 4b. Rebuilt Debian package: FFmpeg
+
+`ffmpeg` (the `ffmpeg` and `ffprobe` tools) is Media Downloads' local
+finalizer: it copies already-acquired native streams into the one planned
+container and never acquires, decodes for output or encodes anything. Debian's
+own `ffmpeg` binary package also carries `ffplay`, links every encoder,
+filter, device and GPU library, and pulls a ~420 MB closure (LLVM and Mesa
+through SDL2 among it). DownloadPulse therefore rebuilds it, like aria2 (§4a),
+as its own immutable supply-chain artifact:
+
+```
+packaging/ffmpeg/  (Debian source version, build configuration, base)
+        |  FFmpeg Package workflow: native amd64 + arm64 builds, qualified
+        v
+ghcr.io/xipher-zero/debridpulse-ffmpeg@sha256:<multi-arch manifest digest>
+        |  application Dockerfile: FROM ...@sha256 AS ffmpeg-packages
+        v
+DownloadPulse image digest  (Image -> Container Security -> Candidate
+                           Runtime Qualification -> Release Promotion)
+```
+
+- **Source:** Debian source package `ffmpeg` at the version named by
+  `FFMPEG_SOURCE_VERSION` in `packaging/ffmpeg/Dockerfile`
+  (`7:7.1.5-0+deb13u1`, the version Trixie serves for the pinned base),
+  fetched with `apt-get source` from the signed Debian repository
+  configuration the base image uses; apt verifies the `.dsc`, orig and
+  debian tarballs against the signed Sources index. Debian's own patches
+  are applied by `apt-get source`; DownloadPulse adds none.
+- **Configuration (one build script):** `packaging/ffmpeg/build-package.sh`
+  owns the configuration and the `+dpN` suffix: `--disable-everything`, then
+  only the local `file` and `pipe` protocols (`--disable-network`: no network
+  protocol exists in the binary), the demuxers of the containers and subtitle
+  formats yt-dlp's native downloaders produce, the muxers of the planned
+  final containers, the stream families' parsers, every bitstream filter and
+  the native decoders of those stream families (probing never depends on a
+  parser alone). No encoder, device, GPU or external library; `ffplay` is not
+  built. Nothing GPL is enabled, so the build is LGPL-2.1-or-later.
+- **Package:** Debian's binary package name `ffmpeg`, version
+  `FFMPEG_PACKAGE_VERSION` (`7:7.1.5-0+deb13u1+dp1`, sorting after the
+  archive version), recording `Source: ffmpeg (<source version>)` and Debian's
+  own `copyright` file, with `Depends` computed by `dpkg-shlibdeps` (libc
+  only), so dpkg, the SBOM and vulnerability scanning resolve it as Debian's
+  FFmpeg. Two clean builds produce bit-identical binaries and payload; only
+  the control file's `Installed-Size` follows the building filesystem's block
+  accounting (`du -sk`), so the published `.deb` (identified by its digest in
+  `/SHA256SUMS`) is the one artifact, never a local rebuild.
+- **Qualification (one verifier):** `packaging/ffmpeg/verify-features.sh`
+  checks the INSTALLED package from the binaries' own reports: the exact
+  version and recorded source, exactly the `file` and `pipe` protocols for
+  input and output, no encoder, the finalization containers, subtitle
+  demuxers and `aac_adtstoasc` present, an LGPL build, and no library beyond
+  libc/libm. It runs in the package build and wherever the package is
+  installed.
+- **Artifact and consumption:** exactly as §4a: a `scratch` package carrier
+  holding `/packages/` (the one `.deb`), `/source/` (Debian's source package
+  as fetched plus the build script: the complete corresponding source),
+  `/VERSION`, `/SHA256SUMS`, `/ffmpeg-version.txt` and `/verify-features.sh`,
+  built natively on `ubuntu-24.04` and `ubuntu-24.04-arm` with provenance and
+  SBOM, published write-once as
+  `ghcr.io/xipher-zero/downloadpulse-ffmpeg:<version without epoch, + as ->`
+  annotated with a hash of every tracked file under `packaging/ffmpeg/`, and
+  consumed by the application Dockerfile by manifest DIGEST.
+- **Licensing:** LGPL-2.1-or-later; the package ships Debian's `copyright`
+  file and the artifact carries the complete corresponding source
+  (`SOURCE_OFFER.md`).
+- **Refresh:** when Trixie publishes a newer ffmpeg source (a security
+  update) or the configuration or base changes, bump
+  `FFMPEG_SOURCE_VERSION` and/or the `+dpN` package version in
+  `packaging/ffmpeg/` in the same change, let the FFmpeg Package workflow
+  publish the new artifact, pin its new digest in the application
+  Dockerfile, and requalify the new image digest (§6).
+
+## 4c. Carried advisories without a Debian fix
+
+`Container Security` reports every MEDIUM+ finding but blocks only on HIGH or
+CRITICAL findings that have a fix (`ignore-unfixed: true`). An advisory Debian
+has not fixed therefore does not fail the gate. Every HIGH or CRITICAL one the
+image carries is recorded here with how it is reached and what limits it, and
+it is removed from this list once the image ships the fix.
+
+### 7zip: CVE-2026-14266 (HIGH, Debian status `affected`)
+
+- **What:** a heap buffer overflow in 7-Zip's XZ decompression, reachable with
+  a crafted archive (ZDI-26-444; fixed upstream in 7-Zip 26.02). CVSS vector
+  `AV:L/AC:H/PR:N/UI:R`. The image carries Debian's `25.01+dfsg-1~deb13u2`.
+- **How DownloadPulse reaches 7-Zip:** only through archive extraction, which
+  is off by default (`extract_enabled: false`). 7-Zip is never reachable
+  over the network: it has no listener, is not exposed through the API, and
+  only runs as a child of the extractor, against files that have already been
+  downloaded. Those archives are still untrusted content, so the limit is
+  which formats reach 7-Zip, not who can reach it:
+  - `.xz`, `.tar.xz` and `.txz` are decoded by Python's `lzma` (the system
+    liblzma), never by 7-Zip;
+  - `.tar.zst`, `.tzst` and `.tar.lzma` are decoded by `zstd` or Python's
+    `lzma`, then read by Python's validated TAR path
+    (`postprocessors/archive/secure.py`), never by 7-Zip;
+  - 7-Zip receives only `.7z`, pinned to its 7z parser (`-t7z`), and RAR whose
+    signature DownloadPulse has already verified. Neither format uses the XZ
+    container, and the parser policy keeps the XZ handler out
+    (`_seven_zip_type_switches`, `-stxxz` on the composite path).
+- **Residual risk:** the public advisory does not say whether the faulty
+  routine is shared with the LZMA2 decoder that `.7z` archives use. Until
+  that is known, a crafted `.7z` should be assumed able to reach it. 7-Zip
+  runs as the unprivileged runtime account (uid 99), in its own process and in
+  an isolated staging directory, with the extraction budgets of
+  `SECURITY.md` → Archive extraction.
+- **Exit:** Debian publishes a fixed `7zip`. The image installs `7zip` from
+  the repository at build time, so the next image build takes the fix. The
+  gate then treats the advisory as fixable, so an older image is held back
+  until it is rebuilt. Remove this entry in the same change.
+
+## 5. Python dependency lock and hash refresh procedure
+
+`backend/requirements.txt` is generated from `backend/requirements.in` with
+hashes for every resolved package (direct and transitive) via `pip-tools`:
+
+```bash
+cd backend
+python -m piptools compile \
+  --generate-hashes \
+  --strip-extras \
+  --output-file=requirements.txt \
+  requirements.in
+```
+
+Run this with `requirements.txt` already present at the output path so
+`pip-compile` reuses currently-pinned versions and only changes a version
+when `requirements.in` (or a transitive constraint) forces it — an
+opportunistic version bump is not an expected side effect of a hash refresh.
+
+The Docker build installs with hash enforcement:
+
+```dockerfile
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
+```
+
+`--require-hashes` makes `pip` refuse to install anything — including a
+transitive dependency — whose downloaded artifact does not match one of the
+recorded hashes. Every package in `requirements.txt` must carry at least one
+`--hash=sha256:...` entry, or the install fails closed rather than silently
+accepting an unverified artifact.
+
+**Refresh procedure:** regenerate `requirements.txt` (above) whenever
+`requirements.in` changes, or periodically to pick up transitive security
+fixes; either way this is a normal source change that produces a new
+source SHA (a new candidate) and must clear qualification (§1) before
+promotion, exactly like any other change.
+
+`requirements-dev.txt` and `requirements-qa.txt` are not hash-pinned by this
+policy — they are development/CI-only inputs, never installed into the
+shipped runtime image. If they are hash-pinned in the future, do so
+consistently and update every CI install command in the same change; a
+half-hashed include graph (some files hash-pinned, others not, feeding into
+each other) is worse than none.
+
+## 6. Any build-input refresh requires requalification
+
+To make the invariant explicit and non-optional: refreshing **any** of the
+following is a new source commit and therefore a new candidate, full stop —
+
+- the pinned base image digest (§3);
+- the Debian package set actually installed (indirectly, via a base refresh
+  or an `apt-get install` package-list change);
+- `backend/requirements.in` / the regenerated hash-pinned
+  `backend/requirements.txt` (§5);
+- the Dockerfile's own build steps.
+
+None of these may be promoted to a mutable tag (`latest`, a `v*` release
+tag) without independently clearing `Tests`, `CodeQL`, `Browser Runtime`,
+`Container Security`, and `Candidate Runtime Qualification` on the exact
+resulting digest, per the existing `release-promotion.yml` gate.

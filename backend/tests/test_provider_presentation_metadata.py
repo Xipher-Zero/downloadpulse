@@ -1,0 +1,78 @@
+from core.config import AppSettings
+from integrations.definition import IntegrationSettings
+from integrations.catalog import definitions
+from integrations.configuration import normalize_settings, public_integrations
+
+
+def public(settings):
+    return public_integrations(normalize_settings(settings, definitions), definitions)
+
+
+def test_provider_presentation_metadata_is_neutral_safe_and_deterministic():
+    result = public(AppSettings())
+
+    alldebrid = result["alldebrid"]
+    assert alldebrid["kind"] == "provider"
+    assert alldebrid["configured"] is False
+    assert alldebrid["presentation"] == {
+        "status_name": "AllDebrid",
+        "premium": True,
+        "status_endpoint": "/integration-status/alldebrid",
+        "static_status": None,
+        "display_order": 10,
+        "status_group": None,
+        "status_group_label": None,
+        # DP 1.0.13 work item L: the neutral acquisition-tier classification the
+        # Provider Status hierarchy is driven by. Integration-owned, so the
+        # renderer never names an integration.
+        "status_tier": "premium_service",
+        "status_tier_label": "Premium Services",
+        # An account-tiered provider presents under this tier while its
+        # current account is of the standard service class.
+        "standard_status_tier": "general_family",
+        "standard_status_tier_label": "Standard Services",
+        # Neither declares its own transfer badge label or theme.
+        "transfer_label": None,
+        "transfer_theme": None,
+    }
+    assert alldebrid["options"]["api_key"] == ""
+    assert alldebrid["options"]["api_key_configured"] is False
+
+    general = result["general_http"]
+    assert general["kind"] == "provider"
+    assert general["configured"] is True
+    assert general["presentation"] == {
+        "status_name": "HTTP(S)",
+        "premium": False,
+        "status_endpoint": None,
+        "static_status": "healthy",
+        "display_order": 910,
+        "status_group": "direct_sources",
+        "status_group_label": "Network Sources",
+        "status_tier": "general_family",
+        "status_tier_label": "Standard Services",
+        "standard_status_tier": None,
+        "standard_status_tier_label": None,
+        "transfer_label": None,
+        "transfer_theme": None,
+    }
+
+
+def test_persisted_secret_presence_establishes_configuration_without_disclosing_secret():
+    result = public(AppSettings(integrations={"alldebrid": IntegrationSettings(options={"api_key": "private-key"})}))
+    alldebrid = result["alldebrid"]
+    assert alldebrid["configured"] is True
+    assert alldebrid["options"]["api_key_configured"] is True
+    assert alldebrid["options"]["api_key"] == ""
+    assert "private-key" not in str(result)
+
+
+def test_whitespace_secret_does_not_claim_configured_state():
+    result = public(AppSettings(integrations={"alldebrid": IntegrationSettings(options={"api_key": "   "})}))
+    assert result["alldebrid"]["configured"] is False
+
+
+def test_executor_does_not_become_download_provider_status_candidate():
+    result = public(AppSettings())
+    assert result["aria2"]["kind"] == "executor"
+    assert result["aria2"]["presentation"]["status_name"] is None

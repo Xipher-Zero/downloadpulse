@@ -1,0 +1,119 @@
+/* DownloadPulse v1.0.11 Settings layout follow-up.
+ *
+ * This late presentation layer closes the remaining desktop geometry gaps from
+ * the Downloads/Sources/Extraction review without changing Settings semantics.
+ */
+
+/* The configured AllDebrid key row's column template and its row rhythm both
+   belong to that row's ONE owner (ui-settings-page.css). This layer used to
+   restate the template here and, with a `gap` shorthand, silently replace the
+   row gap that owner had set -- which is what made the credential block
+   expand ~32px taller than any other Settings field. Both statements now live
+   with the row itself; nothing about it is declared twice.
+
+   The Extraction behaviour group is likewise stated once, by the Extraction
+   geometry owner (ui-settings-downloads-completion.css). */
+@media (min-width: 780px) {
+  /* The Extraction panel owns the available Settings viewport height. The
+     password editor then flexes into the remaining card body instead of ending
+     at an arbitrary textarea-height cap and leaving a large dead area below. */
+  /* EXACTLY the scroll viewport, not merely at least it. `min-height` alone
+     let the flex chain below grow past the viewport as the password list grew,
+     which is the page growth the bounded editor exists to prevent; the editor
+     can only hand its region a finite height if the chain it hangs from has
+     one. Extraction is the only panel this applies to. */
+  #view-settings .dp-settings-scroll:has([data-panel="extraction"]:not([hidden])) .dp-settings-panels {
+    min-height: 100%;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #view-settings [data-panel="extraction"]:not([hidden]) {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #view-settings [data-panel="extraction"] .dp-settings-extraction-card {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 0;
+  }
+
+  #view-settings [data-panel="extraction"] .dp-settings-extraction-card > .card-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #view-settings .dp-settings-extraction-password-field {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  /* The chain ends at the FIELD. What the editor then does with the height it
+     is handed -- its bounded list region, its reserved footer row -- belongs to
+     the editor's one geometry owner (ui-settings-archive-passwords.css), which
+     states the matching `flex` there rather than here. */
+}
+
+/* ── The ONE canonical Settings field datum ───────────────────────────────
+   Inside a field, the label, its control and its helper copy all begin at the
+   SAME inline edge -- the control's OUTER BOX.
+
+   Earlier passes approximated the control's inner TEXT edge instead, nudging
+   labels and hints 3px inward with `position: relative; inset-inline-start: 3px`
+   declared separately for Sources, Downloads, Extraction, Notifications,
+   Maintenance and three Authentication card families. Six copies of one
+   decision meant any field that did not receive a copy -- the Usenet news
+   server cards -- sat visibly left of every other Settings label, which is the
+   broken vertical edge this replaces. The datum is declared here, once, and
+   nowhere else. */
+#view-settings .dp-settings-field > .form-label,
+#view-settings .dp-settings-field > .form-hint,
+:is(#view-settings, .dp-setup-provider-surface) .dp-usenet-field > .form-label,
+:is(#view-settings, .dp-setup-provider-surface) .dp-usenet-field > .form-hint {
+  position: static;
+  inset-inline-start: auto;
+  margin-inline-start: 0;
+  padding-inline-start: 0;
+}
+
+/* ── The ONE canonical single-line Settings checkbox row ──────────────────
+   `align-items: center` on a flex row centres the label's LINE BOX, and a line
+   box is not symmetric about the glyphs inside it -- the control therefore sat
+   visibly above the text it labels, and no `line-height` could correct it
+   (leading is distributed symmetrically about the same centre).
+
+   `vertical-align: middle` aligns the control's centre to the parent font's own
+   `baseline + x-height/2`: the optical centre of the label text, derived from
+   the rendered font's metrics rather than from a measured pixel offset. */
+.dp-settings-inline-check {
+  display: block;
+}
+
+.dp-settings-inline-check > input[type="checkbox"] {
+  vertical-align: middle;
+  margin: 0 8px 0 0;
+}
+
+/* ── Generic form field/toggle material (DP 1.0.12 canonical flattening:
+   migrated from the retired ui-legacy-foundation.css) ───────────────────── */
+.form-label { font-size: 11px; font-weight: 600; color: var(--text2); letter-spacing: .04em; }
+.form-hint  { font-size: 10px; color: var(--text3); margin-top: 3px; }
+body.light .form-hint { color: var(--text2); }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.toggle-info .tl { font-size: 13px; font-weight: 600; }
+.toggle-info .td { font-size: 11px; color: var(--text2); margin-top: 1px; }
+.toggle { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.ttrack { position: absolute; inset: 0; background: var(--border2); border-radius: 12px; cursor: pointer; transition: background .2s; }
+.ttrack::after { content:''; position: absolute; left: 4px; top: 4px; width: 16px; height: 16px; border-radius: 50%; background: var(--text3); transition: all .2s; }
+.toggle input:checked + .ttrack { background: var(--accent); }
+.toggle input:checked + .ttrack::after { left: 22px; background: #fff; }

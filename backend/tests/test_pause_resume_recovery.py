@@ -1,0 +1,444 @@
+"""Deterministic convergence and progress-aware source-recovery contracts."""
+import asyncio
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+import pytest_asyncio
+
+import db.database as database
+from fake_integrations import MemoryExecutor, ParcelProvider
+from transfers.errors import Category, Domain, NormalizedError, Origin, Recovery, Retryability, Stage
+from transfers.models import ExecutionObservation, ExecutionState, TransferProgress, TransferRequest, TransferState
+from transfers.policy import TransferPolicy
+from transfers.registry import IntegrationRegistry
+
+
+class ControlledMemoryExecutor(MemoryExecutor):
+    def __init__(self, authorize, *, zero_progress=False):
+        super().__init__(authorize)
+        self.zero_progress = zero_progress
+        self.native_pause_calls = 0
+        self.native_resume_calls = 0
+        self.resume_entered = asyncio.Event()
+        self.resume_release = asyncio.Event()
+        self.block_resume = False
+        self.start_entered = asyncio.Event()
+        self.start_release = asyncio.Event()
+        self.block_start = False
+
+    def starts(self):
+        return [handle for name, handle in self.calls if name == "start"]
+
+    async def start(self, request, handle):
+        assert await self.authorize(handle, "start")
+        self.calls.append(("start", handle))
+        if self.block_start:
+            self.start_entered.set()
+            await self.start_release.wait()
+        error = self.start_errors.pop(0) if self.start_errors else None
+        progress = TransferProgress(4, 0 if self.zero_progress else 1, 0 if self.zero_progress else 1)
+        result = ExecutionObservation(handle, ExecutionState.FAILED if error else ExecutionState.RUNNING,
+                                      progress, error)
+        self.jobs[handle.attempt_id] = result
+        return result
+
+    async def pause(self, handle):
+        assert await self.authorize(handle, "pause")
+        self.native_pause_calls += 1
+        self.calls.append(("pause", handle))
+        current = self.jobs.get(handle.attempt_id, ExecutionObservation(handle, ExecutionState.ABSENT))
+        if current.resumable:
+            current = replace(current, state=ExecutionState.PAUSED)
+            self.jobs[handle.attempt_id] = current
+        return current
+
+    async def resume(self, handle):
+        assert await self.authorize(handle, "resume")
+        self.native_resume_calls += 1
+        self.calls.append(("resume", handle))
+        if self.block_resume:
+            self.resume_entered.set()
+            await self.resume_release.wait()
+        current = self.jobs.get(handle.attempt_id, ExecutionObservation(handle, ExecutionState.ABSENT))
+        if current.resumable:
+            current = replace(current, state=ExecutionState.RUNNING)
+            self.jobs[handle.attempt_id] = current
+        return current
+
+
+@pytest_asyncio.fixture
+async def convergence(tmp_path, monkeypatch):
+    # DP 1.0.12 canonical lifecycle/recovery/completion rework (CANON-001
+    # closure): pause/resume/pause_all/resume_all are defined exclusively on
+    # transfers.convergence_engine.TransferEngine -- no lower class defines
+    # any of them at all.
+    from transfers.convergence_engine import TransferEngine as CanonicalEngine
+    from transfers.recovery_repository import TransferRepository as CanonicalRepository
+
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
+    await database.init_db()
+    repository = CanonicalRepository()
+    registry = IntegrationRegistry()
+    provider = ParcelProvider()
+    executor = ControlledMemoryExecutor(repository.authorize_execution)
+    registry.register_provider(provider)
+    registry.register_executor(executor)
+    now = [1000.0]
+    policy = TransferPolicy(retry_delay=1, adoption_stability_seconds=0, max_active_executions=2)
+    engine = CanonicalEngine(repository, registry, download_root=str(tmp_path / "payloads"), policy=policy, clock=lambda: now[0])
+    await engine.initialize()
+    return SimpleNamespace(engine=engine, repository=repository, registry=registry, provider=provider, executor=executor, now=now)
+
+
+@pytest_asyncio.fixture
+async def recovery(tmp_path, monkeypatch):
+    # DP 1.0.12 canonical lifecycle/recovery/completion rework (CANON-001
+    # closure): the durable recovery_wait/quiescence representation these
+    # tests assert on is now exclusively produced by the canonical stack
+    # (transfers.convergence_engine.TransferEngine +
+    # transfers.recovery_repository.TransferRepository) -- the lower,
+    # pre-Phase-3 stack no longer contains a recovery-decision
+    # implementation and falls back to _engine_base's simpler retry_at-only
+    # representation.
+    from transfers.convergence_engine import TransferEngine as CanonicalEngine
+    from transfers.recovery_repository import TransferRepository as CanonicalRepository
+
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "recovery.db")
+    await database.init_db()
+    repository = CanonicalRepository()
+    registry = IntegrationRegistry()
+    provider = ParcelProvider()
+    executor = ControlledMemoryExecutor(repository.authorize_execution, zero_progress=True)
+    registry.register_provider(provider)
+    registry.register_executor(executor)
+    now = [2000.0]
+    policy = TransferPolicy(retry_delay=1, adoption_stability_seconds=0, max_active_executions=2)
+    engine = CanonicalEngine(repository, registry, download_root=str(tmp_path / "payloads"), policy=policy, clock=lambda: now[0])
+    await engine.initialize()
+    return SimpleNamespace(engine=engine, repository=repository, registry=registry, provider=provider, executor=executor, now=now)
+
+
+async def submit(ctx, payload="box", name="payload.bin"):
+    transfer = await ctx.engine.submit((TransferRequest("parcel", payload, name=name),))
+    await ctx.engine.tick()
+    return transfer
+
+
+def source_failure(category=Category.REMOTE_READ_FAILED, *, retryability=Retryability.BACKOFF,
+                   recovery=Recovery.TRY_ALTERNATE_CANDIDATE):
+    return NormalizedError(
+        Domain.NETWORK, category, Stage.EXECUTION,
+        retryability=retryability, recovery=recovery, origin=Origin.REMOTE_SOURCE,
+        operator_action_required=False, integration_id="memory-copy",
+    )
+
+
+def executor_uncertainty():
+    return NormalizedError(
+        Domain.EXECUTOR, Category.EXECUTOR_UNAVAILABLE, Stage.RECONCILIATION,
+        retryability=Retryability.BACKOFF, recovery=Recovery.RECONCILE,
+        origin=Origin.EXECUTOR, operator_action_required=False, integration_id="memory-copy",
+    )
+
+
+async def live_writers(ctx, transfer_id):
+    """Writers still authorized to make acquisition progress for a transfer."""
+    return [item for item in await ctx.repository.live_executions()
+            if item.transfer_id == transfer_id and item.state in {"prepared", "queued", "running"}]
+
+
+@pytest.mark.asyncio
+async def test_pause_leaves_durable_intent_material_and_no_writer(convergence):
+    transfer = await submit(convergence)
+    before = (await convergence.repository.artifacts(transfer.id))[0].execution
+    await convergence.engine.pause(transfer.id)
+    artifact = (await convergence.repository.artifacts(transfer.id))[0]
+    # DownloadPulse owns pause: durable intent, the writer fenced, no writer
+    # authorized to make progress -- not "the executor says paused".
+    assert (await convergence.repository.get(transfer.id)).paused
+    assert artifact.execution is None and artifact.state == "paused"
+    assert convergence.executor.jobs[before.attempt_id].state == ExecutionState.CANCELLED
+    assert await live_writers(convergence, transfer.id) == []
+    assert not await convergence.repository.authorize_execution(before, "resume")
+    assert (await convergence.repository.get(transfer.id)).state == TransferState.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_scheduler_and_explicit_resume_admit_exactly_one_writer(convergence):
+    transfer = await submit(convergence)
+    await convergence.engine.pause(transfer.id)
+    artifact = (await convergence.repository.artifacts(transfer.id))[0]
+    starts = len(convergence.executor.starts())
+
+    scheduler = asyncio.create_task(convergence.engine._process_executions(
+        transfer.id, (artifact,), {}, dispatch_allowed=True,
+    ))
+    explicit = asyncio.create_task(convergence.engine.resume(transfer.id))
+    await asyncio.gather(scheduler, explicit)
+    await convergence.engine.reconcile_executions()
+
+    # Resume is a new writer planned from DownloadPulse material, never a
+    # native resume of the fenced one; one owner admits exactly one writer.
+    assert convergence.executor.native_resume_calls == 0
+    assert len(convergence.executor.starts()) == starts + 1
+    assert len(await live_writers(convergence, transfer.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_rapid_triple_resume_is_idempotent(convergence):
+    transfer = await submit(convergence)
+    await convergence.engine.pause(transfer.id)
+    starts = len(convergence.executor.starts())
+    await asyncio.gather(*(convergence.engine.resume(transfer.id) for _ in range(3)))
+    await convergence.engine.reconcile_executions()
+    assert len(convergence.executor.starts()) == starts + 1
+    assert len(await live_writers(convergence, transfer.id)) == 1
+    assert convergence.executor.native_resume_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_pause_arriving_during_resume_reconciliation_wins(convergence):
+    transfer = await submit(convergence)
+    await convergence.engine.pause(transfer.id)
+    convergence.executor.block_start = True
+
+    resuming = asyncio.create_task(convergence.engine.resume(transfer.id))
+    await convergence.executor.start_entered.wait()
+    pausing = asyncio.create_task(convergence.engine.pause(transfer.id))
+    await asyncio.sleep(0)
+    convergence.executor.start_release.set()
+    await asyncio.gather(resuming, pausing)
+    await convergence.engine.reconcile_executions()
+
+    # The later durable Pause wins: the writer Resume started is fenced by
+    # the dispatcher that started it, and no writer is left making progress.
+    assert (await convergence.repository.get(transfer.id)).paused
+    artifact = (await convergence.repository.artifacts(transfer.id))[0]
+    assert artifact.execution is None
+    started = convergence.executor.starts()[-1]
+    assert convergence.executor.jobs[started.attempt_id].state == ExecutionState.CANCELLED
+    assert await live_writers(convergence, transfer.id) == []
+    assert convergence.executor.native_resume_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_capacity_starvation_does_not_admit_a_writer_or_consume_source_budget(convergence):
+    target = await submit(convergence, "target", "target.bin")
+    await convergence.engine.pause(target.id)
+    convergence.engine.configure_policy(replace(convergence.engine.policy, max_active_executions=1))
+    blocker = await submit(convergence, "blocker", "blocker.bin")
+    assert (await convergence.repository.get(blocker.id)).state == TransferState.TRANSFERRING
+    artifact = (await convergence.repository.artifacts(target.id))[0]
+    starts = len(convergence.executor.starts())
+
+    await convergence.engine.resume(target.id)
+    await convergence.engine.reconcile_executions()
+    assert len(convergence.executor.starts()) == starts
+    assert (await convergence.repository.artifacts(target.id))[0].execution is None
+    assert await live_writers(convergence, target.id) == []
+    assert await convergence.repository.recovery_budget(artifact.id) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_stale_native_callback_cannot_unpause_or_commit(convergence):
+    transfer = await submit(convergence)
+    artifact = (await convergence.repository.artifacts(transfer.id))[0]
+    stale = replace(convergence.executor.jobs[artifact.execution.attempt_id], state=ExecutionState.RUNNING)
+    await convergence.engine.pause(transfer.id)
+    # A late "running" report of the fenced writer changes nothing.
+    await convergence.engine._process_executions(transfer.id, (artifact,), {artifact.execution.attempt_id: stale})
+    assert (await convergence.repository.get(transfer.id)).paused
+    assert (await convergence.repository.artifacts(transfer.id))[0].execution is None
+    assert await live_writers(convergence, transfer.id) == []
+
+
+@pytest.mark.asyncio
+async def test_pause_survives_engine_restart(convergence):
+    transfer = await submit(convergence)
+    await convergence.engine.pause(transfer.id)
+    from transfers.convergence_engine import TransferEngine as CanonicalEngine
+    restarted = CanonicalEngine(convergence.repository, convergence.registry,
+                                download_root=convergence.engine.root, policy=convergence.engine.policy,
+                                clock=lambda: convergence.now[0])
+    await restarted.initialize()
+    starts = len(convergence.executor.starts())
+    for _ in range(3):
+        await restarted.tick()
+    assert (await convergence.repository.get(transfer.id)).paused
+    assert len(convergence.executor.starts()) == starts
+    assert await live_writers(convergence, transfer.id) == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_execution_never_aggregates_to_transferring_or_spawns_writer(convergence):
+    transfer = await submit(convergence)
+    artifact = (await convergence.repository.artifacts(transfer.id))[0]
+    original = artifact.execution
+    convergence.executor.jobs[original.attempt_id] = ExecutionObservation(
+        original, ExecutionState.UNKNOWN, error=executor_uncertainty(),
+    )
+    for _ in range(4):
+        await convergence.engine.tick()
+    assert (await convergence.repository.get(transfer.id)).state != TransferState.TRANSFERRING
+    assert (await convergence.repository.artifacts(transfer.id))[0].execution == original
+    assert len(await convergence.repository.executions(transfer.id)) == 1
+    assert await convergence.repository.recovery_budget(artifact.id) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_first_source_failure_retries_same_candidate_in_durable_backoff(recovery):
+    error = source_failure()
+    recovery.executor.start_errors = [error]
+    transfer = await submit(recovery)
+    artifact = (await recovery.repository.artifacts(transfer.id))[0]
+    old = (await recovery.repository.executions(transfer.id))[0].handle
+
+    assert artifact.state == "recovery_wait"
+    assert artifact.selected == 0
+    assert await recovery.repository.recovery_budget(artifact.id) == (1, 0)
+    context = await recovery.repository.recovery_context(artifact.id)
+    assert context["quiescence_reason"] == "retry_backoff"
+    assert str(context["wake_condition"]).startswith("retry_at:")
+    assert not [call for call in recovery.executor.calls if call[0] == "cancel"]
+    assert not await recovery.repository.authorize_execution(old, "resume")
+    assert not await recovery.repository.authorize_execution(old, "pause")
+
+
+@pytest.mark.asyncio
+async def test_second_no_progress_source_failure_refreshes_once_with_identity_preserved(recovery):
+    error = source_failure()
+    recovery.executor.start_errors = [error, error]
+    transfer = await submit(recovery)
+    before = (await recovery.repository.artifacts(transfer.id))[0]
+    recovery.now[0] += 1
+    # DP 1.0.12 canonical lifecycle/recovery/completion rework (CANON-001
+    # closure): the canonical stack's wake+decide+apply sequence converges
+    # the second failure and its refresh within a single tick (the lower,
+    # pre-Phase-3 stack this test previously exercised needed two separate
+    # ticks to reach the same outcome, resting observably in
+    # "refresh_pending" between them) -- assert the real post-refresh
+    # invariants directly instead of an intermediate state name that is no
+    # longer externally observable at this granularity.
+    await recovery.engine.tick()
+    refreshed = (await recovery.repository.artifacts(transfer.id))[0]
+    assert await recovery.repository.recovery_budget(before.id) == (2, 1)
+    assert refreshed.id == before.id
+    assert refreshed.target == before.target
+    assert " (2)" not in refreshed.target
+    assert len([call for call in recovery.provider.calls if call[0] == "refresh"]) == 1
+    details = await recovery.repository.presentation(transfer.id, details=True)
+    assert any(item.get("transition_kind") == "candidate_refresh" for item in details["route_attempts"])
+
+
+@pytest.mark.asyncio
+async def test_definitive_expiry_refreshes_immediately(recovery):
+    expired = source_failure(Category.CANDIDATE_EXPIRED, retryability=Retryability.AFTER_RERESOLUTION,
+                             recovery=Recovery.TRY_ALTERNATE_CANDIDATE)
+    recovery.executor.start_errors = [expired]
+    transfer = await submit(recovery)
+    artifact = (await recovery.repository.artifacts(transfer.id))[0]
+    assert artifact.state == "refresh_pending"
+    assert await recovery.repository.recovery_budget(artifact.id) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_only_meaningful_progress_resets_recovery_epoch(recovery):
+    error = source_failure()
+    recovery.executor.start_errors = [error]
+    transfer = await submit(recovery)
+    recovery.now[0] += 1
+    await recovery.engine.tick()
+    artifact = (await recovery.repository.artifacts(transfer.id))[0]
+    assert artifact.state == "downloading"
+    handle = artifact.execution
+
+    recovery.executor.jobs[handle.attempt_id] = replace(
+        recovery.executor.jobs[handle.attempt_id], progress=TransferProgress(4, 1, 1),
+    )
+    await recovery.engine.tick()
+    assert await recovery.repository.recovery_budget(artifact.id) == (1, 0)
+    before = await recovery.repository.recovery_context(artifact.id)
+    assert before["recovery_epoch"] == 0
+
+    recovery.executor.jobs[handle.attempt_id] = replace(
+        recovery.executor.jobs[handle.attempt_id], progress=TransferProgress(4, 4, 1),
+    )
+    await recovery.engine.tick()
+    assert await recovery.repository.recovery_budget(artifact.id) == (0, 0)
+    after_progress = await recovery.repository.recovery_context(artifact.id)
+    assert after_progress["recovery_epoch"] == 1
+
+    recovery.executor.jobs[handle.attempt_id] = replace(
+        recovery.executor.jobs[handle.attempt_id], state=ExecutionState.FAILED, error=error,
+    )
+    await recovery.engine.tick()
+    after = (await recovery.repository.artifacts(transfer.id))[0]
+    assert after.state == "recovery_wait"
+    assert await recovery.repository.recovery_budget(artifact.id) == (1, 0)
+    assert not [call for call in recovery.provider.calls if call[0] == "refresh"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_budget_and_quiescence_survive_engine_restart(recovery):
+    error = source_failure()
+    recovery.executor.start_errors = [error]
+    transfer = await submit(recovery)
+    artifact = (await recovery.repository.artifacts(transfer.id))[0]
+    assert await recovery.repository.recovery_budget(artifact.id) == (1, 0)
+    before = await recovery.repository.recovery_context(artifact.id)
+    assert before["quiescence_reason"] == "retry_backoff"
+
+    from transfers.convergence_engine import TransferEngine as CanonicalEngine
+    from transfers.recovery_repository import TransferRepository as CanonicalRepository
+
+    restarted = CanonicalEngine(
+        CanonicalRepository(), recovery.registry, download_root=recovery.engine.root,
+        policy=recovery.engine.policy, clock=lambda: recovery.now[0],
+    )
+    await restarted.initialize()
+    recovery.executor.start_errors = [error]
+    recovery.now[0] += 1
+    await restarted.tick()
+    pending = (await recovery.repository.artifacts(transfer.id))[0]
+    # See the comment in test_second_no_progress_source_failure_refreshes_once
+    # _with_identity_preserved: the canonical stack converges this second
+    # failure and its refresh within one tick, so "refresh_pending" is no
+    # longer an externally observable resting state here.
+    assert pending.state != "recovery_wait"
+    assert await recovery.repository.recovery_budget(artifact.id) == (2, 1)
+
+
+@pytest.mark.asyncio
+async def test_refresh_generation_cannot_loop_without_progress(recovery):
+    error = source_failure()
+    recovery.executor.start_errors = [error, error]
+    transfer = await submit(recovery)
+    recovery.now[0] += 1
+    # DP 1.0.12 canonical lifecycle/recovery/completion rework (CANON-001
+    # closure): one tick now converges the second failure and its refresh
+    # (see the comment above in the sibling identity-preservation test), so
+    # only one explicit tick is needed here before injecting the third
+    # (budget-exhausting) failure.
+    await recovery.engine.tick()
+    recovery.executor.start_errors = [error]
+    await recovery.engine.tick()
+    exhausted = (await recovery.repository.artifacts(transfer.id))[0]
+    assert exhausted.state == "error"
+    assert await recovery.repository.recovery_budget(exhausted.id) == (3, 1)
+    context = await recovery.repository.recovery_context(exhausted.id)
+    assert context["quiescence_reason"] == "recovery_exhausted"
+    assert context["wake_condition"] == "operator_retry"
+    assert len([call for call in recovery.provider.calls if call[0] == "refresh"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_executor_ambiguity_never_consumes_source_recovery_budget(recovery):
+    transfer = await submit(recovery)
+    artifact = (await recovery.repository.artifacts(transfer.id))[0]
+    recovery.executor.jobs[artifact.execution.attempt_id] = ExecutionObservation(
+        artifact.execution, ExecutionState.UNKNOWN, error=executor_uncertainty(),
+    )
+    await recovery.engine.tick()
+    assert await recovery.repository.recovery_budget(artifact.id) == (0, 0)
+    assert len(await recovery.repository.executions(transfer.id)) == 1

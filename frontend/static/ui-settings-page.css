@@ -1,0 +1,2469 @@
+/* DownloadPulse v1.0.11 clean-room Settings page.
+ *
+ * Settings is one full-height workspace card, matching the proven Downloads /
+ * Activity composition. The master card owns the fixed header and footer; only
+ * its body scrolls. Shared card/field/button material remains owned by the
+ * universal UI language rather than being recreated here.
+ */
+
+/* At every width Settings follows the same shell-height contract as the
+   Activity Log and Statistics: #content already owns the lower datum (from
+   780px its 24px; below 780px the 10px inset above the dock, as at the top
+   under the header), so Settings fills that box rather than recomputing
+   viewport height, and only its deck (.dp-settings-scroll) scrolls. */
+#content:has(#view-settings.active) {
+  overflow-y: hidden;
+}
+
+#view-settings.dp-settings-clean-view.active {
+  display: flex !important;
+  flex-direction: column;
+  height: 100% !important;
+  min-height: 0;
+  overflow: visible;
+}
+
+#view-settings > .dp-settings-master-card {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 0 !important;
+}
+
+/* ── Master header ───────────────────────────────────────────────────── */
+/* Desktop and tablet (780px and wider): one row. The navigation -- the
+   complete tab strip, or the compact navigator when the strip and the copy
+   do not fit side by side -- keeps the strip's own place: centred in the
+   whole header while the copy fits beside it, otherwise right after the
+   copy (ui-settings-chrome.css). The shared section navigator
+   (ui-section-nav.js, ui-section-nav.css) decides which and draws the
+   compact one. Handheld (below 780px): the header wraps and the complete strip,
+   at most the header's width, scrolls beneath the copy. */
+#view-settings .dp-settings-master-header {
+  flex: 0 0 auto;
+  min-height: 76px;
+  padding: 10px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+#view-settings .dp-settings-header-copy {
+  flex: 1 1 0;
+  min-width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#view-settings .dp-settings-header-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  color: var(--dp-accent-purple-bright);
+  font-size: 24px;
+  line-height: 1;
+}
+
+#view-settings .dp-settings-header-title {
+  color: var(--dp-text-primary);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+#view-settings .dp-settings-header-subtitle {
+  margin-top: 4px;
+  max-width: 560px;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#view-settings .dp-settings-tabs .stab {
+  appearance: none;
+  min-height: 32px;
+  flex: 0 0 auto;
+  border: 0;
+  font: inherit;
+}
+
+@media (min-width: 780px) {
+  #view-settings .dp-settings-master-header {
+    flex-wrap: nowrap;
+  }
+}
+
+/* ── Master body / sole scroll owner ────────────────────────────────── */
+#view-settings .dp-settings-master-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#view-settings .dp-settings-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* ── Services: two independent list viewports ───────────────────────────
+   Network Sources shows exactly one full row of its protocol boxes and
+   scrolls the rest inside itself, at every width. The row height is measured
+   from the rendered grid (fitServicesRows); until it is, the body is
+   simply as tall as its content. */
+#view-settings [data-panel="sources"] > .dp-settings-general-sources > .dp-settings-group-body {
+  box-sizing: border-box;
+  height: var(--dp-settings-source-row-viewport, auto);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* With a bounded deck (the desktop layout) the Services tab is a fixed
+   viewport rather than a long page, as Extraction is: Premium Services takes
+   the room the pinned Network Sources leaves and scrolls its own provider
+   list. Neither card scrolls the deck. A viewport too short for both headers,
+   a minimum Premium list and Network's row is the one case the deck itself
+   scrolls -- by exactly that shortfall, never unboundedly. */
+@media (min-width: 780px) {
+  #view-settings .dp-settings-scroll:has([data-panel="sources"]:not([hidden])) .dp-settings-panels {
+    min-height: 100%;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Shown, or kept on screen by a slide leaving it (data-dp-motion-outgoing):
+     a kept panel is drawn as it was, so its lists keep their bounds and their
+     scroll positions while it leaves. */
+  #view-settings [data-panel="sources"]:is(:not([hidden]), [data-dp-motion-outgoing]) {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #view-settings [data-panel="sources"] > .dp-settings-debrid-services {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Never below one full provider card (measured, fitServicesRows). */
+  #view-settings [data-panel="sources"] > .dp-settings-debrid-services > .dp-settings-group-body {
+    flex: 1 1 auto;
+    min-height: var(--dp-settings-premium-row-min, 0);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources {
+    flex: 0 0 auto;
+  }
+}
+
+/* Inset the tab content so nested shared-card contact shadows have paint room
+   inside the scroll viewport. The master card itself owns the outer frame. */
+#view-settings .dp-settings-panels {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 12px 16px;
+}
+
+#view-settings .dp-settings-panel {
+  width: 100%;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-panel[hidden] {
+  display: none !important;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card {
+  width: 100%;
+}
+
+/* The ONE sibling-card gap of a Settings panel: every top-level card, a group
+   card included, keeps the same distance from the card beneath it. */
+#view-settings .dp-settings-card,
+#view-settings .dp-settings-group-card {
+  margin: 0 0 12px;
+}
+
+#view-settings .dp-settings-card:last-child,
+#view-settings .dp-settings-group-card:last-child {
+  margin-bottom: 0;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card > .card-header {
+  min-height: 50px;
+}
+
+/* ── The ONE canonical Settings card header ──────────────────────────────
+   Three regions: the title group (title + its disclosure chip), the centred
+   flavour copy, and the right-side operational controls. The outer tracks are
+   equal `1fr`s, so the centre region's midpoint is the HEADER's midpoint for
+   any title or control width -- a flex remainder could only centre the copy
+   inside whatever the title happened to leave over, which made the apparent
+   centre move with the title's length. */
+:is(#view-settings, .dp-setup-provider-surface) .card-header.dp-settings-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header > .dp-settings-card-title-group {
+  min-width: 0;
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The shared card material gives .card-title `flex: 1`; inside the title group
+   that would push the chip to the far edge, which is exactly the placement
+   this correction removes. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-title-group > .card-title {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header > .dp-settings-card-header-center {
+  min-width: 0;
+  justify-self: center;
+  text-align: center;
+}
+
+/* The operational header RAIL: state, then the card-level action, then the
+   participation control, on one vertical centreline. It wraps rather than
+   overflowing, and wrapping preserves that order because the order is the
+   source order -- there is no positioning to re-derive.
+
+   Declared for the rail itself rather than for one card family's header grid:
+   a provider card, an Authentication card and a Notifications card all render
+   THIS rail, and each used to restate it. `justify-self` is inert outside a
+   grid, so the one rule serves every header that has one. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header-controls {
+  min-width: 0;
+  justify-self: end;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* The hinted card headers (dp-settings-card-header--hinted: Services'
+   governing and premium-provider headers, every Downloads card and
+   Transfer Method card header, and Automatic Extraction's): one row from 780px, each region in its own track -- the
+   identity at the leading edge, the one-line purpose hint on the header's
+   own midpoint, the rail at the trailing edge -- so the hint, shown or not,
+   never moves the identity or the rail, and never takes a second row. The
+   page runtime (fitHeaderHints) takes the hint out of the layout wherever
+   it would not fit there (data-hint="hidden"); its help chip then says it. */
+@media (min-width: 780px) {
+  #view-settings .dp-settings-card-header--hinted > .dp-settings-card-title-group { grid-area: 1 / 1; }
+  #view-settings .dp-settings-card-header--hinted > .dp-settings-card-header-center { grid-area: 1 / 2; }
+  #view-settings .dp-settings-card-header--hinted > .dp-settings-card-header-controls { grid-area: 1 / 3; }
+
+  /* With no hint there is no midpoint to keep: the rail takes its own width
+     at the trailing edge (never half the header, where it would wrap), and
+     the identity the rest from the leading edge. */
+  #view-settings .dp-settings-card-header--hinted[data-hint='hidden'] {
+    grid-template-columns: minmax(0, 1fr) 0 auto;
+  }
+}
+
+#view-settings .dp-settings-card-header--hinted > .dp-settings-card-header-center > * {
+  white-space: nowrap;
+}
+
+#view-settings .dp-settings-card-header--hinted[data-hint='hidden'] > .dp-settings-card-header-center {
+  display: none;
+}
+
+/* The status sits WITH its rail, so it is not the centred provider variant. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header-controls > .dp-settings-provider-config-status {
+  justify-self: auto;
+  flex: 0 0 auto;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The neutral action slot. It contributes placement and nothing else, so the
+   action inside keeps whatever treatment its own owner gives it. A card may
+   put more than one action in it -- Backups & Retention puts two -- so the
+   slot carries the rail's own rhythm between them; with a single action the
+   gap resolves to nothing. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-action {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── The header Test (ui-settings-page.js headerTestControls) ─────────────
+   One Test at every width. From 780px the rail draws exactly what it always
+   drew: the group adds no box (display: contents). Participation, at every
+   width: while the toggle is off, the Test is the neutral DP ghost button --
+   no status colour in its text, border, background or mark, and never
+   disabled. Its verification is unchanged and still reported where it always
+   is. */
+/* The Test/toggle island's material, one declaration: the handheld header
+   Test group, and a Usenet server card's Test/Enable at every width. */
+:is(#view-settings, .dp-setup-provider-surface) :is(.dp-settings-header-test-group, .dp-usenet-server-controls) {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 3px;
+  border: 1px solid var(--dp-secondary-border);
+  border-radius: var(--dp-radius-sm);
+}
+
+@media (min-width: 780px) {
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group {
+    display: contents;
+  }
+}
+
+#view-settings .dp-settings-header-test-shell {
+  display: none;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group:has(input[type="checkbox"]:not(:checked)) > .dp-settings-header-action > .dp-settings-provider-test {
+  border-color: var(--dp-secondary-border);
+  background: var(--dp-secondary-surface);
+  color: var(--dp-text-muted);
+}
+
+#view-settings .dp-settings-header-test-group:has(input[type="checkbox"]:not(:checked)) > .dp-settings-header-action > .dp-settings-provider-test:hover {
+  border-color: var(--dp-border-strong);
+  background: var(--dp-secondary-surface);
+  color: var(--dp-text-primary);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group:has(input[type="checkbox"]:not(:checked)) > .dp-settings-header-action > .dp-settings-provider-test .dp-settings-action-chip {
+  border-color: var(--dp-secondary-border);
+  background: transparent;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group:has(input[type="checkbox"]:not(:checked)) > .dp-settings-header-action > .dp-settings-provider-test .dp-settings-action-glyph {
+  filter: grayscale(1);
+}
+
+/* ── The ONE canonical Settings disclosure chip ──────────────────────────
+   Rendered by ui-settings-page.js `settingsDisclosure()` and used identically
+   by Sources & Providers cards and Downloads -> Executor Tuning cards. The two
+   earlier implementations (a ghost chip pinned beside Enable, and a naked
+   chevron) are gone, not aliased. */
+#view-settings .dp-settings-disclosure {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--dp-text-muted);
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+
+#view-settings .dp-settings-disclosure:hover {
+  border-color: var(--dp-border-default);
+  background: var(--dp-surface-2);
+  color: var(--dp-text-primary);
+}
+
+#view-settings .dp-settings-disclosure:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright);
+  outline-offset: 2px;
+}
+
+#view-settings .dp-settings-disclosure > span {
+  display: block;
+  font-size: 22px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform .15s ease;
+}
+
+#view-settings .dp-settings-disclosure[aria-expanded="true"] > span {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #view-settings .dp-settings-disclosure,
+  #view-settings .dp-settings-disclosure > span {
+    transition: none;
+  }
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-copy {
+  margin: 0 0 14px;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* The setup wizard's provider surface (DPSettingsPage.mountProvider) is a
+   narrow portrait dialog at every viewport width, so its credential and
+   account islands always take the stacked, full-width form the narrow
+   Settings page uses -- the field gets the dialog's width -- while Settings
+   keeps its deliberately content-bounded islands from 780px; and a blank
+   provider status reserves no row above the account island, so that island
+   sits evenly in its card body like every other provider's. These are the
+   islands' own layout variables (their rules below read them, defaulting to
+   Settings' form). */
+.dp-setup-provider-surface {
+  --dp-credential-island-direction: column;
+  --dp-credential-island-align: stretch;
+  --dp-credential-island-gap: 10px;
+  --dp-credential-island-width: 100%;
+  --dp-credential-island-info-max: none;
+  --dp-account-island-width: 100%;
+  --dp-account-island-copy-max: none;
+  --dp-provider-status-reserve: 0;
+  --dp-provider-status-reserve-gap: 0;
+}
+
+/* A premium provider's account connection (Real-Debrid, TorBox): one compact
+   Account Connection island
+   in the card body, the same island the Extraction behaviour group is --
+   content-bounded, CENTRED, never stretched across spare width -- holding the
+   title/helper and the state's controls side by side, wrapping into rows only
+   when the card is too narrow for them. The state's one line is the card's
+   reserved top row above it. The island ends the region: what follows it owns
+   its own spacing (.dp-settings-additional). */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-connection {
+  margin: 0;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-island {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 18px 44px;
+  width: var(--dp-account-island-width, max-content);
+  max-width: min(100%, 880px);
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px 22px 17px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-island-copy {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: var(--dp-account-island-copy-max, 300px);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-island-copy > .dp-settings-copy {
+  margin: 0;
+}
+
+/* The controls reserve one field's height in every state -- the code field
+   is the tallest thing any state shows -- so the island, and the card, keep
+   one height as the connection moves between states. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-island-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: var(--dp-input-height);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-heading {
+  margin: 0;
+  color: var(--dp-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Sized for an eight-character code and its Copy, never wider than the
+   island: the code never forces a horizontal scroll. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-island .dp-action-field {
+  width: min(100%, 220px);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-code {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+
+/* A provider card's reserved status row: exactly one line of the row's own
+   12px copy, a FIXED height whether it is blank or carries a status, so no
+   card changes height when its status does. The status inside is centred on
+   both axes. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-provider-status-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.5em;
+  margin: 0 0 14px;
+  color: var(--dp-text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* The row while it says nothing: Settings keeps its line and its gap reserved
+   (the card never moves when a status arrives). The setup wizard's provider
+   view reserves nothing for a blank status (--dp-provider-status-reserve: 0),
+   so the account island sits evenly in its card body, as every other
+   provider's island does; a status, when there is one, takes its row. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-provider-status-line:empty {
+  height: var(--dp-provider-status-reserve, 1.5em);
+  margin-bottom: var(--dp-provider-status-reserve-gap, 14px);
+}
+
+/* The premium expiry is ordinary card copy -- the size and colour of the
+   island's own helper line -- inside the row's fixed height. Only the wait
+   below is emphasised. */
+#view-settings .dp-settings-account-expiry {
+  color: var(--dp-text-muted);
+  font-size: 11px;
+}
+
+/* Larger than the row's own line, set solid (line-height 1) so it still sits
+   inside the row's fixed height. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-waiting {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  animation: dp-settings-account-waiting 2.4s ease-in-out infinite;
+}
+
+@keyframes dp-settings-account-waiting {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-account-waiting {
+    animation: none;
+  }
+}
+
+#view-settings .dp-settings-field + .dp-settings-field,
+#view-settings .dp-settings-toggle + .dp-settings-field,
+#view-settings .dp-settings-field + .dp-settings-toggle,
+#view-settings .dp-settings-toggle + .dp-settings-toggle {
+  margin-top: 12px;
+}
+
+#view-settings .dp-settings-engine-tuning[hidden] {
+  display: none !important;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header-center {
+  min-width: 0;
+  justify-self: center;
+  text-align: center;
+}
+
+#view-settings .dp-settings-download-engine-header-copy {
+  display: block;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* One primary form, not a tuning region: the card body carries the compact
+   card padding rather than the full one, so the two zones are not floated in a
+   tall band. Only this card's body; the shared token is untouched. */
+#view-settings .dp-settings-download-engine-card > .card-body {
+  padding-block: var(--dp-card-padding-compact, 14px);
+}
+
+/* Disk Space & Recovery is open from 780px, without its disclosure chip;
+   below it the chip is drawn, the card starting closed (card(), collapsible)
+   and keeping the operator's choice for the page. */
+@media (min-width: 780px) {
+  #view-settings .dp-settings-download-recovery-card > .card-header .dp-settings-disclosure {
+    display: none;
+  }
+
+  #view-settings .dp-settings-download-recovery-card > .card-body[hidden] {
+    display: block;
+  }
+}
+
+/* Two settings, one CENTRED bounded island -- the same relationship container
+   and the same padding density as the accepted Extraction behaviour island, so
+   the two surfaces speak one visual language. Content-bounded, never stretched
+   across the card. Each setting is the shared inline field; the island states
+   only how the two sit beside one another. */
+#view-settings .dp-settings-download-engine-row {
+  display: flex;
+  /* STRETCH, not centre: the two settings' informational stacks wrap to
+     different line counts as text reflows, and centring items of unequal
+     height pulls the taller one's top upward -- so two settings genuinely on
+     one row stop sharing a baseline. Equal-height items keep that promise at
+     any font metric; each field still centres its own control against its own
+     stack. */
+  align-items: stretch;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 18px 44px;
+  width: max-content;
+  /* Bounded by what these two settings need -- a readable path field and a job
+     count -- not by a width chosen to make them fit. */
+  max-width: min(100%, 1040px);
+  margin: 0 auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px var(--dp-island-padding-inline, 22px) 17px;
+}
+
+/* A hint is a sentence: bound the informational stacks so the island's width
+   is decided by its controls rather than by its longest sentence. */
+#view-settings .dp-settings-download-engine-row .dp-settings-inline-field-info {
+  max-width: 200px;
+}
+
+/* A bounded island whose settings no longer share one row (fitIslands in
+   ui-settings-page.js reads that from the island laid out as a row): one
+   setting per row, each at its OWN width and centred under the one above --
+   exactly where the wrapped row put it, its title, hint and control together
+   -- so the island's max-content width, and its outline, is its widest
+   setting rather than the room the wrapped row was given. Each setting
+   centres ITSELF (align-self), so no island's own cross-axis alignment -- the
+   equal-height `stretch` a row of them uses -- can widen one to the island and
+   leave its content packed to the leading edge. The same at every width:
+   below 780px the island also takes back room step by step (data-island-fit,
+   below), and stacking is one of those steps. */
+#view-settings .dp-settings-island[data-island='stacked'] {
+  flex-direction: column;
+}
+
+#view-settings .dp-settings-island[data-island='stacked'] :is(.dp-settings-inline-field, .dp-settings-island-member) {
+  align-self: center;
+}
+
+/* Handheld (below 780px): an island takes back only as much room as its
+   card needs, one step at a time, and fitIslands keeps the first step at
+   which every setting fits whole -- its title and hint beside its control,
+   nothing overflowing (ui-settings-page.js). The steps are declared here, and
+   their count is what tells the fitter the island is the handheld one:
+     0  the established island: one row while it holds its settings at their
+        own sizes;
+     1  one row, its settings narrowed to their floors (a hint keeps a
+        readable measure, a control its usable width) at a closer gap;
+     2  stacked: one setting per row, each whole and centred;
+     3  stacked, the island's side padding and each setting's inner gap closer;
+     4  stacked and close, the hints taken out of view (still each control's
+        description to assistive technology), the titles wrapping as needed.
+   Only a setting that still cannot fit at 4 puts its title above its control
+   (data-island-field="column"), the last resort; its neighbours stay inline
+   -- unless the island declares data-island-columns (Statistics Reporting's
+   cadence and window), whose settings at 4 all take their titles above their
+   controls together, so the pair reads alike.
+   The island stays content-bounded and centred at every step. */
+@media (max-width: 779px) {
+  #view-settings .dp-settings-island {
+    --dp-island-fit-steps: 5;
+    --dp-island-hint-min: 128px;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: 100%;
+    margin-inline: auto;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  /* Every setting may narrow, never past the island: its title, hint and
+     control then yield to their own floors, and the fit reads whether they
+     still hold. */
+  #view-settings .dp-settings-island .dp-settings-inline-field {
+    flex-shrink: 1;
+    min-width: auto;
+    max-width: 100%;
+  }
+
+  /* A member of an island of other controls (islandFields) is whole or not
+     there: it keeps its own width and its title one line, so a row that
+     cannot hold it wraps or overflows, and the fit reads that, rather than
+     squeezing its title under its control. */
+  #view-settings .dp-settings-island .dp-settings-island-member {
+    flex-shrink: 0;
+    max-width: 100%;
+  }
+
+  #view-settings .dp-settings-island .dp-settings-island-member .tl {
+    white-space: nowrap;
+  }
+
+  /* A hint is a sentence: it may wrap, but never into a column of words. */
+  #view-settings .dp-settings-island .dp-settings-inline-field-info:has(> .form-hint) {
+    min-width: var(--dp-island-hint-min);
+  }
+
+  #view-settings .dp-settings-island[data-island-fit='1'] {
+    flex-wrap: nowrap;
+    column-gap: 24px;
+  }
+
+  /* Each island states its side padding through this one property. */
+  #view-settings .dp-settings-island:is([data-island-fit='3'], [data-island-fit='4']) {
+    --dp-island-padding-inline: 10px;
+  }
+
+  #view-settings .dp-settings-island:is([data-island-fit='3'], [data-island-fit='4']) .dp-settings-inline-field {
+    gap: 10px;
+  }
+
+  #view-settings .dp-settings-island[data-island-fit='4'] .dp-settings-inline-field-info {
+    min-width: auto;
+  }
+
+  #view-settings .dp-settings-island[data-island-fit='4'] .dp-settings-inline-field-info > .form-hint {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-island[data-island-fit='4'] .dp-settings-inline-field[data-island-field='column'],
+  #view-settings .dp-settings-island[data-island-fit='4'][data-island-columns] .dp-settings-inline-field {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  /* Turned to a column, the main axis is vertical: a basis, grow or shrink a
+     region declared for the row (the folder's 380px) would be read as a
+     HEIGHT. Both regions take their own height instead, and the control spans
+     the setting's width, its own control centred within it. */
+  #view-settings .dp-settings-island[data-island-fit='4'] .dp-settings-inline-field[data-island-field='column']
+    > :is(.dp-settings-inline-field-info, .dp-settings-inline-field-control),
+  #view-settings .dp-settings-island[data-island-fit='4'][data-island-columns] .dp-settings-inline-field
+    > :is(.dp-settings-inline-field-info, .dp-settings-inline-field-control) {
+    flex: none;
+  }
+
+  #view-settings .dp-settings-island[data-island-fit='4'] .dp-settings-inline-field[data-island-field='column']
+    > .dp-settings-inline-field-control,
+  #view-settings .dp-settings-island[data-island-fit='4'][data-island-columns] .dp-settings-inline-field
+    > .dp-settings-inline-field-control {
+    align-self: stretch;
+    justify-content: center;
+  }
+}
+
+#view-settings .dp-settings-download-path-stack,
+#view-settings .dp-settings-download-limit {
+  display: contents;
+}
+
+#view-settings .dp-settings-download-path-stack[hidden] {
+  display: none !important;
+}
+
+/* The folder is the one control here with a variable-length value, so it is
+   the wider of the two -- bounded, because a path field wide enough to read is
+   not a field as wide as the card happens to be. */
+#view-settings .dp-settings-download-folder-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-download-folder-field > .dp-settings-inline-field-control {
+  flex: 0 1 auto;
+  min-width: 0;
+  width: 380px;
+  max-width: 100%;
+}
+
+/* Path and Browse are ONE compound field, so the pair fills the bounded room
+   above together rather than sitting at content width inside it. */
+#view-settings .dp-settings-download-folder-field .dp-settings-directory-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-download-limit-field {
+  flex: 0 0 auto;
+}
+
+#view-settings .dp-settings-download-limit-field .input {
+  width: 96px;
+}
+
+/* Inside the field's border the action is the small DP button at its own
+   height (btn-sm), centred in the field like every other embedded action --
+   not the bare pairing's full-height Browse (ui-settings-directory-browser.css).
+   From 780px it is the compact chip that surface has always drawn. */
+#view-settings .dp-action-field > .dp-settings-directory-field-browse {
+  min-height: var(--dp-control-height-sm);
+}
+
+@media (min-width: 780px) {
+  #view-settings .dp-action-field > .dp-settings-directory-field-browse {
+    min-height: 0;
+    padding-block: 4px;
+  }
+}
+
+#view-settings .dp-settings-inline-check {
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* ── The UNIT a numeric field carries inside its trailing edge ───────────
+   A sibling of the control within the one compound-field primitive, so the
+   number physically ends where the unit begins. It is a reading, not a
+   control: no pointer events, no selection, no tab stop. */
+#view-settings .dp-settings-field-unit {
+  flex: 0 0 auto;
+  padding-inline: 2px 4px;
+  color: var(--dp-text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── A named, collapsible SUBSECTION inside a card body ──────────────────
+   Rendered by ui-settings-page.js `disclosureSection()` with the ONE canonical
+   disclosure chip. It is a block in the card's own flow with its own body, so
+   opening it adds height beneath the rows above and cannot resize or
+   rebalance them. */
+#view-settings .dp-settings-subsection {
+  min-width: 0;
+  margin-top: 14px;
+}
+
+#view-settings .dp-settings-subsection-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#view-settings .dp-settings-subsection-title {
+  color: var(--dp-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+
+#view-settings .dp-settings-subsection-body {
+  min-width: 0;
+  padding-top: 14px;
+}
+
+#view-settings .dp-settings-subsection-body[hidden] {
+  display: none !important;
+}
+
+/* ── The ONE inline Settings field ───────────────────────────────────────
+   [ stacked title + hint ]   [ control ]   [ optional action ]
+
+   The informational stack is one unit and the control is centred against it,
+   which is what removes the extra help/status band these rows used to carry.
+   Every surface that reads this way uses THIS; none states a geometry of its
+   own. What a caller may state is how much room its own control deserves --
+   a path, a credential and a job count are not the same control. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field-info > .form-hint {
+  margin-top: 0;
+}
+
+/* Bounded by default: a control earns extra room by asking for it. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-inline-field-action {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+/* ── A field that owns a SECOND LINE ─────────────────────────────────────
+   [ stacked title + hint ]   [ control ]   [ optional action ]
+                              [ second line                   ]
+
+   A preview of what a value resolves to is a line of the FIELD, beneath the
+   control it describes -- not another item on the control row. So the field
+   that carries one is genuinely two rows: a two-row grid whose second line is
+   PLACED in row two of the control's column. Placement is what makes it
+   structural. No wrap decides it, no breakpoint forces it and no amount of
+   spare horizontal room can pull it up beside the input, because there is no
+   width at which row two becomes row one.
+
+   Everything else is the one grammar above: the same three regions on one
+   centre line, the same inherited column gap. Only the row the second line
+   occupies is stated here, and the rows are drawn tight against one another so
+   the second line's own material owns the distance between them.
+
+   Written as a modifier OF the base class, not as a class beside it: the two
+   are the same element in two forms, so the two-line form must win wherever the
+   base form is stated -- including the second `.dp-settings-inline-field`
+   declaration further down this sheet. */
+/* The control's track keeps the control's OWN declared minimum (`auto`): zero
+   for an ordinary control, which declares min-width: 0, and its typing room
+   plus its embedded action for one that declares more (the Avatar URL). */
+#view-settings .dp-settings-inline-field.dp-settings-inline-field--two-line {
+  display: grid;
+  grid-template-columns: auto minmax(auto, 1fr) auto;
+  grid-template-rows: auto auto;
+  row-gap: 0;
+}
+
+#view-settings .dp-settings-inline-field.dp-settings-inline-field--two-line > .dp-settings-inline-field-second-line {
+  grid-row: 2;
+  grid-column: 2;
+  min-width: 0;
+}
+
+/* The AllDebrid credential row: ONE compact, centred Settings control island
+   -- the Backup Folder island's material and its deliberate share of the card
+   body -- holding the title/hint, the field and the removal side by side at
+   the ordinary Settings spacing. The field takes what the island has left,
+   never the card's width. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-alldebrid-key-row {
+  box-sizing: border-box;
+  justify-content: center;
+  flex-direction: var(--dp-credential-island-direction, row);
+  gap: var(--dp-credential-island-gap, 18px);
+  width: var(--dp-credential-island-width, 65%);
+  max-width: 100%;
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px 22px 17px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-alldebrid-key-row > .dp-settings-inline-field-info {
+  flex: 0 1 auto;
+  align-self: var(--dp-credential-island-align, auto);
+  max-width: var(--dp-credential-island-info-max, 240px);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-alldebrid-key-row > .dp-settings-inline-field-control {
+  align-self: var(--dp-credential-island-align, auto);
+  /* The field is what absorbs the row's spare width. */
+  flex: 1 1 auto;
+}
+
+/* The key field carries Remove inside its own border (.dp-action-field): the
+   key text ends where Remove begins, so nothing has to reserve room for it. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-alldebrid-key-row .dp-settings-inline-field-control > .dp-action-field {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/* The Debrid-Link and Premiumize credential rows: the AllDebrid row's island, exactly. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-debridlink-key-row,
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-premiumize-key-row {
+  box-sizing: border-box;
+  justify-content: center;
+  flex-direction: var(--dp-credential-island-direction, row);
+  gap: var(--dp-credential-island-gap, 18px);
+  width: var(--dp-credential-island-width, 65%);
+  max-width: 100%;
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px 22px 17px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-debridlink-key-row > .dp-settings-inline-field-info,
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-premiumize-key-row > .dp-settings-inline-field-info {
+  flex: 0 1 auto;
+  align-self: var(--dp-credential-island-align, auto);
+  max-width: var(--dp-credential-island-info-max, 240px);
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-debridlink-key-row > .dp-settings-inline-field-control,
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-premiumize-key-row > .dp-settings-inline-field-control {
+  align-self: var(--dp-credential-island-align, auto);
+  flex: 1 1 auto;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-debridlink-key-row .dp-settings-inline-field-control > .dp-action-field,
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-premiumize-key-row .dp-settings-inline-field-control > .dp-action-field {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/* Secondary provider/engine tuning lives in native disclosures rather than
+   nested cards. Native details/summary keeps collapsed state accessible and
+   requires no additional runtime state or event ownership.
+
+   The disclosure is now the WHOLE of the provider card's secondary row: the
+   provider-level action moved to the card's header rail, so there is no action
+   group to share a row with and no band beneath the options. It follows the
+   primary island directly: its own 42px summary row is the separation, so no
+   spacer band precedes it, and the island above already bounds the credential,
+   so no rule is drawn. One rule for every provider card of this grammar. */
+#view-settings .dp-settings-additional {
+  min-width: 0;
+  margin-top: 0;
+}
+
+#view-settings .dp-settings-additional > summary {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  list-style: none;
+  color: var(--dp-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+#view-settings .dp-settings-additional > summary::-webkit-details-marker {
+  display: none;
+}
+
+#view-settings .dp-settings-additional > summary::after {
+  content: '›';
+  flex: 0 0 auto;
+  color: var(--dp-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform .15s ease, color .15s ease;
+}
+
+#view-settings .dp-settings-additional[open]:not([data-dp-closing]) > summary::after {
+  color: var(--dp-accent-purple-bright);
+  transform: rotate(90deg);
+}
+
+#view-settings .dp-settings-additional-body {
+  padding: 2px 0 4px;
+}
+
+/* A provider card whose configuration ENDS in its closed Additional Settings
+   disclosure ends there: the 42px summary row is the card's last geometry, so
+   the generic card-body bottom padding is not stacked beneath it as a second
+   blank band. Open, the tuning content keeps the ordinary bottom padding.
+   Structural, shared by every provider card of this grammar; left, right and
+   top padding stay. It holds at every viewport, so it must also outrank the
+   phone-width card sizing rule (`.card-body { padding: ... !important }` in
+   ui-universal-language.css), which sets bottom padding the same way. */
+#view-settings .dp-settings-card > .card-body:has(> .dp-settings-additional:last-child:not([open])) {
+  padding-bottom: 0 !important;
+}
+
+/* ── The ONE fixed tuning-set grammar ────────────────────────────────────
+   Every fixed tuning set in Settings -- AllDebrid Additional Settings,
+   every Transfer Method Settings card, Disk Space & Recovery -- is laid out
+   by exactly this, and by nothing else.
+
+   The set declares only its own CARDINALITY (`data-tuning-lanes`, emitted by
+   tuningCells()). From that, the region is divided into EQUAL, INVISIBLE lanes
+   spanning the usable width -- one per cell, but never more than FIVE: five is
+   the row ceiling, so a larger set continues on the next row -- and a bounded
+   card is centred in each: every lane's share at full capacity is the
+   region's width less its gaps, divided by that lane count
+   (`--dp-tuning-share`, in the region's own container units). Each cell and
+   each group is laid out at the full width of the lanes it occupies, so a row
+   breaks by real lanes: at most five cells per row, and a group that does not
+   fit what is left of a row moves to the next one whole. Below full capacity
+   the lanes give up width down to their accepted minimum and the set wraps
+   sooner. Every row -- the first, a partial last one, any between -- is
+   centred by the same rule. No column-count matrix, no viewport breakpoint
+   and nothing measured in JavaScript.
+
+   A lane's minimum is a fact about ITS OWN cell: the set's accepted minimum
+   for an ordinary cell, or one selector cell for a cell that holds a selector
+   (so every value it offers reads whole). A selector lane may therefore be
+   wider than its siblings at a narrow width; no sibling inherits its
+   requirement, and nothing about the set as a whole changes because one cell
+   holds a selector.
+
+   Because the lane is the layout unit and the card is merely bounded inside
+   it, a card never stretches edge to edge and the per-set width difference
+   falls out of cardinality alone: four lanes give a materially wider card than
+   five do, from one rule. */
+#view-settings .dp-settings-tuning-grid {
+  --dp-tuning-gap: 16px;
+  /* Overridden per cardinality below; a set that declares none still lays out. */
+  --dp-tuning-lanes: 5;
+  --dp-tuning-lane-min: 160px;
+  /* The bounded card inside the lane. */
+  --dp-tuning-card-max: 240px;
+  /* The widest a selector grows inside its cell: 160px of value text plus the
+     canonical trigger's own padding, gap and chevron (54px), so an offered
+     value and its menu are read whole, never cut to an ellipsis. */
+  --dp-tuning-select-max: 214px;
+  /* The lane one such selector cell needs: the bound plus the cell's own
+     horizontal padding (2 x 10px) and border (2 x 1px). */
+  --dp-tuning-select-lane: calc(var(--dp-tuning-select-max) + 22px);
+  /* Each lane's equal share of the region at full capacity. Container units:
+     it resolves against THIS region wherever a lane or a group reads it. */
+  /* (1px is held back from the row so rounding can never push a full row's
+     last lane onto the next one.) */
+  --dp-tuning-share: calc((100cqi - (var(--dp-tuning-lanes) - 1) * var(--dp-tuning-gap) - 1px) / var(--dp-tuning-lanes));
+  /* What a drawn relationship LOOKS like, declared exactly once for every set
+     that has one. Whether a group draws it is that group's own fact (below);
+     none of them states an appearance, so there is no per-section variant to
+     drift.
+
+     The hierarchy it has to sit in: the enclosing card body draws no edge at
+     all, and a tuning card draws a filled border over its own raised
+     background. A hairline in the strong border tone is therefore plainly
+     more present than the container -- it no longer reads as a rendering
+     artifact -- while remaining a single unfilled line against the cards'
+     border-plus-surface weight, so the cards still dominate. It is a quiet
+     line -- the strong border tone at well under its full weight in either
+     theme -- so it reads as a relationship, never as a second card edge. */
+  --dp-tuning-relation-color: color-mix(in srgb, var(--dp-border-strong) 58%, transparent);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  gap: var(--dp-tuning-gap);
+  padding: 4px 0 2px;
+  /* The region's own width is what every lane and group measures itself
+     against -- not the viewport, which knows nothing about the card it is
+     inside. */
+  container-type: inline-size;
+  container-name: dp-tuning;
+}
+
+/* A fixed set's lane count IS its cardinality up to the five-lane row
+   ceiling, and its accepted minimum lane is the width below which a lane
+   stops being honest. Two numbers per cardinality, and nothing else: no set
+   names a column count of its own. A set of more than five keeps five lanes
+   and the ordinary minimum; what does not fit continues on the next row. */
+#view-settings .dp-settings-tuning-grid[data-tuning-lanes="1"] { --dp-tuning-lanes: 1; --dp-tuning-lane-min: 160px; }
+#view-settings .dp-settings-tuning-grid[data-tuning-lanes="2"] { --dp-tuning-lanes: 2; --dp-tuning-lane-min: 160px; }
+#view-settings .dp-settings-tuning-grid[data-tuning-lanes="3"] { --dp-tuning-lanes: 3; --dp-tuning-lane-min: 160px; }
+#view-settings .dp-settings-tuning-grid[data-tuning-lanes="4"] { --dp-tuning-lanes: 4; --dp-tuning-lane-min: 200px; }
+#view-settings .dp-settings-tuning-grid[data-tuning-lanes="5"] { --dp-tuning-lanes: 5; --dp-tuning-lane-min: 160px; }
+
+/* A set of one is a standalone control: its single lane is the whole region,
+   so its bounded card is centred beneath whatever set precedes it. */
+#view-settings .dp-settings-tuning-grid + .dp-settings-tuning-grid {
+  margin-top: var(--dp-tuning-gap);
+}
+
+/* The lane and the card in it.
+ *
+ * The cell IS its lane: its card is laid out at its bounded width, and the
+ * lane's own slack -- the margins that centre the card -- makes up the rest,
+ * so the cell occupies exactly one lane when a row is broken. Narrower than
+ * that the lane gives way to the cell's own minimum. `--dp-tuning-cell-min` is
+ * the only per-cell fact. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field {
+  --dp-tuning-cell-min: var(--dp-tuning-lane-min);
+  --dp-tuning-lane: max(var(--dp-tuning-cell-min), var(--dp-tuning-share));
+  --dp-tuning-card: min(var(--dp-tuning-lane), var(--dp-tuning-card-max));
+  flex: 0 1 var(--dp-tuning-card);
+  min-width: var(--dp-tuning-cell-min);
+  max-width: var(--dp-tuning-card);
+  margin-top: 0;
+  margin-inline: calc((var(--dp-tuning-lane) - var(--dp-tuning-card)) / 2);
+  box-sizing: border-box;
+  border: 1px solid var(--dp-border-nested);
+  border-radius: 10px;
+  padding: 10px 10px 9px;
+  background: var(--dp-surface-2, rgba(255, 255, 255, .03));
+  /* Label, control and help text are each centred AS ELEMENTS on the cell's
+     own axis; the value inside the control keeps the canonical field
+     alignment, restored explicitly below because this centring inherits. */
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  row-gap: 6px;
+  text-align: center;
+}
+
+/* Inside a group the group's own box already holds the row to the lanes it
+   occupies, so its members start from their minimums and share that box --
+   a group with a selector still sits on one row wherever its minimum fits. */
+#view-settings .dp-settings-tuning-group > .dp-settings-field {
+  flex: 1 1 var(--dp-tuning-cell-min);
+}
+
+/* A cell that holds a selector: ITS lane is never narrower than one selector
+   cell. A requirement of this cell alone -- its siblings keep theirs. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field:has(select.input) {
+  --dp-tuning-cell-min: var(--dp-tuning-select-lane);
+}
+
+/* The control is an element centred in the cell, bounded so a number field
+   stays a number field. A boolean and a selector are cells of exactly this
+   shape: neither is a special layout. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .input,
+#view-settings .dp-settings-tuning-grid .dp-settings-field > select.input,
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .dp-dropdown-shell {
+  width: min(100%, 112px) !important;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* A compact tunable shows its value centred, whatever its type: every control
+   of a tuning cell (integers, fractions such as 0.5, sized strings such as
+   10M), every number field in whichever grammar holds it, and every selector's
+   chosen value -- centred in the room beside its chevron. Paths, addresses,
+   names and credentials are never tunables: they keep the ordinary alignment. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .input,
+:is(#view-settings, .dp-setup-provider-surface) input[type="number"].input,
+#view-settings .dp-dropdown__value {
+  text-align: center;
+}
+
+/* A selector is the same cell control, sized for what it offers: it fills its
+   cell up to the one selector bound instead of a number field's width (its
+   menu matches the trigger). */
+#view-settings .dp-settings-tuning-grid .dp-settings-field > select.input,
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .dp-dropdown-shell,
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .input[data-control-width="selector"] {
+  width: min(100%, var(--dp-tuning-select-max)) !important;
+}
+
+/* A text control that declares a selector's width (a short list of names)
+   needs a selector's lane, exactly as a selector cell does. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field:has(> .input[data-control-width="selector"]) {
+  --dp-tuning-cell-min: var(--dp-tuning-select-lane);
+}
+
+/* A control that carries a unit inside its own border is the same cell control
+   in the same place; it is simply wider, because the number and the unit are
+   siblings rather than one overlapping the other. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .dp-action-field {
+  width: min(100%, 150px);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+/* Help text wraps to different heights, so the row itself keeps the cells on a
+   common top edge and the controls on a common visual baseline as far as the
+   longest label allows. */
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .form-label {
+  min-height: 2.4em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#view-settings .dp-settings-tuning-grid .dp-settings-field > .form-hint {
+  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+/* A boolean cell IS a tuning cell: the same bounded box and the same centred
+   label / control / help stack every other cell has. The only thing it adds is
+   where its toggle sits inside that stack -- centred, like every other cell's
+   control. This is its ONE geometry owner. */
+#view-settings .dp-settings-tuning-grid .dp-settings-engine-tuning-toggle-control {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* A relationship between adjacent cells, and nothing more.
+ *
+ * The group is ONE unit of the row: it is laid out at the full width of the
+ * lanes it holds, so when it does not fit what is left of a row it moves to
+ * the next row whole, and it never starts on one row and ends on the next
+ * while the region can hold it. Its members keep their own lanes inside it
+ * (the same cells, the same minimums, the same share). Its own minimum is the
+ * sum of its members' -- declared from its composition (`data-tuning-span`,
+ * `data-tuning-selectors`, emitted by tuningGroup()), never measured.
+ *
+ * Only when the region is narrower than the group (a group of more than five,
+ * or a narrow region) does it split: it takes the whole row and its members
+ * continue on the rows inside it, centred like every other row, under its one
+ * outline. */
+#view-settings .dp-settings-tuning-group {
+  --dp-tuning-span: 1;
+  --dp-tuning-selectors: 0;
+  --dp-tuning-group-min: calc(
+    (var(--dp-tuning-span) - var(--dp-tuning-selectors)) * var(--dp-tuning-lane-min)
+    + var(--dp-tuning-selectors) * var(--dp-tuning-select-lane)
+    + (var(--dp-tuning-span) - 1) * var(--dp-tuning-gap));
+  --dp-tuning-group-max: calc(
+    (var(--dp-tuning-span) - var(--dp-tuning-selectors)) * max(var(--dp-tuning-lane-min), var(--dp-tuning-share))
+    + var(--dp-tuning-selectors) * max(var(--dp-tuning-select-lane), var(--dp-tuning-share))
+    + (var(--dp-tuning-span) - 1) * var(--dp-tuning-gap));
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  gap: var(--dp-tuning-gap);
+  flex: 0 1 min(100cqi, var(--dp-tuning-group-max));
+  min-width: min(100cqi, var(--dp-tuning-group-min));
+  max-width: var(--dp-tuning-group-max);
+  box-sizing: border-box;
+  border-radius: 14px;
+  /* The relationship outline itself.
+   *
+   * `outline` rather than `border`, with an offset: it is painted OUTSIDE the
+   * group's box and takes no space at all, and the group adds no track,
+   * padding, heading or container bulk, so drawing or withdrawing it moves
+   * nothing.
+   *
+   * It is drawn exactly while THIS group is whole on one row -- the region is
+   * at least the group's own minimum wide -- and its width is that predicate:
+   * 1px while it holds, 0 (not drawn at all) once the group has to split.
+   * Every other group answers the same question for itself, so a set that
+   * spans several rows keeps the outline of every group that still fits, and
+   * nothing about the set as a whole -- its row count, or whether some other
+   * cell holds a selector -- withdraws it. */
+  outline: clamp(0px, (100cqi - var(--dp-tuning-group-min) + 1px) * 1000, 1px) solid var(--dp-tuning-relation-color);
+  outline-offset: 5px;
+}
+
+#view-settings .dp-settings-tuning-group[data-tuning-span="2"] { --dp-tuning-span: 2; }
+#view-settings .dp-settings-tuning-group[data-tuning-span="3"] { --dp-tuning-span: 3; }
+#view-settings .dp-settings-tuning-group[data-tuning-span="4"] { --dp-tuning-span: 4; }
+#view-settings .dp-settings-tuning-group[data-tuning-span="5"] { --dp-tuning-span: 5; }
+#view-settings .dp-settings-tuning-group[data-tuning-span="6"] { --dp-tuning-span: 6; }
+#view-settings .dp-settings-tuning-group[data-tuning-span="7"] { --dp-tuning-span: 7; }
+#view-settings .dp-settings-tuning-group[data-tuning-selectors="1"] { --dp-tuning-selectors: 1; }
+#view-settings .dp-settings-tuning-group[data-tuning-selectors="2"] { --dp-tuning-selectors: 2; }
+#view-settings .dp-settings-tuning-group[data-tuning-selectors="3"] { --dp-tuning-selectors: 3; }
+
+/* The sentence that closes a tuning region belongs to the CARD, not to the
+   cell collection: its own full-width row beneath the cells, centred on the
+   card whatever width the cells happened to occupy. */
+#view-settings .dp-settings-tuning-footer {
+  width: 100%;
+  margin: 14px auto 0;
+  text-align: center;
+}
+
+#view-settings .dp-settings-inline-check {
+  margin-top: 8px;
+}
+
+#view-settings .dp-settings-filter-fields {
+  margin-top: 12px;
+  transition: opacity .15s ease;
+}
+
+#view-settings .dp-settings-filter-fields.is-disabled {
+  opacity: .45;
+}
+
+/* A tuning cell whose parent permission is off: visibly deactivated, its
+   stored value kept (ui-settings-page.js projectPrivateLanDependency). The
+   change fades both ways from the moment the permission's accepted state
+   changes; the control's own enabled state changes at that same moment. */
+#view-settings .dp-settings-field.is-disabled {
+  opacity: .45;
+}
+
+#view-settings .dp-settings-dependent-field {
+  transition: opacity 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #view-settings .dp-settings-dependent-field {
+    transition: none;
+  }
+}
+
+#view-settings .dp-settings-field.is-disabled label {
+  cursor: not-allowed;
+}
+
+#view-settings .dp-settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+#view-settings .dp-settings-avatar-preview {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  color: var(--dp-text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+#view-settings .dp-settings-avatar-preview[hidden] {
+  display: none !important;
+}
+
+#view-settings .dp-settings-avatar-preview img {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+#view-settings .dp-settings-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+#view-settings .dp-settings-status {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--dp-surface-2);
+  color: var(--dp-text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+#view-settings .dp-settings-status b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--dp-text-primary);
+}
+
+#view-settings .dp-settings-status span {
+  overflow-wrap: anywhere;
+}
+
+#view-settings .dp-settings-caution,
+#view-settings .dp-settings-load-error {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--dp-state-caution) 45%, var(--dp-border-default));
+  border-radius: var(--radius-sm);
+  background: var(--dp-state-caution-bg);
+  color: var(--dp-text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+#view-settings .dp-settings-caution {
+  margin-bottom: 12px;
+}
+
+#view-settings .dp-settings-caution b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--dp-state-caution);
+}
+
+#view-settings .dp-settings-caution span,
+#view-settings .dp-settings-load-error span {
+  display: block;
+}
+
+#view-settings .dp-settings-load-error {
+  border-color: color-mix(in srgb, var(--dp-state-error) 42%, var(--dp-border-default));
+  background: var(--dp-state-error-bg);
+  color: var(--dp-state-error);
+}
+
+#view-settings .dp-settings-loading,
+#view-settings .dp-settings-load-error {
+  margin: 4px 0;
+}
+
+#view-settings .dp-settings-loading {
+  color: var(--dp-text-muted);
+  font-size: 12px;
+}
+
+#view-settings .dp-settings-token-once {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--dp-accent-purple-bright) 45%, var(--dp-border-default));
+  border-radius: var(--radius-sm);
+  background: var(--dp-surface-2);
+}
+
+#view-settings .dp-settings-token-once > b {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--dp-accent-purple-bright);
+  font-size: 11px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-inline-field > .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The centre copy takes the header's second row, centred on the header's
+   tracks. Where those tracks' minimums are wider than the header (a narrow
+   tablet), their midpoint lies right of the header's, so the copy is bounded
+   to the room it has on both sides of that midpoint inside the header
+   (2 x the header's width, measured as its container, minus the row) and
+   wraps rather than run past the card. Where it fits, the bound is wider than
+   the copy and nothing moves. */
+@media (max-width: 1180px) {
+  #view-settings .card-header:not(.dp-settings-card-header--hinted):has(> .dp-settings-card-header-center) {
+    container-type: inline-size;
+  }
+
+  #view-settings :where(:not(.dp-settings-card-header--hinted)) > .dp-settings-card-header-center {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    padding-top: 2px;
+    max-width: calc(200cqi - 100%);
+  }
+}
+
+@media (max-width: 779px) {
+  /* Stacked: the informational block and the field (Remove inside it) each
+     take the full width, in that order. */
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-alldebrid-key-row {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-alldebrid-key-row > .dp-settings-inline-field-info {
+    max-width: none;
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-debridlink-key-row,
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-premiumize-key-row {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-debridlink-key-row > .dp-settings-inline-field-info,
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-premiumize-key-row > .dp-settings-inline-field-info {
+    max-width: none;
+  }
+
+  /* The island steps (data-island-fit) narrow the folder no further than a
+     path still worth reading beside Browse. The path is the one island
+     control whose width is flexible: it starts at that floor and takes the
+     room its title and hint leave, up to its 380px, so they keep their own
+     width first and narrow -- and wrap -- only once the path is at its floor.
+     Taking the hints out of view therefore hands it no width a title still
+     needs. */
+  #view-settings .dp-settings-download-folder-field > .dp-settings-inline-field-control {
+    width: auto;
+    flex: 1 0 152px;
+    min-width: 152px;
+    max-width: 380px;
+  }
+}
+
+@media (max-width: 779px) {
+  /* The handheld header is one row, as from 780px: the identity -- as much of
+     it as leaves the section navigator whole (ui-section-nav.js: shorter
+     approved wordings, then no hint, no artwork, none) -- and the navigator,
+     centred in the whole header while the identity fits beside it, else right
+     after it, and centred again with no identity at all. */
+  #view-settings .dp-settings-master-header {
+    padding: 12px;
+    flex-wrap: nowrap;
+  }
+
+  #view-settings :is(.dp-settings-header-title, .dp-settings-header-subtitle) {
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-master-header[data-dp-identity~='quiet'] .dp-settings-header-subtitle,
+  #view-settings .dp-settings-master-header[data-dp-identity~='bare'] .dp-settings-header-icon,
+  #view-settings .dp-settings-master-header[data-dp-identity='none'] .dp-settings-header-copy,
+  #view-settings .dp-settings-master-header[data-dp-identity='none']::after {
+    display: none;
+  }
+
+  #view-settings .dp-settings-panels {
+    padding: 10px 10px 14px;
+  }
+
+  #view-settings :where(:not(.dp-settings-card-header--hinted)) > .dp-settings-card-header-center {
+    grid-column: 1;
+  }
+
+  #view-settings :where(:not(.dp-settings-card-header--hinted)) > .dp-settings-card-header-center {
+    grid-row: 2;
+    text-align: left;
+  }
+
+  /* A Settings island's settings keep their inline form; the island's own
+     steps decide how they yield (data-island-fit). */
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-inline-field:not(.dp-settings-island .dp-settings-inline-field) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  /* The two-line variant collapses the same way every inline field does: one
+     column, with its second line still the line beneath the control. */
+  #view-settings .dp-settings-inline-field.dp-settings-inline-field--two-line {
+    display: flex;
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* Canonical Settings master subtitle. */
+#view-settings .dp-settings-header-subtitle {
+  font-size: 11px !important;
+  line-height: 1.35;
+}
+#view-settings .dp-settings-header-subtitle::after { content: none !important; }
+
+/* A mild grouping rule inside one group card, between the reserved Usenet
+   member and the debrid providers beneath it. Inset and partial width, within
+   the content bounds and never full bleed: it groups, and it is emphatically
+   not a second section, header or category. */
+#view-settings .dp-settings-group-separator {
+  height: 1px;
+  width: min(72%, 520px);
+  margin: 16px auto;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--dp-divider), transparent);
+}
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-integration-header-enable { flex:0 0 auto; }
+
+/* ── The Network Source protocol boxes ───────────────────────────────────
+   A compact bounded box per real registered member, in canonical order, in
+   CENTRED rows: as many boxes as the group body's width holds sit on a row,
+   and every row -- an incomplete last one included -- is centred on the body
+   as a group, the boxes keeping their own width and the one gap between
+   them. Nothing counts members or columns, no breakpoint names a count,
+   nothing is measured or placed per box, and no horizontal scroll at any
+   width; a protocol registered later simply joins the rows. */
+#view-settings .dp-settings-source-box-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: stretch;
+  gap: 12px;
+}
+
+#view-settings .card.dp-settings-source-box {
+  /* Bounded: a box is its own compact width wherever the body holds it, and
+     shrinks only where the body itself is narrower -- never stretched across
+     the room an incomplete row leaves. */
+  flex: 0 1 210px;
+  width: 210px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  /* The COLLECTION's gap owns the rhythm between boxes. A stacking margin
+     inherited from the card material would also be subtracted from the flex
+     line's cross size, which is what made two boxes on one line disagree about
+     their height. */
+  margin: 0;
+  display: grid;
+  grid-template-rows: auto auto auto;
+  justify-items: center;
+  align-content: start;
+  row-gap: 8px;
+  border-radius: 12px;
+  padding: 12px 10px;
+}
+
+/* The head is the same proven three-region model as the canonical card header,
+   for the same reason: the outer tracks are equal `1fr`s, so the centre track's
+   midpoint is the HEAD's midpoint for any mark or title width. An `auto`
+   leading track would instead centre the title inside whatever the mark left
+   over, which is exactly the drift this model removes. The mark sits at the
+   start of the box and the trailing track stays empty. */
+#view-settings .dp-settings-source-box-head {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+#view-settings .dp-settings-source-box-head > .dp-settings-protocol-chip {
+  justify-self: start;
+}
+
+#view-settings .dp-settings-source-box-head > .card-title {
+  min-width: 0;
+  justify-self: center;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* One word per line (sourceProtocolBox): the head's `align-items: center`
+   centres the whole block on the mark. */
+#view-settings .dp-settings-source-box-head .dp-settings-source-box-title-line {
+  display: block;
+}
+
+/* The toggle is the only action in the box, so it is centred on the box's own
+   axis. The shared header-rail control places itself at the END of a card
+   header, which is right there and wrong here: a box has no rail, so this is
+   the one placement the box states for it. */
+#view-settings .card.dp-settings-source-box .dp-settings-source-box-enable {
+  justify-self: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+#view-settings .dp-settings-source-box-copy {
+  margin: 0;
+  min-width: 0;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+/* Two lines, as two lines: each is its own row, so neither depends on where
+   the box happens to wrap. */
+#view-settings .dp-settings-source-box-copy > span {
+  display: block;
+}
+#view-settings .dp-settings-provider-header-copy {
+  min-width: 0;
+  margin: 0;
+  justify-self: center;
+  text-align: center;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+@media (max-width:779px) {
+  #view-settings .dp-settings-integration-header-enable .tl { font-size:11px; }
+  /* Narrow: the copy wraps beneath the title group and the controls, still
+     inside the same canonical header (a Services hint never does: it is
+     carried by its help chip there). The title group keeps its own width and
+     the rail takes the rest, wrapping within it -- a rail wider than the room
+     left wraps onto a second line instead of covering the title. */
+  :is(#view-settings, .dp-setup-provider-surface) .card-header.dp-settings-card-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    row-gap: 4px;
+  }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header > .dp-settings-card-title-group { grid-column: 1; grid-row: 1; }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header > .dp-settings-card-header-controls { grid-column: 2; grid-row: 1; }
+  /* Downloads and Extraction: the rail is reserved first, whole and on one
+     line (Help; Automatic Extraction's Help and Enable), and the identity --
+     the title with its disclosure -- takes what is left, the title wrapping
+     inside it. Neither region can reach into the other. */
+  #view-settings :is([data-panel="downloads"], [data-panel="extraction"]) .card-header.dp-settings-card-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  #view-settings :is([data-panel="downloads"], [data-panel="extraction"]) .dp-settings-card-header > .dp-settings-card-header-controls {
+    flex-wrap: nowrap;
+  }
+  #view-settings .dp-settings-card-header:where(:not(.dp-settings-card-header--hinted)) > .dp-settings-card-header-center {
+    grid-column: 1 / -1; grid-row: 2; justify-self: start; text-align: left;
+  }
+  /* A header carrying the handheld Test group (headerTestControls): its rail
+     is never narrower than what it holds, so it wraps WHOLE onto its own line,
+     at the trailing edge, when the title leaves it too little room -- and
+     stays beside the title when it fits. A rail item wider than a grid track
+     would otherwise be drawn across the title. The hint, which the handheld
+     header never shows, keeps its own last line; the header declares no grid
+     tracks, so the hint fitter (fitHeaderHints) never reads it as the
+     three-track header. */
+  :is(#view-settings, .dp-setup-provider-surface) .card-header.dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) {
+    display: flex;
+    grid-template-columns: none;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 6px;
+  }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) > .dp-settings-card-title-group {
+    flex: 0 1 auto;
+    /* Room before the rail has to wrap, taken first from the space between
+       the title and its disclosure, then from the identity mark: the whole
+       chip -- mark, corner and glow -- at 30px (from 38), and its gap to the
+       title. The title's type is unchanged. */
+    gap: 2px;
+  }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) .dp-settings-card-title--with-icon {
+    gap: 8px;
+  }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) :is(.dp-settings-protocol-chip, .dp-settings-provider-chip) {
+    zoom: calc(30 / 38);
+  }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) > .dp-settings-card-header-controls {
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+    flex-wrap: nowrap;
+  }
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) > .dp-settings-card-header-center {
+    flex: 1 0 100%;
+    order: 1;
+  }
+  #view-settings .dp-settings-card-header:has(> .dp-settings-card-header-controls > .dp-settings-header-test-group) > .dp-settings-card-header-center:empty {
+    display: none;
+  }
+  /* Premium Services: every provider header is ONE row, every title in
+     full, every control at its own size. The row never wraps and the title
+     never shrinks; room comes back step by step, as little as the room
+     needs, and the step is the group's data-header-fit, chosen from the
+     rendered headers (fitHeaderSteps): 1 the gaps (the title's own gap to
+     its unmarked, zero-width premium mark included) and the Services
+     panel's padding, 2 the header and group-body padding, 3 the identity
+     marks at 26px, 4 Help lent to the card's body where a header still does
+     not fit (no rule of its own), 5 the last of the group body's padding.
+     The paddings are the phone-width card sizing rule's (`.card-header`/
+     `.card-body { padding: ... !important }` in ui-universal-language.css),
+     narrowed here for this group only. */
+  #view-settings .dp-settings-debrid-services .dp-settings-provider-card > .card-header.dp-settings-card-header {
+    flex-wrap: nowrap;
+  }
+  #view-settings .dp-settings-debrid-services .dp-settings-provider-card > .card-header.dp-settings-card-header > .dp-settings-card-title-group {
+    flex: 0 0 auto;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header {
+    column-gap: 6px;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header > .dp-settings-card-title-group {
+    gap: 0;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header .dp-settings-card-title--with-icon {
+    gap: 4px;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header .dp-provider-premium:empty {
+    margin-inline-start: -4px;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header > .dp-settings-card-header-controls {
+    column-gap: 6px;
+  }
+  #view-settings .dp-settings-panels:has(> [data-panel="sources"]:not([hidden]) > .dp-settings-debrid-services:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"])) {
+    padding-inline: 4px;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header {
+    padding-inline: 4px !important;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .dp-settings-group-body {
+    padding-inline: 4px !important;
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) .dp-settings-provider-card > .card-header.dp-settings-card-header :is(.dp-settings-protocol-chip, .dp-settings-provider-chip) {
+    zoom: calc(26 / 38);
+  }
+  #view-settings .dp-settings-debrid-services:is([data-header-fit="5"]) > .dp-settings-group-body {
+    padding-inline: 2px !important;
+  }
+  /* Network Sources: its own header is ONE row, its title in full, by the
+     same least-necessary steps (its data-header-fit-self, fitHeaderSteps):
+     1 the gaps, 2 the header padding, 3 its identity mark at 26px, 4 Help
+     lent to the row above its protocol boxes (no rule of its own). The
+     Services panel's padding stays Premium Services' to take. */
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources > .card-header.dp-settings-card-header {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources > .card-header.dp-settings-card-header > .dp-settings-card-title-group {
+    flex: 0 0 auto;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources > .card-header.dp-settings-card-header > .dp-settings-card-header-controls {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    margin-inline-start: auto;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .card-header.dp-settings-card-header {
+    column-gap: 6px;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .card-header.dp-settings-card-header > .dp-settings-card-title-group {
+    gap: 0;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .card-header.dp-settings-card-header .dp-settings-card-title--with-icon {
+    gap: 4px;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources:is([data-header-fit="1"],[data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .card-header.dp-settings-card-header > .dp-settings-card-header-controls {
+    column-gap: 6px;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources:is([data-header-fit="2"],[data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .card-header.dp-settings-card-header {
+    padding-inline: 4px !important;
+  }
+  #view-settings [data-panel="sources"] > .dp-settings-general-sources:is([data-header-fit="3"],[data-header-fit="4"],[data-header-fit="5"]) > .card-header.dp-settings-card-header .dp-settings-protocol-chip {
+    zoom: calc(26 / 38);
+  }
+  /* A header whose title may wrap (data-header-fit-wrap: the Authentication
+     cards) is ONE row: the identity from the leading edge, its title taking
+     what the rail leaves and wrapping there, and the rail whole, on one line,
+     at the trailing edge. It takes room back in the steps declared here, the
+     first that fits kept (fitHeaderSteps): 1 the informational status leaves
+     the rail -- Test and Enable stay; 2 an action's shorter words, 3 its
+     shortest, or its actions menu where one takes over from 3 (Users &
+     Access; this header keeps its gaps, padding and identity mark); 4 Help
+     is lent to the row at the top of the card body; 5 the card's short
+     title, where it has one -- drawn from 4, and Help lent at 5, on a card
+     whose short title comes first (data-header-short-first). */
+  #view-settings .dp-settings-card[data-header-fit-wrap] {
+    --dp-header-fit-steps: 6;
+  }
+  #view-settings .dp-settings-card[data-header-fit-wrap] > .card-header.dp-settings-card-header {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    column-gap: 10px;
+  }
+  #view-settings .dp-settings-card[data-header-fit-wrap] > .card-header.dp-settings-card-header > .dp-settings-card-title-group {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  #view-settings .dp-settings-card[data-header-fit-wrap] > .card-header.dp-settings-card-header > .dp-settings-card-header-controls {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    margin-inline-start: auto;
+  }
+  #view-settings .dp-settings-card[data-header-fit-wrap]:not([data-header-fit="0"]) > .card-header > .dp-settings-card-header-controls > .dp-settings-provider-config-status {
+    display: none;
+  }
+  /* A card whose short title comes first (data-header-short-first:
+     Integration Delivery Profiles) draws it from step 4, and lends Help only
+     at 5. */
+  #view-settings .dp-settings-card[data-header-fit-wrap][data-header-short-first] {
+    --dp-header-fit-lends-help: 5;
+  }
+
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="5"], [data-header-short-first][data-header-fit="4"]) .dp-settings-card-title-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="5"], [data-header-short-first][data-header-fit="4"]) .dp-settings-card-title-short {
+    display: inline;
+  }
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="5"], [data-header-short-first][data-header-fit="4"]) .dp-settings-card-title-short::before {
+    content: attr(data-short-title);
+  }
+
+  /* A header action's shorter words (fitLabel, Users & Access): from step 2
+     its first, from step 3 its shortest -- before Help is lent at 4. Its full
+     words stay its text and name. */
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="2"], [data-header-fit="3"], [data-header-fit="4"], [data-header-fit="5"])
+    > .card-header .dp-settings-header-action .dp-settings-fit-label-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="2"], [data-header-fit="3"], [data-header-fit="4"], [data-header-fit="5"])
+    > .card-header .dp-settings-header-action .dp-settings-fit-label-short {
+    display: inline;
+  }
+
+  #view-settings .dp-settings-card[data-header-fit-wrap][data-header-fit="2"] > .card-header .dp-settings-fit-label-short::before {
+    content: attr(data-fit-2);
+  }
+
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="3"], [data-header-fit="4"], [data-header-fit="5"])
+    > .card-header .dp-settings-fit-label-short::before {
+    content: attr(data-fit-3);
+  }
+
+  /* An actions menu that takes over only from a later step (headerActionsMenu
+     ``from``: User Accounts' Manage, from 3): until then the actions are
+     drawn whole, and the menu is not. */
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="0"], [data-header-fit="1"], [data-header-fit="2"])
+    > .card-header > .dp-settings-card-header-controls:has(> .dp-settings-header-test-group[data-menu-from="3"]) > .dp-settings-header-action {
+    display: flex;
+  }
+
+  #view-settings .dp-settings-card[data-header-fit-wrap]:is([data-header-fit="0"], [data-header-fit="1"], [data-header-fit="2"])
+    > .card-header > .dp-settings-card-header-controls > .dp-settings-header-test-group[data-menu-from="3"] {
+    display: none;
+  }
+
+  /* A menu with no toggle beside it is its trigger alone: no island. */
+  #view-settings .dp-settings-header-test-group[data-menu-from] {
+    padding: 0;
+    border: 0;
+  }
+}
+
+/* A header action's shorter words are drawn only by the steps above. */
+#view-settings .dp-settings-fit-label-short {
+  display: none;
+}
+
+/* A card's short title is drawn only at its header's last step (above). */
+#view-settings .dp-settings-card-title-short {
+  display: none;
+}
+
+/* A subsection's short title (disclosureSection) is its handheld title: its
+   full title stays its text, out of view there. */
+#view-settings .dp-settings-subsection-title-short {
+  display: none;
+}
+
+@media (max-width: 779px) {
+  #view-settings .dp-settings-subsection-title-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-subsection-title-short {
+    display: inline;
+  }
+
+  #view-settings .dp-settings-subsection-title-short::before {
+    content: attr(data-short-title);
+  }
+}
+
+/* A body box a header may lend its help chip to (fitHeaderHints): the chip
+   sits in the box's upper-right corner, out of the box's flow, so the box and
+   everything in it keep their geometry. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-help-slot {
+  position: relative;
+}
+
+#view-settings .dp-settings-help-slot > .dp-settings-help-chip {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+}
+
+/* Usenet's body has no box with a free corner (its server cards and the Add
+   Server tile fill it), so its slot is a row of its own above the servers,
+   drawn only while it holds the lent chip, which sits at its trailing edge. */
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-help-slot.dp-settings-help-slot--row {
+  position: static;
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-help-slot.dp-settings-help-slot--row:empty {
+  display: none;
+}
+
+#view-settings .dp-settings-help-slot--row > .dp-settings-help-chip {
+  position: static;
+}
+
+/* Settings: tabs and action footer remain visible; only the body scrolls.
+   (DP 1.0.12 canonical flattening: migrated from the retired
+   ui-legacy-foundation.css) */
+#view-settings:is(.active, [data-dp-motion-outgoing]) {
+  display: flex !important;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+#settings-tabs {
+  flex: 0 0 auto;
+  margin: 0 24px;
+}
+#settings-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 28px 0 24px;
+}
+@media (max-width: 779px) {
+  #settings-tabs {
+    margin-left: 10px;
+    margin-right: 10px;
+  }
+  #settings-form {
+    padding: 10px 14px 0 10px;
+  }
+}
+#settings-form .scard-body { gap: 14px; }
+#settings-form .toggle-row { max-width: 860px; }
+#settings-form .input { width: 100%; }
+#settings-form input[type="number"].input { max-width: 220px; }
+#settings-form textarea.input { max-width: 100%; }
+
+/* ── The ONE Settings help chip ──────────────────────────────────────────
+   Rendered by ui-settings-page.js `helpChip()`, last in a card's header rail
+   (and beside a Role selector in the account dialogs). Icon-only and
+   rectangular, in the neutral control colours of the disclosure chip: it
+   explains a card and operates nothing, so it takes no accent of its own. */
+.dp-settings-help-chip {
+  width: 34px;
+  height: 28px;
+  flex: 0 0 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--dp-border-default);
+  border-radius: 6px;
+  background: var(--dp-surface-2);
+  color: var(--dp-text-muted);
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+
+.dp-settings-help-chip:hover {
+  border-color: var(--dp-border-strong);
+  background: var(--dp-surface-3);
+  color: var(--dp-text-primary);
+}
+
+.dp-settings-help-chip:active {
+  background: var(--dp-surface-1);
+}
+
+.dp-settings-help-chip:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright);
+  outline-offset: 2px;
+}
+
+.dp-settings-help-chip .dp-settings-help-glyph {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-settings-help-chip {
+    transition: none;
+  }
+}
+
+/* The help dialog (ui-settings-help.js in the canonical dialog shell): the
+   header and Close stay put and the explanation scrolls on a short viewport. */
+.dp-modal-dialog.dp-settings-help-dialog {
+  width: min(680px, 100%);
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+
+.dp-modal-dialog.dp-settings-help-dialog > .dp-modal-header,
+.dp-modal-dialog.dp-settings-help-dialog > .dp-modal-footer {
+  flex: 0 0 auto;
+}
+
+.dp-modal-dialog.dp-settings-help-dialog > .dp-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dp-settings-help-content {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  color: var(--dp-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dp-settings-help-section {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dp-settings-help-heading {
+  margin: 0;
+  color: var(--dp-text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.dp-settings-help-text {
+  margin: 0;
+}
+
+.dp-settings-help-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+}
+
+/* The role comparison scrolls inside its own region on a narrow viewport, so
+   the dialog itself never widens. */
+.dp-settings-help-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.dp-settings-help-table-scroll:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright);
+  outline-offset: 2px;
+}
+
+.dp-settings-help-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dp-settings-help-table caption {
+  padding: 8px 10px;
+  color: var(--dp-text-primary);
+  font-weight: 700;
+  text-align: left;
+}
+
+.dp-settings-help-table th,
+.dp-settings-help-table td {
+  padding: 7px 10px;
+  border-top: 1px solid var(--dp-border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.dp-settings-help-table thead th {
+  color: var(--dp-text-primary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.dp-settings-help-table tbody th {
+  color: var(--dp-text-primary);
+  font-weight: 600;
+}
+
+.dp-settings-help-table td[data-answer="no"] {
+  color: var(--dp-text-muted);
+}
+
+/* The table's columns need its 560px. Where the matrix is narrower, the same
+   rows read capability by capability (ui-settings-help.js), each role's
+   answer labelled, with no sideways scroll; the table is not shown, so only
+   one of the two is announced. */
+.dp-settings-help-matrix {
+  container: dp-settings-help-matrix / inline-size;
+  min-width: 0;
+}
+
+.dp-settings-help-roles {
+  display: none;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dp-settings-help-roles-caption {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--dp-text-primary);
+  font-weight: 700;
+}
+
+.dp-settings-help-role-item {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--dp-border-subtle);
+}
+
+.dp-settings-help-role-capability {
+  margin: 0;
+  color: var(--dp-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dp-settings-help-role-answers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 4px 14px;
+  margin: 0;
+}
+
+.dp-settings-help-role-answer {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.dp-settings-help-role-answer dt {
+  color: var(--dp-text-primary);
+  font-weight: 600;
+}
+
+.dp-settings-help-role-answer dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dp-settings-help-role-answer dd[data-answer="no"] {
+  color: var(--dp-text-muted);
+}
+
+@container dp-settings-help-matrix (width < 562px) {
+  .dp-settings-help-table-scroll {
+    display: none;
+  }
+
+  .dp-settings-help-roles {
+    display: block;
+  }
+}
+
+/* ── The header Test, below 780px ─────────────────────────────────────────
+   The rail's status gives way, and the Test and the toggle sit in one compact
+   outlined group: the Test textual (its mark not drawn), its colour the
+   configuration's, in the DP button tones -- verified (success), unverified
+   (caution), unconfigured (the accent purple). One press still runs it. The
+   status stays the rail's live region (read, not drawn). */
+@media (max-width: 779px) {
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-card-header-controls:has(> .dp-settings-header-test-group) > .dp-settings-provider-config-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-card-header-controls:has(> .dp-settings-header-test-group) > .dp-settings-header-action {
+    display: none;
+  }
+
+  #view-settings .dp-settings-header-test-shell {
+    display: inline-flex;
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group > .dp-settings-header-action {
+    display: contents;
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group .dp-settings-provider-test .dp-settings-action-chip {
+    display: none;
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group[data-verification] .dp-settings-provider-test {
+    box-shadow: none;
+  }
+
+  #view-settings .dp-settings-header-test-group[data-verification="verified"] .dp-settings-provider-test {
+    border-color: color-mix(in srgb, var(--dp-state-success) 34%, transparent);
+    background: var(--dp-state-success-bg);
+    color: var(--dp-state-success);
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group[data-verification="unverified"] .dp-settings-provider-test {
+    border-color: color-mix(in srgb, var(--dp-state-caution) 34%, transparent);
+    background: var(--dp-state-caution-bg);
+    color: var(--dp-state-caution);
+  }
+
+  :is(#view-settings, .dp-setup-provider-surface) .dp-settings-header-test-group[data-verification="unconfigured"] .dp-settings-provider-test {
+    border-color: color-mix(in srgb, var(--dp-accent-purple-bright) 34%, transparent);
+    background: color-mix(in srgb, var(--dp-accent-purple-bright) 11%, transparent);
+    color: var(--dp-accent-purple-bright);
+  }
+
+  #view-settings .dp-settings-header-test-group[data-verification] .dp-settings-provider-test:hover:not(:disabled) {
+    filter: none;
+  }
+
+  #view-settings .dp-settings-header-test-group[data-verification="verified"] .dp-settings-provider-test:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--dp-state-success) 22%, transparent);
+  }
+
+  #view-settings .dp-settings-header-test-group[data-verification="unverified"] .dp-settings-provider-test:hover:not(:disabled) {
+    background: rgba(234,179,8,.2);
+    border-color: rgba(234,179,8,.5);
+  }
+
+  #view-settings .dp-settings-header-test-group[data-verification="unconfigured"] .dp-settings-provider-test:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--dp-accent-purple-bright) 22%, transparent);
+  }
+
+  /* An actions menu (Backups): the shared projected-menu material, in the
+     top layer. */
+  #view-settings .dp-settings-header-test-menu {
+    inset: auto;
+    margin: 0;
+    width: max-content;
+    min-width: 160px;
+    max-width: calc(100vw - 16px);
+    padding: 8px;
+    display: none;
+  }
+
+  #view-settings .dp-settings-header-test-menu:popover-open {
+    display: grid;
+    gap: 8px;
+  }
+
+  #view-settings .dp-settings-header-test-menu > .btn {
+    min-height: 40px;
+    justify-content: center;
+  }
+}

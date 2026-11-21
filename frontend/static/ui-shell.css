@@ -1,0 +1,463 @@
+/* DownloadPulse v1.0.11 application shell.
+   Desktop visual target: approved dark/light mockups. */
+
+html, body {
+  background: var(--dp-gradient-page);
+}
+
+body {
+  font-family: var(--dp-font-sans);
+  color: var(--dp-text-primary);
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  top: 0;
+  height: 100%;
+  width: var(--dp-sidebar-width);
+  min-width: var(--dp-sidebar-width);
+  background:
+    radial-gradient(circle at 18% 8%, rgba(var(--dp-accent-rgb), .12), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--dp-bg-sidebar) 94%, var(--dp-accent-purple) 6%), var(--dp-bg-sidebar));
+  border-right: 1px solid var(--dp-border-subtle);
+}
+#sidebar nav {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  min-height: var(--dp-sidebar-brand-height);
+  padding: 18px 20px;
+  gap: 12px;
+  border-bottom: 1px solid var(--dp-border-subtle);
+  background: linear-gradient(180deg, rgba(255,255,255,.018), transparent);
+}
+
+.logo-icon {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--dp-radius-md);
+  box-shadow: var(--dp-glow-accent);
+}
+
+.logo-text { min-width: 0; line-height: 1.2; }
+.logo-name-full { font-size: 11.5px; line-height: 1.08; white-space: nowrap; }
+.logo-name {
+  font-family: var(--dp-font-sans);
+  font-size: 17px;
+  line-height: 1.05;
+  font-weight: 700;
+  letter-spacing: -.025em;
+  color: var(--dp-text-primary);
+}
+.logo-name span { color: var(--dp-accent-purple-bright); }
+.logo-ver {
+  margin-top: 5px;
+  font-family: var(--dp-font-mono);
+  font-size: var(--dp-type-version-size);
+  color: var(--dp-text-muted);
+}
+
+#sidebar nav {
+  padding: 12px 10px 10px;
+}
+
+.nav-group {
+  padding: 14px 10px 6px;
+  margin: 0;
+  font-size: var(--dp-type-nav-group-size);
+  line-height: 1.2;
+  font-weight: var(--dp-type-nav-group-weight);
+  letter-spacing: var(--dp-type-nav-group-tracking);
+  color: var(--dp-text-muted);
+}
+.nav-group:not(:first-child) { margin-top: 6px; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  min-height: 42px;
+  margin: 2px 0;
+  padding: 0 12px;
+  gap: 11px;
+  border: 0;
+  border-radius: var(--dp-radius-md);
+  color: var(--dp-text-secondary);
+  font-size: var(--dp-type-nav-size);
+  line-height: var(--dp-type-nav-line);
+  font-weight: var(--dp-type-nav-weight);
+  transition: background .14s ease, color .14s ease, box-shadow .14s ease;
+  position: relative;
+}
+
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: transparent;
+}
+
+.nav-item .icon {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  justify-content: center;
+  color: currentColor;
+  opacity: .9;
+  font-family: inherit;
+  font-size: 0;
+  line-height: 1;
+  font-weight: 400;
+  font-variant-emoji: text;
+}
+.nav-item .icon svg { width: 19px; height: 19px; }
+.nav-label { flex: 1; }
+
+.nav-item:hover {
+  color: var(--dp-text-primary);
+  background: var(--dp-nav-hover);
+}
+.nav-item.active {
+  color: var(--dp-nav-active-text);
+  background: var(--dp-nav-active);
+  font-weight: var(--dp-type-nav-active-weight);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dp-accent-purple) 14%, transparent);
+}
+.nav-item.active::before { background: var(--dp-nav-active-rail); box-shadow: 0 0 12px rgba(var(--dp-accent-rgb), .45); }
+.nav-item.active .icon { color: var(--dp-accent-purple-bright); }
+
+.nav-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--dp-radius-pill);
+  background: color-mix(in srgb, var(--dp-state-active) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--dp-state-active) 24%, transparent);
+  color: var(--dp-state-active);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.sidebar-footer {
+  flex-shrink: 0;
+  margin: 0 12px 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: var(--dp-radius-lg);
+  background: color-mix(in srgb, var(--dp-surface-2) 80%, transparent);
+  box-shadow: 0 8px 22px rgba(0,0,8,.12);
+}
+.conn-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 7px;
+  gap: 8px;
+  color: var(--dp-text-secondary);
+  font-size: 11px;
+}
+.conn-row:last-child { margin-bottom: 0; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+.dot.ok     { background: var(--dp-state-success-mark); box-shadow: 0 0 6px color-mix(in srgb, var(--dp-state-success-fill) 40%, transparent); }
+.dot.error  { background: var(--red); animation: blink 1.5s infinite; }
+.dot.check  { background: var(--yellow); animation: pulse 1.2s infinite; }
+.dot.warn   { background: var(--yellow); }
+/* A Provider Status dot glows in currentColor; on a light theme that is the
+   row's dark text, so there the glow is the dot's own state. */
+body.light .dot.ok { color: var(--dp-state-success-mark); }
+body.light .dot.error { color: var(--red); }
+body.light :is(.dot.check, .dot.warn) { color: var(--yellow); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* Theme control stays in the existing DOM for compatibility but visually lives
+   in the always-accessible upper-right topbar position required by the mockups. */
+.sidebar-theme-control {
+  display: flex;
+  justify-content: center;
+  position: fixed;
+  top: 14px;
+  right: 20px;
+  z-index: 460;
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+.theme-toggle {
+  position: static;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--dp-radius-md);
+  border: 1px solid var(--dp-border-default);
+  background: color-mix(in srgb, var(--dp-surface-2) 92%, transparent);
+  color: var(--dp-text-secondary);
+  box-shadow: var(--dp-shadow-control);
+  font: inherit;
+  font-size: 0;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform .15s, border-color .15s, background .15s;
+}
+.theme-toggle svg { width: 18px; height: 18px; }
+.theme-toggle:hover {
+  transform: none;
+  color: var(--dp-text-primary);
+  border-color: var(--dp-border-strong);
+  background: var(--dp-surface-3);
+}
+.theme-toggle:focus-visible { outline: none; outline-offset: 3px; box-shadow: var(--dp-focus-ring), var(--dp-shadow-control); }
+
+/* ── Top operational strip ─────────────────────────────────────────────── */
+#main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  min-height: 0;
+  flex: 1;
+}
+#topbar {
+  display: flex;
+  align-items: center;
+  position: relative;
+  z-index: 210; /* must be above sidebar */
+  min-height: var(--dp-topbar-height);
+  height: var(--dp-topbar-height);
+  padding: 0 68px 0 var(--dp-page-gutter-x);
+  gap: 10px;
+  background: color-mix(in srgb, var(--dp-bg-app-alt) 84%, transparent);
+  border-bottom: 1px solid var(--dp-border-subtle);
+  box-shadow: 0 8px 26px rgba(0,0,8,.08);
+  backdrop-filter: blur(14px);
+}
+/* DP 1.0.12 canonical flattening: #topbar h1 (1,0,1) is more specific than
+   #page-title (1,0,0) alone, so it has always governed font-size/flex for
+   the shared <h1 id="page-title"> element regardless of source order --
+   preserved verbatim rather than folded into #page-title. From the shell's
+   780px mode change up the page title's size is the one desktop page-title
+   size (ui-shell-structural.css --dp-shell-title-size); the handheld shell
+   (below 780px) sets its own (ui-shell-mobile.css). */
+#topbar h1 { font-weight: 700; flex: 1; }
+
+#page-title {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 130px;
+  margin: 0;
+  font-family: var(--dp-font-sans);
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: -.025em;
+  color: var(--dp-text-primary);
+}
+/* The title's waveform: icons/dp/shell-pulse.svg is its shape, fade and
+   halo, as a mask -- the file itself (sharp) over its #glow state (the halo
+   alone; DownloadPulse Light's is #glow-light, ui-shell-structural.css) -- and
+   the palette in force is its colour (--dp-chrome-pulse-*: the file's own
+   purple to blue natively). An image cannot take the page's colours, and a
+   drop-shadow would be masked away, so the halo is the file's. The stops sit
+   where the file's own lie in the drawn box (contain, 105 x 19: 9.3% each
+   side). */
+#page-title::after {
+  content: '';
+  display: inline-block;
+  width: 68px;
+  height: 14px;
+  margin-left: 8px;
+  vertical-align: -1px;
+  opacity: .52;
+  background: linear-gradient(90deg, var(--dp-chrome-pulse-start) 27.2%, var(--dp-chrome-pulse-mid) 59.8%, var(--dp-chrome-pulse-end) 90.7%);
+  -webkit-mask: url('/icons/dp/shell-pulse.svg?v=4') center / contain no-repeat, url('/icons/dp/shell-pulse.svg?v=4#glow') center / contain no-repeat;
+  mask: url('/icons/dp/shell-pulse.svg?v=4') center / contain no-repeat, url('/icons/dp/shell-pulse.svg?v=4#glow') center / contain no-repeat;
+}
+
+#topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+#topbar-actions .btn {
+  min-height: 34px;
+  height: 34px;
+  padding: 0 12px;
+  gap: 6px;
+  border-radius: var(--dp-radius-sm);
+  font-size: 12px;
+}
+#topbar-actions .btn svg { width: 15px; height: 15px; }
+
+#update-badge {
+  min-height: 30px;
+  padding: 0 10px !important;
+  border-radius: var(--dp-radius-pill) !important;
+  background: color-mix(in srgb, var(--dp-accent-purple) 9%, var(--dp-surface-2)) !important;
+  border-color: color-mix(in srgb, var(--dp-accent-purple) 30%, var(--dp-border-default)) !important;
+  color: var(--dp-accent-purple-bright) !important;
+  font-size: 10px !important;
+}
+
+#runtime-speed-badge {
+  box-sizing: border-box;
+  justify-content: center;
+  position: relative;
+  overflow: visible;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 34px;
+  padding: 0 10px !important;
+  gap: 6px !important;
+  border-radius: var(--dp-radius-md) !important;
+  background: color-mix(in srgb, var(--dp-surface-2) 90%, transparent) !important;
+  border-color: var(--dp-border-default) !important;
+  color: var(--dp-text-secondary) !important;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.01);
+  font-family: var(--dp-font-mono);
+  font-size: 10.5px !important;
+}
+#runtime-badge-speed {
+  display: inline-block;
+  width: 64px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--dp-state-success) !important;
+}
+#runtime-badge-limit {
+  display: inline-block;
+  width: 64px;
+  text-align: right;
+}
+#runtime-cap-toggle { font-size: 10.5px; }
+#runtime-cap-toggle svg { width: 13px; height: 13px; }
+#runtime-cap-toggle .dp-speedcap-arrow {
+  display: inline-block;
+  color: var(--green);
+  font-size: 9px;
+  line-height: 1;
+  transform: translateY(-1px);
+  text-shadow: 0 0 7px color-mix(in srgb, var(--green) 42%, transparent);
+}
+
+.runtime-cap-options button:hover,
+.runtime-cap-options button:focus-visible {
+  background: var(--surface2) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+  font-weight: 600;
+}
+
+.runtime-cap-menu {
+  margin-top: 4px;
+  border-radius: var(--dp-radius-lg);
+  backdrop-filter: blur(16px);
+}
+
+/* ── Shared content frame ──────────────────────────────────────────────── */
+#content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: var(--dp-page-gutter-y) var(--dp-page-gutter-x);
+  background: transparent;
+}
+#content > .view {
+  width: min(100%, var(--dp-content-max-width));
+  margin-inline: auto;
+}
+
+/* The shell owns global card geometry during migration while page-specific
+   restructuring remains in the later Dashboard/Downloads passes. */
+.card, .list-card, .scard {
+  border-color: var(--dp-border-default);
+  border-radius: var(--dp-radius-lg);
+}
+
+/* ── Light theme parity ───────────────────────────────────────────────── */
+body.light #sidebar {
+  background:
+    radial-gradient(circle at 16% 8%, rgba(var(--dp-accent-rgb), .055), transparent 28%),
+    linear-gradient(180deg, #ffffff, var(--dp-bg-sidebar));
+  border-right-color: var(--dp-border-default);
+}
+/* The light header's surface is painted on the canvas (ui-shell-structural.css),
+   where it eases into the page across this bar's bottom edge. */
+body.light #topbar {
+  background: transparent;
+  border-bottom-color: var(--dp-border-default);
+  box-shadow: none;
+}
+body.light .sidebar-footer {
+  background: rgba(255,255,255,.82);
+  box-shadow: var(--dp-shadow-card);
+}
+body.light .theme-toggle,
+body.light #runtime-speed-badge {
+  background: rgba(255,255,255,.9) !important;
+}
+
+/* ── Responsive shell ─────────────────────────────────────────────────── */
+@media (max-width: 1439px) {
+  :root { --dp-sidebar-width: 236px; --dp-page-gutter-x: 22px; }
+  #topbar { gap: 7px; }
+  #topbar-actions .btn { padding-inline: 10px; }
+  #runtime-speed-badge { padding-inline: 8px !important; }
+}
+
+/* The compact desktop sidebar (901-1559px) is ui-shell-structural.css's. The
+   page title's pulse artwork stays beside it at every desktop width; the
+   handheld shell (below 780px) is ui-shell-mobile.css's. */
+
+@media (max-width: 899px) {
+  #page-title { font-size: 21px; }
+  #topbar-actions .btn { padding-inline: 9px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-item, .theme-toggle { transition: none; }
+}
+
+/* ── Page-view visibility (DP 1.0.12 canonical flattening: migrated from
+   the retired ui-legacy-foundation.css) ─────────────────────────────────── */
+.view { display: none !important; }
+.view:is(.active, [data-dp-motion-outgoing]) { display: block !important; }
+
+@media (min-width: 780px) {
+  /* Keep the shared page header divider aligned with the sidebar logo divider. */
+  .logo { box-sizing: border-box; height: var(--chrome-header-height); }
+}
+
+@media (max-width: 779px) {
+  .view:is(.active, [data-dp-motion-outgoing]) { display: block !important; }
+}

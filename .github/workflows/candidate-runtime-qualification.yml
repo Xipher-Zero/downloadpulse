@@ -1,0 +1,284 @@
+# Exact-artifact runtime qualification for the immutable DownloadPulse candidate.
+# No source-equivalent image is built here: both published platform children are
+# pulled by digest and exercised directly (arm64 through QEMU on the hosted runner).
+name: Candidate Runtime Qualification
+
+on:
+  push:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+    tags:
+      - 'v*'
+      - 'internal-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUNTIME_PREDICATE_TYPE: https://github.com/Xipher-Zero/downloadpulse/attestations/candidate-runtime/v1
+
+jobs:
+  identity:
+    name: Resolve immutable candidate identity
+    runs-on: ubuntu-24.04
+    outputs:
+      app_version: ${{ steps.revision.outputs.app_version }}
+      manifest_digest: ${{ steps.identity.outputs.manifest_digest }}
+      amd64_digest: ${{ steps.identity.outputs.amd64_digest }}
+      arm64_digest: ${{ steps.identity.outputs.arm64_digest }}
+      source_ref: ${{ steps.identity.outputs.source_ref }}
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Verify exact checkout identity
+        id: revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          app_version="$(tr -d '\r\n' < VERSION)"
+          if [[ ! "$app_version" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+            echo "VERSION does not name a release version: '${app_version:-<empty>}'"
+            exit 1
+          fi
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for and resolve exact published candidate
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_ref="${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          manifest_digest=""
+          manifest_json=""
+
+          # Wait on this commit's own Image run, not on a clock: while it
+          # is queued or running (a re-run included) the candidate may still
+          # come; once it finished without publishing, fail saying so. Bounded.
+          python3 .github/qualification/candidate_image.py --sha "$GITHUB_SHA" --ref "$source_ref"
+          inspect="$(docker buildx imagetools inspect "$source_ref")"
+          manifest_json="$(docker buildx imagetools inspect --raw "$source_ref")"
+          manifest_digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$inspect")"
+          if [[ ! "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Immutable candidate $source_ref did not resolve to an index digest"
+            exit 1
+          fi
+
+          index_revision="$(jq -r '.annotations["org.opencontainers.image.revision"] // empty' <<< "$manifest_json")"
+          if [ "$index_revision" != "$GITHUB_SHA" ]; then
+            echo "Candidate $source_ref records source revision '${index_revision:-<empty>}', expected $GITHUB_SHA"
+            exit 1
+          fi
+
+          amd64_digest="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest][0] // empty' <<< "$manifest_json")"
+          arm64_digest="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest][0] // empty' <<< "$manifest_json")"
+          for value in "$amd64_digest" "$arm64_digest"; do
+            if [[ ! "$value" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "Published manifest is missing an expected linux platform child: $value"
+              exit 1
+            fi
+          done
+          if [ "$amd64_digest" = "$arm64_digest" ]; then
+            echo "Platform child digests unexpectedly collapse to the same artifact"
+            exit 1
+          fi
+
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+          echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"
+          echo "amd64_digest=$amd64_digest" >> "$GITHUB_OUTPUT"
+          echo "arm64_digest=$arm64_digest" >> "$GITHUB_OUTPUT"
+
+  runtime:
+    name: Qualify exact ${{ matrix.arch }} child
+    needs: identity
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      APP_VERSION: ${{ needs.identity.outputs.app_version }}
+      CHILD_DIGEST: ${{ matrix.arch == 'amd64' && needs.identity.outputs.amd64_digest || needs.identity.outputs.arm64_digest }}
+    steps:
+      - name: Set up QEMU for cross-platform execution
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull exact platform child
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME}@${CHILD_DIGEST}"
+          docker pull --platform "linux/${{ matrix.arch }}" "$image"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')" = "$APP_VERSION"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.title" }}')" = "DownloadPulse: Universal Transfer Manager"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/Xipher-Zero/downloadpulse"
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}')" = "GPL-2.0-or-later"
+
+      - name: Qualify non-root runtime, writable paths, application, providers, and archive support
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME}@${CHILD_DIGEST}"
+          container="downloadpulse-candidate-${{ matrix.arch }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          docker run --detach \
+            --platform "linux/${{ matrix.arch }}" \
+            --name "$container" \
+            --env PUID=99 \
+            --env PGID=100 \
+            --env CONFIG_PATH=/app/config/config.json \
+            --env DB_PATH=/app/data/downloadpulse.db \
+            "$image"
+
+          healthy=0
+          for _ in $(seq 1 60); do
+            if docker exec "$container" curl --fail --silent --show-error http://127.0.0.1:8095/api/health >/tmp/dp-health.json; then
+              healthy=1
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$container")" != "true" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "$healthy" -ne 1 ]; then
+            docker inspect "$container" || true
+            docker logs "$container" || true
+            exit 1
+          fi
+
+          uid="$(docker exec "$container" sh -c "awk '/^Uid:/ {print \$2}' /proc/1/status")"
+          gid="$(docker exec "$container" sh -c "awk '/^Gid:/ {print \$2}' /proc/1/status")"
+          test "$uid" = "99"
+          test "$gid" = "100"
+
+          docker exec --user 99:100 "$container" sh -c '
+            set -eu
+            printf runtime > /app/data/.candidate-write
+            printf runtime > /app/config/.candidate-write
+            printf runtime > /download/.candidate-write
+            rm /app/data/.candidate-write /app/config/.candidate-write /download/.candidate-write
+          '
+
+          health="$(docker exec "$container" curl --fail --silent --show-error http://127.0.0.1:8095/api/health)"
+          test "$(jq -r '.version // empty' <<< "$health")" = "$APP_VERSION"
+
+          provider_status="$(docker exec "$container" curl --fail --silent --show-error http://127.0.0.1:8095/api/integration-status/alldebrid)"
+          test "$(jq -r '.integration // empty' <<< "$provider_status")" = "alldebrid"
+          case "$(jq -r '.state // empty' <<< "$provider_status")" in
+            disabled|unconfigured|auth_required|healthy|unhealthy) ;;
+            *) echo "Unexpected AllDebrid runtime state: $provider_status"; exit 1 ;;
+          esac
+
+          docker exec --user 99:100 "$container" python -c '
+          import asyncio
+          from providers.general_http.provider import GeneralHttpProvider
+          from transfers.models import TransferRequest
+          async def main():
+              provider = GeneralHttpProvider()
+              result = await provider.resolve(TransferRequest("https", "https://downloads.example/file.bin", name="file.bin"))
+              assert len(result.candidates) == 1
+              candidate = result.candidates[0]
+              assert candidate.provider_id == "general_http"
+              assert candidate.endpoints[0].scheme == "https"
+          asyncio.run(main())
+          '
+
+          docker exec "$container" dpkg-query -W 7zip 7zip-rar aria2 gosu
+          docker exec "$container" sh -c 'bash /usr/share/downloadpulse/aria2/verify-features.sh "$(cat /usr/share/downloadpulse/aria2/VERSION)"'
+          docker exec "$container" sh -c '7z i | grep -qi rar'
+          docker exec --user 99:100 "$container" sh -c '
+            set -eu
+            rm -rf /tmp/downloadpulse-candidate-7z
+            mkdir -p /tmp/downloadpulse-candidate-7z/input /tmp/downloadpulse-candidate-7z/output
+            printf "candidate-runtime\n" > /tmp/downloadpulse-candidate-7z/input/payload.txt
+            (cd /tmp/downloadpulse-candidate-7z/input && 7z a -bd -y ../archive.7z payload.txt >/dev/null)
+            7z x -bd -y /tmp/downloadpulse-candidate-7z/archive.7z -o/tmp/downloadpulse-candidate-7z/output >/dev/null
+            grep -q candidate-runtime /tmp/downloadpulse-candidate-7z/output/payload.txt
+          '
+
+  evidence:
+    name: Attest exact candidate runtime qualification
+    needs: [identity, runtime]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write machine-verifiable runtime predicate
+        shell: bash
+        env:
+          MANIFEST_DIGEST: ${{ needs.identity.outputs.manifest_digest }}
+          AMD64_DIGEST: ${{ needs.identity.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ needs.identity.outputs.arm64_digest }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg commit_sha "$GITHUB_SHA" \
+            --arg manifest_digest "$MANIFEST_DIGEST" \
+            --arg amd64_digest "$AMD64_DIGEST" \
+            --arg arm64_digest "$ARM64_DIGEST" \
+            '{
+              schema_version: 1,
+              commit_sha: $commit_sha,
+              manifest_digest: $manifest_digest,
+              platforms: {
+                "linux/amd64": {digest: $amd64_digest, runtime: "passed", non_root: "passed"},
+                "linux/arm64": {digest: $arm64_digest, runtime: "passed", non_root: "passed", execution: "qemu"}
+              },
+              result: "success"
+            }' > candidate-runtime-evidence.json
+          cat candidate-runtime-evidence.json
+
+      - name: Upload runtime evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-runtime-${{ github.sha }}
+          path: candidate-runtime-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Log in to GHCR for attestation publication
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign runtime qualification for exact OCI manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ needs.identity.outputs.manifest_digest }}
+          predicate-type: ${{ env.RUNTIME_PREDICATE_TYPE }}
+          predicate-path: candidate-runtime-evidence.json
+          push-to-registry: true
+          create-storage-record: false

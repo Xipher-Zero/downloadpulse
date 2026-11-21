@@ -1,0 +1,143 @@
+/* The sidebar's bottom stack.
+ *
+ * #sidebar-bottom-stack is static shell markup that wraps the sidebar footer
+ * (Provider Status) and the auth owner's mount. It is the last item of the
+ * sidebar's column, below the navigation and pushed to the bottom by its own
+ * auto top margin, so the navigation always ends above it: nothing in the
+ * stack is positioned over the sidebar, in either session state. When the
+ * session owner marks it data-session ("authenticated", or "standalone" where
+ * the row holds My Account alone), Provider Status and the session row are
+ * one flow inside it.
+ */
+#sidebar .sidebar-bottom-stack {
+  --dp-sidebar-stack-inset: 10px;
+  position: relative;
+  z-index: 3;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: auto var(--dp-sidebar-stack-inset) 12px;
+}
+/* Provider Status keeps its own composition at any sidebar scale: it is as
+   wide, in its own terms, as it is at full size, centred, so its indicators
+   and lines wrap exactly as they do unscaled (ui-shell-structural.css,
+   --dp-sidebar-scale). Scaled, the stack is wider in its own terms by the
+   scale's inverse while its insets are not, which this width undoes; at full
+   size it is the stack's own width. */
+#sidebar .sidebar-bottom-stack .sidebar-footer {
+  align-self: center;
+  width: calc(100% * var(--dp-sidebar-scale, 1) - 2 * var(--dp-sidebar-stack-inset) * (1 - var(--dp-sidebar-scale, 1)));
+  flex: 0 0 auto;
+}
+#sidebar .sidebar-bottom-stack[data-session] #sidebar-auth-row {
+  position: static !important;
+  width: 100%;
+  min-height: 46px;
+  flex: 0 0 auto;
+  cursor: default;
+}
+/* The session row is one row holding two controls -- Log Out at its start, the
+   signed-in account at its end -- so the row itself is not a target: it takes
+   no hover of its own, each control does. The space between belongs to
+   neither. */
+#sidebar #sidebar-auth-row.dp-sidebar-session-row:hover {
+  background: transparent;
+}
+#sidebar .dp-sidebar-session-row > :is(.dp-sidebar-logout, .dp-sidebar-profile) {
+  display: flex;
+  align-items: center;
+  gap: inherit;
+  min-width: 0;
+  min-height: 34px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dp-radius-sm, 6px);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+#sidebar .dp-sidebar-session-row > :is(.dp-sidebar-logout, .dp-sidebar-profile):hover {
+  color: var(--dp-text-primary, #f3f4ff);
+}
+body.light #sidebar .dp-sidebar-session-row > :is(.dp-sidebar-logout, .dp-sidebar-profile):hover {
+  color: #1c2037;
+}
+#sidebar .dp-sidebar-session-row > :is(.dp-sidebar-logout, .dp-sidebar-profile):focus-visible {
+  outline: 2px solid var(--accent, #a855f7);
+  outline-offset: 2px;
+}
+#sidebar .dp-sidebar-session-row > .dp-sidebar-logout {
+  flex: 0 0 auto;
+}
+#sidebar .dp-sidebar-session-space {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 4px;
+}
+#sidebar .dp-sidebar-session-row > .dp-sidebar-profile {
+  flex: 0 1 auto;
+  gap: 9px;
+  text-align: right;
+}
+/* Without a session the row holds My Account alone, laid out as Log Out is:
+   glyph first on the icon rail, label after it at the item gap. */
+#sidebar #sidebar-auth-row[data-session="standalone"] > .dp-sidebar-profile {
+  gap: inherit;
+  text-align: left;
+}
+#sidebar .dp-sidebar-profile .nav-label {
+  min-width: 0;
+}
+/* The signed-in account: its name over its role. */
+#sidebar .dp-sidebar-account-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 0;
+  line-height: 1.25;
+}
+#sidebar .dp-sidebar-account-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sidebar .dp-sidebar-account-role {
+  color: var(--dp-text-muted, var(--text3));
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+@media (min-width: 780px) {
+  #sidebar .sidebar-bottom-stack {
+    margin-bottom: 24px;
+  }
+}
+/* Log Out is a navigation item inside the inset stack: its leading padding
+   gives the stack's inset back, so its glyph sits on the sidebar icon rail
+   (ui-shell-structural.css) with its label following at the item gap -- at
+   every sidebar width. */
+#sidebar .sidebar-bottom-stack[data-session] #sidebar-auth-row {
+  padding-left: calc(var(--dp-sidebar-item-inset) - var(--dp-sidebar-stack-inset));
+  padding-right: 10px;
+}
+
+/* The compact desktop rail (780-1559px, ui-shell-structural.css): both
+   session controls keep their glyphs on the rail, the account above and Log
+   Out at the bottom, each label faded in place (its accessible name is its
+   own; the account's DP tooltip names it). */
+@media (min-width: 780px) and (max-width: 1559px) {
+  #sidebar:not(.sidebar-overlay-open) .sidebar-bottom-stack[data-session] #sidebar-auth-row {
+    flex-direction: column-reverse;
+    align-items: flex-start;
+    row-gap: 2px;
+  }
+  #sidebar:not(.sidebar-overlay-open) .dp-sidebar-session-space {
+    display: none;
+  }
+  #sidebar:not(.sidebar-overlay-open) .dp-sidebar-session-row > .dp-sidebar-profile .icon {
+    order: -1;
+  }
+}

@@ -1,0 +1,367 @@
+"""
+Comprehensive statistics and reporting module.
+
+SQLite-backed — all queries go through the shared database wrapper.
+Per-table time filters use the correct timestamp column for each table:
+  torrents:       created_at
+  download_files: updated_at  (has no created_at)
+  events:         created_at
+  stats_snapshots: created_at
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+from core.branding import APP_SHORT_NAME
+from core.localization import CodedValueError, CodedRuntimeError
+
+logger = logging.getLogger("downloadpulse.stats")
+
+
+def _cfg():
+    from core.config import get_settings
+    return get_settings()
+
+
+# ── Type-safe numeric helpers (handle int / float / Decimal / None) ───────────
+
+def _i(v) -> int:
+    try:
+        return int(v or 0)
+    except Exception:
+        return 0
+
+
+def _f(v) -> float:
+    try:
+        return float(v or 0)
+    except Exception:
+        return 0.0
+
+
+# ── Snapshot writer ───────────────────────────────────────────────────────────
+
+async def take_stats_snapshot() -> None:
+    """Capture a point-in-time snapshot and prune old ones per keep_days setting."""
+    try:
+        metrics = await collect_all_metrics(hours=24)
+        from db.database import get_db
+        from core.config import get_settings
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO stats_snapshots (snapshot_json, created_at) VALUES (?, CURRENT_TIMESTAMP)",
+                (json.dumps(metrics, default=str),),
+            )
+            # Prune snapshots older than stats_snapshot_keep_days (default 30)
+            keep_days = max(1, int(getattr(get_settings(), "stats_snapshot_keep_days", 30) or 30))
+            await db.execute(
+                "DELETE FROM stats_snapshots WHERE created_at < datetime('now', ? || ' days')",
+                (f"-{keep_days}",),
+            )
+            await db.commit()
+        logger.debug("Stats snapshot taken (kept last %d days)", keep_days)
+    except Exception as exc:
+        logger.warning("Stats snapshot failed: %s", exc)
+
+
+# ── Core metrics collector ────────────────────────────────────────────────────
+
+async def collect_all_metrics(
+    hours: Optional[int] = None,
+    since: Optional[datetime] = None,
+    owner_ids: Optional[list[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Collect comprehensive metrics for a given time window.
+    hours=None → all-time.
+    Each table uses its correct timestamp column.
+
+    ``owner_ids`` scopes every figure to ONE owner's attributable activity:
+    the distinct transfers that owner's own requests (the demand ledger,
+    withdrawn or not) were admitted to within the window, and those
+    transfers' files. A transfer two of that owner's requests share counts
+    once; nobody else's requests count at all. The instance event journal is
+    not owner-attributable and is left out of a scoped report.
+    """
+    from db.database import get_db
+
+    # Per-table time filters (each table has a different timestamp column)
+    tf_t  = ""   # torrents.created_at
+    tf_f  = ""   # download_files.updated_at
+    event_since: Optional[float] = None   # event_journal occurrence time
+    p: tuple = ()   # query params (only used when since= is given)
+
+    if since:
+        tf_t  = "AND created_at >= ?"
+        tf_f  = "AND updated_at >= ?"
+        event_since = since.timestamp()
+        p = (since,)
+    elif hours:
+        h = int(hours)
+        tf_t  = f"AND created_at >= datetime('now', '-{h} hours')"
+        tf_f  = f"AND updated_at >= datetime('now', '-{h} hours')"
+        event_since = time.time() - h * 3600
+        # no params needed — datetime() is in the SQL string, converted by _adapt()
+
+    trend_days = min(hours // 24, 14) if hours else 14
+    tf_d = ""   # the daily trend's scope (never windowed)
+    p_d: tuple = ()
+
+    if owner_ids is not None:
+        owners = tuple(sorted({str(item) for item in owner_ids if item})) or ("",)
+        if since:
+            cutoff = since.timestamp()
+        elif hours:
+            cutoff = time.time() - int(hours) * 3600
+        else:
+            cutoff = 0.0
+        marks = ",".join("?" * len(owners))
+        owned = f"SELECT transfer_id FROM transfer_demands WHERE account_id IN ({marks})"
+        tf_t = f"AND id IN ({owned} AND created_at >= ?)"
+        tf_f = f"AND torrent_id IN ({owned} AND created_at >= ?)"
+        p = (*owners, cutoff)
+        tf_d = f"AND id IN ({owned})"
+        p_d = owners
+
+    async with get_db() as db:
+
+        # ── Torrent summary ──────────────────────────────────────────────────
+        torrent_rows = await db.fetchall(
+            f"SELECT status, COUNT(*) AS cnt FROM torrents WHERE 1=1 {tf_t} GROUP BY status",
+            p,
+        )
+        torrent_counts = {r["status"]: _i(r["cnt"]) for r in torrent_rows}
+        total_torrents = sum(torrent_counts.values())
+        completed = torrent_counts.get("completed", 0)
+        errors    = torrent_counts.get("error", 0)
+        terminal  = completed + errors
+
+        # ── Download volume (torrents.created_at) ────────────────────────────
+        vol = await db.fetchone(
+            f"""SELECT
+                COALESCE(SUM(size_bytes), 0) AS total_bytes,
+                COALESCE(AVG(size_bytes), 0) AS avg_bytes,
+                COALESCE(MAX(size_bytes), 0) AS max_bytes
+               FROM torrents WHERE status = 'completed' {tf_t}""",
+            p,
+        ) or {}
+
+        # ── Duration (torrents — julianday converted by _adapt for PG) ───────
+        dur = await db.fetchone(
+            f"""SELECT
+                COALESCE(AVG(CAST((julianday(completed_at)-julianday(created_at))*86400 AS INTEGER)), 0) AS avg_secs,
+                COALESCE(MIN(CAST((julianday(completed_at)-julianday(created_at))*86400 AS INTEGER)), 0) AS min_secs,
+                COALESCE(MAX(CAST((julianday(completed_at)-julianday(created_at))*86400 AS INTEGER)), 0) AS max_secs
+               FROM torrents
+               WHERE completed_at IS NOT NULL AND created_at IS NOT NULL {tf_t}""",
+            p,
+        ) or {}
+
+        # ── File stats (download_files.updated_at) ───────────────────────────
+        file_rows = await db.fetchall(
+            f"""SELECT status, COUNT(*) AS cnt,
+                COALESCE(SUM(size_bytes), 0) AS total_bytes
+               FROM download_files WHERE 1=1 {tf_f} GROUP BY status""",
+            p,
+        )
+        files_by_status = {r["status"]: {"count": _i(r["cnt"]), "bytes": _i(r["total_bytes"])} for r in file_rows}
+        total_files = sum(_i(r["cnt"]) for r in file_rows)
+
+        blocked_row = await db.fetchone(
+            f"SELECT COUNT(*) AS c FROM download_files WHERE blocked = 1 {tf_f}",
+            p,
+        ) or {}
+
+        # ── Retry stats (download_files.updated_at) ──────────────────────────
+        retry = await db.fetchone(
+            f"""SELECT
+                COALESCE(SUM(retry_count), 0)                          AS total_retries,
+                COALESCE(AVG(retry_count), 0)                          AS avg_retries,
+                COALESCE(MAX(retry_count), 0)                          AS max_retries,
+                COUNT(CASE WHEN retry_count > 0 THEN 1 END)            AS files_with_retries
+               FROM download_files WHERE 1=1 {tf_f}""",
+            p,
+        ) or {}
+
+        # ── Event counts (the event journal, by severity) ─────────────────────
+        from db.event_journal import severity_counts
+        event_counts = {} if owner_ids is not None else await severity_counts(db, event_since)
+
+        # ── Source + label distribution (torrents.created_at) ────────────────
+        source_rows = await db.fetchall(
+            f"SELECT source, COUNT(*) AS cnt FROM torrents WHERE 1=1 {tf_t} GROUP BY source",
+            p,
+        )
+        label_rows = await db.fetchall(
+            f"""SELECT COALESCE(label, '') AS label, COUNT(*) AS cnt
+               FROM torrents WHERE label != '' {tf_t} GROUP BY label""",
+            p,
+        )
+
+        # ── Daily completion trend (no per-window filter needed) ──────────────
+        daily = await db.fetchall(
+            f"""SELECT DATE(completed_at, 'localtime') AS date, COUNT(*) AS cnt,
+                COALESCE(SUM(size_bytes), 0) AS bytes
+               FROM torrents
+               WHERE completed_at IS NOT NULL
+                 AND completed_at >= datetime('now', '-{trend_days} days') {tf_d}
+               GROUP BY DATE(completed_at, 'localtime')
+               ORDER BY date ASC""",
+            p_d,
+        )
+
+        # ── Assemble ─────────────────────────────────────────────────────────
+        total_bytes = _i(vol.get("total_bytes"))
+        return {
+            "window": {
+                "hours": hours,
+                "since": since.isoformat() if since else None,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "torrents": {
+                "total":            total_torrents,
+                "by_status":        torrent_counts,
+                "completed":        completed,
+                "errors":           errors,
+                "success_rate_pct": round(completed / terminal * 100, 1) if terminal > 0 else None,
+                "sources":          {r["source"]: _i(r["cnt"]) for r in source_rows},
+                "labels":           {r["label"]: _i(r["cnt"]) for r in label_rows},
+            },
+            "downloads": {
+                "total_bytes":      total_bytes,
+                "total_gb":         round(total_bytes / 1e9, 2),
+                "avg_bytes":        _i(vol.get("avg_bytes")),
+                "max_bytes":        _i(vol.get("max_bytes")),
+                "avg_duration_sec": _i(dur.get("avg_secs")),
+                "min_duration_sec": _i(dur.get("min_secs")),
+                "max_duration_sec": _i(dur.get("max_secs")),
+            },
+            "files": {
+                "total":              total_files,
+                "by_status":          files_by_status,
+                "blocked":            _i(blocked_row.get("c")),
+                "retry_total":        _i(retry.get("total_retries")),
+                "retry_avg":          round(_f(retry.get("avg_retries")), 2),
+                "retry_max":          _i(retry.get("max_retries")),
+                "files_with_retries": _i(retry.get("files_with_retries")),
+            },
+            "events":      event_counts,
+            "daily_trend": daily,
+        }
+
+
+async def generate_report(hours: int = 24, owner_ids: Optional[list[str]] = None) -> Dict[str, Any]:
+    """Generate a structured report for the given time window (``owner_ids``:
+    one owner's own activity, ``collect_all_metrics``)."""
+    metrics = await collect_all_metrics(hours=hours, owner_ids=owner_ids)
+    t = metrics["torrents"]
+    d = metrics["downloads"]
+    f = metrics["files"]
+
+    def _fmt_bytes(b: int) -> str:
+        for u in ("B", "KB", "MB", "GB", "TB"):
+            if b < 1024:
+                return f"{b:.1f} {u}"
+            b //= 1024
+        return f"{b:.1f} TB"
+
+    def _fmt_dur(s: int) -> str:
+        if s < 60:   return f"{s}s"
+        if s < 3600: return f"{s // 60}m {s % 60}s"
+        return f"{s // 3600}h {(s % 3600) // 60}m"
+
+    return {
+        "report": {
+            "window_hours":  hours,
+            "generated_at":  metrics["window"]["generated_at"],
+            "summary": {
+                "torrents_processed": t["total"],
+                "completed":          t["completed"],
+                "errors":             t["errors"],
+                "success_rate":       f"{t['success_rate_pct']}%" if t["success_rate_pct"] is not None else "—",
+                "total_downloaded":   _fmt_bytes(d["total_bytes"]),
+                "avg_torrent_size":   _fmt_bytes(d["avg_bytes"]),
+                "avg_duration":       _fmt_dur(d["avg_duration_sec"]),
+                "total_files":        f["total"],
+                "blocked_files":      f["blocked"],
+                "total_retries":      f["retry_total"],
+                "error_events":       metrics["events"].get("error", 0),
+                "warn_events":        metrics["events"].get("warning", 0),
+            },
+        },
+        "raw": metrics,
+    }
+
+
+def _report_fields(summary: Dict[str, Any], triggered_by: str) -> list[dict]:
+    """The report, as the neutral field structure every notification carries.
+
+    Content only: no endpoint dialect, no payload envelope, no serialisation
+    decision. What a destination does with these is the transport's business.
+    """
+    named = (
+        ("Torrents", "torrents_processed"), ("Completed", "completed"),
+        ("Errors", "errors"), ("Success Rate", "success_rate"),
+        ("Downloaded", "total_downloaded"), ("Avg Duration", "avg_duration"),
+        ("Files", "total_files"), ("Blocked", "blocked_files"),
+        ("Retries", "total_retries"),
+    )
+    fields = [{"name": label, "value": str(summary.get(key, "")), "inline": True}
+              for label, key in named]
+    fields.append({"name": "Triggered", "value": str(triggered_by), "inline": True})
+    return fields
+
+
+async def send_stats_report(
+    hours: int = 24,
+    webhook_url: Optional[str] = None,
+    triggered_by: str = "manual",
+    *,
+    owner_ids: Optional[list[str]] = None,
+    sender=None,
+) -> Dict[str, Any]:
+    """Generate a report and hand it to the ONE webhook transport.
+
+    Statistics owns the metrics, the content and the window. It owns no
+    transport: there is no session here, no endpoint classification, no
+    per-destination payload and no HTTP status handling, so a destination that
+    works for an ordinary notification works for a report for the same reason
+    -- it is the same sender.
+    """
+    from services.notification_service import reporting_destination
+    from services.notifications import COLOR_INFO, NotificationService
+
+    if sender is None:
+        cfg = _cfg()
+        # The dedicated-webhook -> primary-Discord fallback has ONE owner
+        # (services.notification_service.reporting_destination), resolved here
+        # so the transport receives an already-effective destination and never
+        # duplicates the fallback.
+        url = (webhook_url or "").strip() or reporting_destination(cfg)
+        if not url:
+            raise CodedValueError("No reporting webhook configured — set stats_report_webhook_url or discord_webhook_url", code="stats.report_webhook_missing")
+        sender = NotificationService(url)
+    elif not sender.webhook_url:
+        # An account's report goes to that account's own destination or nowhere.
+        raise CodedValueError("No reporting or primary Discord webhook configured", code="notifications.report_missing")
+
+    report = await generate_report(hours=hours, owner_ids=owner_ids)
+    summary = report["report"]["summary"]
+    personal = owner_ids is not None
+    # Each report is a distinct generated artifact, so suppressing one as a
+    # near-duplicate would silently lose it.
+    sent = await sender.send(
+        f"📊 {'Your ' if personal else ''}Statistics Report — Last {hours}h",
+        f"{'Your own download activity' if personal else 'Automated activity summary'} from {APP_SHORT_NAME}.",
+        color=COLOR_INFO,
+        fields=_report_fields(summary, triggered_by),
+        bypass_dedup=True,
+    )
+    if not sent:
+        raise CodedRuntimeError("Reporting webhook did not accept the statistics report", code="stats.report_not_accepted")
+
+    logger.info("Statistics report sent via webhook (%sh, %s)", hours, triggered_by)
+    return {"ok": True, "hours": hours, "triggered_by": triggered_by}

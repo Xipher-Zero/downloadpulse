@@ -1,0 +1,461 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from i18n_node import english, says, spoken
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+INDEX = STATIC / "index.html"
+APP = STATIC / "app.js"
+SETTINGS = STATIC / "ui-settings-page.js"
+HELP = STATIC / "ui-help-page.js"
+HELP_LEGAL = STATIC / "ui-help-license-documents.js"
+STATS = STATIC / "ui-statistics.js"
+BOOTSTRAP = STATIC / "ui-theme-bootstrap.js"
+VERSION = ROOT / "VERSION"
+README = ROOT / "README.md"
+COMPOSE = ROOT / "docker-compose.yml"
+CHANGELOG = ROOT / "CHANGELOG.md"
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def script_position(html: str, name: str) -> int:
+    match = re.search(rf'<script[^>]+src=["\'][^"\']*{re.escape(name)}(?:\?[^"\']*)?["\']', html)
+    assert match, f"missing direct script dependency: {name}"
+    return match.start()
+
+
+def test_canonical_pages_are_direct_required_dependencies_without_legacy_loader() -> None:
+    html = read(INDEX)
+    bootstrap = read(BOOTSTRAP)
+    retired = (
+        "ui-presentation-loader.js",
+        "ui-shell-runtime.js",
+        "ui-page-finalization.js",
+        "ui-page-finalization.css",
+        "ui-visual-behavior-fixes.js",
+        "ui-help-chrome.js",
+        "ui-settings-auth-resilience.js",
+        "ui-settings-authentication.js",
+        "ui-settings-authentication-polish.js",
+        "ui-settings-authentication-polish.css",
+        "ui-settings-authentication-oidc.js",
+        "ui-settings-authentication-callback.js",
+    )
+    retired = retired + ("ui-runtime.js", "ui-downloads-runtime.js")
+    for name in retired:
+        assert not (STATIC / name).exists(), f"retired presentation layer returned: {name}"
+        assert name not in html
+
+    order = [
+        script_position(html, "app.js"),
+        script_position(html, "ui-statistics.js"),
+        script_position(html, "ui-help-page.js"),
+        script_position(html, "ui-help-license-documents.js"),
+        script_position(html, "ui-settings-page.js"),
+    ]
+    assert order == sorted(order)
+    assert "createElement('script')" not in bootstrap
+    assert 'createElement("script")' not in bootstrap
+    assert "createElement('link')" not in bootstrap
+    assert 'createElement("link")' not in bootstrap
+
+
+def test_settings_and_help_have_no_inherited_static_substrate() -> None:
+    html = read(INDEX)
+    for view_id in ("view-settings", "view-help"):
+        match = re.search(rf'<div class="view" id="{view_id}">\s*</div>', html)
+        assert match, f"{view_id} must be an empty canonical render root"
+
+
+def test_app_does_not_regain_page_specific_owners() -> None:
+    app = read(APP)
+    forbidden = (
+        "function renderSettings(",
+        "function getFormSettings(",
+        "function switchSettingsTab(",
+        "function loadDetailedStats(",
+    )
+    for fragment in forbidden:
+        assert fragment not in app
+
+
+def test_settings_is_the_single_clean_room_owner_and_emits_explicit_lifecycle() -> None:
+    source = read(SETTINGS)
+    assert "window.loadSettings = load;" in source
+    assert "window.DPSettingsPage = Object.freeze({load, openTab, writeDocument: overrides => writeSettingsDocument(overrides), providerStatuses, mountProvider,\n    providerArtwork,\n    // A card's contextual Help chip, from this page's one emitter, for a surface\n    // that offers the same topic outside Settings (the setup wizard's Premium\n    // Services and each service's view there): `title` names the card it\n    // explains -- its title key, or {name}, a service's own name.\n    helpChip: (topic, title) => helpChip(topic, typeof title === 'string' ? say(title) : String(title?.name || ''))});" in source
+    assert "downloadpulse:settings-rendered" in source
+    assert "view.innerHTML =" in source
+    assert "new MutationObserver" not in source
+    assert "window.api =" not in source
+    assert "window.confirm =" not in source
+    assert "window.toast =" not in source
+
+    # 1.0.14: each tab is said from the catalog by its key.
+    expected = [f"['{tab}', say('settings.tab.{tab}'), '{glyph}']" for tab, glyph in (
+        ("sources", "zap"), ("downloads", "download-downloads"), ("extraction", "package-open"),
+        ("authentication", "shield-user"), ("notifications", "bell-ring"), ("maintenance", "database"))]
+    positions = [source.index(item) for item in expected]
+    assert positions == sorted(positions)
+
+
+def test_settings_authentication_renders_final_cards_directly() -> None:
+    source = read(SETTINGS)
+    for fragment in (
+        "Authentication Status",
+        "Username & Password",
+        "OpenID Connect",
+        "Default Role for New OIDC Users",
+        "Browser Session Lifetime",
+        "Public DownloadPulse Base URL",
+        "OIDC Callback URL",
+        # DP 1.0.13: Test is a provider-level action on the card's own
+        # operational rail, in the one canonical treatment -- relocated from
+        # the footer, not duplicated.
+        "providerTestAction('verify-oidc')",
+        "dp-settings-auth-header-enable",
+        "dp-settings-auth-credentials-row",
+        "dp-settings-auth-status-card",
+    ):
+        # 1.0.14: words may be said through the catalog key the source names.
+        assert says(source, fragment), fragment
+    assert "renderSettingsWithAuthentication" not in source
+    assert "removeLegacyAuthenticationControls" not in source
+
+
+def test_auth_loading_is_resilient_without_wrapping_global_api_or_settings() -> None:
+    source = read(SETTINGS)
+    for fragment in (
+        "let loadGeneration = 0;",
+        "let authGeneration = 0;",
+        "fallbackAuthFromSettings(settings)",
+        "const settingsPromise = request('GET', '/settings'",
+        "const authPromise = request('GET', '/auth/config'",
+        "if (generation !== loadGeneration || !settingsActive()) return;",
+        "markAuthUnavailable(error)",
+        "probeOidcRuntime(auth, authGen)",
+    ):
+        assert fragment in source
+    assert source.index("settings = await settingsPromise") < source.index("void authPromise.then")
+
+
+def test_oidc_origin_callback_and_verified_email_policy_are_owned_by_settings() -> None:
+    source = read(SETTINGS)
+    for fragment in (
+        "function callbackFromPublicBase(value)",
+        "function updateOidcCallbackPreview()",
+        "function copyOidcCallback()",
+        "fieldId('public_base_url')",
+        "input('oidc_callback_url', say('settings.oidc.callback')",
+        "readonly",
+        "Requires email_verified=true.",
+        "oidc_allowed_emails",
+        "oidc_allowed_subjects",
+        "oidc_allowed_groups",
+        "oidc_group_claim",
+        "oidc_allow_all",
+        "clear_oidc_client_secret",
+    ):
+        assert says(source, fragment), fragment
+    assert english("settings.oidc.callback") == "OIDC Callback URL"
+    assert "request('PUT', '/auth/config'" in source
+
+
+def test_password_session_and_api_token_secret_semantics_survive_canonicalization() -> None:
+    source = read(SETTINGS)
+    for fragment in (
+        "function writeAuthentication(",
+        "function clearPassword(",
+        "clear_password",
+        "auth_session_lifetime_hours",
+        "logoutSession(",
+        # 1.0.13 ACL: tokens are Integration accounts' (Users & Access).
+        "async function issueToken(",
+        "async function revokeToken(",
+        "Copy this token now",
+    ):
+        assert says(source, fragment), fragment
+    assert "localStorage" not in source
+    assert "sessionStorage" not in source
+
+
+def test_non_auth_settings_contracts_remain_in_canonical_owner_or_semantic_modules() -> None:
+    combined = "\n".join(read(path) for path in sorted(STATIC.glob("ui-settings*.js")))
+    for fragment in (
+        "alldebrid_api_key",
+        "aria2_split",
+        "extract_enabled",
+        "extract_delete_archive",
+        "discord_webhook_url",
+        "backup_enabled",
+        "db_wipe_enabled",
+        "clear_secrets",
+        "/settings/validate-alldebrid",
+        "/settings/validate-discord",
+    ):
+        assert fragment in combined
+
+
+def test_help_is_direct_final_owner_with_eight_reviewed_sections() -> None:
+    source = read(HELP)
+    # 1.0.14: each section's label is a catalog key (help.tab.<id>) said in the page's language.
+    for tab, label, icon in (
+        ("quickstart", "Quick Start", "rocket"),
+        ("using", "Everyday Use", "activity"),
+        ("howitworks", "How It Works", "workflow"),
+        ("services", "Services", "plug"),
+        ("engines", "Engines", "download"),
+        ("settings", "Settings", "settings"),
+        ("trouble", "Troubleshooting", "wrench"),
+        ("license", "License", "scale"),
+    ):
+        assert f"['{tab}', 'help.tab.{tab}', '{icon}']" in source
+        assert english(f"help.tab.{tab}") == label
+    assert "${t('help.header.title')}" in source and english("help.header.title") == "Field Manual"
+    assert "${t('help.header.hint')}" in source and english("help.header.hint") == "When intuition fails."
+    assert "dp-help-master-card" in source
+    assert "dp-help-section-card" in source
+    assert "window.loadHelp = load;" in source
+    assert "window.DPHelpPage = Object.freeze({load, activateTab});" in source
+    assert "downloadpulse:help-rendered" in source
+    assert "DOMContentLoaded" not in source
+    assert "new MutationObserver" not in source
+    assert "if (v === 'help')      loadHelp();" in read(APP)
+    assert (STATIC / "icons" / "lucide" / "scale.svg").is_file()
+
+
+def test_help_legal_attribution_and_bundled_document_actions_are_preserved() -> None:
+    help_source = spoken(read(HELP))   # 1.0.14: the manual as a reader hears it in English
+    legal = read(HELP_LEGAL)
+    for fragment in (
+        "Copyright © 2026 Chris Moore",
+        "GPL-2.0-or-later",
+        'data-legal-document="gpl"',
+        'data-legal-document="source-offer"',
+        'data-legal-document="third-party"',
+    ):
+        assert fragment in help_source
+    # 1.0.13: Help no longer offers the Attribution notice or the upstream MIT
+    # license as buttons. Both files still ship in the image and remain served
+    # by /api/legal-documents (test_help_local_legal_documents.py).
+    for removed in ('data-legal-document="notice"', 'data-legal-document="upstream-mit"',
+                    "Attribution notice", "Upstream MIT license"):
+        assert removed not in help_source, removed
+    # Upstream provenance lives in the bundled legal documents, not in Help copy.
+    for fragment in ("kroeberd", "alldebrid-client", "Upstream attribution", "dp-help-attribution"):
+        assert fragment not in help_source
+    assert "/api/legal-documents/" in legal
+    assert "credentials: 'same-origin'" in legal
+    assert "trapDialogKeydown" in legal
+    assert "const helpRoot = () => document.getElementById('view-help');" in legal
+    assert "let activeBackdrop = null;" in legal
+    assert "let activeOpener = null;" in legal
+    assert "downloadpulse:help-rendered" in legal
+    assert "requestAnimationFrame" not in legal
+    assert "DOMContentLoaded" not in legal
+
+
+def test_statistics_is_final_owner_with_reviewed_copy_default_and_palette() -> None:
+    source = read(STATS)
+    html = read(INDEX)
+    style = read(STATIC / "style.css")
+    view = html[html.index('<!-- Statistics -->'):html.index('<!-- Help -->')]
+    for fragment in (
+        "window.loadDetailedStats = loadDetailedStats;",
+        "window.DPStatisticsLifecycle = Object.freeze({load: loadDetailedStats, install});",
+        "statisticsPurpleGradient", "downloadpulse:theme-changed",
+    ):
+        assert fragment in source
+    for fragment in (
+        "By The Numbers", "Vibes are not a performance metric.",
+        "dp-statistics-master", "dp-stats-master-header", "dp-stats-master-body",
+        "dp-stats-breakdown-grid", "Completed downloads in the last 7 days.",
+    ):
+        assert fragment in view
+    assert "|| '7d'" in source
+    assert 'class="ftab active" data-period="7d"' in view
+    assert "Completions — last 7 days" not in view
+    assert "ensureStatisticsArchitecture" not in source
+    assert "decorateChartHeader" not in source
+    assert "dash-kpi-strip--dashboard" not in html
+    assert not (STATIC / "ui-statistics.css").exists()
+    assert "/ui-statistics.css" not in style
+    assert "window.loadDetailedStats = wrapped" not in source
+    assert not (STATIC / "ui-runtime.js").exists()
+
+def test_statistics_keeps_reviewed_kpis_breakdowns_and_chart_header() -> None:
+    source = read(STATS)
+    html = read(INDEX)
+    view = html[html.index('<!-- Statistics -->'):html.index('<!-- Help -->')]
+    for fragment in (
+        "Last 24 Hours", "Completed downloads over the last 24 hours.",
+        "Last 7 Days", "Completed downloads over the last 7 days.",
+        "MEAN DOWNLOAD TIME", "LIFETIME SUCCESS RATE", "MEAN DOWNLOAD SIZE",
+        "/icons/dp/card-download.svg", 'class="dp-stats-chart-heading" data-i18n="stats.chart.title">Completions</span>',
+    ):
+        assert fragment in view
+    for fragment in (
+        "MAX_VISIBLE = 10", "TWO_COLUMN_THRESHOLD = 6",
+        "entries.slice(0, MAX_VISIBLE)", "Math.ceil(visible.length / 2)",
+    ):
+        assert fragment in source
+
+
+def test_canonical_coordination_uses_explicit_events_not_page_convergence_observation() -> None:
+    app = read(APP)
+    operator = read(STATIC / "operator-title.js")
+    for event in (
+        "downloadpulse:navigation",
+        "downloadpulse:dashboard-stats-rendered",
+    ):
+        assert event in app
+    # The Activity Log owner is the sole producer of its render event.
+    activity_owner = read(STATIC / "ui-activity-log-runtime.js")
+    assert "downloadpulse:activity-rendered" in activity_owner
+    assert "downloadpulse:activity-rendered" not in app
+    # The Dashboard Recent Items renderer was consolidated into its bounded
+    # presentation owner (ui-dashboard-transfer-presentation.js). That owner is
+    # now the sole producer of downloadpulse:dashboard-recent-rendered; the app.js
+    # loadRecent() entrypoint is a stable delegator that neither renders rows nor
+    # emits the event.
+    dashboard_owner = read(STATIC / "ui-dashboard-transfer-presentation.js")
+    assert "downloadpulse:dashboard-recent-rendered" in dashboard_owner
+    assert "downloadpulse:dashboard-recent-rendered" not in app
+    assert "new MutationObserver" not in operator
+    assert "window.loadStats =" not in operator
+    assert not (STATIC / "ui-runtime.js").exists()
+    assert not (STATIC / "ui-downloads-runtime.js").exists()
+
+def test_downloads_pagination_filtering_are_owned_by_the_canonical_downloads_owner() -> None:
+    # DP 1.0.12 canonical flattening (CANON-001 closure): app.js no longer
+    # carries a second Downloads pagination/filter implementation. There is
+    # exactly one Downloads controller/renderer owner, ui-downloads.js, and
+    # app.js only calls into its published window entry points.
+    app = read(APP)
+    downloads = read(STATIC / "ui-downloads.js")
+    assert "function renderTorrentPagination(" not in app
+    assert "function setFilter(" not in app
+    assert "function loadTorrents(" not in app
+    assert "function renderTorrentPagination(" in downloads
+    assert "function setFilter(" in downloads
+    assert "function loadTorrents(" in downloads
+    assert "window.setFilter = setFilter" in downloads
+    assert "window.loadTorrents = loadTorrents" in downloads
+    assert not (STATIC / "ui-downloads-runtime.js").exists()
+    assert not (STATIC / "ui-downloads-presentation.js").exists()
+
+def test_downloads_has_exactly_one_owner_with_no_wrapper_patch_composition() -> None:
+    # DP 1.0.12 canonical flattening (CANON-001 closure): the historical
+    # "static app.js owner + dynamic patch layer" composition is retired.
+    # ui-downloads.js is the sole Downloads load/render owner; it never
+    # replaces api/loadTorrents/renderTorrentPagination/fmtDate on another
+    # owner, and no second Downloads renderer exists anywhere.
+    html = read(INDEX)
+    app = read(APP)
+    downloads = read(STATIC / "ui-downloads.js")
+    page_css = read(STATIC / "ui-downloads-page.css")
+    operator = read(STATIC / "operator-title.js")
+    view = html[html.index('id="view-torrents"'):html.index('<!-- Events -->')]
+    assert 'On the Books' in view
+    assert 'data-dp-filter-contract="desktop-v24"' in view
+    assert 'class="dp-card dp-downloads-bulk-card dp-downloads-bulk-integrated" id="bulk-bar"' in view
+    assert view.index('id="torrent-search"') < view.index('id="bulk-bar"') < view.index('class="dp-downloads-table-wrap"')
+    assert 'id="torrent-page-size"' not in view
+    assert "bar.replaceChildren(header)" not in app
+    assert "insertBefore(bar" not in app
+    assert "bar.classList.add('dp-card'" not in app
+    assert "Canonical integrated multi-selection strip" not in page_css
+    assert "data-dp-downloads-runtime" not in operator
+    assert '/ui-downloads-runtime.js' not in html
+    assert not (STATIC / "ui-downloads-runtime.js").exists()
+
+    for pattern in ("const baseApi = api", "const canonical = loadTorrents", "loadTorrents = async function",
+                     "renderTorrentPagination = renderPagination", "oldFmt", "fmtDate = dateMarkup"):
+        assert pattern not in downloads
+    for name in STATIC.glob("*.js"):
+        source = read(name)
+        assert "const baseApi=api" not in source, name.name
+        assert "const canonical=loadTorrents" not in source, name.name
+        assert "loadTorrents=async function" not in source, name.name
+    # WS3b: the subtitle is the catalog's, by key.
+    from i18n_node import english
+
+    assert "'downloads.tracked.full'" in downloads and 'Most of them behaved.' in english("downloads.tracked.full")
+
+def test_dashboard_has_no_inherited_startup_status_surface_or_writer() -> None:
+    html = read(INDEX)
+    app = read(APP)
+    for fragment in ('debug-status', 'dash-health-bar', 'dash-health-recovery', 'dash-health-deadlock', 'dash-health-aging'):
+        assert fragment not in html
+        assert fragment not in app
+    assert 'function dbg(' not in app
+    assert 'dbg(' not in app
+    assert 'function updateHealthBar(' not in app
+    # The unreferenced app.js recovery trigger is retired: recovery is driven by
+    # the unified backend machinery, not a second frontend entry point.
+    assert 'function runRecovery(' not in app
+
+def test_install_references_track_the_latest_published_release() -> None:
+    # VERSION names the in-development application version, which on a
+    # development line has no published image. Install references therefore
+    # track the newest released CHANGELOG entry and must not fabricate a tag
+    # for an unreleased VERSION.
+    headings = re.findall(r"^## \[(\d+(?:\.\d+)+)\](.*)$", read(CHANGELOG), re.M)
+    released = next(v for v, title in headings if "development" not in title.casefold())
+    tag = f"ghcr.io/xipher-zero/downloadpulse:v{released}"
+    assert tag in read(COMPOSE)
+    assert read(README).count(tag) >= 2
+    development = read(VERSION).strip()
+    if development != released:
+        unreleased = f"ghcr.io/xipher-zero/downloadpulse:v{development}"
+        assert unreleased not in read(COMPOSE)
+        assert unreleased not in read(README)
+
+
+def test_core_canonical_owners_do_not_reintroduce_historical_wrapper_patterns() -> None:
+    sources = {
+        "app": read(APP), "settings": read(SETTINGS), "help": read(HELP),
+        "statistics": read(STATS), "operator": read(STATIC / "operator-title.js"),
+    }
+    forbidden = (
+        "baseRenderSettings", "legacyRender", "previous.apply",
+        "window.loadSettings = wrapped", "window.loadDetailedStats = wrapped",
+        "window.api = wrapped",
+    )
+    for name, source in sources.items():
+        for fragment in forbidden:
+            assert fragment not in source, f"{name} regained wrapper pattern {fragment}"
+    assert not (STATIC / "ui-runtime.js").exists()
+    assert not (STATIC / "ui-downloads-runtime.js").exists()
+
+def test_retired_unreachable_views_and_owners_are_not_packaged() -> None:
+    html = read(INDEX)
+    app = read(APP)
+    legacy_css = read(STATIC / "style.css")
+    for fragment in (
+        "view-changelog",
+        "view-aria2queue",
+        "view-support",
+        "changelog-content",
+        "aria2q-",
+    ):
+        assert fragment not in html
+        assert fragment not in legacy_css
+    for fragment in (
+        "loadChangelog",
+        "loadAria2QueueView",
+        "renderAria2QueueView",
+        "aria2QueueAction",
+        "_aria2qTimer",
+        "aria2q-",
+    ):
+        assert fragment not in app
+    supported = re.findall(r'class="nav-item(?: active)?" data-view="([^"]+)"', html)
+    # The Settings slot holds the Admin's Settings or, composed only for a
+    # standard User, that User's own Notifications -- never both.
+    assert supported == ["dashboard", "torrents", "events", "stats", "settings", "settings", "help"]

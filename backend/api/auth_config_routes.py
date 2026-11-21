@@ -1,0 +1,837 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import secrets
+from typing import Literal
+from urllib.parse import parse_qs, urlsplit
+
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from api import auth_routes as interactive_routes
+from auth.accounts import (
+    AccountRefused,
+    admin_password_holders,
+    change_deployment_credentials,
+    deployment_eligible,
+    local_credential_status,
+    set_own_local_credential,
+)
+from auth.csrf import clear_login_csrf_cookie
+from auth.manager import peer_key
+from auth.models import AuthMechanism, Principal
+from auth.oidc import (
+    OIDC_CORRELATION_COOKIE,
+    OIDC_TRANSACTION_TTL_SECONDS,
+    OidcConfigurationError,
+    OidcError,
+    begin_oidc_login,
+    complete_oidc_login,
+    discover_oidc,
+    oidc_auth_ready,
+    oidc_callback_url,
+    oidc_configuration,
+    oidc_transaction_store,
+)
+from auth.oidc_verification import oidc_verification_store
+from auth.oidc_version import (
+    authentication_configuration_baseline_version,
+    oidc_configuration_version,
+)
+from auth.passwords import basic_verification_cache
+from auth.pending_oidc import commit_verified_pending_oidc, pending_oidc_store
+from auth.policy import (
+    interactive_auth_enabled,
+    normalized_origin,
+    public_base_url_bootstrap_origin,
+    oidc_auth_enabled,
+    password_auth_enabled,
+    safe_return_path,
+    standalone_deployment,
+)
+from auth.sessions import clear_session_cookie, session_cookie_token, session_store, set_session_cookie
+from auth.throttle import oidc_verify_rate_limiter
+from auth.transitions import authentication_configuration_lock, oidc_critical_change
+from core.config import apply_settings, config_write_lock, get_settings, journal_configuration_change, save_settings
+from core.config_validator import validate_and_sanitise
+from core.localization import code_of, disclosed, fact
+
+
+router = APIRouter()
+logger = logging.getLogger("downloadpulse.auth")
+
+
+class OidcVerificationRequest(BaseModel):
+    """Proposed OIDC settings staged only until a real login proves them.
+
+    A proven proposal is SAVED (``auth.pending_oidc``), so it meets exactly the
+    rules ``AuthenticationConfigUpdate`` holds the same fields to: strict JSON
+    types, the same lengths, and an HTTPS public origin (checked by the route)."""
+    model_config = ConfigDict(strict=True)
+
+    auth_password_enabled: bool | None = None
+    oidc_provider_name: str | None = Field(default=None, max_length=256)
+    oidc_issuer_url: str | None = Field(default=None, max_length=2048)
+    oidc_client_id: str | None = Field(default=None, max_length=2048)
+    oidc_client_secret: str | None = Field(default=None, max_length=8192)
+    clear_oidc_client_secret: bool = False
+    oidc_scopes: list[str] | None = None
+    oidc_allow_all: bool | None = None
+    oidc_allowed_subjects: list[str] | None = None
+    oidc_allowed_emails: list[str] | None = None
+    oidc_allowed_groups: list[str] | None = None
+    oidc_group_claim: str | None = Field(default=None, max_length=256)
+    public_base_url: str | None = Field(default=None, max_length=2048)
+    return_to: str = "/settings"
+
+
+class AuthenticationConfigUpdate(BaseModel):
+    # Strict: a value of the wrong JSON type is refused, never coerced. This is
+    # also the rule an authentication value changed through ``PUT /settings``
+    # meets (``api.routes._refuse_invalid_document_changes``).
+    model_config = ConfigDict(strict=True)
+    auth_password_enabled: bool | None = None
+    auth_username: str | None = Field(default=None, max_length=256)
+    auth_password: str | None = Field(default=None, max_length=4096)
+    clear_password: bool = False
+    auth_session_lifetime_hours: int | None = Field(default=None, ge=1, le=168)
+
+    auth_oidc_enabled: bool | None = None
+    auth_oidc_default_role: Literal["user", "readonly"] | None = None
+    oidc_provider_name: str | None = Field(default=None, max_length=256)
+    oidc_issuer_url: str | None = Field(default=None, max_length=2048)
+    oidc_client_id: str | None = Field(default=None, max_length=2048)
+    oidc_client_secret: str | None = Field(default=None, max_length=8192)
+    clear_oidc_client_secret: bool = False
+    oidc_scopes: list[str] | None = None
+    oidc_allow_all: bool | None = None
+    oidc_allowed_subjects: list[str] | None = None
+    oidc_allowed_emails: list[str] | None = None
+    oidc_allowed_groups: list[str] | None = None
+    oidc_group_claim: str | None = Field(default=None, max_length=256)
+    public_base_url: str | None = Field(default=None, max_length=2048)
+    confirm_open_mode: bool = False
+
+
+def _valid_public_base_url(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    identity = normalized_origin(raw)
+    return bool(identity is not None and identity[0] == "https")
+
+
+def _authentication_mode(cfg) -> str:
+    password = password_auth_enabled(cfg)
+    oidc = oidc_auth_enabled(cfg)
+    if password and oidc:
+        return "Username & Password + OIDC"
+    if password:
+        return "Username & Password"
+    if oidc:
+        return "OIDC"
+    return "No authentication"
+
+
+def _local_oidc_state(cfg) -> tuple[bool, str]:
+    candidate = cfg.model_copy(update={"auth_oidc_enabled": True}, deep=True)
+    try:
+        oidc_configuration(candidate)
+        return True, oidc_callback_url(candidate)
+    except OidcError:
+        return False, ""
+
+
+def _oidc_configuration_version_for_status(cfg) -> str:
+    """Fingerprint configured OIDC even while its enable toggle is off."""
+    candidate = cfg.model_copy(update={"auth_oidc_enabled": True}, deep=True)
+    return oidc_configuration_version(candidate)
+
+
+async def _oidc_runtime_available(cfg, configured: bool) -> bool | None:
+    """Probe live provider discovery outside the configuration read/write path."""
+    if not oidc_auth_enabled(cfg) or not configured:
+        return None
+    try:
+        config = oidc_configuration(cfg)
+        await asyncio.wait_for(discover_oidc(config), timeout=3.0)
+        return True
+    except (OidcError, TimeoutError):
+        return False
+
+
+async def _authentication_payload(request: Request, *, cfg=None) -> dict:
+    """Build the authentication configuration/status payload from local state only.
+
+    This function intentionally performs no provider discovery or other network
+    I/O. GET/PUT /api/auth/config are configuration boundaries and must remain
+    available even when the configured identity provider is offline or deleted.
+    Live OIDC reachability is exposed separately by the runtime-status endpoint.
+    """
+    cfg = cfg if cfg is not None else get_settings()
+    oidc_configured, callback_url = _local_oidc_state(cfg)
+    oidc_version = _oidc_configuration_version_for_status(cfg) if oidc_configured else ""
+    oidc_verification = oidc_verification_store.status(oidc_version)
+    principal = getattr(request.state, "principal", Principal.anonymous())
+    # Until the Users & Access surface (1.0.13 ACL Stage 3), the local
+    # credential this tab edits is the signed-in account's own.
+    username, password_configured = await local_credential_status(principal.account_id)
+    configured_public_base = str(getattr(cfg, "public_base_url", "") or "").strip()
+    env_public_base = str(os.getenv("PUBLIC_BASE_URL", "") or "").strip()
+    effective_public_base = env_public_base or configured_public_base
+    return {
+        "mode": _authentication_mode(cfg),
+        "authentication_required": interactive_auth_enabled(cfg),
+        "password_enabled": password_auth_enabled(cfg),
+        "password_ready": bool(password_auth_enabled(cfg) and await admin_password_holders(cfg)),
+        "password_configured": password_configured,
+        "username": username,
+        "session_lifetime_hours": int(getattr(cfg, "auth_session_lifetime_hours", 12) or 12),
+        "oidc_enabled": oidc_auth_enabled(cfg),
+        "oidc_default_role": str(getattr(cfg, "auth_oidc_default_role", "user") or "user"),
+        "oidc_configured": oidc_configured,
+        "oidc_ready": oidc_auth_ready(cfg) if oidc_auth_enabled(cfg) else False,
+        "oidc_available": None,
+        "oidc_verified": oidc_verification.verified,
+        "oidc_verified_at": oidc_verification.verified_at,
+        "oidc_provider_name": str(getattr(cfg, "oidc_provider_name", "") or "OpenID Connect"),
+        "oidc_issuer_url": str(getattr(cfg, "oidc_issuer_url", "") or ""),
+        "oidc_client_id": str(getattr(cfg, "oidc_client_id", "") or ""),
+        "oidc_client_secret_configured": bool(str(getattr(cfg, "oidc_client_secret", "") or "")),
+        "oidc_scopes": list(getattr(cfg, "oidc_scopes", []) or []),
+        "oidc_allow_all": bool(getattr(cfg, "oidc_allow_all", False)),
+        "oidc_allowed_subjects": list(getattr(cfg, "oidc_allowed_subjects", []) or []),
+        "oidc_allowed_emails": list(getattr(cfg, "oidc_allowed_emails", []) or []),
+        "oidc_allowed_groups": list(getattr(cfg, "oidc_allowed_groups", []) or []),
+        "oidc_group_claim": str(getattr(cfg, "oidc_group_claim", "groups") or "groups"),
+        "public_base_url": configured_public_base,
+        "public_base_url_effective": effective_public_base,
+        "public_base_url_env_override": bool(env_public_base),
+        "oidc_callback_url": callback_url,
+        "current_session_mechanism": principal.mechanism.value if principal.mechanism else None,
+        "session_count": session_store.size,
+    }
+
+
+def _build_proposed_settings(request: OidcVerificationRequest, *, current=None):
+    current = current if current is not None else get_settings()
+    updates: dict[str, object] = {"auth_oidc_enabled": True}
+    ordinary_fields = (
+        "oidc_provider_name",
+        "oidc_issuer_url",
+        "oidc_client_id",
+        "oidc_scopes",
+        "oidc_allow_all",
+        "oidc_allowed_subjects",
+        "oidc_allowed_emails",
+        "oidc_allowed_groups",
+        "oidc_group_claim",
+        "public_base_url",
+    )
+    for field in ordinary_fields:
+        value = getattr(request, field)
+        if value is not None:
+            updates[field] = value
+
+    if request.auth_password_enabled is not None:
+        updates["auth_password_enabled"] = request.auth_password_enabled
+
+    if request.clear_oidc_client_secret:
+        updates["oidc_client_secret"] = ""
+        updates["oidc_client_secret_clear"] = True
+    elif request.oidc_client_secret is not None and request.oidc_client_secret.strip():
+        updates["oidc_client_secret"] = request.oidc_client_secret
+        updates["oidc_client_secret_clear"] = False
+    else:
+        updates["oidc_client_secret"] = str(getattr(current, "oidc_client_secret", "") or "")
+        updates["oidc_client_secret_clear"] = False
+
+    return current.model_copy(update=updates, deep=True)
+
+
+def _build_authentication_update(update: AuthenticationConfigUpdate):
+    current = get_settings()
+    changes: dict[str, object] = {}
+    ordinary_fields = (
+        "auth_password_enabled",
+        "auth_session_lifetime_hours",
+        "auth_oidc_enabled",
+        "auth_oidc_default_role",
+        "oidc_provider_name",
+        "oidc_issuer_url",
+        "oidc_client_id",
+        "oidc_scopes",
+        "oidc_allow_all",
+        "oidc_allowed_subjects",
+        "oidc_allowed_emails",
+        "oidc_allowed_groups",
+        "oidc_group_claim",
+        "public_base_url",
+    )
+    for field in ordinary_fields:
+        value = getattr(update, field)
+        if value is not None:
+            changes[field] = value
+
+    secret = str(update.oidc_client_secret or "")
+    if update.clear_oidc_client_secret:
+        changes["oidc_client_secret"] = ""
+        changes["oidc_client_secret_clear"] = True
+    elif secret:
+        changes["oidc_client_secret"] = secret
+        changes["oidc_client_secret_clear"] = False
+
+    return current.model_copy(update=changes, deep=True)
+
+
+def _requested_username(update: AuthenticationConfigUpdate, own_username: str) -> str | None:
+    """The username this update asks for, or ``None`` when it keeps the current one."""
+    if update.auth_username is None or update.auth_username.strip() == own_username:
+        return None
+    return update.auth_username.strip()
+
+
+def _credential_change(update: AuthenticationConfigUpdate, own_username: str) -> bool:
+    return bool(
+        update.clear_password
+        or str(update.auth_password or "")
+        or _requested_username(update, own_username) is not None
+    )
+
+
+async def _prospective_password_ready(candidate, update: AuthenticationConfigUpdate, principal, own_username: str) -> bool:
+    """Whether, after this update, an active Admin could sign in with a password."""
+    if not bool(getattr(candidate, "auth_password_enabled", False)):
+        return False
+    holders = await admin_password_holders(candidate)
+    own = principal.account_id
+    if own and update.clear_password:
+        # Clear intent wins over simultaneous plaintext, exactly as applied.
+        holders.discard(own)
+    elif own and principal.role == "admin" and str(update.auth_password or ""):
+        if _requested_username(update, own_username) or own_username:
+            holders.add(own)
+    return bool(deployment_eligible(holders, candidate))
+
+
+def _set_pending_correlation_cookie(response: JSONResponse, correlation: str) -> None:
+    response.set_cookie(
+        key=OIDC_CORRELATION_COOKIE,
+        value=str(correlation),
+        max_age=OIDC_TRANSACTION_TTL_SECONDS,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_pending_correlation_cookie(response) -> None:
+    response.delete_cookie(
+        key=OIDC_CORRELATION_COOKIE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _oidc_verification_failure_page(*, status_code: int) -> HTMLResponse:
+    """Return a popup-safe failure result without navigating the operator SPA."""
+    body = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title data-i18n="settings.oidc.complete_title">OIDC verification · DownloadPulse</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#090812;color:#f4f1ff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+main { width:min(420px,100%);padding:28px;border:1px solid #302c49;border-radius:12px;background:#171526;text-align:center; }
+h1 { margin:0 0 10px;font-size:19px; }
+p { margin:0;color:#c2bdd6;font-size:13px;line-height:1.55; }
+.status { color:#ff6b6b;font-weight:700; }
+</style>
+</head>
+<body>
+<main>
+  <h1 data-i18n="settings.oidc.failed_heading">OIDC verification failed</h1>
+  <p class="status" data-i18n="settings.oidc.failed_status">Provider sign-in or authorization did not complete successfully.</p>
+  <p data-i18n="settings.oidc.complete_closing">This window should close automatically.</p>
+</main>
+<script>
+(() => {
+  'use strict';
+  const payload = {
+    type: 'downloadpulse-oidc-verification',
+    ok: false,
+    message: 'OIDC verification failed — provider sign-in or authorization did not complete successfully.',
+    // The opener says the outcome from its catalog, in the shown language.
+    message_key: 'settings.oidc.verify_failed'
+  };
+  // No catalog of its own: said in the opener's language through the opener's
+  // runtime (same origin), as text; English without an opener.
+  try {
+    const i18n = window.opener && !window.opener.closed ? window.opener.DPI18n : null;
+    if (i18n) {
+      document.documentElement.lang = String(i18n.locale());
+      document.querySelectorAll('[data-i18n]').forEach(node => { node.textContent = i18n.t(node.dataset.i18n); });
+    }
+  } catch (_) {}
+  try {
+    if ('BroadcastChannel' in window) {
+      const channel = new BroadcastChannel('downloadpulse-oidc-verification');
+      channel.postMessage(payload);
+      window.setTimeout(() => channel.close(), 250);
+    }
+  } catch (_) {}
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(payload, window.location.origin);
+    }
+  } catch (_) {}
+  window.setTimeout(() => window.close(), 180);
+})();
+</script>
+</body>
+</html>"""
+    response = HTMLResponse(content=body, status_code=status_code)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+        "base-uri 'none'; frame-ancestors 'none'"
+    )
+    return response
+
+
+@router.get("/api/auth/config")
+async def get_authentication_config(request: Request):
+    response = JSONResponse(await _authentication_payload(request))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/api/auth/oidc/runtime-status")
+async def get_oidc_runtime_status():
+    """Return live provider reachability without blocking configuration access."""
+    cfg = get_settings()
+    oidc_configured, _callback_url = _local_oidc_state(cfg)
+    response = JSONResponse(
+        {
+            "oidc_enabled": oidc_auth_enabled(cfg),
+            "oidc_configured": oidc_configured,
+            "oidc_available": await _oidc_runtime_available(cfg, oidc_configured),
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _bootstrap_rejection(request: Request, update: AuthenticationConfigUpdate):
+    """Hold the bootstrap allowance to its single purpose.
+
+    The security boundary admitted this request only because no public
+    authority exists yet and it claims to be establishing one. It has not been
+    origin-verified in the ordinary way, so it may carry NOTHING else: every
+    other field must be absent, and the value must be exactly the origin the
+    browser is standing on. Anything else is an attempt to ride the allowance,
+    and is refused here rather than at the boundary, because this is where the
+    parsed body already lives -- there is no second parser.
+    """
+    # Re-derived, not received. The boundary and this route ask the ONE shared
+    # predicate the same question, so nothing has to survive the middleware
+    # chain -- and a request that was admitted normally is not restricted here.
+    origin_identity = public_base_url_bootstrap_origin(request, get_settings())
+    if origin_identity is None:
+        return None
+
+    carried = update.model_dump(exclude_none=True)
+    # The three flags default to False rather than None, so they are always
+    # present and are checked by value.
+    for flag in ("clear_password", "clear_oidc_client_secret", "confirm_open_mode"):
+        if carried.pop(flag, False):
+            return JSONResponse(
+                {"detail": "Only the Public Base URL may be established before a trusted origin exists", "code": "auth.bootstrap_public_base_url_only", "params": {}},
+                status_code=403,
+            )
+    if set(carried) != {"public_base_url"}:
+        return JSONResponse(
+            {"detail": "Only the Public Base URL may be established before a trusted origin exists", "code": "auth.bootstrap_public_base_url_only", "params": {}},
+            status_code=403,
+        )
+
+    proposed = normalized_origin(str(update.public_base_url or "").strip())
+    if proposed is None or not _valid_public_base_url(update.public_base_url):
+        return JSONResponse(
+            {"detail": "External Base URL must be an HTTPS origin in the form https://host[:port]", "code": "auth.public_base_url_invalid", "params": {}},
+            status_code=400,
+        )
+    if proposed != origin_identity:
+        return JSONResponse(
+            {"detail": "The Public Base URL must match the address this page was opened from", "code": "auth.public_base_url_mismatch", "params": {}},
+            status_code=403,
+        )
+    return None
+
+
+@router.put("/api/auth/config")
+async def update_authentication_config(request: Request, update: AuthenticationConfigUpdate):
+    current = get_settings()
+    bootstrap_rejection = _bootstrap_rejection(request, update)
+    if bootstrap_rejection is not None:
+        return bootstrap_rejection
+    candidate = _build_authentication_update(update)
+
+    if update.public_base_url is not None and not _valid_public_base_url(update.public_base_url):
+        return JSONResponse(
+            {"detail": "External Base URL must be an HTTPS origin in the form https://host[:port]", "code": "auth.public_base_url_invalid", "params": {}},
+            status_code=400,
+        )
+
+    principal = getattr(request.state, "principal", Principal.anonymous())
+    own_username, _own_password = await local_credential_status(principal.account_id)
+    if _credential_change(update, own_username) and not principal.account_id:
+        return JSONResponse(
+            {"detail": "Sign-in credentials can only be changed by the account they belong to", "code": "auth.credentials_owner_only", "params": {}},
+            status_code=409,
+        )
+
+    # The local credential is changed WHOLE: a new username brings the
+    # password it will be checked against, so a name is never bound to a
+    # stored password it was not set with, and a first credential is never a
+    # name alone. Refused before anything is written.
+    if (_requested_username(update, own_username) and not str(update.auth_password or "")
+            and not update.clear_password):
+        return JSONResponse(
+            {"detail": "Enter a new password to change the username", "code": "auth.rename_needs_password", "params": {}},
+            status_code=400,
+        )
+
+    if bool(getattr(candidate, "auth_password_enabled", False)) and not await _prospective_password_ready(
+        candidate, update, principal, own_username,
+    ):
+        return JSONResponse(
+            {"detail": "Username & Password cannot be enabled until a username and stored or new password are configured", "code": "auth.password_enable_incomplete", "params": {}},
+            status_code=400,
+        )
+
+    if bool(getattr(candidate, "auth_oidc_enabled", False)):
+        try:
+            oidc_configuration(candidate)
+        except OidcConfigurationError:
+            return JSONResponse(
+                {"detail": "OpenID Connect cannot be enabled until its local configuration is complete", "code": "oidc.enable_incomplete", "params": {}},
+                status_code=400,
+            )
+
+    clean = validate_and_sanitise(candidate)
+    password_toggled = bool(
+        update.auth_password_enabled is not None
+        and bool(update.auth_password_enabled) != password_auth_enabled(current)
+    )
+    payload = update.model_dump(exclude_none=True)
+    critical_oidc_changed = oidc_critical_change(payload, current)
+    oidc_disabled = bool(
+        update.auth_oidc_enabled is False and oidc_auth_enabled(current)
+    )
+
+    # The account credential (SQLite) and the authentication settings
+    # (config.json) are one transition: the settings are written inside the
+    # still-open credential transaction, so either both take effect or neither
+    # does. The account owner revokes this account's sessions with the change.
+    attempted = []
+
+    def persist():
+        attempted.append(True)
+        save_settings(clean)
+
+    try:
+        if _credential_change(update, own_username):
+            await set_own_local_credential(
+                principal.account_id,
+                username=_requested_username(update, own_username),
+                password=str(update.auth_password or "") or None,
+                clear=update.clear_password,
+                settings=clean,
+                persist=persist,
+            )
+        else:
+            persist()
+    except AccountRefused as exc:
+        named, params = disclosed(str(exc), *code_of(exc))
+        return JSONResponse({"detail": str(exc), "code": named, "params": params}, status_code=409)
+    except Exception as exc:  # noqa: BLE001 - a persistence failure is reported, never half-applied
+        if attempted:
+            # The settings may have been written while the credential did not
+            # commit: put the previous authentication settings back so the
+            # pair stays consistent.
+            try:
+                save_settings(current)
+            except Exception as restore_exc:  # noqa: BLE001
+                logger.critical("Previous authentication settings could not be restored: %s",
+                                type(restore_exc).__name__)
+        logger.error("Authentication configuration was not changed: %s", type(exc).__name__)
+        return JSONResponse(
+            {"detail": "Authentication configuration could not be saved; nothing was changed", "code": "auth.config_not_saved", "params": {}},
+            status_code=500,
+            headers={"Cache-Control": "no-store"},
+        )
+    apply_settings(clean)
+    await journal_configuration_change(current, clean)
+
+    if password_toggled:
+        basic_verification_cache.clear()
+        session_store.revoke_mechanism(AuthMechanism.PASSWORD_SESSION)
+    if critical_oidc_changed or oidc_disabled:
+        session_store.revoke_mechanism(AuthMechanism.OIDC_SESSION)
+
+    logger.info(
+        "Authentication configuration updated: password=%s oidc=%s",
+        "enabled" if password_auth_enabled(clean) else "disabled",
+        "enabled" if oidc_auth_enabled(clean) else "disabled",
+    )
+    response = JSONResponse({"ok": True, **(await _authentication_payload(request, cfg=clean))})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+class DeploymentTypeChange(BaseModel):
+    """The confirmed Server <-> Standalone transition. ``confirm`` is the
+    destructive confirmation the operator gave; without it nothing changes."""
+    model_config = ConfigDict(strict=True)
+    deployment_type: Literal["server", "standalone"]
+    confirm: bool = False
+
+
+_DEPLOYMENT_LABELS = {"server": "Server", "standalone": "Standalone"}
+
+
+@router.put("/api/auth/deployment-type")
+async def change_deployment_type(request: Request, change: DeploymentTypeChange):
+    """Change the installation's deployment type, in either direction, as one
+    authoritative transition: the type, Username & Password and OpenID Connect
+    both disabled (the rest of their configuration kept), and the default
+    Admin's local password removed if it has one. No other account, credential,
+    binding, token, enabled state or demand is touched. Every browser session
+    then ends: the installation is open, as its default Admin, until
+    authentication is configured again.
+
+    The authentication boundary holds the configuration lock from the caller's
+    admission through this route (``holds_authentication_configuration_lock``),
+    so the current type is the one every concurrent change sees. A request for
+    the type already in force changes nothing and says so."""
+    # The installed desktop application is one person's and always Standalone
+    # (``AppSettings._desktop_is_standalone``): it has no type to change, and
+    # the transition would only clear its sign-in.
+    from core.config import desktop_installation
+    if desktop_installation():
+        return JSONResponse(
+            {"detail": "The desktop application is always Standalone; its deployment type does not change", "code": "deployment.desktop_standalone", "params": {}}, status_code=409)
+    if not change.confirm:
+        return JSONResponse(
+            {"detail": "Explicit confirmation is required to change the deployment type", "code": "deployment.confirmation_required", "params": {}}, status_code=409)
+    target = change.deployment_type
+    async with config_write_lock():
+        current = get_settings()
+        if current.deployment_type == target:
+            return JSONResponse(
+                {"detail": f"DownloadPulse is already {_DEPLOYMENT_LABELS[target]}; nothing was changed", "code": "deployment.unchanged", "params": {"type": fact(target)}},
+                status_code=409)
+        clean = validate_and_sanitise(current.model_copy(
+            update={"deployment_type": target, "auth_password_enabled": False, "auth_oidc_enabled": False},
+            deep=True))
+        attempted = []
+
+        def persist():
+            attempted.append(True)
+            save_settings(clean)
+
+        try:
+            await change_deployment_credentials(settings=clean, persist=persist)
+        except Exception as exc:  # noqa: BLE001 - a persistence failure is reported, never half-applied
+            if attempted:
+                try:
+                    save_settings(current)
+                except Exception as restore_exc:  # noqa: BLE001
+                    logger.critical("Previous deployment settings could not be restored: %s",
+                                    type(restore_exc).__name__)
+            logger.error("Deployment type was not changed: %s", type(exc).__name__)
+            return JSONResponse(
+                {"detail": "The deployment type could not be saved; nothing was changed", "code": "deployment.not_saved", "params": {}},
+                status_code=500, headers={"Cache-Control": "no-store"})
+        apply_settings(clean)
+    basic_verification_cache.clear()
+    session_store.clear()
+    pending_oidc_store.clear()
+    await journal_configuration_change(current, clean)
+    logger.warning("Deployment type changed to %s; interactive authentication is disabled", target)
+    response = JSONResponse({"ok": True, "deployment_type": target})
+    response.headers["Cache-Control"] = "no-store"
+    clear_session_cookie(response, request)
+    return response
+
+
+@router.post("/api/auth/oidc/verify-config")
+async def verify_pending_oidc_configuration(
+    request: Request,
+    proposed: OidcVerificationRequest,
+):
+    """Stage proposed OIDC settings and require a complete provider login."""
+    principal = getattr(request.state, "principal", None)
+    if principal is None or not getattr(principal, "authenticated", False):
+        return JSONResponse({"detail": "Authentication required", "code": "auth.required", "params": {}}, status_code=401)
+    if standalone_deployment(get_settings()):
+        return JSONResponse({"detail": "OpenID Connect cannot be enabled while DownloadPulse is Standalone", "code": "oidc.standalone", "params": {}},
+                            status_code=409)
+    if not oidc_verify_rate_limiter.allow(peer_key(request)):
+        return JSONResponse(
+            {"detail": "Too many OpenID Connect configuration verifications have been started", "code": "oidc.verification_rate_limited", "params": {}},
+            status_code=429,
+            headers={"Retry-After": "60", "Cache-Control": "no-store"},
+        )
+
+    if proposed.public_base_url is not None and not _valid_public_base_url(proposed.public_base_url):
+        return JSONResponse(
+            {"detail": "External Base URL must be an HTTPS origin in the form https://host[:port]", "code": "auth.public_base_url_invalid", "params": {}},
+            status_code=400,
+        )
+
+    current = get_settings()
+    baseline_version = authentication_configuration_baseline_version(current)
+    candidate = _build_proposed_settings(proposed, current=current)
+    return_to = safe_return_path(proposed.return_to, default="/settings")
+    try:
+        authorization_url, correlation = await begin_oidc_login(
+            candidate,
+            return_to=return_to,
+        )
+        version = oidc_configuration_version(candidate)
+        if not version:
+            raise ValueError("OIDC configuration is not usable")
+        state_values = parse_qs(urlsplit(authorization_url).query).get("state", [])
+        state = str(state_values[0]) if state_values else ""
+        if not state:
+            raise ValueError("OIDC authorization state is missing")
+    except (OidcError, ValueError):
+        return JSONResponse(
+            {"detail": "Proposed OpenID Connect configuration could not start a verification login", "code": "oidc.verification_start_failed", "params": {}},
+            status_code=400,
+        )
+
+    pending_oidc_store.stage(
+        state,
+        candidate,
+        configuration_version=version,
+        baseline_configuration_version=baseline_version,
+        apply_password_enabled=proposed.auth_password_enabled is not None,
+        account_id=principal.account_id,
+    )
+    response = JSONResponse(
+        {
+            "ok": True,
+            "authorization_url": authorization_url,
+            "callback_url": oidc_callback_url(candidate),
+            "pending": True,
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    _set_pending_correlation_cookie(response, correlation)
+    return response
+
+
+@router.get("/auth/oidc/callback", include_in_schema=False)
+async def pending_aware_oidc_callback(
+    request: Request,
+    state: str = "",
+    code: str = "",
+    error: str = "",
+):
+    """Commit pending settings only after the matching complete OIDC flow passes."""
+    if not pending_oidc_store.has(state):
+        return await interactive_routes.oidc_callback(
+            request,
+            state=state,
+            code=code,
+            error=error,
+        )
+
+    correlation = str(request.cookies.get(OIDC_CORRELATION_COOKIE, "") or "")
+    if error:
+        pending_oidc_store.discard(state)
+        oidc_transaction_store.consume(state, correlation)
+        response = _oidc_verification_failure_page(status_code=401)
+        _clear_pending_correlation_cookie(response)
+        return response
+
+    try:
+        principal, return_to = await complete_oidc_login(
+            state=state,
+            code=code,
+            correlation=correlation,
+        )
+    except OidcError:
+        pending_oidc_store.discard(state)
+        response = _oidc_verification_failure_page(status_code=401)
+        _clear_pending_correlation_cookie(response)
+        return response
+
+    proof_version = str(principal.credential_version or "")
+    if not proof_version:
+        pending_oidc_store.discard(state)
+        response = _oidc_verification_failure_page(status_code=409)
+        _clear_pending_correlation_cookie(response)
+        return response
+
+    # Serialize baseline validation, proof binding, persistence, old-session
+    # revocation, and replacement-session creation as one auth configuration event.
+    async with authentication_configuration_lock:
+        try:
+            account = await commit_verified_pending_oidc(
+                state,
+                expected_configuration_version=proof_version,
+                issuer=str(principal.claims.get("iss") or ""),
+                subject=str(principal.claims.get("sub") or ""),
+            )
+        except Exception:  # noqa: BLE001 - never expose persistence/config details at callback boundary
+            account = None
+        if account is None:
+            response = _oidc_verification_failure_page(status_code=409)
+            _clear_pending_correlation_cookie(response)
+            return response
+
+        cfg = get_settings()
+        current_version = oidc_configuration_version(cfg)
+        if not current_version or not secrets.compare_digest(
+            proof_version,
+            current_version,
+        ):
+            response = _oidc_verification_failure_page(status_code=409)
+            _clear_pending_correlation_cookie(response)
+            return response
+
+        old_token = session_cookie_token(request)
+        if old_token:
+            session_store.revoke(old_token)
+        lifetime = interactive_routes._session_lifetime_seconds(cfg)
+        token, _record = session_store.create(
+            principal.bound_to(account),
+            lifetime_seconds=lifetime,
+            credential_version=proof_version,
+        )
+
+    response = RedirectResponse(url=safe_return_path(return_to), status_code=303)
+    set_session_cookie(
+        response,
+        request,
+        token,
+        max_age=lifetime,
+        force_secure=True,
+    )
+    clear_login_csrf_cookie(response, request)
+    _clear_pending_correlation_cookie(response)
+    response.headers["Cache-Control"] = "no-store"
+    return response

@@ -1,0 +1,3462 @@
+"""
+REST API routes for DownloadPulse.
+
+Conventions:
+- All DB access uses get_db() against the authoritative SQLite store.
+- Pydantic models for request bodies are defined inline.
+- No inline `import` statements — all imports are at module level.
+"""
+import asyncio
+import ipaddress
+import json as _json
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated, AsyncGenerator, Literal
+from urllib.parse import urlparse, urlsplit
+
+from fastapi import Depends, APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
+from starlette.background import BackgroundTask
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from core.branding import APP_SHORT_NAME, REPOSITORY_API_URL
+from core.config import (
+    AppSettings,
+    apply_settings,
+    config_write_lock,
+    display_timezone,
+    get_settings,
+    journal_configuration_change,
+    load_settings,
+    save_settings,
+)
+from api.legacy_settings_view import legacy_settings_projection
+from providers.alldebrid.definition import canonical_options as alldebrid_canonical_options
+from providers.multimeta.metalink import MAX_DESCRIPTOR_BYTES
+from transfers.requests import (
+    ALTERNATIVE_SOURCE_DELIMITER, MAX_LINK_FILE_BYTES, direct_link_rows, link_file_entries, normalize_direct_links,
+)
+from core.config_validator import validate_and_sanitise
+from integrations.definition import IntegrationSettings
+from transfers._repository_base import canonical_artifact_membership_sql
+from transfers.runtime_limits import ExecutionRuntimeLimits
+from transfers.models import SubmissionDemand
+from transfers._repository_base import DemandChanged
+from transfers.manual_queue_move import QueueMoveRefused, RestartConfirmationRequired
+from transfers.manual_route_switch import root_switches
+from transfers.settings import TransferSettings
+from core.logging_utils import sanitize_exception, sanitize_log_value
+from core.presentation_safety import safe_original_http_resource, safe_original_remote_file_resource, safe_public_host
+from core.version import is_version_newer, normalize_version_tag, read_version
+from auth import accounts
+from auth.middleware import session_record_valid
+from auth.models import AuthMechanism, Principal
+from auth.policy import interactive_auth_enabled
+from auth.permissions import ACTIONS, Capability, destruction_precondition, permits, require_destruction, transfer_access
+from auth.oidc_version import oidc_configuration_version
+from auth.passwords import basic_verification_cache
+from auth.sessions import session_store
+from core import scheduler as scheduler_runtime
+from application.lifetime import RestoreFailed, restore_backup as restore_application_backup
+from services import backup as backup_store
+from db.database import DB_PATH, database_maintenance, get_db
+
+
+def _sanitize_error(exc: Exception) -> str:
+    """Return a safe, short error message suitable for API responses.
+
+    Strips raw magnet links and very long URLs that may appear in exception
+    strings — e.g. when AllDebrid echoes back the submitted magnet in an
+    error payload, or when a download_torrent_file exception includes the URL.
+    Truncates the result to 200 characters.
+    """
+    return sanitize_exception(exc, max_length=200)
+
+
+# What a refused value must be, by the rule it broke. Built only from the
+# schema's own bounds -- never the submitted value, which may be a secret.
+_VALIDATION_REQUIREMENTS = {
+    "less_than_equal": "must be {le} or less",
+    "greater_than_equal": "must be {ge} or more",
+    "less_than": "must be less than {lt}",
+    "greater_than": "must be more than {gt}",
+    "int_parsing": "must be a whole number",
+    "int_type": "must be a whole number",
+    "int_from_float": "must be a whole number",
+    "float_parsing": "must be a number",
+    "float_type": "must be a number",
+    "bool_parsing": "must be on or off",
+    "bool_type": "must be on or off",
+    "string_type": "must be text",
+    "string_too_short": "must be at least {min_length} characters",
+    "string_too_long": "must be at most {max_length} characters",
+    "missing": "is required",
+    "extra_forbidden": "is not a recognised setting",
+    "finite_number": "must be a finite number",
+    "literal_error": "must be one of the offered choices",
+    "setting_choice": "must be {expected}",
+    "setting_url": "must be an http:// or https:// address",
+    "setting_avatar": "must be an http:// or https:// image address that is not an SVG",
+    "setting_path": "must be an absolute folder path",
+    "setting_host": "must be a host name or IP address without a scheme, path, or spaces",
+    "setting_player_clients": "must name each client at most once, from {supported}",
+    "setting_player_clients_unknown": "can only be Automatic: the installed yt-dlp's player clients are unknown",
+}
+
+
+def _validation_refusal(error: dict) -> dict:
+    """One refused value as an operator reads it: ``message`` stands alone,
+    ``requirement`` lets a caller that knows the field's label say "<label>
+    <requirement>.", and ``field`` names the schema key for that matching (it
+    is never shown). A validator's own sentence is its message; a rule not
+    listed here is "not valid" rather than Pydantic's wording."""
+    field = next((str(part) for part in reversed(error.get("loc") or ()) if isinstance(part, str)), "")
+    kind = str(error.get("type") or "")
+    if kind in ("value_error", "assertion_error"):
+        authored = str(error.get("msg") or "").removeprefix("Value error, ").removeprefix("Assertion failed, ")
+        # The validator's own refusal names its code where it has one (WS3e);
+        # otherwise it is the explicit ``unclassified`` fallback.
+        message = authored[:200] or "Value is not valid."
+        named, named_params = code_of((error.get("ctx") or {}).get("error"))
+        # Never more than the message itself shows (``disclosed``).
+        code, params = disclosed(message, named, named_params)
+        return {"message": message, "field": field, "code": code, "params": params}
+    try:
+        requirement = _VALIDATION_REQUIREMENTS.get(kind, "is not valid").format(**(error.get("ctx") or {}))
+        rule = kind if kind in _VALIDATION_REQUIREMENTS else "invalid"
+    except (KeyError, IndexError, ValueError):
+        requirement, rule = "is not valid", "invalid"
+    # ``code`` names the rule (``error.validation.<rule>``, and its bare
+    # requirement ``error.requirement.<rule>``); ``params`` are the rule's own
+    # bounds -- never the refused value.
+    # A rule's bounds are the schema's own (``ctx``), never the refused value: facts.
+    bounds = {name: fact(value) if isinstance(value, str) else value for name, value in (error.get("ctx") or {}).items()
+              if rule != "invalid" and isinstance(value, (str, int, float, bool))}
+    code, params = disclosed(f"Value {requirement}.", f"validation.{rule}", bounds)
+    return {"message": f"Value {requirement}.", "requirement": requirement, "field": field,
+            "code": code, "params": params}
+
+
+def _refused(exc: ValidationError) -> HTTPException:
+    """A 400 for a refused settings value: the first rule it broke, in words
+    (``_validation_refusal``); the full validation detail goes to the log."""
+    # Where and which rule -- never the refused value, which may be a secret.
+    logger.info("Settings value refused: %s", "; ".join(
+        f"{'.'.join(str(part) for part in error.get('loc') or ())}: {error.get('type')}"
+        for error in exc.errors(include_url=False, include_input=False, include_context=False)))
+    return HTTPException(400, _validation_refusal(exc.errors(include_url=False)[0]))
+
+
+# ── SQL dialect helpers ────────────────────────────────────────────────────────
+def _sql_now_minus(interval: str) -> str:
+    parts = interval.split()
+    n, unit = parts[0], parts[1]
+    return f"datetime('now','-{n} {unit}')"
+
+
+def _sql_strftime(fmt: str, field: str) -> str:
+    # SQLite stores canonical UTC clock values; calendar buckets are operator-local.
+    return f"strftime('{fmt}', {field}, 'localtime')"
+
+
+def _sql_date(field: str) -> str:
+    return f"DATE({field}, 'localtime')"
+
+from application import dispatch_admission
+from application.dependencies import get_application
+from transfers import codec
+from application.service import AcquisitionScopeRequired, ApplicationService, LocalNetworkConfirmationRequired
+from executors.aria2.runtime import runtime as aria2_runtime, _canonical_aria2_options
+from services.event_bus import bind_publisher
+from services import transfer_trace
+from api.serializers import (
+    public_download_file,
+    public_payload,
+    public_torrent,
+)
+from executors.aria2.presentation import public_aria2_download
+from core.localization import CodedValueError, DisplayError, code_of, disclosed, refusal, fact
+
+logger = logging.getLogger("downloadpulse.routes")
+router = APIRouter()
+# A stored transfer priority is a signed 32-bit value: never an overflow.
+_PRIORITY_MIN, _PRIORITY_MAX = -(2 ** 31), 2 ** 31 - 1
+
+
+def _duplicate_candidate_from_payload(payload: dict, source: str = "preview"):
+    """Build a read-only duplicate-check candidate from API/search payload data."""
+    from services.duplicates import DuplicateCandidate
+
+    return DuplicateCandidate(
+        source=source,
+        title=str(payload.get("title") or payload.get("name") or "").strip(),
+        magnet=str(payload.get("magnet") or "").strip(),
+        torrent_url=str(payload.get("torrent_url") or "").strip(),
+        infohash=str(payload.get("hash") or payload.get("infohash") or "").strip().lower(),
+        resource_id=str(payload.get("resource_id") or "").strip(),
+        size_bytes=int(payload.get("size_bytes") or payload.get("size") or 0),
+        indexer=str(payload.get("indexer") or "").strip(),
+        category=str(payload.get("category") or "").strip(),
+        imdb_id=str(payload.get("imdb_id") or payload.get("imdbid") or "").strip(),
+        tmdb_id=str(payload.get("tmdb_id") or payload.get("tmdbid") or "").strip(),
+    )
+
+
+def _public_base_url(request: Request) -> str:
+    """Return the externally reachable base URL for generated links."""
+    configured = (os.getenv("PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "localhost:8095"
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _avatar_reachability_warning(public_url: str) -> str:
+    """Return a warning when Discord likely cannot fetch the generated avatar URL."""
+    if _is_public_url(public_url):
+        return ""
+    return (
+        "Avatar uploaded, but the generated URL is private or loopback and may not be reachable by Discord. "
+        "Set PUBLIC_BASE_URL to a public HTTP(S) address or use a public avatar URL directly."
+    )
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _is_public_url(url: str) -> bool:
+    """Returns True when url is reachable from outside the container."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if not host or host in ("localhost", "127.0.0.1", "::1"):
+            return False
+        addr = ipaddress.ip_address(host)
+        return not (addr.is_loopback or addr.is_private or addr.is_link_local)
+    except ValueError:
+        # hostname — not an IP, assume public
+        return True
+
+
+# ── Settings ───────────────────────────────────────────────────────────────────
+# Secrets of the broad settings document only. Integration-owned secrets
+# (AllDebrid ``api_key``, aria2 ``secret``) live in their ``integrations.<id>``
+# namespace and are written, cleared and redacted through it.
+_SECRET_SETTINGS = {
+    "discord_webhook_url",
+    "discord_webhook_added", "stats_report_webhook_url",
+    "extraction_password",
+}
+
+# SettingsUpdate inherits AppSettings, so omitted values are otherwise populated
+# with model defaults before the route sees them. Authentication transition
+# enforcement reasons from the raw request and deliberately treats omitted auth
+# fields as unchanged. Preserve those fields here too so a partial legacy PUT
+# cannot silently reset authentication behind the transition state machine.
+_AUTH_COMPAT_SETTINGS_FIELDS = (
+    "auth_password_enabled",
+    "auth_session_lifetime_hours",
+    "auth_oidc_enabled",
+    "auth_oidc_default_role",
+    "oidc_provider_name",
+    "oidc_issuer_url",
+    "oidc_client_id",
+    "oidc_scopes",
+    "oidc_allow_all",
+    "oidc_allowed_subjects",
+    "oidc_allowed_emails",
+    "oidc_allowed_groups",
+    "oidc_group_claim",
+    "public_base_url",
+)
+
+
+def _with_option_availability(integrations: dict, application: ApplicationService) -> dict:
+    """Each integration's account-gated options as its account owner allows
+    them now (``ApplicationService.option_availability``): live truth beside
+    the saved options, never stored."""
+    for definition in application.definitions:
+        availability = application.option_availability(definition)
+        if availability and definition.id in integrations:
+            integrations[definition.id]["option_availability"] = availability
+    return integrations
+
+
+def _public_settings(settings: AppSettings, definitions=()) -> dict:
+    data = settings.model_dump()
+    from integrations.configuration import public_integration_groups, public_integrations
+    data["integrations"] = public_integrations(settings, definitions)
+    data["integration_groups"] = public_integration_groups(settings, definitions)
+    # Compatibility output for pre-canonical readers, derived from the
+    # canonical namespaces above at response time; never persisted or consumed.
+    compatibility = legacy_settings_projection(settings, definitions)
+    data.update(compatibility)
+    # Self-describing: a client that re-submits this document strips exactly
+    # these names, so no client has to keep its own list of them.
+    data["compatibility_fields"] = sorted(compatibility)
+    for field in _SECRET_SETTINGS:
+        if field in data:
+            data[f"{field}_configured"] = bool(str(data.get(field) or "").strip())
+            data[field] = ""
+    # Verification evidence is internal: a fingerprint is never served. What is
+    # published is the DERIVED notification state -- whether each section has an
+    # effective destination, and whether a Test has covered exactly what is
+    # saved -- computed by the one notification-boundary owner.
+    data.pop("notification_verification", None)
+    from services.notification_service import notification_state
+    data.update(notification_state(settings))
+    data["database_backend"] = "sqlite"
+    data["timezone"] = display_timezone()
+    return data
+
+
+def _provider_definition(identity: str | None, definitions):
+    if not identity:
+        return None
+    return next((definition for definition in definitions if definition.id == identity), None)
+
+
+def _provider_display_name(identity: str | None, definitions) -> str | None:
+    """How one transfer names its provider: the integration's own transfer
+    label when it declares one, otherwise its name."""
+    definition = _provider_definition(identity, definitions)
+    if definition is None:
+        return None
+    return definition.presentation.transfer_label or definition.name
+
+
+def _provider_theme(identity: str | None, definitions) -> str | None:
+    """The provider badge's declared theme token, if the integration has one."""
+    definition = _provider_definition(identity, definitions)
+    return definition.presentation.transfer_theme if definition is not None else None
+
+
+# The normalized-error facts Details may disclose beneath its ERROR message,
+# in display order: who reported it, the reported reason and native code, and
+# how it is classified. Scalars only -- never the free-form ``context`` or the
+# trace-only ``diagnostic_evidence`` -- and never the category, which the
+# message already states.
+_ERROR_DISCLOSURE_FIELDS = ("origin", "domain", "diagnostic", "native_code", "stage", "permanence", "retryability")
+
+
+def _error_disclosure(error, displayed, definitions) -> dict | None:
+    """What Details discloses about the error it displays, or ``None``.
+
+    ``error`` is the transfer's decoded normalized error and ``displayed`` the
+    public projection Details shows for it; nothing is disclosed unless they
+    are the same error (a transition between the two reads, a malformed or a
+    missing error fails closed to the message alone). Every value has already
+    crossed ``NormalizedError``'s own sanitization; unknown and empty values
+    are left out."""
+    if error is None or not isinstance(displayed, dict) or error.as_dict() != displayed:
+        return None
+    facts = {}
+    if error.integration_id:
+        facts["integration_id"] = error.integration_id
+        name = _provider_display_name(error.integration_id, definitions)
+        if name:
+            facts["integration_name"] = name
+    for name in _ERROR_DISCLOSURE_FIELDS:
+        value = str(getattr(getattr(error, name), "value", getattr(error, name)) or "")
+        if value and value != "unknown":
+            facts[name] = value
+    return facts or None
+
+
+# A held artifact's states that are no longer recovering: its error is history.
+_SETTLED_ARTIFACT_STATES = frozenset({"completed", "cancelled", "error"})
+
+
+async def _error_reason(repository, transfer_id: int, transfer, displayed, wake_condition, definitions) -> dict | None:
+    """The reporting integration's own words (``IntegrationPresentation
+    .error_reasons``) for the failure Details shows, or ``None``.
+
+    That failure is the transfer's displayed error when it has one (bound
+    exactly as ``_error_disclosure`` binds it); otherwise the failure DownloadPulse
+    is still recovering from: a source whose resolution retry is scheduled,
+    else a held file whose acquisition failed. ``scheduled_retry_at`` is only
+    ever a real schedule -- that source's own retry time, or the recovery
+    projection's ``retry_at:`` wake -- and ``None`` when no automatic retry is
+    scheduled. Nothing here decides or changes recovery. An error is the
+    integration's by any identity it records work under (a provider's or
+    its executor's), and nothing more is read unless some integration
+    declares words at all."""
+    declaring = [definition for definition in definitions or () if definition.presentation.error_reasons]
+    if not declaring:
+        return None
+    retry_at = None
+    if displayed is not None:
+        error = transfer.error if transfer else None
+        if error is None or not isinstance(displayed, dict) or error.as_dict() != displayed:
+            return None
+    else:
+        pending = next((item for item in await repository.requests(transfer_id)
+                        if item.state == "pending" and item.error and float(item.retry_at or 0) > 0), None)
+        if pending is not None:
+            error, retry_at = pending.error, float(pending.retry_at)
+        else:
+            held = next((item for item in await repository.artifacts(transfer_id)
+                         if item.error and item.state not in _SETTLED_ARTIFACT_STATES), None)
+            if held is None:
+                return None
+            error, wake = held.error, str(wake_condition or "")
+            try:
+                retry_at = float(wake.removeprefix("retry_at:")) if wake.startswith("retry_at:") else None
+            except ValueError:
+                retry_at = None
+    definition = next((item for item in declaring if error.integration_id in item.owned_identities), None)
+    words = definition.presentation.error_reason(error.native_code) if definition is not None else None
+    if words is None:
+        return None
+    return {"reason": words[0], "explanation": words[1], "scheduled_retry_at": retry_at}
+
+
+_REMOTE_FILE_KINDS = frozenset({"ftp", "sftp", "scp", "ssh", "rsync", "rsync+ssh", "webdav", "webdavs", "dav", "davs"})
+
+
+def _original_resource_url(request_payload, admitted_verbatim: bool = False) -> tuple[str | None, bool]:
+    """``(complete safe URL, copy allowed)`` for Details' Original Resource.
+
+    The URL is the same canonical sanitizer's output as the compact label,
+    only never shortened; ``None`` when that sanitizer yields no URL. Copy is
+    allowed only for an HTTP(S) request the admission boundary attested as
+    received verbatim (``admitted_verbatim``, read from the repository),
+    whose host is a plain DNS name or address, and which that sanitizer
+    returns byte for byte unchanged -- so the copied value is the safe value
+    itself and nothing was, or would be, removed."""
+    if not request_payload:
+        return None, False
+    try:
+        request = codec.request(request_payload)
+    except (TypeError, ValueError, KeyError):
+        return None, False
+    kind = str(request.kind or "").strip().lower()
+    if not isinstance(request.payload, str):
+        return None, False
+    raw = request.payload
+    if kind in {"http", "https"}:
+        full = safe_original_http_resource(raw, max_length=None)
+    elif kind in _REMOTE_FILE_KINDS:
+        full = safe_original_remote_file_resource(raw, max_length=None)
+    else:
+        return None, False
+    copy_allowed = (kind in {"http", "https"} and admitted_verbatim is True and full == raw
+                    and safe_public_host(urlsplit(raw).hostname) is not None)
+    return full, copy_allowed
+
+
+def _safe_original_resource(request_payload) -> str | None:
+    """Return a normal-user source label without returning capability-bearing data."""
+    if not request_payload:
+        return None
+    try:
+        request = codec.request(request_payload)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+    kind = str(request.kind or "").strip().lower()
+    raw = request.payload.decode("utf-8", "replace") if isinstance(request.payload, bytes) else str(request.payload or "")
+
+    if kind in {"http", "https"}:
+        return safe_original_http_resource(raw, max_length=180) or request.name or "HTTP/HTTPS resource"
+
+    if kind in _REMOTE_FILE_KINDS:
+        # The operator's own remote-file request (never, for SCP/SSH, the SFTP
+        # address it executes as, nor, for WebDAV, the HTTP(S) address): scheme,
+        # host, non-default port and path only.
+        return safe_original_remote_file_resource(raw, max_length=180) or request.name or f"{kind.upper()} resource"
+
+    if kind == "magnet" or raw.lower().startswith("magnet:?"):
+        return sanitize_log_value(raw, max_length=180)
+
+    if isinstance(request.payload, bytes) or kind in {"torrent", "torrent_file", "file"}:
+        return request.name or "Torrent file"
+
+    return request.name or (f"{kind.upper()} resource" if kind else "Source resource")
+
+
+def _public_transfer_presentation(value, definitions, *, admitted_verbatim: bool = False) -> dict:
+    """Decorate durable provenance with neutral display metadata before stripping capabilities."""
+    raw_request = value.get("request") if isinstance(value, dict) else None
+    result = public_payload(value)
+    if "current_provider_id" in result:
+        result["current_provider_name"] = _provider_display_name(result.get("current_provider_id"), definitions)
+    if "delivering_provider_id" in result:
+        result["delivering_provider_name"] = _provider_display_name(result.get("delivering_provider_id"), definitions)
+    if "origin_provider_id" in result:
+        result["origin_provider_name"] = _provider_display_name(result.get("origin_provider_id"), definitions)
+    if "route_provider_id" in result:
+        result["route_provider_name"] = _provider_display_name(result.get("route_provider_id"), definitions)
+    if "active_provider_id" in result:
+        result["active_provider_name"] = _provider_display_name(result.get("active_provider_id"), definitions)
+    # Only a provider that declares a badge theme carries one, beside its name,
+    # so every other badge stays exactly as it was.
+    for role in ("current", "delivering", "origin", "route", "active"):
+        theme = _provider_theme(result.get(f"{role}_provider_id"), definitions)
+        if theme:
+            result[f"{role}_provider_theme"] = theme
+
+    for attempt in result.get("route_attempts", []) or []:
+        attempt["provider_name"] = _provider_display_name(attempt.get("provider_id"), definitions)
+    for attempt in result.get("execution_attempts", []) or []:
+        attempt["provider_name"] = _provider_display_name(attempt.get("provider_id"), definitions)
+
+    if raw_request is not None:
+        result["original_resource"] = _safe_original_resource(raw_request)
+        full, result["original_resource_copy_allowed"] = _original_resource_url(raw_request, admitted_verbatim)
+        if full:
+            result["original_resource_sanitized_full"] = full
+    return result
+
+
+def _password_auth_binding(settings: AppSettings) -> bool:
+    # Local credentials are account state (``auth.accounts``): the broad
+    # document only enables or disables the mechanism.
+    return bool(getattr(settings, "auth_password_enabled", False))
+
+
+def _oidc_auth_binding(settings: AppSettings) -> tuple[bool, str]:
+    return (
+        bool(getattr(settings, "auth_oidc_enabled", False)),
+        oidc_configuration_version(settings),
+    )
+
+
+def _revoke_stale_authentication_state(previous: AppSettings, current: AppSettings) -> None:
+    """Give the legacy broad Settings route the same revocation semantics as the dedicated auth route."""
+    if _password_auth_binding(previous) != _password_auth_binding(current):
+        basic_verification_cache.clear()
+        session_store.revoke_mechanism(AuthMechanism.PASSWORD_SESSION)
+    if _oidc_auth_binding(previous) != _oidc_auth_binding(current):
+        session_store.revoke_mechanism(AuthMechanism.OIDC_SESSION)
+
+
+@router.get("/settings")
+async def get_settings_ep(application: ApplicationService = Depends(get_application)):
+    data = _public_settings(get_settings(), application.definitions)
+    _with_option_availability(data["integrations"], application)
+    return data
+
+
+@router.get("/health")
+async def health_check():
+    """
+    Lightweight liveness probe for Docker HEALTHCHECK and uptime monitors.
+
+    Returns HTTP 200 as long as the process is running. Does not check
+    AllDebrid or aria2 — those are external and their absence should not
+    restart the container. Use GET /api/stats for full service health.
+    A process whose stored state awaits an unresolved restore's reversal is
+    not healthy: only its next start puts the previous state back.
+    """
+    from db.database import database_maintenance_gate
+
+    if database_maintenance_gate.sealed:
+        return JSONResponse(status_code=503, content={"status": "restore_unresolved", "version": read_version()})
+    return {"status": "ok", "version": read_version()}
+
+
+@router.get("/version")
+async def get_version_ep():
+    return {"version": read_version()}
+
+
+_update_check_cache: dict = {}
+
+
+def _version_gt(a: str, b: str) -> bool:
+    """True when candidate release ``a`` is newer than running release ``b``."""
+    return is_version_newer(a, b)
+
+
+@router.get("/version/check")
+async def version_check():
+    """Compare running version with latest GitHub release. Cached 30 min."""
+    import time, aiohttp as _aiohttp
+    cache, now, current = _update_check_cache, time.time(), read_version()
+    if cache.get("ts", 0) + 1800 > now:
+        return cache.get("result", {"current": current, "latest": None, "update_available": False})
+    try:
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(
+                f"{REPOSITORY_API_URL}/releases/latest",
+                headers={"Accept": "application/vnd.github.v3+json"},
+            ) as r:
+                if r.status != 200: raise RuntimeError("GitHub API " + str(r.status))
+                rel = await r.json()
+        latest = normalize_version_tag(rel.get("tag_name") or "")
+        result = {
+            "current": current, "latest": latest,
+            "update_available": _version_gt(latest, current),
+            "release_url":   rel.get("html_url", ""),
+            "release_notes": (rel.get("body") or "").strip(),
+            "published_at":  (rel.get("published_at") or "")[:10],
+        }
+        cache["result"] = result
+        cache["ts"] = now
+        return result
+    except Exception as exc:
+        logger.warning("Version check failed: %s", sanitize_exception(exc))
+        return {"current": current, "latest": None, "update_available": False, "error": sanitize_exception(exc)}
+
+
+class SettingsUpdate(AppSettings):
+    # Strict: a value of the wrong JSON type ("5", true for a number, 5.5 for
+    # a whole number) is refused, never coerced into some other value.
+    model_config = ConfigDict(strict=True)
+    clear_secrets: list[str] = Field(default_factory=list)
+
+
+# The broad document's own flat values -- everything a PUT may change.
+_DOCUMENT_FIELDS = frozenset(AppSettings.model_fields) - {
+    "integrations", "integration_groups", "transfer_policy", "execution_runtime_limits",
+    "external_delivery", "notification_verification", "oidc_client_secret", "oidc_client_secret_clear",
+    "deployment_type",
+}
+
+
+def _refuse_invalid_document_changes(merged: dict, previous: AppSettings) -> None:
+    """Every flat value this write CHANGES meets its field's rule
+    (``core.settings_constraints``); untouched stored values are not re-judged.
+    An authentication value changed here meets exactly what the Authentication
+    surface (``PUT /api/auth/config``) requires of it -- this is not a way
+    around it."""
+    from api.auth_config_routes import AuthenticationConfigUpdate, _valid_public_base_url
+    from core.settings_constraints import validate_changes
+    try:
+        validate_changes(AppSettings, merged, previous, names=_DOCUMENT_FIELDS)
+        validate_changes(AuthenticationConfigUpdate, merged, previous, names=_AUTH_COMPAT_SETTINGS_FIELDS)
+    except ValidationError as exc:
+        raise _refused(exc) from None
+    if (merged.get("public_base_url") != previous.public_base_url
+            and not _valid_public_base_url(merged.get("public_base_url"))):
+        raise HTTPException(400, {"message": "Value must be an HTTPS origin.",
+                                  "requirement": "must be an HTTPS origin in the form https://host[:port]",
+                                  "field": "public_base_url", "code": "validation.https_origin", "params": {}})
+
+
+def _merge_secret_settings(new: SettingsUpdate, previous: AppSettings) -> dict:
+    requested_clears = {str(field) for field in getattr(new, "clear_secrets", [])}
+    unknown = requested_clears - _SECRET_SETTINGS
+    if unknown:
+        raise DisplayError(400, f"Unsupported secret field(s): {', '.join(sorted(unknown))}", code="settings.secret_field_unsupported", params={"fields": str(', '.join(sorted(unknown)))})
+    merged = new.model_dump(exclude={"clear_secrets"})
+    explicitly_set = set(new.model_fields_set)
+    for field in _AUTH_COMPAT_SETTINGS_FIELDS:
+        if field not in explicitly_set:
+            merged[field] = getattr(previous, field)
+    for field in _SECRET_SETTINGS:
+        if str(merged.get(field) or "").strip():
+            # An explicit non-empty value is authoritative and overrides a
+            # contradictory clear request: a payload that both supplies a
+            # secret and asks to clear it must not destroy the supplied value.
+            continue
+        if field in requested_clears:
+            merged[field] = ""
+        else:
+            merged[field] = getattr(previous, field, "")
+    return merged
+
+
+async def _apply_aria2_settings(application: ApplicationService, *, strict: bool = False) -> dict:
+    """Ensure the aria2 daemon runs and reapply its native tuning after a
+    settings change. Shared by the whole-settings route and the scoped
+    integration-configuration route (specification section 9.5) so both
+    surfaces give aria2 the same targeted, non-blanket handling -- never
+    ``ApplicationMaintenanceGate`` (specification section 2.6, 6).
+
+    ``strict`` (the scoped route, which changes aria2's own options): a
+    configuration aria2 refuses -- a start that exits on a refused option, or
+    a running daemon answering the live update with a refusal -- raises
+    ``NativeConfigurationRefused``, so the mutation keeps the previous
+    configuration instead of reporting success. Anything else (no daemon by
+    choice, a connection that is not there) is reported, never raised.
+    Returns what actually took effect: whether the daemon runs, and the
+    startup-only options that wait for its next start."""
+    from executors.aria2.client import Aria2ResponseError
+    from executors.aria2.runtime import OPTION_REFUSED_EXIT_CODE
+    from integrations.configuration_mutation import NativeConfigurationRefused
+
+    status = await aria2_runtime.ensure_started()
+    if strict and not status.get("process_running") and aria2_runtime.last_exit_code == OPTION_REFUSED_EXIT_CODE:
+        raise NativeConfigurationRefused(f"aria2 refused this configuration: {status.get('last_error') or 'exit 28'}", code="aria2.configuration_refused", params={"reason": str(status.get('last_error') or 'exit 28')})
+    applied = False
+    if status.get("process_running"):
+        try:
+            await application.integration_admin("aria2").apply_memory_tuning()
+            applied = True
+        except Aria2ResponseError as exc:
+            if strict:
+                raise NativeConfigurationRefused(f"aria2 refused this configuration: {sanitize_exception(exc)}", code="aria2.configuration_refused", params={"reason": str(sanitize_exception(exc))}) from None
+            logger.warning("Could not apply aria2 memory settings immediately: %s", sanitize_exception(exc))
+        except Exception as exc:
+            logger.warning("Could not apply aria2 memory settings immediately: %s", sanitize_exception(exc))
+    return {"running": bool(status.get("process_running")), "applied": applied,
+            "pending_restart": aria2_runtime.pending_restart()}
+
+
+@router.put("/settings")
+async def update_settings(new: SettingsUpdate, application: ApplicationService = Depends(get_application)):
+    async with application.configuration_admission():
+        # The narrow config-write lock (specification sections 9.5, 13.8)
+        # serializes this load-modify-save critical section against every
+        # OTHER settings-mutation route -- including the scoped PATCH
+        # surfaces below, which deliberately do NOT hold
+        # ``configuration_admission()`` and could otherwise run genuinely
+        # concurrently with this whole-settings write.
+        async with config_write_lock():
+            previous = get_settings()
+            merged = _merge_secret_settings(new, previous)
+            _refuse_invalid_document_changes(merged, previous)
+            definitions = application.definitions
+            from integrations.configuration import normalize_settings
+            # The broad document never writes a canonical namespace: those have
+            # their own scoped surfaces (``/integrations/{id}/configuration``,
+            # ``/transfer-policy``, ``/execution/runtime-limits``). Whatever a
+            # stale snapshot echoes for them is ignored, so it cannot undo a
+            # concurrently applied scoped write.
+            merged["integrations"] = previous.integrations
+            merged["integration_groups"] = previous.integration_groups
+            merged["transfer_policy"] = previous.transfer_policy
+            merged["execution_runtime_limits"] = previous.execution_runtime_limits
+            merged["external_delivery"] = previous.external_delivery
+            # Notification verification evidence is metadata ABOUT canonical
+            # configuration and is never accepted from a request, so it is
+            # carried forward here exactly like the canonical namespaces above.
+            merged["notification_verification"] = previous.notification_verification
+            # The deployment type changes only through its confirmed transition
+            # (``PUT /api/auth/deployment-type``); a submitted one is ignored.
+            merged["deployment_type"] = previous.deployment_type
+            # So does the default language (``PUT /api/settings/default-locale``).
+            merged["default_locale"] = previous.default_locale
+            # And the desktop application's Local Port (``PUT /api/settings/local-port``).
+            merged["desktop_local_port"] = previous.desktop_local_port
+            clean = normalize_settings(AppSettings(**merged), definitions, previous=previous)
+            clean = validate_and_sanitise(clean)
+            # ... and then retired where it no longer describes what is about to
+            # be saved. Sanitisation can itself change material (a rejected
+            # avatar URL is cleared), so this is the last word before the write.
+            from services.notification_service import carried_verification
+            clean = carried_verification(clean)
+            try:
+                await application.validate_configuration(previous, clean)
+            except ValueError as exc:
+                raise refusal(409, str(exc), exc) from None
+            save_settings(clean)
+            apply_settings(clean)
+        _revoke_stale_authentication_state(previous, clean)
+        application.configure()
+        await _apply_aria2_settings(application)
+        await journal_configuration_change(previous, clean)
+        data = _public_settings(clean, application.definitions)
+        _with_option_availability(data["integrations"], application)
+        if clean.download_folder != previous.download_folder:
+            # The Download Folder moved: name every delivery profile whose
+            # local_root is now outside it. Nothing about them is changed --
+            # they stay as saved, and are not delivered to until moved.
+            from external.profiles import confined_to
+            data["delivery_profiles_outside_download_folder"] = [
+                profile.id for profile in clean.external_delivery.profiles
+                if not confined_to(clean.download_folder, profile.local_root)]
+        data["ok"] = True
+        return data
+
+
+# ── Avatar ─────────────────────────────────────────────────────────────────────
+
+@router.post("/settings/upload-avatar")
+async def upload_avatar(request: Request, file: UploadFile = File(...)):
+    """
+    Saves the avatar image to CONFIG_DIR/avatar.<ext> and returns the
+    public HTTP URL so Discord can fetch it.
+    Discord requires a real HTTPS/HTTP URL — data URIs are rejected.
+    """
+    ALLOWED = {"image/png": "png", "image/jpeg": "jpg",
+                "image/gif": "gif", "image/webp": "webp"}
+    MAX_BYTES = 4 * 1024 * 1024
+
+    ct = (file.content_type or "").lower().split(";")[0].strip()
+    if ct not in ALLOWED:
+        raise DisplayError(400, f"Unsupported type '{ct}'. Allowed: PNG, JPG, GIF, WebP", code="avatar.type_unsupported", params={"type": ct})
+
+    data = await file.read(MAX_BYTES + 1)
+    await file.close()
+    if len(data) > MAX_BYTES:
+        raise DisplayError(413, f"File too large ({len(data)//1024} KB). Limit: 4 MB", code="avatar.too_large", params={"kilobytes": fact(len(data)//1024)})
+
+    ext = ALLOWED[ct]
+    config_dir = Path(os.getenv("CONFIG_PATH", "/app/config/config.json")).parent
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    for old in config_dir.glob("avatar.*"):
+        old.unlink(missing_ok=True)
+    (config_dir / f"avatar.{ext}").write_bytes(data)
+
+    public_url = f"{_public_base_url(request)}/api/avatar"
+    warning = _avatar_reachability_warning(public_url)
+
+    if warning:
+        logger.warning(
+            "Avatar uploaded, but URL %s may not be reachable by Discord",
+            public_url,
+        )
+
+    payload = {"ok": True, "url": public_url, "size_bytes": len(data), "content_type": ct}
+    if warning:
+        payload["warning"] = warning
+    return payload
+
+
+@router.get("/avatar")
+async def serve_avatar():
+    """Serves the stored avatar image for Discord to fetch."""
+    config_dir = Path(os.getenv("CONFIG_PATH", "/app/config/config.json")).parent
+    media_types = {"png": "image/png", "jpg": "image/jpeg",
+                   "gif": "image/gif", "webp": "image/webp"}
+    for ext, media_type in media_types.items():
+        p = config_dir / f"avatar.{ext}"
+        if p.exists():
+            return FileResponse(str(p), media_type=media_type,
+                                headers={"Cache-Control": "public, max-age=3600"})
+    raise DisplayError(404, "No avatar uploaded", code="avatar.missing")
+
+
+# ── Connection tests ───────────────────────────────────────────────────────────
+
+@router.post("/settings/test-alldebrid")
+async def test_alldebrid():
+    from providers.alldebrid.admin import account_status
+    cfg = get_settings()
+    if not alldebrid_canonical_options(cfg).api_key:
+        raise DisplayError(400, "No API key configured", code="settings.api_key_missing")
+    try:
+        return await account_status(cfg)
+    except Exception as exc:
+        raise refusal(502, _sanitize_error(exc), exc)
+
+
+@router.post("/settings/test-aria2")
+async def test_aria2( application: ApplicationService = Depends(get_application)):
+    try:
+        result = await application.integration_admin("aria2").test()
+        return {"ok": True, **result}
+    except Exception as e:
+        raise refusal(502, _sanitize_error(e), e)
+
+
+@router.post("/settings/aria2-housekeeping")
+async def run_aria2_housekeeping_ep( application: ApplicationService = Depends(get_application)):
+    try:
+        return await application.integration_admin("aria2").housekeeping()
+    except Exception as e:
+        raise refusal(502, _sanitize_error(e), e)
+
+
+@router.get("/aria2/runtime")
+async def aria2_runtime_status( application: ApplicationService = Depends(get_application)):
+    status = await aria2_runtime.status()
+    diagnostics = {}
+    speed_stat = {"download_speed": 0, "upload_speed": 0, "active": 0}
+    try:
+        if status.get("running"):
+            diagnostics = await application.integration_admin("aria2").memory_diagnostics()
+            speed_stat  = await application.integration_admin("aria2").get_global_stat()
+    except Exception as exc:
+        diagnostics = {"error": sanitize_exception(exc)}
+    return {**status, "diagnostics": diagnostics, **speed_stat}
+
+
+@router.get("/aria2/global-stat")
+async def aria2_global_stat( application: ApplicationService = Depends(get_application)):
+    """Return live counters used by the topbar indicator."""
+    return {"ok": True, **await application.integration_admin("aria2").get_global_stat()}
+
+
+@router.post("/aria2/runtime/start")
+async def aria2_runtime_start( application: ApplicationService = Depends(get_application)):
+    status = await aria2_runtime.start()
+    application.configure()
+    return status
+
+
+@router.post("/aria2/runtime/stop")
+async def aria2_runtime_stop( application: ApplicationService = Depends(get_application)):
+    status = await aria2_runtime.stop()
+    application.configure()
+    return status
+
+
+@router.post("/aria2/runtime/restart")
+async def aria2_runtime_restart( application: ApplicationService = Depends(get_application)):
+    status = await aria2_runtime.restart()
+    application.configure()
+    return status
+
+
+@router.post("/aria2/runtime/apply")
+async def aria2_runtime_apply( application: ApplicationService = Depends(get_application)):
+    try:
+        await aria2_runtime.apply_options()
+        result = await application.integration_admin("aria2").housekeeping()
+        return {"ok": True, **result}
+    except Exception as e:
+        raise refusal(502, _sanitize_error(e), e)
+
+
+@router.get("/aria2/downloads")
+async def aria2_downloads( application: ApplicationService = Depends(get_application)):
+    aria2 = _canonical_aria2_options(get_settings())
+    try:
+        downloads = await application.integration_admin("aria2").get_all(
+            aria2.waiting_window,
+            aria2.stopped_window,
+        )
+        downloads = await application.integration_admin("aria2").filter_owned(downloads)
+    except Exception as e:
+        raise refusal(502, _sanitize_error(e), e)
+    items = [public_aria2_download(download) for download in downloads]
+    groups = {
+        "active": [item for item in items if item["status"] == "active"],
+        "waiting": [item for item in items if item["status"] in {"waiting", "paused"}],
+        "stopped": [item for item in items if item["status"] not in {"active", "waiting", "paused"}],
+    }
+    return {
+        "ok": True,
+        "items": items,
+        "groups": groups,
+        "summary": {
+            "active": len(groups["active"]),
+            "waiting": len(groups["waiting"]),
+            "stopped": len(groups["stopped"]),
+            "download_speed": sum(item["download_speed"] for item in groups["active"]),
+            "remaining_length": sum(item["remaining_length"] for item in items),
+        },
+    }
+
+
+@router.post("/aria2/downloads/{gid}/{action}")
+async def aria2_download_action(gid: str, action: str, application: ApplicationService = Depends(get_application)):
+    if action not in {"pause", "resume", "remove"}:
+        raise DisplayError(400, "Unsupported aria2 action", code="aria2.action_unsupported")
+    try:
+        result = await application.integration_admin("aria2").control(gid, action)
+        return {"ok": True, "gid": gid, "action": action, **result}
+    except PermissionError as e:
+        raise refusal(403, _sanitize_error(e), e)
+    except Exception as e:
+        raise refusal(502, _sanitize_error(e), e)
+
+
+# ── Torrents ───────────────────────────────────────────────────────────────────
+#
+# The operational torrents collection (GET /api/torrents) is owned solely by
+# api.operational_downloads.list_operational_torrents. Its canonical lifecycle
+# rule (soft-deleted *and* fully consolidated rows excluded from the default
+# view) and its bounded single-read projection differ from the historical
+# per-row presentation rebuild, so it is declared there rather than here.
+
+def _demand(request: Request) -> SubmissionDemand:
+    """The demand one accepted submission records: the authenticated
+    account that owns it and, for attribution, the token that carried it."""
+    principal = request.state.principal
+    return SubmissionDemand(principal.account_id or None, principal.credential_id or None)
+
+
+def _local_network_answer(request: Request, answered) -> bool:
+    """Whether this request carries a valid answer to its own private-LAN
+    confirmation. The answer is an operator's decision about THIS submission
+    (``ApplicationService._local_network_consent``), so it counts only from a
+    caller who may operate transfers -- a person, never an Integration token,
+    which must not widen its own network reach. An Integration's private-LAN
+    hosts are admitted only where the operator pre-authorized them (Local
+    Network Connections with Skip Local Connection Confirmation on)."""
+    return answered is True and permits(request.state.principal, Capability.TRANSFERS_OPERATE)
+
+
+def _submitted(request: Request, result: dict, demands) -> dict:
+    """A submission's response. A caller that may read transfers gets the
+    transfer it submitted to; an Integration gets only its own request(s) and
+    their status -- a repeat submission may land on someone else's transfer."""
+    if permits(request.state.principal, Capability.TRANSFERS_READ):
+        return public_payload(result)
+    items = result.get("items") or [result]
+    return {"ok": True, "requests": [
+        {"id": demand.id, "transfer_id": item.get("id"), "status": item.get("status")}
+        for demand, item in zip(demands, items)]}
+
+
+@router.post("/torrents/add-magnet")
+async def add_magnet(body: dict, request: Request, application: ApplicationService = Depends(get_application)):
+    magnet = (body.get("magnet") or "").strip()
+    if not magnet:
+        raise DisplayError(400, "magnet is required", code="submit.magnet_required")
+    # Optional neutral submission intent. Omitted -> ALL (correction section 6):
+    # a historical/headless caller sending the unchanged body shape never enters
+    # the interactive file-selection lifecycle.
+    try:
+        demand = _demand(request)
+        row = await application.submit_magnet(
+            magnet, source="manual", selection_mode=body.get("selection_mode"), demand=demand,
+        )
+        return _submitted(request, row, [demand])
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc)
+    except Exception as exc:
+        logger.exception("add_magnet failed: %s", _sanitize_error(exc))
+        raise refusal(502, _sanitize_error(exc), exc)
+
+
+# How much of a streamed upload is read at a time. Bounded, so a large upload
+# costs one chunk of memory rather than its whole size.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+@router.post("/torrents/add-file")
+async def add_torrent_file(
+    request: Request,
+    file: UploadFile = File(...),
+    selection_mode: str | None = Form(default=None),
+    application: ApplicationService = Depends(get_application),
+):
+    """Upload a .torrent metafile directly to AllDebrid.
+
+    The local aria2 daemon never receives the torrent metafile.  AllDebrid
+    processes it and ADC later dispatches only the unlocked HTTPS file URLs.
+
+    ``selection_mode`` is an optional multipart form field; omitted -> ALL. The
+    built-in browser sends ``interactive``; a historical multipart upload with
+    only ``file=<torrent>`` keeps the ALL default (correction section 6).
+    """
+    max_bytes = 16 * 1024 * 1024
+    filename = Path(file.filename or "upload.torrent").name
+
+    if not filename.lower().endswith(".torrent"):
+        raise DisplayError(400, "A .torrent file is required", code="submit.torrent_required")
+
+    try:
+        data = await file.read(max_bytes + 1)
+    finally:
+        await file.close()
+
+    if not data:
+        raise DisplayError(400, "Torrent file is empty", code="submit.torrent_empty")
+    if len(data) > max_bytes:
+        raise DisplayError(413, "Torrent file exceeds the 16 MB upload limit", code="submit.torrent_too_large")
+
+    try:
+        demand = _demand(request)
+        result = await application.submit_torrent(
+            data,
+            filename,
+            source="manual_file",
+            selection_mode=selection_mode,
+            demand=demand,
+        )
+        return _submitted(request, result, [demand])
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc)
+    except Exception as exc:
+        raise refusal(502, _sanitize_error(exc), exc)
+
+
+@router.post("/usenet/add-file")
+async def add_usenet_file(
+    request: Request,
+    file: UploadFile = File(...),
+    application: ApplicationService = Depends(get_application),
+):
+    """Upload an .nzb posting for DownloadPulse to acquire.
+
+    The route does nothing but hand the upload to the canonical submission
+    seam: the Usenet provider validates and normalizes it and universal core
+    chooses the executor. Nothing here knows how acquisition is performed.
+
+    The bytes are handed over as a STREAM, not a buffer. A real posting's
+    manifest is routinely tens or hundreds of megabytes -- reading one into a
+    single object here would cost multiples of its size in memory before the
+    application had even seen it -- so the route reads it in chunks and the
+    staged-input owner writes it through. The route is not the persistence
+    owner and holds no ceiling of its own: the one ceiling belongs to that
+    owner and is enforced as the stream is written.
+    """
+    filename = Path(file.filename or "upload.nzb").name
+    if not filename.lower().endswith(".nzb"):
+        raise DisplayError(400, "An .nzb file is required", code="submit.nzb_required")
+
+    async def chunks():
+        while True:
+            chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                return
+            yield chunk
+
+    try:
+        demand = _demand(request)
+        return _submitted(request, await application.submit_nzb(chunks(), filename, source="manual_file",
+                                                                demand=demand), [demand])
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc) from None
+    except Exception as exc:
+        logger.exception("add_usenet_file failed: %s", _sanitize_error(exc))
+        raise refusal(502, _sanitize_error(exc), exc)
+    finally:
+        await file.close()
+
+
+@router.post("/usenet/add-link")
+async def add_usenet_link(body: dict, request: Request, application: ApplicationService = Depends(get_application)):
+    """Add the NZB an HTTP(S) link names -- the explicit counterpart of
+    ``/usenet/add-file`` for a posting that is published as a link.
+
+    Explicit intent is the whole point: an ordinary link submitted through
+    ``/links/add`` stays an ordinary link, whatever it looks like. The
+    application fetches and validates the posting and admits the same
+    canonical NZB request an upload becomes; a refusal is the normalized
+    submission error. ``allow_local_network`` answers THIS submission's
+    private-LAN confirmation only, exactly as for ``/links/add``."""
+    url = body.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise DisplayError(400, "An NZB link is required", code="submit.nzb_link_required")
+    try:
+        demand = _demand(request)
+        return _submitted(request, await application.submit_nzb_link(
+            url, demand=demand,
+            **({"allow_local_network": True}
+               if _local_network_answer(request, body.get("allow_local_network")) else {})), [demand])
+    except LocalNetworkConfirmationRequired as exc:
+        raise _local_network_confirmation(exc) from None
+
+
+@router.post("/multimeta/add-file")
+async def add_multimeta_file(
+    request: Request,
+    file: UploadFile = File(...),
+    selection_mode: str | None = Form(default=None),
+    application: ApplicationService = Depends(get_application),
+):
+    """Upload a Metalink4 (.meta4) descriptor for Multimeta to decompose.
+
+    Like an NZB upload, the route only hands the stream to the canonical
+    submission seam; the Multimeta provider interprets it during resolution
+    and core routes every source it describes. ``selection_mode`` is optional;
+    omitted -> ALL."""
+    filename = Path(file.filename or "upload.meta4").name
+    if not filename.lower().endswith(".meta4"):
+        raise DisplayError(400, "A .meta4 file is required", code="submit.meta4_required")
+
+    async def chunks():
+        read = 0
+        while True:
+            chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                return
+            read += len(chunk)
+            # The Multimeta reader's own hard bound: nothing larger is staged.
+            if read > MAX_DESCRIPTOR_BYTES:
+                raise CodedValueError("Metalink file exceeds the 16 MB upload limit", code="submit.meta4_too_large")
+            yield chunk
+
+    try:
+        demand = _demand(request)
+        return _submitted(request, await application.submit_meta4(
+            chunks(), filename, source="manual_file", selection_mode=selection_mode, demand=demand), [demand])
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc) from None
+    except Exception as exc:
+        logger.exception("add_multimeta_file failed: %s", _sanitize_error(exc))
+        raise refusal(502, _sanitize_error(exc), exc)
+    finally:
+        await file.close()
+
+
+@router.post("/links/add")
+async def add_debrid_links(body: dict, request: Request, application: ApplicationService = Depends(get_application)):
+    """Submit one or more ordinary hoster URLs as a tracked transfer batch."""
+    raw_links = body.get("links", [])
+    if isinstance(raw_links, str):
+        links = [line.strip() for line in raw_links.splitlines() if line.strip()]
+    elif isinstance(raw_links, list):
+        links = [str(value).strip() for value in raw_links if str(value).strip()]
+    else:
+        raise DisplayError(400, "links must be a list or newline-separated string", code="submit.links_invalid")
+    try:
+        # A row of TAB-separated links is ONE item with explicit alternate
+        # sources (this text surface's grammar only -- a link file is read by
+        # its own grammar and never grouped). Text without a TAB is submitted
+        # exactly as before.
+        if any(ALTERNATIVE_SOURCE_DELIMITER in value for value in links):
+            links = [row if len(row) > 1 else row[0] for row in direct_link_rows(links)]
+        # Explicit per-submission intent: the browser opts in; an omitted field
+        # keeps the ALL default. Never inferred from the source or client.
+        # ``allow_local_network`` is the operator's answer to THIS submission's
+        # private-LAN confirmation only; it never changes a setting.
+        # ``acquisition_scopes`` answers, link by link, a link that names one
+        # item inside an enclosing collection: ``{link: "item"|"collection"}``.
+        scopes = body.get("acquisition_scopes")
+        if scopes is not None and not (isinstance(scopes, dict)
+                                       and all(isinstance(value, str) for value in scopes.values())):
+            raise DisplayError(400, "acquisition_scopes must map each link to a scope", code="submit.scopes_invalid")
+        demand = _demand(request)
+        return _submitted(request, await application.submit_links(
+            links, selection_mode=body.get("selection_mode"), demand=demand,
+            **({"allow_local_network": True}
+               if _local_network_answer(request, body.get("allow_local_network")) else {}),
+            **({"acquisition_scopes": scopes} if scopes else {})), [demand])
+    except AcquisitionScopeRequired as exc:
+        raise _acquisition_scope_required(exc) from None
+    except LocalNetworkConfirmationRequired as exc:
+        raise _local_network_confirmation(exc) from None
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc)
+    except Exception as exc:
+        logger.exception("add_debrid_links failed: %s", _sanitize_error(exc))
+        raise refusal(502, _sanitize_error(exc), exc)
+
+
+def _acquisition_scope_required(exc: AcquisitionScopeRequired) -> HTTPException:
+    """Nothing was admitted: each listed link names one item inside an
+    enclosing collection, and the caller must choose -- link by link, with
+    ``acquisition_scopes`` -- which to acquire. Never inferred."""
+    return HTTPException(409, {
+        "confirmation": "acquisition_scope", "links": [dict(link) for link in exc.links],
+        "message": "Choose whether to download the linked item or its collection.",
+        "code": "submit.acquisition_scope_required",
+    })
+
+
+def _local_network_confirmation(exc: LocalNetworkConfirmationRequired) -> HTTPException:
+    return HTTPException(409, {
+        "confirmation": "local_network", "hosts": list(exc.hosts),
+        "message": "This transfer connects to an address on your private network.",
+        "code": "submit.local_network_confirmation",
+    })
+
+
+@router.post("/links/add-file")
+async def add_link_file(
+    request: Request,
+    file: UploadFile = File(...),
+    selection_mode: str | None = Form(default=None),
+    allow_local_network: bool = Form(default=False),
+    application: ApplicationService = Depends(get_application),
+):
+    """Submit a file no structured upload owns as the links it lists.
+
+    The file is only a submission channel: once read, each link goes to the
+    owner that would take it from Quick Add -- the direct links to one
+    ``submit_links`` batch (with its private-LAN confirmation), each magnet to
+    ``submit_magnet``. Every value is first checked by its owner's syntax
+    check, so a file listing one malformed or unsupported link admits nothing.
+    Admission itself is not atomic across owners: the direct-link batch is
+    admitted first and then each magnet in turn, so a magnet refused while
+    it is being admitted leaves the direct links and every earlier magnet
+    already admitted, and the request answers with that refusal.
+    ``selection_mode`` and ``allow_local_network`` mean what they mean for
+    ``/links/add``."""
+    try:
+        data = await file.read(MAX_LINK_FILE_BYTES + 1)
+    finally:
+        await file.close()
+    try:
+        direct, magnets = [], []
+        for location, value in link_file_entries(data):
+            try:
+                if urlsplit(value).scheme.casefold() == "magnet":
+                    ApplicationService.magnet_request(value, selection_mode=selection_mode)
+                    magnets.append(value)
+                else:
+                    normalize_direct_links([value])
+                    direct.append(value)
+            except ValueError:
+                raise CodedValueError(f"{location} is not a supported link", code="submit.link_unsupported", params={"link": location}) from None
+        items, demands = [], []
+        if direct:
+            demands.append(_demand(request))
+            items.extend((await application.submit_links(
+                direct, selection_mode=selection_mode,
+                allow_local_network=_local_network_answer(request, allow_local_network),
+                demand=demands[-1]))["items"])
+        for magnet in magnets:
+            demands.append(_demand(request))
+            items.append(await application.submit_magnet(magnet, source="manual", selection_mode=selection_mode,
+                                                         demand=demands[-1]))
+        return _submitted(request, {"ok": True, "accepted": len(direct) + len(magnets), "items": items}, demands)
+    except AcquisitionScopeRequired as exc:
+        # A link file carries no answers: it is declined, never guessed.
+        raise _acquisition_scope_required(exc) from None
+    except LocalNetworkConfirmationRequired as exc:
+        raise _local_network_confirmation(exc) from None
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc)
+    except Exception as exc:
+        logger.exception("add_link_file failed: %s", _sanitize_error(exc))
+        raise refusal(502, _sanitize_error(exc), exc)
+
+
+@router.post("/torrents/check-duplicate")
+async def check_torrent_duplicate(body: dict):
+    """Read-only duplicate preview. Never uploads/imports anything to AllDebrid."""
+    from services.duplicates import check_before_add
+
+    candidate = _duplicate_candidate_from_payload(body, source=str(body.get("source") or "preview"))
+    if not (candidate.infohash or candidate.magnet or candidate.title or candidate.resource_id):
+        raise DisplayError(400, "title, magnet, hash, infohash, or resource_id is required", code="duplicates.query_required")
+    decision = await check_before_add(candidate)
+    return {"ok": True, "duplicate": decision.as_dict()}
+
+
+@router.post("/torrents/import-existing")
+async def import_existing( application: ApplicationService = Depends(get_application)):
+    return {"ok": True, **await application.reconcile_inventory()}
+
+
+@router.get("/torrents/diagnose")
+async def diagnose_torrents():
+    """Return a full count breakdown of all local torrent statuses."""
+    async with get_db() as db:
+        all_counts = await (await db.execute(
+            """SELECT status, COUNT(*) AS cnt FROM torrents
+               GROUP BY status ORDER BY cnt DESC"""
+        )).fetchall()
+        non_terminal = await (await db.execute(
+            """SELECT t.id, t.name, t.status,
+                      (SELECT COUNT(*) FROM download_files f WHERE f.torrent_id=t.id AND f.blocked=0) AS file_count
+               FROM torrents t
+               WHERE t.status NOT IN ('completed', 'deleted')
+               ORDER BY t.id DESC LIMIT 20"""
+        )).fetchall()
+    return {
+        "status_counts": [dict(r) for r in all_counts],
+        "sample_non_terminal": [dict(r) for r in non_terminal],
+    }
+
+
+@router.post("/torrents/recover-all")
+async def recover_all_ready( application: ApplicationService = Depends(get_application)):
+    """Reconcile durable requests and owned executions through the core."""
+    return await application.recover()
+
+
+@router.get("/torrents/{torrent_id}/files-preview")
+async def torrent_files_preview(torrent_id: int, application: ApplicationService = Depends(get_application)):
+    try:
+        return await application.preview(torrent_id)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+
+
+@router.post("/torrents/{torrent_id}/files/{file_id}/block")
+async def block_file(torrent_id: int, file_id: int, request: Request, blocked: bool = True,
+                     application: ApplicationService = Depends(get_application)):
+    expected = await require_destruction(request, application.repository, torrent_id)
+    try:
+        return await application.select_artifact(torrent_id, file_id, selected=not blocked, expected_demand=expected)
+    except KeyError:
+        raise DisplayError(404, "File not found", code="transfer.file_not_found")
+    except ValueError as exc:
+        raise refusal(409, _sanitize_error(exc), exc)
+
+
+@router.get("/torrents/{torrent_id}")
+async def get_torrent(torrent_id: int, application: ApplicationService = Depends(get_application),
+                      request: Request = None):
+    engine = getattr(application, "engine", None)
+    item = await application.repository.presentation(
+        torrent_id, details=True,
+        capacity_only_blocked_ids=dispatch_admission.capacity_only_blocked_ids(engine),
+    )
+    if item is None:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+    transfer = await application.repository.get(torrent_id)
+    result = _public_transfer_presentation(
+        item, application.definitions,
+        admitted_verbatim=await application.repository.first_root_admitted_verbatim(torrent_id))
+    # Details alone discloses its error's facts: not the list, not the event stream.
+    disclosure = _error_disclosure(transfer.error if transfer else None, item.get("error"), application.definitions)
+    if disclosure:
+        result["error_disclosure"] = disclosure
+    reason = await _error_reason(application.repository, torrent_id, transfer, item.get("error"),
+                                 result.get("wake_condition"), application.definitions)
+    if reason:
+        result["error_reason"] = reason
+    registry = getattr(engine, "registry", None)
+    rooted = [row for key in ("files", "file_presentations") for row in result.get(key) or ()
+              if isinstance(row, dict) and isinstance(row.get("route_root"), dict)]
+    if rooted:
+        # Whether each file's producing root may move now: the one offer rule
+        # the bounded list and the switch's own guard read.
+        switches = (root_switches(registry, await application.repository.root_route_facts_by_root(torrent_id))
+                    if registry is not None else {})
+        for row in rooted:
+            route = row["route_root"]
+            route["provider_name"] = (_provider_display_name(route["provider_id"], application.definitions)
+                                      if route.get("provider_id") else None)
+            route["switch_available"] = bool(switches.get(str(route.get("root_id"))))
+    contributors = result.pop("execution_contributors", None)
+    if "usenet" in {result.get(f"{role}_provider_id") for role in ("active", "route", "delivering", "current")}:
+        result["usenet_servers"] = _usenet_servers(contributors)
+    principal = getattr(getattr(request, "state", None), "principal", None)
+    if principal is not None:
+        # What the interface may offer this caller here (a hint; every act is
+        # re-authorized when it commits).
+        result["access"] = (await transfer_access(principal, application.repository, [torrent_id]))[torrent_id]
+        result["requested_by"] = await _requested_by(application.repository, torrent_id)
+    return result
+
+
+def _usenet_servers(contributors) -> dict:
+    """The Usenet servers a transfer's own execution evidence says delivered
+    its articles (``execution_contributors``), each named as the operator
+    names it now -- or as recorded, when the server was since removed.
+    ``state``: ``known``; ``none`` (the report names no server); or
+    ``unavailable`` (nothing reported: still running, recorded before this
+    evidence existed, or unreadable). Never the configured server list."""
+    if contributors is None:
+        return {"state": "unavailable", "servers": []}
+    try:
+        from integrations.usenet.definition import UsenetOptions
+        entry = get_settings().integrations.get("usenet")
+        configured = {server.id: server for server in UsenetOptions.model_validate(
+            getattr(entry, "options", None) or {}).servers}
+    except Exception:  # noqa: BLE001 - naming falls back to the recorded label
+        configured = {}
+    servers, seen = [], set()
+    for item in contributors:
+        identity = str(item.get("identity") or "")
+        key = identity or "label:" + str(item.get("label") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        server = configured.get(identity) if identity else None
+        current = (str(server.display_name or "").strip() or str(server.host or "").strip()) if server else ""
+        servers.append({"server_id": identity or None, "name": current or str(item.get("label") or ""),
+                        "recorded_name": str(item.get("label") or ""), "attributed": bool(identity),
+                        "removed": bool(identity) and server is None,
+                        "reported": str(item.get("reported") or ""),
+                        "approximate_bytes": item.get("approximate_bytes")})
+    return {"state": "known" if servers else "none", "servers": servers}
+
+
+def _ledger_time(value) -> str | None:
+    return None if value is None else datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat(timespec="seconds")
+
+
+async def _requested_by(repository, transfer_id: int) -> dict:
+    """Details' Requested By: who asked for this transfer's work, read from
+    the demand ledger alone -- never from the transfer's creator, provenance
+    or route. One entry per request record, in the ledger's own order (oldest
+    first, outstanding and withdrawn together): its requester, its token and
+    the consolidated transfer it arrived through, when it was made and, if
+    withdrawn, when. A request with no recorded owner is credited to nobody."""
+    rows = await repository.demand_history(transfer_id)
+    people, labels = await accounts.requester_identities(
+        [row["account_id"] for row in rows], [row["credential_id"] for row in rows])
+    requests: list[tuple[str, dict]] = []
+    for row in rows:
+        owner = str(row["account_id"] or "")
+        if owner:
+            identity = people.get(owner, {})
+            entry = {"name": identity.get("name") or "Unknown account", "kind": identity.get("kind", "unknown"),
+                     "standing": identity.get("standing")}
+        else:
+            legacy = row["origin"] == "legacy"
+            entry = {"name": "Legacy / Unknown" if legacy else "Unknown",
+                     "kind": "legacy" if legacy else "unknown", "standing": None}
+        entry.update({"token_label": labels.get(str(row["credential_id"] or "")) or None,
+                      "via_transfer_id": row["via_transfer_id"], "requested_at": _ledger_time(row["created_at"]),
+                      "withdrawn_at": _ledger_time(row["withdrawn_at"])})
+        requests.append((owner, entry))
+    # Distinct accounts that share a display name are told apart by a short,
+    # stable reference to the account (never a credential).
+    sharing: dict[str, set[str]] = {}
+    for owner, entry in requests:
+        if owner:
+            sharing.setdefault(entry["name"].casefold(), set()).add(owner)
+    for owner, entry in requests:
+        entry["reference"] = owner[-8:] if owner and len(sharing[entry["name"].casefold()]) > 1 else None
+    return {"requests": [entry for _owner, entry in requests]}
+
+
+@router.get("/torrents/{torrent_id}/trace")
+async def export_transfer_trace(torrent_id: int, application: ApplicationService = Depends(get_application)):
+    """Transfer Trace Log download: the sanitized, read-only trace built by
+    ``services.transfer_trace`` (its one owner)."""
+    exported = await transfer_trace.export(torrent_id, application)
+    if exported is None:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+    filename, body = exported
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    })
+
+
+# ── Desktop saves: a file saved where the person's own Save dialog says ──────
+# The desktop application has no browser download flow: its window would put
+# a download in the Downloads folder unasked. Each file the interface offers
+# for saving is therefore also served here, beside its download route and
+# under the same permission (auth.permissions): the same file, written where
+# the person chose in the Save dialog the desktop supervisor shows
+# (application.desktop_control.request_destination), or nowhere if they
+# cancel. Like the download it mirrors, it changes no application state, so it
+# is not an application operation (main.py _EXPORT_SAVE_PATTERN): a person
+# taking their time in the dialog never holds maintenance back.
+
+def _require_desktop(detail: str = "Saving to a chosen location is only available in the desktop application",
+                     code: str = "desktop.only") -> None:
+    from core.config import desktop_installation
+    if not desktop_installation():
+        raise DisplayError(404, detail, code=code)
+
+
+# ── the desktop application's window frame ─────────────────────────────────
+# The page says the colours of its theme (on load and on every change of
+# theme); the supervisor colours the window's own frame with them
+# (application.desktop_control set_frame / op "frame"). A server has no frame.
+
+class DesktopFrame(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    caption: str
+    text: str
+    dark: bool
+
+
+@router.put("/desktop/frame")
+async def desktop_frame(body: DesktopFrame):
+    _require_desktop("Only the desktop application has a window frame.", "desktop.frame_only")
+    from application.desktop_control import set_frame
+    try:
+        return set_frame(body.caption, body.text, body.dark)
+    except ValueError:
+        raise DisplayError(422, "The window frame colours are not valid.", code="desktop.frame_invalid") from None
+
+
+# ── Local Port (the desktop application's external address) ────────────────
+# Classified ``administer``. The port external clients reach on this computer
+# (``application.desktop_listener``): read with the clients that connected in
+# the past week (``auth.accounts.recent_clients``) -- what a change would cut
+# off, which the page asks about first -- and changed at once. A server has no
+# Local Port: its address is its container's binding.
+
+LOCAL_PORT_DETAIL = "Local Port is only available in the desktop application."
+
+
+class LocalPortUpdate(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    port: int
+
+
+def _configured_local_port() -> int:
+    from application.desktop_listener import PortInvalid, valid_port
+    try:
+        return valid_port(get_settings().desktop_local_port)
+    except PortInvalid:
+        return AppSettings.model_fields["desktop_local_port"].default
+
+
+async def _local_port_reading() -> dict:
+    from application.desktop_listener import listener
+    from auth.accounts import recent_clients
+    return {**listener.state(_configured_local_port()), "recent_clients": await recent_clients()}
+
+
+@router.get("/settings/local-port")
+async def local_port():
+    _require_desktop(LOCAL_PORT_DETAIL, "local_port.desktop_only")
+    return await _local_port_reading()
+
+
+@router.put("/settings/local-port")
+async def choose_local_port(body: LocalPortUpdate):
+    """Listen on ``port`` from now on: bound first, saved once it listens, and
+    the old port closed -- a port another program holds changes nothing."""
+    _require_desktop(LOCAL_PORT_DETAIL, "local_port.desktop_only")
+    from application.desktop_listener import PortInUse, PortInvalid, listener, valid_port
+    from core.config import apply_settings, config_write_lock, journal_configuration_change, save_settings
+    try:
+        port = valid_port(body.port)
+    except PortInvalid:
+        from application.desktop_listener import HIGHEST, LOWEST
+        raise DisplayError(422, f"Local Port must be a whole number from {LOWEST} to {HIGHEST}.",
+                           code="local_port.invalid", params={"lowest": fact(str(LOWEST)), "highest": fact(str(HIGHEST))}) from None
+    changed = []
+
+    async def persist() -> None:
+        async with config_write_lock():
+            previous = get_settings()
+            if previous.desktop_local_port == port:
+                return
+            current = previous.model_copy(update={"desktop_local_port": port}, deep=True)
+            save_settings(current)
+            apply_settings(current)
+            changed.append((previous, current))
+
+    try:
+        await listener.move(port, persist)
+    except PortInUse:
+        raise DisplayError(409, f"Port {port} is in use by another program.",
+                           code="local_port.in_use", params={"port": fact(str(port))}) from None
+    for previous, current in changed:
+        await journal_configuration_change(previous, current)
+    return await _local_port_reading()
+
+
+async def _save_where_chosen(name: str, write) -> dict:
+    from application.desktop_control import request_destination
+    path = await request_destination(name)
+    if path is None:
+        return {"saved": False}
+    try:
+        await asyncio.to_thread(write, path)
+    except OSError:
+        logger.exception("desktop save of %s failed", name)
+        raise DisplayError(500, "The file could not be saved", code="desktop.save_failed") from None
+    return {"saved": True, "name": Path(path).name}
+
+
+@router.post("/torrents/{torrent_id}/trace/save")
+async def save_transfer_trace(torrent_id: int, application: ApplicationService = Depends(get_application)):
+    """Desktop: the Transfer Trace Log (``export_transfer_trace``'s file),
+    saved where the person's Save dialog says."""
+    _require_desktop()
+    exported = await transfer_trace.export(torrent_id, application)
+    if exported is None:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+    filename, body = exported
+    return await _save_where_chosen(filename, lambda path: Path(path).write_bytes(body))
+
+
+@router.delete("/torrents/{torrent_id}")
+async def delete_torrent(torrent_id: int, request: Request, from_alldebrid: bool = True,
+                         application: ApplicationService = Depends(get_application)):
+    expected = await require_destruction(request, application.repository, torrent_id)
+    # The old query parameter is retained as an external API compatibility alias.
+    try:
+        return await application.delete(torrent_id, remote=from_alldebrid, expected_demand=expected)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+
+
+@router.post("/torrents/{torrent_id}/input")
+async def submit_transfer_input(torrent_id: int, request: Request, application: ApplicationService = Depends(get_application)):
+    raw = await request.body()
+    if len(raw) > 512 * 1024:
+        raise DisplayError(413, "Authentication input is too large", code="auth_input.too_large")
+    try:
+        body = _json.loads(raw)
+    except (TypeError, ValueError):
+        raise DisplayError(400, "Authentication input must be a JSON object", code="auth_input.not_object") from None
+    finally:
+        raw = b""
+    if not isinstance(body, dict):
+        raise DisplayError(400, "Authentication input must be a JSON object", code="auth_input.not_object")
+    allowed_fields = {"challenge_id", "method", "username", "password", "private_key", "passphrase"}
+    if set(body) - allowed_fields:
+        body.clear()
+        raise DisplayError(400, "Authentication input contains unsupported fields", code="auth_input.unsupported_fields")
+    challenge_id = body.get("challenge_id")
+    method = body.get("method")
+    if not isinstance(challenge_id, str) or not challenge_id or not isinstance(method, str) or not method:
+        body.clear()
+        raise DisplayError(400, "challenge_id and method are required", code="auth_input.fields_required")
+    values = {name: body[name] for name in ("username", "password", "private_key", "passphrase") if name in body}
+    try:
+        return await application.submit_input(torrent_id, challenge_id=challenge_id, method=method, values=values)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
+    except ValueError:
+        raise DisplayError(409, "Authentication input was not accepted", code="auth_input.not_accepted") from None
+    finally:
+        values.clear()
+        body.clear()
+
+
+@router.post("/torrents/{torrent_id}/cancel")
+async def cancel_torrent(torrent_id: int, request: Request, application: ApplicationService = Depends(get_application)):
+    expected = await require_destruction(request, application.repository, torrent_id)
+    try:
+        return await application.cancel(torrent_id, expected_demand=expected)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
+
+
+@router.post("/torrents/{torrent_id}/retry")
+async def retry_torrent(torrent_id: int, application: ApplicationService = Depends(get_application)):
+    try:
+        return await application.retry(torrent_id)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+
+
+@router.post("/torrents/{torrent_id}/pause")
+async def pause_torrent(torrent_id: int, application: ApplicationService = Depends(get_application)):
+    try:
+        await application.pause(torrent_id)
+        return {"ok": True}
+    except Exception as e:
+        raise refusal(400, _sanitize_error(e), e)
+
+
+@router.post("/torrents/{torrent_id}/resume")
+async def resume_torrent(torrent_id: int, application: ApplicationService = Depends(get_application)):
+    try:
+        await application.resume(torrent_id)
+        return {"ok": True, "paused": await application.repository.globally_paused()}
+    except Exception as e:
+        raise refusal(400, _sanitize_error(e), e)
+
+class LabelUpdate(BaseModel):
+    label: str = ""
+    # Older clients sent a priority with every label edit; only an explicitly
+    # supplied one is applied, so a label edit never moves the transfer in
+    # the queue.
+    priority: int | None = Field(default=None, ge=_PRIORITY_MIN, le=_PRIORITY_MAX)
+
+
+@router.put("/torrents/{torrent_id}/label")
+async def set_torrent_label(torrent_id: int, body: LabelUpdate, application: ApplicationService = Depends(get_application)):
+    await application.repository.update_metadata(torrent_id, label=body.label.strip(), priority=body.priority)
+    return {"ok": True}
+
+
+class BulkAction(BaseModel):
+    ids: list
+    action: Literal["delete", "retry", "reset", "pause", "resume", "remove_label"]
+
+
+@router.post("/torrents/bulk")
+async def bulk_action(body: BulkAction, request: Request, application: ApplicationService = Depends(get_application)):
+    """Each target is authorized on its own: an ordinary action applies to
+    any transfer; ``delete`` applies only where the caller may destroy that
+    transfer's work (``destruction_precondition``), re-checked when the
+    delete commits. A denied target is reported and left untouched; it never
+    stops the others."""
+    if not body.ids:
+        raise DisplayError(400, "No IDs provided", code="bulk.no_ids")
+    principal = request.state.principal
+    ok = failed = denied = 0
+    results = []
+    for value in body.ids:
+        try:
+            tid = int(value)
+            if body.action == "delete":
+                permitted, expected = await destruction_precondition(principal, application.repository, tid)
+                if permitted:
+                    try:
+                        await application.delete(tid, remote=True, expected_demand=expected)
+                    except DemandChanged:
+                        permitted = False
+                if not permitted:
+                    denied += 1
+                    results.append({"id": tid, "outcome": "denied"})
+                    continue
+            elif body.action in {"retry", "reset"}:
+                await application.retry(tid)
+            elif body.action == "pause":
+                await application.pause(tid)
+            elif body.action == "resume":
+                await application.resume(tid)
+            elif body.action == "remove_label":
+                await application.repository.update_metadata(tid, label="")
+            ok += 1
+            results.append({"id": tid, "outcome": "applied"})
+        except Exception:
+            failed += 1
+            results.append({"id": value, "outcome": "failed"})
+    return {"ok": ok, "failed": failed, "denied": denied, "results": results}
+
+
+# ── Events ─────────────────────────────────────────────────────────────────────
+#
+# The activity events collection (GET /api/events) is owned solely by
+# api.operational_downloads.list_activity_events, which applies the optional
+# search / severity / timeframe predicates before the result ceiling. The
+# streaming and subscriber-count event routes below remain here.
+
+@router.get("/admin/performance")
+async def performance_diagnostics( application: ApplicationService = Depends(get_application)):
+    from core.performance import snapshot as performance_snapshot
+    from db.database import db_runtime_metrics
+
+    return {
+        "timers": performance_snapshot(),
+        "database": db_runtime_metrics(),
+        "aria2": application.integration_admin("aria2").rpc_metrics(),
+    }
+
+
+# ── Statistics ─────────────────────────────────────────────────────────────────
+
+@router.get("/stats")
+async def get_stats(application: ApplicationService = Depends(get_application)):
+    started = time.monotonic()
+    async with get_db() as db:
+        by_status_rows = await db.fetchall(
+            "SELECT status, COUNT(*) as count FROM torrents GROUP BY status"
+        )
+        by_status = {r["status"]: r["count"] for r in by_status_rows}
+
+        last_24h_expr = _sql_now_minus("1 day")
+        last_7d_expr = _sql_now_minus("7 days")
+        aggregate = await db.fetchone(
+            f"""SELECT
+                   COALESCE(SUM(CASE WHEN status='completed' THEN size_bytes ELSE 0 END), 0)
+                       AS total_completed_bytes,
+                   SUM(CASE WHEN status IN ('downloading','processing','uploading','paused')
+                            THEN 1 ELSE 0 END) AS active_downloads,
+                   SUM(CASE WHEN COALESCE(extraction_status,'')='extracting'
+                            THEN 1 ELSE 0 END) AS extracting_count,
+                   SUM(CASE WHEN status IN ('ready','queued') THEN 1 ELSE 0 END)
+                       AS queued_downloads,
+                   SUM(CASE WHEN status='downloading' THEN 1 ELSE 0 END)
+                       AS operator_active_downloads,
+                   AVG(CASE WHEN status='downloading' THEN COALESCE(progress, 0)
+                            ELSE NULL END) AS operator_active_progress_pct,
+                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error_count,
+                   SUM(CASE WHEN status='completed' AND COALESCE(extraction_status,'')!='extracting' THEN 1 ELSE 0 END) AS completed_count,
+                   SUM(CASE WHEN completed_at >= {last_24h_expr}
+                                AND COALESCE(extraction_status,'')!='extracting' THEN 1 ELSE 0 END)
+                       AS completed_last_24h,
+                   SUM(CASE WHEN completed_at >= {last_7d_expr}
+                                AND COALESCE(extraction_status,'')!='extracting' THEN 1 ELSE 0 END)
+                       AS completed_last_7d,
+                   AVG(CASE
+                       WHEN completed_at IS NOT NULL AND created_at IS NOT NULL
+                       THEN CAST((julianday(completed_at)-julianday(created_at))*86400 AS INTEGER)
+                       ELSE NULL END) AS avg_download_duration_seconds,
+                   AVG(CASE WHEN status='completed' AND size_bytes>0 THEN size_bytes
+                            ELSE NULL END) AS avg_torrent_size_bytes,
+                   (SELECT COUNT(*) FROM download_files WHERE blocked=1)
+                       AS total_blocked_files
+               FROM torrents"""
+        ) or {}
+
+    operator_active = int(aggregate.get("operator_active_downloads") or 0)
+    operator_progress = None
+    if operator_active > 0:
+        average = float(aggregate.get("operator_active_progress_pct") or 0)
+        operator_progress = max(0, min(100, round(average)))
+
+    error_count = int(aggregate.get("error_count") or 0)
+    completed_count = int(aggregate.get("completed_count") or 0)
+    active_downloads = int(aggregate.get("active_downloads") or 0)
+    extracting_count = int(aggregate.get("extracting_count") or 0)
+    terminal = completed_count + error_count
+    success_rate = (
+        round(completed_count / terminal * 100, 1)
+        if terminal > 0
+        else None
+    )
+
+    db_type = "sqlite"
+
+    result = {
+        "version": read_version(),
+        "by_status": by_status,
+        "total_completed_bytes": int(aggregate.get("total_completed_bytes") or 0),
+        "db_type": db_type,
+        "total_blocked_files": int(aggregate.get("total_blocked_files") or 0),
+        "active_downloads": active_downloads,
+        "active_operations": active_downloads + extracting_count,
+        "extracting_count": extracting_count,
+        "queued_downloads": int(aggregate.get("queued_downloads") or 0),
+        "operator_active_downloads": operator_active,
+        "operator_active_progress_pct": operator_progress,
+        "error_count": error_count,
+        "completed_count": completed_count,
+        "success_rate_pct": success_rate,
+        "completed_last_24h": int(aggregate.get("completed_last_24h") or 0),
+        "completed_last_7d": int(aggregate.get("completed_last_7d") or 0),
+        "avg_download_duration_seconds": int(
+            aggregate.get("avg_download_duration_seconds") or 0
+        ),
+        "avg_torrent_size_bytes": int(aggregate.get("avg_torrent_size_bytes") or 0),
+        "paused": await application.repository.globally_paused(),
+    }
+    from core.performance import observe
+    observe("api.stats", time.monotonic() - started)
+    return result
+
+
+# The Completions chart's source families, as Settings -> Services presents
+# them, from the metadata each integration declares: Premium Services are the
+# integrations whose static tier is the premium service tier, Network Sources
+# the members of the direct-sources group. No integration is named here.
+_COMPLETION_FAMILIES = (("premium", "status_tier", "premium_service"), ("network", "status_group", "direct_sources"))
+
+
+def _completion_family_members(definitions) -> dict[str, list[str]]:
+    return {family: sorted(definition.id for definition in definitions
+                           if getattr(definition.presentation, field, None) == value)
+            for family, field, value in _COMPLETION_FAMILIES}
+
+
+async def _completion_buckets(db, bucket_sql: str, since_sql: str, definitions) -> list[dict]:
+    """Completed transfers per bucket since ``since_sql``: ``count`` as it has
+    always been counted and how many of them each source family delivered.
+
+    A completion belongs to a family only when every one of its current
+    canonical artifacts was delivered -- by its latest delivered execution
+    (``execution_attempt_provenance.delivered``, written by the one completion
+    funnel; earlier failed or replaced attempts never count) -- through a
+    provider of that same family. A completion whose material came through
+    both families, or any part of which has no recorded delivering provider
+    (history from before provenance, an adopted payload), is unattributed and
+    stays in ``count``: ``count == premium + network + unattributed``."""
+    members = _completion_family_members(definitions)
+    family_sql = " ".join(
+        f"WHEN p.provider_id IN ({', '.join('?' for _ in ids) or 'NULL'}) THEN '{family}'"
+        for family, ids in members.items())
+    rows = await db.fetchall(f"""
+        WITH done AS (
+            SELECT id, {bucket_sql} AS date FROM torrents WHERE completed_at >= {since_sql} AND status='completed'
+        ),
+        artifact AS (
+            SELECT f.torrent_id AS transfer_id,
+                   (SELECT CASE {family_sql} END FROM execution_attempt_provenance p
+                    WHERE p.artifact_id = f.id AND p.delivered = 1 ORDER BY p.ordinal DESC LIMIT 1) AS family
+            FROM download_files f JOIN done ON done.id = f.torrent_id
+            WHERE {canonical_artifact_membership_sql("f")}
+        ),
+        attributed AS (
+            SELECT transfer_id,
+                   CASE WHEN COUNT(*) = COUNT(family) AND MIN(family) = MAX(family) THEN MIN(family) END AS family
+            FROM artifact GROUP BY transfer_id
+        )
+        SELECT done.date AS date, COUNT(*) AS count,
+               COUNT(CASE WHEN attributed.family = 'premium' THEN 1 END) AS premium,
+               COUNT(CASE WHEN attributed.family = 'network' THEN 1 END) AS network
+        FROM done LEFT JOIN attributed ON attributed.transfer_id = done.id
+        GROUP BY done.date ORDER BY done.date ASC""", [provider for ids in members.values() for provider in ids])
+    return [{**row, "unattributed": int(row["count"]) - int(row["premium"]) - int(row["network"])} for row in rows]
+
+
+async def _transfer_methods(db, where_sql: str, definitions) -> list[dict]:
+    """Statistics -> Transfer Methods: how DownloadPulse actually acquired the
+    transfers added in the period, ranked, at most ten rows.
+
+    A transfer counts ONCE under each acquisition method that delivered any of
+    its current canonical artifacts -- by that artifact's latest delivered
+    execution (``execution_attempt_provenance.delivered``, the same delivery
+    truth the Completions families read; failed, replaced or standby attempts
+    never count). The method is the one the delivering integration declares
+    (``IntegrationPresentation.acquisition_method``), so three debrid services
+    are one "Debrid" and a transfer that also took material over HTTP(S)
+    counts there too. What was submitted (a magnet, an NZB, a Metalink) is
+    never a method. A transfer that completed with no delivery attributable to
+    any declared method -- history from before provenance, an adopted payload
+    -- is "Unattributed", never guessed into one."""
+    methods: dict[str, list[str]] = {}
+    for definition in definitions:
+        method = getattr(definition.presentation, "acquisition_method", None)
+        if method:
+            methods.setdefault(method, []).append(definition.id)
+    method_sql = " ".join(
+        f"WHEN p.provider_id IN ({', '.join('?' for _ in ids)}) THEN ?" for ids in methods.values()) or "WHEN 0 THEN NULL"
+    parameters = [value for method, ids in methods.items() for value in (*ids, method)]
+    return await db.fetchall(f"""
+        WITH scope AS (
+            SELECT id, completed_at FROM torrents {where_sql}
+        ),
+        delivered AS (
+            SELECT DISTINCT f.torrent_id AS transfer_id,
+                   (SELECT CASE {method_sql} END FROM execution_attempt_provenance p
+                    WHERE p.artifact_id = f.id AND p.delivered = 1 ORDER BY p.ordinal DESC LIMIT 1) AS method
+            FROM download_files f JOIN scope ON scope.id = f.torrent_id
+            WHERE {canonical_artifact_membership_sql("f")}
+        ),
+        attributed AS (SELECT transfer_id, method FROM delivered WHERE method IS NOT NULL)
+        SELECT method, COUNT(*) AS count FROM attributed GROUP BY method
+        UNION ALL
+        SELECT 'Unattributed', COUNT(*) FROM scope
+        WHERE completed_at IS NOT NULL AND id NOT IN (SELECT transfer_id FROM attributed)
+        HAVING COUNT(*) > 0
+        ORDER BY count DESC, method ASC LIMIT 10""", parameters)
+
+
+@router.get("/stats/detail")
+async def get_stats_detail(period: str = "all", application: ApplicationService = Depends(get_application)):
+    """
+    period: "1h" | "24h" | "7d" | "30d" | "1y" | "all"
+    All metrics (including totals) are filtered to the selected period.
+    """
+    period_map = {
+        "1h":  (_sql_now_minus("1 hour"),  "1h",  _sql_strftime("%H:%M", "completed_at"), 60),
+        "24h": (_sql_now_minus("1 day"),   "24h", _sql_strftime("%H:00", "completed_at"), 24),
+        "7d":  (_sql_now_minus("7 days"),  "7d",  _sql_date("completed_at"),              7),
+        "30d": (_sql_now_minus("30 days"), "30d", _sql_date("completed_at"),              30),
+        "1y":  (_sql_now_minus("1 year"),  "1y",  _sql_strftime("%Y-%m", "completed_at"), 12),
+        "all": (None,                      "all", _sql_date("completed_at"),              None),
+    }
+    entry = period_map.get(period, period_map["all"])
+    cutoff, period_label, date_fmt, _ = entry
+    where_ts   = f"WHERE created_at >= {cutoff}"    if cutoff else ""
+    where_done = f"WHERE completed_at >= {cutoff}"   if cutoff else ""
+    where_comp = (
+        f"WHERE status='completed' AND COALESCE(extraction_status,'')!='extracting' AND completed_at >= {cutoff}"
+        if cutoff
+        else "WHERE status='completed' AND COALESCE(extraction_status,'')!='extracting'"
+    )
+
+    async with get_db() as db:
+        # ── Totals (period-filtered) ─────────────────────────────────────────
+        totals_row = await db.fetchone(
+            f"SELECT COUNT(*) as torrent_total, COALESCE(SUM(size_bytes),0) as torrent_size_total "
+            f"FROM torrents {where_ts}"
+        ) or {}
+        totals = dict(totals_row)
+
+        completed_count = (await db.fetchone(
+            f"SELECT COUNT(*) as c FROM torrents {where_comp}") or {}).get("c", 0)
+        error_count = (await db.fetchone(
+            f"SELECT COUNT(*) as c FROM torrents WHERE status='error'"
+            + (f" AND created_at >= {cutoff}" if cutoff else "")) or {}).get("c", 0)
+        terminal = completed_count + error_count
+        totals["success_rate_pct"] = round(completed_count / terminal * 100, 1) if terminal > 0 else None
+
+        completed_size_row = await db.fetchone(
+            f"SELECT COALESCE(SUM(size_bytes),0) as v FROM torrents {where_comp}")
+        totals["completed_size"]  = completed_size_row["v"] if completed_size_row else 0
+        totals["completed_count"] = completed_count
+
+        partial_row = await db.fetchone(
+            "SELECT COUNT(*) as c FROM torrents "
+            "WHERE (status IN ('processing','downloading','dispatched','partial') OR COALESCE(extraction_status,'')='extracting')"
+            + (f" AND created_at >= {cutoff}" if cutoff else ""))
+        totals["partial_total"] = partial_row["c"] if partial_row else 0
+
+        # ── Breakdowns ───────────────────────────────────────────────────────
+        # Transfer Disposition: each retained transfer at its current SETTLED
+        # status, at most once; anything still active, pending or extracting
+        # (the in-progress KPI's own rule) has no disposition yet. Remove
+        # persists `deleted`, so there is no separate Removed to count.
+        from api.operational_downloads import _SETTLED_RAW_STATUSES
+        torrent_status = await db.fetchall(
+            f"SELECT status, COUNT(*) as count FROM torrents "
+            f"WHERE status IN ({','.join('?' * len(_SETTLED_RAW_STATUSES))}) "
+            f"AND COALESCE(extraction_status,'')!='extracting'"
+            + (f" AND created_at >= {cutoff}" if cutoff else "")
+            + " GROUP BY status ORDER BY count DESC", _SETTLED_RAW_STATUSES)
+        where_files = (f"WHERE updated_at >= {cutoff}" if cutoff else "")
+        file_status = await db.fetchall(
+            f"SELECT status, COUNT(*) as count, COALESCE(SUM(size_bytes),0) as size_bytes "
+            f"FROM download_files {where_files} GROUP BY status ORDER BY count DESC")
+        from db.event_journal import severity_counts
+        event_since = (time.time() - {"1h": 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400,
+                                      "1y": 365 * 86400}[period_label]) if cutoff else None
+        event_levels = [{"level": level, "count": count}
+                        for level, count in (await severity_counts(db, event_since)).items()]
+        transfer_methods = await _transfer_methods(db, where_ts, application.definitions)
+
+        # ── Chart data (period-aware grouping) ───────────────────────────────
+        _cutoff_90d = _sql_now_minus("90 days")
+        if period == "1h":
+            _grp, _since = _sql_strftime("%H:%M", "completed_at"), cutoff
+        elif period == "24h":
+            # Group and label by hour -- both SELECT and GROUP BY use the same expression
+            _grp, _since = _sql_strftime("%H:00", "completed_at"), cutoff
+        elif period in ("7d", "30d"):
+            _grp, _since = _sql_date("completed_at"), cutoff
+        elif period == "1y":
+            _grp, _since = _sql_strftime("%Y-%m", "completed_at"), cutoff
+        else:  # all -- last 90 days grouped by day
+            _grp, _since = _sql_date("completed_at"), _cutoff_90d
+        daily_completions = await _completion_buckets(db, _grp, _since, application.definitions)
+
+        return {
+            "period":             period_label,
+            "totals":             totals,
+            "torrent_status":     torrent_status,
+            "file_status":        file_status,
+            "event_levels":       event_levels,
+            "daily_completions":  daily_completions,
+            "transfer_methods":   transfer_methods,
+        }
+
+
+# ── Processing control ─────────────────────────────────────────────────────────
+
+@router.post("/processing/pause")
+async def pause_processing( application: ApplicationService = Depends(get_application)):
+    result = await application.pause_all()
+    return {"ok": True, **result}
+
+@router.post("/processing/resume")
+async def resume_processing( application: ApplicationService = Depends(get_application)):
+    result = await application.resume_all()
+    return {"ok": True, **result}
+
+# ── Changelog ──────────────────────────────────────────────────────────────────
+
+_changelog_cache: dict = {}
+
+
+@router.get("/changelog")
+async def get_changelog():
+    """Return CHANGELOG.md.
+    Uses local file when it contains the running version entry.
+    Falls back to GitHub Releases API (1h cache) for stale images."""
+    import time, aiohttp as _aiohttp
+    local: str | None = None
+    for c in (Path("/app/CHANGELOG.md"),
+              Path(__file__).resolve().parents[2] / "CHANGELOG.md"):
+        if c.exists():
+            local = c.read_text(encoding="utf-8"); break
+    running = read_version()
+    if local and ("[" + running + "]") in local:
+        return {"content": local, "source": "local"}
+    cache, now = _changelog_cache, time.time()
+    if cache.get("ts", 0) + 3600 > now:
+        return {"content": cache.get("content", local or ""), "source": "github_cache"}
+    sep = "\n\n---\n\n"
+    try:
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(
+                f"{REPOSITORY_API_URL}/releases?per_page=25",
+                headers={"Accept": "application/vnd.github.v3+json"},
+            ) as r:
+                if r.status == 200:
+                    rels = await r.json()
+                    parts = []
+                    for rel in rels:
+                        body = (rel.get("body") or "").strip()
+                        tag  = rel.get("tag_name", "")
+                        date = (rel.get("published_at") or "")[:10]
+                        parts.append(body or "## " + tag + " \u2014 " + date)
+                    combined = sep.join(parts)
+                    cache["content"] = combined
+                    cache["ts"] = now
+                    return {"content": combined, "source": "github"}
+    except Exception as exc:
+        logger.warning("Changelog GitHub fetch failed: %s", exc)
+    return {"content": local or "", "source": "local_fallback"}
+
+
+# ── Admin ──────────────────────────────────────────────────────────────────────
+
+@router.post("/admin/backup")
+async def trigger_backup():
+    try:
+        return await backup_store.run_backup()
+    except backup_store.BackupRejected as exc:
+        raise refusal(500, exc.message, exc) from None
+
+
+# ── Backups: one restore point per DownloadPulse backup ──────────────────────────
+# Every operation below is owned by services.backup; a restore is the
+# application lifetime owner's whole-state replacement.
+
+def _backup_refusal(exc: backup_store.BackupRejected) -> HTTPException:
+    status = {"not_found": 404, "duplicate": 409, "space": 507}.get(
+        exc.reason, 500 if exc.action in {"save", "remove"} else 400)
+    return refusal(status, exc.message, exc)
+
+
+@router.get("/admin/backups")
+async def list_backups():
+    return {"backups": [point.public() for point in backup_store.list_restore_points()]}
+
+
+@router.post("/admin/backups")
+async def add_backup(request: Request):
+    # The package is the raw request body, handed over as it arrives: nothing
+    # spools it anywhere first, so the backup owner's storage fence governs
+    # every byte that reaches disk.
+    try:
+        point = await backup_store.add_backup(request.stream())
+    except backup_store.BackupRejected as exc:
+        raise _backup_refusal(exc) from None
+    return {"backup": point.public()}
+
+
+@router.get("/admin/backups/{backup_id}/package")
+async def save_backup(backup_id: str):
+    try:
+        package = await asyncio.to_thread(backup_store.package_restore_point, backup_id)
+    except backup_store.BackupRejected as exc:
+        raise _backup_refusal(exc) from None
+    return FileResponse(package, media_type="application/zip", filename=backup_store.package_name(backup_id),
+                        background=BackgroundTask(package.unlink, missing_ok=True))
+
+
+@router.post("/admin/backups/{backup_id}/package/save")
+async def save_backup_where_chosen(backup_id: str):
+    """Desktop: the backup package (``save_backup``'s file), saved where the
+    person's Save dialog says."""
+    import shutil
+    _require_desktop()
+    try:
+        package = await asyncio.to_thread(backup_store.package_restore_point, backup_id)
+    except backup_store.BackupRejected as exc:
+        raise _backup_refusal(exc) from None
+    try:
+        return await _save_where_chosen(backup_store.package_name(backup_id),
+                                        lambda path: shutil.copyfile(package, path))
+    finally:
+        package.unlink(missing_ok=True)
+
+
+@router.delete("/admin/backups/{backup_id}")
+async def remove_backup(backup_id: str):
+    try:
+        await asyncio.to_thread(backup_store.remove_restore_point, backup_id)
+    except backup_store.BackupRejected as exc:
+        raise _backup_refusal(exc) from None
+    await backup_store.journal_backup("administration.backup_removed", "Backup removed", backup_id)
+    return {"ok": True}
+
+
+@router.post("/admin/backups/restore")
+async def restore_backup(body: dict, request: Request):
+    try:
+        return await restore_application_backup(request.app.state, str((body or {}).get("id") or ""))
+    except RestoreFailed as exc:
+        raise refusal(exc.status_code, exc.message, exc) from None
+
+
+@router.post("/admin/drop-page-cache")
+async def drop_page_cache_ep():
+    """
+    Release the Linux kernel page cache for all completed download files.
+    This frees RAM that Linux holds as file cache after downloads finish.
+    Safe to call at any time — files on disk are not affected.
+    """
+    from services.page_cache import drop_page_cache_for_file
+    from pathlib import Path
+
+    try:
+        async with get_db() as db:
+            rows = await (await db.execute(
+                "SELECT local_path FROM download_files "
+                "WHERE status='completed' AND local_path IS NOT NULL"
+            )).fetchall()
+        paths = [r["local_path"] for r in rows if r["local_path"]]
+        dropped = sum(1 for p in paths if drop_page_cache_for_file(p))
+        return {
+            "ok": True,
+            "files_processed": len(paths),
+            "cache_released": dropped,
+            "message": f"Page cache released for {dropped}/{len(paths)} files",
+        }
+    except Exception as e:
+        raise refusal(500, _sanitize_error(e), e)
+
+
+@router.get("/admin/memory-info")
+async def memory_info_ep():
+    """
+    Read /proc/meminfo to show the difference between total RAM usage
+    and actual used RAM vs kernel page cache.
+    This helps diagnose whether high RAM usage is a real leak or
+    normal kernel page-cache behaviour.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    info = {}
+    try:
+        text = _Path("/proc/meminfo").read_text()
+        for line in text.splitlines():
+            m = _re.match(r"^(\w+):\s+(\d+)\s+kB$", line)
+            if m:
+                info[m.group(1)] = int(m.group(2)) * 1024
+
+        def fmt(b: int) -> str:
+            if b >= 1 << 30:
+                return f"{b / (1 << 30):.1f} GB"
+            if b >= 1 << 20:
+                return f"{b / (1 << 20):.1f} MB"
+            return f"{b / (1 << 10):.0f} KB"
+
+        total       = info.get("MemTotal", 0)
+        free        = info.get("MemFree", 0)
+        available   = info.get("MemAvailable", 0)
+        cached      = info.get("Cached", 0) + info.get("SwapCached", 0)
+        buffers     = info.get("Buffers", 0)
+        used        = total - free - cached - buffers
+        page_cache  = cached + buffers
+
+        return {
+            "total":           fmt(total),
+            "really_used":     fmt(used),
+            "page_cache":      fmt(page_cache),
+            "available":       fmt(available),
+            "free":            fmt(free),
+            "note": (
+                "really_used is actual process RAM. "
+                "page_cache is kernel file cache (shown as 'used' in Unraid dashboard "
+                "but reclaimed automatically when needed). "
+                "If page_cache is large, run POST /admin/drop-page-cache to release it."
+            ),
+            "raw_kb": {k: v // 1024 for k, v in info.items()
+                       if k in ("MemTotal","MemFree","MemAvailable","Cached","Buffers","SwapTotal","SwapFree")},
+        }
+    except Exception as e:
+        raise refusal(500, _sanitize_error(e), e)
+
+
+
+_database_wipe_lock = asyncio.Lock()
+
+
+@router.post("/admin/database/wipe")
+async def wipe_database_admin(body: dict | None = None, application: ApplicationService = Depends(get_application)):
+    """The operator confirms the destructive intent; the wipe establishes what
+    it needs itself. Inside the maintenance admission it drains every native
+    execution through the one generic drain (the one a restore uses), so none
+    outlives the database that owned it. The operator's pre-wipe pause
+    intent -- the global Pause and every transfer's own -- is recorded first,
+    is what the safety backup captures, and is reinstated exactly afterwards."""
+    cfg = get_settings()
+    if not getattr(cfg, "db_wipe_enabled", False):
+        raise DisplayError(400, "Database wipe is disabled in settings", code="maintenance.wipe_disabled")
+    if not (body or {}).get("confirm"):
+        raise DisplayError(400, "Wipe confirmation required", code="maintenance.wipe_confirmation_required")
+
+    if _database_wipe_lock.locked():
+        raise DisplayError(409, "Database wipe is already in progress", code="maintenance.wipe_in_progress")
+
+    async with _database_wipe_lock:
+        scheduler_was_running = scheduler_runtime.scheduler_running()
+        scheduler_stopped = False
+        intent = None
+        try:
+            async with application.database_wipe_admission():
+                # A state-changing request could have been admitted immediately
+                # before maintenance closed admission. The gate drains it first;
+                # refresh every destructive setting, and record the operator's
+                # pause intent, only after that drain.
+                cfg = get_settings()
+                if not getattr(cfg, "db_wipe_enabled", False):
+                    raise DisplayError(400, "Database wipe is disabled in settings", code="maintenance.wipe_disabled")
+                intent = await application.pause_intent()
+
+                if scheduler_was_running:
+                    # Claim restart responsibility before the interruptible stop.
+                    scheduler_stopped = True
+                    await scheduler_runtime.stop_scheduler()
+
+                try:
+                    drain = await application.drain_executions()
+                except Exception as exc:
+                    raise refusal(409, _sanitize_error(exc), exc)
+
+                # Application execution admission, scheduler activity, provider
+                # work, materialization work and every native execution are all
+                # closed/drained before this database writer gate is acquired.
+                # The safety backup outlives every retention pass until the
+                # wipe has ended, however it ends.
+                async with backup_store.holding() as hold, database_maintenance():
+                    if await application.repository.live_executions():
+                        raise DisplayError(409, "Could not prove every native execution stopped", code="maintenance.executions_not_stopped")
+                    # The drain's pause is the wipe's own; the backup keeps the
+                    # operator's intent instead.
+                    await application.record_pause_intent(intent)
+                    # Mandatory, like the pre-restore safety backup, and made by
+                    # the same one creation owner as Run Backup: a restore point.
+                    # Without it nothing is deleted.
+                    try:
+                        safety = await backup_store.create_restore_point()
+                    except backup_store.BackupRejected:
+                        raise DisplayError(500, "Pre-wipe database backup failed; wipe aborted", code="maintenance.wipe_backup_failed") from None
+                    hold(safety.id)
+                    backup_result = safety.public()
+
+                    from services.db_maintenance import wipe_database
+                    result = await wipe_database(verified_quiesced=True)
+
+                return {**result, "backup": backup_result, "drain": drain}
+        finally:
+            # Unwound only once application admission has reopened, so neither
+            # the readmission nor new scheduler tasks bounce off the maintenance
+            # gate. Exactly the operator's recorded intent is reinstated.
+            try:
+                if intent is not None:
+                    await application.restore_pause_intent(intent)
+            finally:
+                if scheduler_stopped:
+                    await scheduler_runtime.start_scheduler(application)
+
+
+
+# ── Statistics & Reporting ──────────────────────────────────────────────────────
+
+
+
+@router.get("/aria2/global-options")
+async def aria2_get_global_options( application: ApplicationService = Depends(get_application)):
+    """Return current aria2 global options (includes speed limits)."""
+    try:
+        opts = await application.integration_admin("aria2").get_global_options()
+        return {
+            "ok": True,
+            "max_download_speed": int(opts.get("max-overall-download-limit") or 0),
+            "max_concurrent_downloads": int(
+                application.engine.policy.max_active_executions
+            ),
+            "raw": {k: v for k, v in opts.items() if "limit" in k or "speed" in k or "concurrent" in k},
+        }
+    except Exception as e:
+        raise refusal(502, _sanitize_error(e), e)
+
+
+@router.post("/aria2/global-options")
+async def aria2_set_global_options(body: dict, application: ApplicationService = Depends(get_application)):
+    """
+    Legacy compatibility edge only (specification section 9.6). Forwards
+    download-bandwidth and concurrency mutations to the SAME canonical scoped
+    routes the neutral UI now calls directly -- ``patch_execution_runtime_limits``
+    and ``patch_transfer_policy`` -- so exactly one implementation ever
+    applies or persists either value; this route holds no independent
+    native-apply or persistence logic for them (Gate 9 revision-4 rejection
+    finding 5: two implementations were previously able to change the same
+    underlying state). There is no ``max_upload_speed``: DownloadPulse's aria2
+    is compiled without BitTorrent and never uploads.
+
+    Accepts: max_download_speed (bytes/s, 0=unlimited) and
+    max_concurrent_downloads. The UI has migrated to the neutral routes and
+    sends at most one of these per request; no external dependency requires
+    combined multi-field requests to keep working atomically.
+    """
+    async with application.application_operation():
+        requested = set(body)
+        if not requested & {"max_download_speed", "max_concurrent_downloads"}:
+            raise DisplayError(400, "No valid options provided", code="aria2.options_invalid")
+
+        applied: dict = {}
+        last_apply_error = None
+        try:
+            if "max_download_speed" in body:
+                result = await patch_execution_runtime_limits(
+                    {"max_download_bytes_per_second": body["max_download_speed"]}, application=application,
+                )
+                last_apply_error = result.get("last_apply_error")
+                applied["max-overall-download-limit"] = str(result["configured"]["max_download_bytes_per_second"])
+
+            if "max_concurrent_downloads" in body:
+                try:
+                    update = TransferPolicyUpdate(max_concurrent_executions=body["max_concurrent_downloads"])
+                except ValidationError as exc:
+                    raise _refused(exc) from None
+                except Exception as exc:
+                    raise refusal(400, _sanitize_error(exc), exc) from None
+                result = await patch_transfer_policy(update, application=application)
+                # Gate 9 revision-6 rejection finding 3: propagate the
+                # canonical route's own native-apply truth through this
+                # compatibility forwarder -- an ``ok: true`` response here
+                # must never imply a native concurrency apply that
+                # ``patch_transfer_policy`` itself reported as failed.
+                last_apply_error = last_apply_error or result.get("last_apply_error")
+                concurrency = result["max_concurrent_executions"]
+                applied["max-concurrent-downloads"] = str(concurrency)
+
+            return {
+                "ok": last_apply_error is None,
+                "applied": applied,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise refusal(502, _sanitize_error(e), e)
+
+
+@router.get("/execution/runtime-limits")
+async def get_execution_runtime_limits(application: ApplicationService = Depends(get_application)):
+    """Neutral live executor-runtime limits (specification section 4.4).
+    ``configured`` is the durable desired value; ``effective`` is the value
+    the core runtime owner has proven enforced across every executor that
+    currently holds a bandwidth reservation -- ``None`` (with
+    ``last_apply_error``) whenever that cannot be proven (section 2.7)."""
+    return await application.execution_runtime_limits()
+
+
+@router.get("/execution/throughput")
+async def get_execution_throughput(application: ApplicationService = Depends(get_application)):
+    """Neutral live download speed for the operator-facing shell.
+
+    The volatile part of the runtime facts on its own cheap read: the one core
+    throughput fact and the configured download cap, never awaiting the slower
+    occupancy fact ``/execution/runtime-status`` also carries. The topbar and
+    the browser-tab title present this one sample."""
+    return {"ok": True, **await application.execution_throughput()}
+
+
+@router.get("/execution/runtime-status")
+async def get_execution_runtime_status(application: ApplicationService = Depends(get_application)):
+    """Neutral live runtime status for the operator-facing shell.
+
+    The ONE fact source for the topbar indicator and the browser-tab title:
+    current aggregate download throughput across every acquiring executor,
+    DownloadPulse's own execution-admission occupancy, and the configured global
+    download cap. Executor-specific routes remain available as diagnostics;
+    they no longer own generic presentation truth, so a future executor joins
+    by implementing the neutral contracts rather than by adding a branch here.
+    """
+    return {"ok": True, **await application.execution_runtime_status()}
+
+
+@router.patch("/execution/runtime-limits")
+async def patch_execution_runtime_limits(body: dict, application: ApplicationService = Depends(get_application)):
+    """Scoped neutral runtime-limit mutation (specification sections 4.4, 9.5,
+    9.6). Reloads only this namespace, preserves every unrelated setting, and
+    uses the SAME ordinary application-operation admission every other
+    command already uses -- never application-wide maintenance merely because
+    the value is persisted (specification section 2.6, 13.3)."""
+    if "max_download_bytes_per_second" not in body:
+        raise DisplayError(400, "A speed limit is required.", code="speed.limit_required")
+    # The namespace's own rule, strictly: a whole number of bytes per second
+    # from 0 (no limit) up -- never a truncated fraction, a boolean, a string,
+    # a negative silently read as "no limit", or a non-finite value.
+    from core.settings_constraints import validate_changes
+    value = body["max_download_bytes_per_second"]
+    try:
+        validate_changes(ExecutionRuntimeLimits, {"max_download_bytes_per_second": value})
+    except ValidationError as exc:
+        raise _refused(exc) from None
+
+    async with application.application_operation():
+        # The config-write lock serializes the full desired-write ->
+        # reinjection -> convergence pipeline as one critical section, so the
+        # last writer under the lock wins for the durable value and the
+        # enforced executor ceilings together. Durable desired state is
+        # persisted FIRST: a convergence failure afterwards is an explicit,
+        # observable configured != effective divergence (section 2.7), never
+        # a silent split between executors and disk.
+        async with config_write_lock():
+            previous = get_settings()
+            current = load_settings()
+            current.execution_runtime_limits = ExecutionRuntimeLimits(max_download_bytes_per_second=value)
+            from integrations.configuration import normalize_settings
+            current = normalize_settings(current, application.definitions)
+            save_settings(current)
+            apply_settings(current)
+            application.configure()
+            await journal_configuration_change(previous, current)
+            return await application.execution_runtime_limits()
+
+
+# ── Scoped namespace mutation surfaces (DP 1.0.12 canonical architecture ──
+# correction, Workstream C, specification section 9.5): each surface reloads
+# only its own namespace, preserves every unrelated setting, and never
+# replaces the whole settings document from a stale UI snapshot. Neither
+# acquires ``configuration_admission()`` -- concurrency/retry policy and
+# executor tuning are not application-wide invariants (specification
+# sections 2.6, 6).
+
+class TransferPolicyUpdate(BaseModel):
+    """Partial update of ``transfer_policy``: every operator-tunable field of
+    the canonical namespace, and only through this surface. Strict: a value of
+    the wrong JSON type is refused, never coerced; the bounds are the
+    namespace's own (``TransferSettings``)."""
+    model_config = ConfigDict(strict=True)
+    max_concurrent_executions: int | None = None
+    execution_retry_count: int | None = None
+    execution_retry_delay_seconds: int | None = None
+    resolution_retry_count: int | None = None
+    resolution_retry_delay_minutes: int | None = None
+    execution_poll_interval_seconds: int | None = None
+    provider_poll_interval_seconds: int | None = None
+    stalled_timeout_hours: int | None = None
+    material_checkpoint_interval_seconds: int | None = None
+    graceful_stop_timeout_seconds: int | None = None
+    private_lan_connections: bool | None = None
+    skip_private_lan_confirmation: bool | None = None
+
+
+@router.get("/transfer-policy")
+async def get_transfer_policy_ep(application: ApplicationService = Depends(get_application)):
+    """Universal transfer-policy namespace (specification section 4.1): the
+    single canonical authority for execution concurrency, retry, polling and
+    stall policy, never aria2-named."""
+    policy = get_settings().transfer_policy or TransferSettings()
+    return {"ok": True, **policy.model_dump()}
+
+
+@router.patch("/transfer-policy")
+async def patch_transfer_policy(body: TransferPolicyUpdate, application: ApplicationService = Depends(get_application)):
+    """Scoped universal transfer-policy mutation. The canonical UI writes only
+    this surface for every ``transfer_policy`` field; no flat alias is a second
+    writable authority (specification sections 4.1, 9.7, 9.8)."""
+    updates = body.model_dump(exclude_none=True)
+    if not updates:
+        raise DisplayError(400, "No valid transfer-policy fields provided", code="policy.fields_invalid")
+    async with application.application_operation():
+        # The narrow config-write lock (specification sections 9.5, 13.8)
+        # serializes this load-modify-save critical section against every
+        # other settings-mutation route: no namespace may lose another
+        # namespace's newer value to a concurrent read-modify-write.
+        async with config_write_lock():
+            previous = get_settings()
+            current = load_settings()
+            base = current.transfer_policy or TransferSettings()
+            try:
+                policy = base.model_copy(update=updates)
+                policy = TransferSettings(**policy.model_dump())  # re-validate bounds
+            except ValidationError as exc:
+                raise _refused(exc) from None
+            except Exception as exc:
+                raise refusal(400, _sanitize_error(exc), exc) from None
+            current.transfer_policy = policy
+            from integrations.configuration import normalize_settings
+            current = normalize_settings(current, application.definitions)
+            save_settings(current)
+            apply_settings(current)
+            # Unconditional (Gate 9 revision-3 rejection finding 4):
+            # ``application.configure()`` (``composition.configure``) is the
+            # ONE place ``execution_retry_count``/``execution_retry_delay_seconds``
+            # become the running universal recovery engine's live
+            # ``max_attempts``/``retry_delay`` -- exactly as it is also the
+            # one place ``max_concurrent_executions`` becomes the live
+            # scheduler capacity. Gating this call on "did concurrency
+            # change" left a retry-only PATCH silently persisting one retry
+            # policy while the running engine kept consuming the old one
+            # until restart or an unrelated reconfigure. Held inside the
+            # SAME config-write lock so the engine's live policy always
+            # corresponds to the just-persisted revision, never a stale
+            # interleaving (specification section 13.8).
+            application.configure()
+            await journal_configuration_change(previous, current)
+
+            # ``max_concurrent_executions`` is the one global concurrency
+            # policy and core admission (``occupied_execution_slots``) its only
+            # enforcement: no executor receives it as a native policy copy.
+            last_apply_error = None
+        if "max_concurrent_executions" in updates:
+            # Only the capacity-triggered dispatch nudge stays conditional:
+            # it exists solely to immediately use newly available
+            # concurrency slots, which a retry-only change does not create,
+            # and is an async dispatch operation that must not run while
+            # holding the config-write lock.
+            try:
+                await application.reconcile_executions()
+            except Exception as exc:
+                logger.debug("transfer-policy concurrency reconfigure skipped: %s", sanitize_exception(exc))
+    return {
+        "ok": last_apply_error is None,
+        "last_apply_error": last_apply_error,
+        **current.transfer_policy.model_dump(),
+    }
+
+
+class IntegrationConfigurationUpdate(BaseModel):
+    # Strict request envelope; each changed option is validated strictly by
+    # its integration's own schema (``mutate_integration_configuration``).
+    model_config = ConfigDict(strict=True)
+    options: dict = Field(default_factory=dict)
+    enabled: bool | None = None
+    priority: int | None = None
+    clear_secrets: list[str] = Field(default_factory=list)
+    # Opaque proofs a successful Test handed back for what it actually tested.
+    # NEVER a claim that something is verified: the fingerprint is re-derived
+    # server-side from the configuration this request saves, and a proof is
+    # accepted only for that. A forged or asserted token matches nothing.
+    verification: list[str] = Field(default_factory=list)
+
+
+def _integration_definition(application: ApplicationService, integration_id: str):
+    definition = next((d for d in application.definitions if d.id == integration_id), None)
+    if definition is None:
+        raise DisplayError(404, "Unknown integration", code="integration.unknown")
+    return definition
+
+
+@router.get("/integrations/{integration_id}/configuration")
+async def get_integration_configuration(integration_id: str, application: ApplicationService = Depends(get_application)):
+    """Integration/executor-owned configuration namespace (specification
+    section 4.3): concrete executor tuning is never read back through
+    universal transfer policy."""
+    _integration_definition(application, integration_id)
+    from integrations.configuration import public_integrations
+    public = public_integrations(get_settings(), application.definitions).get(integration_id, {})
+    return {"ok": True, **public}
+
+
+@router.patch("/integrations/{integration_id}/configuration")
+async def patch_integration_configuration(
+    integration_id: str, body: IntegrationConfigurationUpdate, application: ApplicationService = Depends(get_application),
+):
+    """Scoped integration/executor configuration mutation (specification
+    sections 4.3, 9.1, 9.5). Merges only the supplied option keys into the
+    existing namespace -- every unrelated integration and every unrelated
+    option is preserved untouched. A proven lifecycle/binding invariant
+    (``ApplicationService.validate_configuration`` -- has this integration
+    ever been used) is still enforced for an integration's ownership fields;
+    it is not exempt merely because this is a scoped route."""
+    definition = _integration_definition(application, integration_id)
+    from integrations.configuration_mutation import (
+        ConfigurationRefused, InvalidIntegrationOptions, SettingsStore, mutate_integration_configuration,
+    )
+
+    async def apply_aria2():
+        return await _apply_aria2_settings(application, strict=True)
+
+    # The whole request -- save, then existing downloads -- ends well inside
+    # the 60 s the Settings page waits for one of these fields.
+    tuning_deadline = asyncio.get_running_loop().time() + _JOB_TUNING_REQUEST_SECONDS
+    try:
+        result = await mutate_integration_configuration(
+            application, definition, options=body.options, enabled=body.enabled, priority=body.priority,
+            clear_secrets=body.clear_secrets, verification=body.verification,
+            # This route's own bound view of the settings owner.
+            store=SettingsStore(get_settings, load_settings, save_settings, apply_settings, config_write_lock),
+            apply_native=apply_aria2 if integration_id == "aria2" else None)
+    except InvalidIntegrationOptions as exc:
+        if isinstance(exc.__cause__, ValidationError):
+            raise _refused(exc.__cause__) from None
+        raise refusal(400, _sanitize_error(exc.__cause__ or exc), exc) from None
+    except ConfigurationRefused as exc:
+        raise refusal(409, str(exc), exc) from None
+    clean, applied, runtime = result.settings, result.applied, result.native
+    from integrations.configuration import public_integrations
+    public = _with_option_availability(public_integrations(clean, application.definitions),
+                                       application).get(integration_id, {})
+    # A save whose native application failed is reported truthfully: the
+    # canonical namespace is saved (it is the desired state) but the operator is
+    # never told the service is configured when it is not.
+    # The daemon's own outcome (aria2): running, applied live, and what waits
+    # for its next start -- validation success is not reported as more.
+    # Changed per-download tuning also reaches the jobs that already exist,
+    # after the save and outside the config-write lock; what each job actually
+    # took is reported beside what was saved, never folded into it. "Changed"
+    # is decided against what this save actually replaced, read under the
+    # lock (``result.previous``), never against an earlier unserialized read.
+    job_tuning = None
+    if integration_id == "aria2" and _aria2_job_tuning(clean) != _aria2_job_tuning(result.previous):
+        job_tuning = await _converge_aria2_job_tuning(application, runtime, tuning_deadline)
+    return {"ok": True, **public, **({"native": applied.public()} if applied is not None else {}),
+            **({"runtime": runtime} if runtime is not None else {}),
+            **({"job_tuning": job_tuning} if job_tuning is not None else {})}
+
+
+# A Settings save of aria2 per-download tuning, including applying it to the
+# existing downloads, ends within this many seconds of the request arriving;
+# the page waits 60 s for it (ui-settings-page.js, ``liveTuning`` fields).
+_JOB_TUNING_REQUEST_SECONDS = 45.0
+
+
+def _aria2_job_tuning(settings) -> tuple:
+    """The saved per-download tuning existing aria2 jobs are given
+    (``executors.aria2.executor.JOB_TUNING_OPTIONS``), normalized."""
+    from executors.aria2.definition import aria2_size_bytes
+    options = _canonical_aria2_options(settings)
+    return (int(options.max_connection_per_server), int(options.split), aria2_size_bytes(options.min_split_size))
+
+
+async def _converge_aria2_job_tuning(application: ApplicationService, runtime: dict | None, deadline: float) -> dict:
+    """Apply just-saved tuning to the existing DP-owned aria2 jobs
+    (``Aria2Administration.converge_job_tuning``), by ``deadline`` (event-loop
+    time). Without a running daemon nothing can be applied, and that is what
+    is reported."""
+    if not (runtime or {}).get("running"):
+        return {"daemon": "unavailable", "selected": 0}
+    try:
+        return {"daemon": "running",
+                **await application.integration_admin("aria2").converge_job_tuning(deadline=deadline)}
+    except Exception as exc:
+        logger.warning("Could not apply aria2 tuning to existing downloads: %s", sanitize_exception(exc))
+        return {"daemon": "unavailable", "selected": 0}
+
+
+class IntegrationGroupConfigurationUpdate(BaseModel):
+    model_config = ConfigDict(strict=True)
+    enabled: bool
+
+
+@router.get("/integration-groups")
+async def list_integration_groups(application: ApplicationService = Depends(get_application)):
+    """Every declared integration group and its aggregate participation gate."""
+    from integrations.configuration import public_integration_groups
+    return {"ok": True, "groups": public_integration_groups(get_settings(), application.definitions)}
+
+
+@router.patch("/integration-groups/{group_id}/configuration")
+async def patch_integration_group_configuration(
+    group_id: str, body: IntegrationGroupConfigurationUpdate,
+    application: ApplicationService = Depends(get_application),
+):
+    """Scoped mutation of ONE aggregate participation gate.
+
+    Deliberately the same discipline as ``/integrations/{id}/configuration``
+    -- the same admission, the same narrow config-write lock held across
+    validate -> save -> apply -> reconfigure, and the same neutral applicability
+    wake afterwards -- because it is the same kind of thing: canonical operator
+    intent about whether something participates. It is not a second settings
+    framework, and it writes no member namespace: a gate gates, and the
+    members' own preferences are exactly as they were on both sides of it.
+    """
+    from integrations.configuration import (
+        known_groups, normalize_settings, public_integration_groups, set_group_enabled,
+    )
+    if group_id not in known_groups(application.definitions):
+        raise DisplayError(404, "Unknown integration group", code="integration.group_unknown")
+    async with application.application_operation():
+        async with config_write_lock():
+            previous = get_settings()
+            current = set_group_enabled(load_settings(), group_id, body.enabled,
+                                        definitions=application.definitions)
+            clean = normalize_settings(current, application.definitions, previous=previous)
+            try:
+                await application.validate_configuration(previous, clean)
+            except ValueError as exc:
+                raise refusal(409, str(exc), exc) from None
+            save_settings(clean)
+            apply_settings(clean)
+            application.configure()
+            await journal_configuration_change(previous, clean)
+    # Which sources are routable just changed for every member of this group.
+    for member in public_integration_groups(clean, application.definitions)[group_id]["members"]:
+        application.notify_applicability_changed(member)
+    return {"ok": True, "group_id": group_id,
+            **public_integration_groups(clean, application.definitions)[group_id]}
+
+
+@router.get("/stats/comprehensive")
+async def get_comprehensive_stats(hours: int = Query(24, ge=1, le=8760)):
+    """Comprehensive stats for a given time window (hours)."""
+    from services.stats import collect_all_metrics
+    return await collect_all_metrics(hours=hours)
+
+
+@router.get("/stats/report")
+@router.get("/stats/report-data")
+async def get_stats_report(hours: int = Query(24, ge=1, le=8760)):
+    """Formatted report for a given time window."""
+    from services.stats import generate_report
+    return await generate_report(hours=hours)
+
+
+@router.post("/stats/report/send")
+async def send_stats_report_ep(hours: int = Query(24, ge=1, le=8760)):
+    """Send the current report to the configured reporting webhook."""
+    from services.stats import send_stats_report
+    return await send_stats_report(hours=hours, triggered_by="manual")
+
+
+@router.post("/stats/snapshot")
+async def trigger_stats_snapshot():
+    """Manually trigger a stats snapshot."""
+    from services.stats import take_stats_snapshot
+    await take_stats_snapshot()
+    return {"ok": True, "message": "Snapshot taken"}
+
+
+@router.get("/stats/snapshots")
+async def list_stats_snapshots(limit: int = Query(30, le=100)):
+    """Return recent stats snapshots."""
+    async with get_db() as db:
+        rows = await db.fetchall(
+            "SELECT id, created_at FROM stats_snapshots ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+    return {"snapshots": public_payload(rows)}
+
+
+@router.get("/stats/export")
+async def export_stats(hours: int = Query(24, ge=1, le=8760)):
+    """Export comprehensive stats as JSON."""
+    from services.stats import collect_all_metrics
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    data = await collect_all_metrics(hours=hours)
+    return JSONResponse(
+        content=jsonable_encoder(data),
+        headers={"Content-Disposition": f"attachment; filename=stats_{hours}h.json"},
+    )
+
+
+@router.post("/admin/full-sync")
+async def trigger_full_sync( application: ApplicationService = Depends(get_application)):
+    return {"ok": True, **await application.reconcile_inventory()}
+
+
+@router.post("/admin/deep-sync")
+async def trigger_deep_sync( application: ApplicationService = Depends(get_application)):
+    t0 = time.monotonic()
+    await application.reconcile_executions()
+    return {"ok": True, "elapsed_seconds": round(time.monotonic() - t0, 2)}
+
+
+# ── Server-Sent Events (SSE) ──────────────────────────────────────────────────
+# Lightweight pub/sub: a set of asyncio.Queue instances, one per connected client.
+# The backend pushes events when significant state changes occur; the frontend
+# listens via EventSource and drops its 15-second polling interval.
+#
+# Event types:
+#   ping          — heartbeat at least every 30 s, however busy the stream
+#                   (keeps the connection alive through proxies, and is the
+#                   browser's clock for figures that age with time alone)
+#   stats_changed — basic stats object; frontend re-renders stats bar
+#   torrent_updated — {id, status, name}; frontend refreshes the affected row
+#   statistics_changed — {}; Statistics' own inputs changed (the journal), to
+#                   a role that may read Statistics.
+#   activity_journal_changed — {latest}; the Activity Log's journal changed.
+#                   Delivered only to a connection whose CURRENT principal may
+#                   read the Activity Log (``_SSE_GATED``): that activity
+#                   occurred is itself information other roles are not given.
+#
+# This requires NO external dependencies (no Redis, no WebSocket library).
+
+_sse_subscribers: dict[asyncio.Queue, "_SseSubscriber"] = {}
+_sse_lock = asyncio.Lock()
+# Put on a connection's own queue when the session or account that opened it
+# ends: the stream says so and closes.
+_SSE_SESSION_ENDED = object()
+# What is left on the queue of a connection evicted for falling a whole queue
+# behind (``_sse_evict``): the stream ends the next time it can send, so the
+# browser's EventSource reconnects and re-reads, never streaming heartbeats
+# while it receives nothing.
+_SSE_EVICTED = object()
+
+
+@dataclass(frozen=True)
+class _SseSubscriber:
+    """Who one live connection streams to: its principal and, for a browser
+    application session, that session's address (``session_store.fingerprint``)."""
+    principal: Principal
+    session_token: str = ""
+    session: bytes = b""
+
+
+# An event only some roles may receive, by the capability of the one action
+# that reads what it signals. Every other event keeps the stream's own access.
+_SSE_GATED: dict[str, Capability] = {
+    "activity_journal_changed": ACTIONS["api.operational_downloads.list_activity_events"],
+    "statistics_changed": ACTIONS["api.routes.get_stats_detail"],
+}
+
+
+@dataclass(frozen=True)
+class _SseGatedFrame:
+    """A queued frame that is re-checked against the connection's current
+    principal when it is about to be sent."""
+    capability: Capability
+    text: str
+
+
+def _sse_principal(subscriber: _SseSubscriber) -> Principal | None:
+    """Who the connection streams to NOW: a browser session's principal is
+    re-bound in place by a role change (``session_store``), so it is read from
+    the live session record, never from the connection's opening."""
+    if subscriber.session_token:
+        record = session_store.resolve(subscriber.session_token)
+        return record.principal if record is not None else None
+    return subscriber.principal
+
+
+async def _sse_broadcast(event_type: str, data: dict) -> None:
+    """Push an SSE event to every connected client (fire-and-forget).
+
+    Every payload is the public projection (``public_payload``): the same
+    capability-free fields REST serves to every role allowed to read
+    transfers -- never a stored request, candidate, endpoint or credential.
+    A gated event (``_SSE_GATED``) is queued only for a connection whose
+    current principal holds its capability, and checked again when sent."""
+    payload = f"event: {event_type}\ndata: {_json.dumps(public_payload(data))}\n\n"
+    capability = _SSE_GATED.get(event_type)
+    dead: list[asyncio.Queue] = []
+    async with _sse_lock:
+        for q, subscriber in _sse_subscribers.items():
+            if capability is not None and not permits(_sse_principal(subscriber), capability):
+                continue
+            try:
+                q.put_nowait(payload if capability is None else _SseGatedFrame(capability, payload))
+            except asyncio.QueueFull:
+                dead.append(q)
+        for q in dead:
+            _sse_evict(q)
+
+
+def _sse_evict(queue: asyncio.Queue, *last) -> None:
+    """End a connection that cannot keep up -- a whole queue of frames it has
+    not consumed -- without waiting on it: it is no longer published to, its
+    backlog is released at once, and its queue then holds at most two
+    frames, which always fit: the one reason it must still be told, if any,
+    and ``_SSE_EVICTED``, on which its stream ends. No publication ever waits
+    for it, and no other connection is touched.
+
+    The reason is chosen from what was queued and ``last``: a session's end
+    wins over a role change (the session is gone, so the browser signs out
+    and a reload under the new role is moot), and repeats of one reason are
+    one instruction."""
+    _sse_subscribers.pop(queue, None)
+    reasons = list(last)
+    while True:
+        try:
+            frame = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+        if frame is _SSE_SESSION_ENDED or frame == _SSE_ACCOUNT_CHANGED:
+            reasons.append(frame)
+    reason = (_SSE_SESSION_ENDED if any(frame is _SSE_SESSION_ENDED for frame in reasons)
+              else _SSE_ACCOUNT_CHANGED if reasons else None)
+    if reason is not None:
+        queue.put_nowait(reason)
+    queue.put_nowait(_SSE_EVICTED)
+
+
+_SSE_ACCOUNT_CHANGED = "event: account_changed\ndata: {}\n\n"
+_SSE_PING = "event: ping\ndata: {}\n\n"
+_SSE_HEARTBEAT_SECONDS = 30
+
+
+def _sse_sessions_ended(fingerprints: frozenset[bytes], account_id: str | None, ended: bool = True) -> None:
+    """For every live connection opened under a changed session or, for an
+    account change, by that account through any credential: end it when the
+    session ended, or tell the browser to reset (``account_changed``) when
+    the session was re-bound to the account's new role."""
+    for queue, subscriber in list(_sse_subscribers.items()):
+        if (subscriber.session and subscriber.session in fingerprints) or (
+                account_id and subscriber.principal.account_id == account_id):
+            frame = _SSE_SESSION_ENDED if ended else _SSE_ACCOUNT_CHANGED
+            try:
+                queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                _sse_evict(queue, frame)            # it still learns why, then ends
+
+
+bind_publisher(_sse_broadcast)
+session_store.on_revocation(_sse_sessions_ended)
+
+
+def _sse_still_authorized(subscriber: _SseSubscriber) -> bool:
+    """Re-checked at every event and heartbeat: a connection outlives neither
+    its session, nor the standalone installation it opened in."""
+    settings = get_settings()
+    if subscriber.session_token:
+        record = session_store.resolve(subscriber.session_token)
+        return record is not None and session_record_valid(record, settings)
+    if not subscriber.principal.authenticated:
+        return not interactive_auth_enabled(settings)
+    return True
+
+
+async def _sse_generator(request: Request) -> AsyncGenerator[str, None]:
+    """Yield SSE frames until the client disconnects or its access ends."""
+    token = str(getattr(request.state, "auth_session_token", "") or "")
+    subscriber = _SseSubscriber(request.state.principal, token,
+                                session_store.fingerprint(token) if token else b"")
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    async with _sse_lock:
+        _sse_subscribers[queue] = subscriber
+    loop = asyncio.get_running_loop()
+    try:
+        yield "event: connected\ndata: {}\n\n"
+        next_ping = loop.time() + _SSE_HEARTBEAT_SECONDS
+        while True:
+            if await request.is_disconnected():
+                break
+            # The heartbeat is due on its own clock, not only after a quiet
+            # spell: proxies keep the connection, and the browser re-reads
+            # figures that change with time alone, even while events stream.
+            frame = _SSE_PING
+            if loop.time() < next_ping:
+                try:
+                    frame = await asyncio.wait_for(queue.get(), timeout=next_ping - loop.time())
+                except asyncio.TimeoutError:
+                    pass
+            if frame is _SSE_EVICTED:
+                break                            # evicted: end, so the browser reconnects and re-reads
+            if frame is _SSE_PING:
+                next_ping = loop.time() + _SSE_HEARTBEAT_SECONDS
+            if frame is _SSE_SESSION_ENDED or not _sse_still_authorized(subscriber):
+                yield "event: session_ended\ndata: {}\n\n"
+                break
+            if isinstance(frame, _SseGatedFrame):
+                if not permits(_sse_principal(subscriber), frame.capability):
+                    continue                     # the role changed after it was queued
+                frame = frame.text
+            yield frame
+    finally:
+        async with _sse_lock:
+            _sse_subscribers.pop(queue, None)
+
+
+@router.get("/events/stream")
+async def events_stream(request: Request):
+    """Server-Sent Events stream for live UI updates.
+
+    Connect via:  const es = new EventSource('/api/events/stream');
+    Events:  connected, ping, stats_changed, torrent_updated, and (to a role
+    that may read it) statistics_changed and activity_journal_changed
+    """
+    return StreamingResponse(
+        _sse_generator(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+        },
+    )
+
+
+@router.get("/events/subscriber-count")
+async def sse_subscriber_count():
+    """Diagnostic: how many SSE clients are currently connected."""
+    return {"subscribers": len(_sse_subscribers)}
+
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+
+
+@router.get("/disk-guard")
+async def disk_guard_status( application: ApplicationService = Depends(get_application)):
+    """
+    Current disk-space guard state.
+
+    Returns free_gb, min_free_gb, and whether the guard is active
+    (new dispatches currently deferred due to low disk space).
+    """
+    return await application.check_resources()
+
+
+@router.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus-compatible metrics endpoint.
+
+    Scrape with: `- job_name: downloadpulse  static_configs: [{targets: [host:8095]}]`
+    and set `metrics_path: /api/metrics`.
+
+    Every metric describes universal transfer/scheduler state under the
+    ``downloadpulse_`` namespace; none is named for a provider or an executor.
+    """
+    try:
+        from prometheus_client import (
+            Counter, Gauge, Histogram, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST,
+            REGISTRY,
+        )
+    except ImportError:
+        raise DisplayError(503, "prometheus-client is not installed. Add it to requirements.txt and rebuild.", code="metrics.client_missing",)
+
+    async with get_db() as db:
+        # Torrent counts by status
+        rows = await db.fetchall(
+            "SELECT status, COUNT(*) AS c FROM torrents GROUP BY status"
+        )
+        by_status = {r["status"]: int(r["c"]) for r in rows}
+
+        # Download file counts by status
+        frows = await db.fetchall(
+            "SELECT status, COUNT(*) AS c FROM download_files GROUP BY status"
+        )
+        by_file_status = {r["status"]: int(r["c"]) for r in frows}
+
+        # Total size downloaded (bytes)
+        size_row = await db.fetchone(
+            "SELECT COALESCE(SUM(size_bytes),0) AS total FROM torrents WHERE status='completed'"
+        )
+        total_bytes = int((size_row["total"] if size_row else 0) or 0)
+
+    # Build output manually to avoid global registry side-effects on repeated scrapes
+    lines: list[str] = []
+
+    def _gauge(name: str, help_text: str, value: float, labels: dict | None = None) -> None:
+        lstr = ""
+        if labels:
+            lstr = "{" + ",".join(f'{k}="{v}"' for k, v in labels.items()) + "}"
+        lines.append(f"# HELP {name} {help_text}")
+        lines.append(f"# TYPE {name} gauge")
+        lines.append(f"{name}{lstr} {value}")
+
+    _gauge("downloadpulse_transfers_total",
+           "Number of transfers across all statuses",
+           sum(by_status.values()))
+
+    for status, count in by_status.items():
+        lines.append(f'downloadpulse_transfers_by_status{{status="{status}"}} {count}')
+
+    _gauge("downloadpulse_active_downloads",
+           "Transfers currently in queued or downloading state",
+           by_status.get("queued", 0) + by_status.get("downloading", 0))
+
+    _gauge("downloadpulse_completed_downloads",
+           "Total transfers completed",
+           by_status.get("completed", 0))
+
+    _gauge("downloadpulse_error_transfers",
+           "Transfers in error state",
+           by_status.get("error", 0))
+
+    _gauge("downloadpulse_pending_files",
+           "Download files in pending state (waiting for an available execution slot)",
+           by_file_status.get("pending", 0))
+
+    _gauge("downloadpulse_sse_subscribers",
+           "Number of SSE connections",
+           len(_sse_subscribers))
+
+    _gauge("downloadpulse_downloaded_bytes_total",
+           "Total bytes downloaded (completed transfers)",
+           total_bytes)
+
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+# ── Priority Queue ────────────────────────────────────────────────────────────
+
+class QueuePosition(BaseModel):
+    """Exactly one of: an operator queue move -- the transfer's new
+    neighbours in the complete queue (``before_id`` and/or ``after_id``); a
+    ``reaffirm`` of the place it already holds, renewing the promotion it
+    holds there; or, as older clients send it, an absolute ``priority``
+    (higher = sooner), applied as given and never displacing running work.
+    A move or a reaffirmation carries the attempts whose restart the operator
+    confirmed."""
+    priority: int | None = Field(default=None, ge=_PRIORITY_MIN, le=_PRIORITY_MAX)
+    before_id: int | None = Field(default=None, ge=1)
+    after_id: int | None = Field(default=None, ge=1)
+    reaffirm: bool = False
+    confirm_restart: list[str] = Field(default_factory=list, max_length=64)
+
+
+def _queue_move_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, RestartConfirmationRequired):
+        count = len(exc.transfers)
+        return HTTPException(409, {
+            "confirmation": "restart_required", "changed": exc.changed, "transfers": list(exc.transfers),
+            "message": ("The transfers this reorder interrupts changed; nothing was moved." if exc.changed
+                        else f"Reordering the queue interrupts {count} active transfer{'s' if count != 1 else ''} "
+                             "that cannot resume."),
+            "code": "queue.restart_changed" if exc.changed else "queue.restart_required",
+            "params": {} if exc.changed else {"count": count},
+        })
+    if exc.reason == "not_queued":
+        return HTTPException(409, {"reason": "not_queued", "code": "queue.not_queued",
+                                   "message": "Only unfinished transfers have a place in the queue."})
+    return HTTPException(409, {"reason": "queue_changed", "code": "queue.changed",
+                               "message": "The queue changed; nothing was moved."})
+
+
+@router.patch("/torrents/{torrent_id}/priority")
+async def set_torrent_priority(torrent_id: int, body: dict, application: ApplicationService = Depends(get_application)):
+    """The transfer's place in the queue (``QueuePosition``)."""
+    try:
+        position = QueuePosition.model_validate(body or {})
+    except ValidationError as exc:
+        raise DisplayError(422, "Invalid queue position", code="queue.position_invalid") from exc
+    moving = position.before_id is not None or position.after_id is not None
+    if sum((moving, position.reaffirm, position.priority is not None)) != 1:
+        raise DisplayError(422, "Give the transfer's new neighbours, a reaffirmation or a priority", code="queue.move_unspecified")
+    if not await application.repository.get(torrent_id):
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+    if position.priority is not None:
+        await application.repository.update_metadata(torrent_id, priority=position.priority)
+        await _sse_broadcast("torrent_updated", {"torrent_id": torrent_id, "priority": position.priority})
+        return {"ok": True, "torrent_id": torrent_id, "priority": position.priority}
+    try:
+        moved = await application.move_in_queue(torrent_id, before_id=position.before_id, after_id=position.after_id,
+                                                reaffirm=position.reaffirm, confirm_restart=position.confirm_restart)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
+    except (QueueMoveRefused, RestartConfirmationRequired) as exc:
+        raise _queue_move_error(exc) from None
+    return {"ok": True, "torrent_id": torrent_id, "priority": moved.priority, "moved": moved.moved,
+            "outcome": moved.outcome, "preempting": list(moved.preempting)}
+
+
+class QueueTop(BaseModel):
+    """Move to Top: the unfinished transfers among ``ids`` -- one, or the
+    operator's selection on one page -- become the front of the queue, in
+    their current queue order; any other is left as it is. Carries the
+    attempts whose restart the operator confirmed."""
+    ids: list[Annotated[int, Field(ge=1)]] = Field(min_length=1, max_length=100)
+    confirm_restart: list[str] = Field(default_factory=list, max_length=64)
+
+
+@router.post("/torrents/move-to-top")
+async def move_to_top(body: QueueTop, application: ApplicationService = Depends(get_application)):
+    """One queue move for every transfer named (``QueueTop``): ``moved``
+    queue members, ``ignored`` transfers that are no queue member."""
+    requested = frozenset(body.ids)
+    try:
+        moved = await application.move_in_queue(top=requested, confirm_restart=body.confirm_restart)
+    except (QueueMoveRefused, RestartConfirmationRequired) as exc:
+        raise _queue_move_error(exc) from None
+    return {"ok": True, "moved": len(moved.members) if moved.moved else 0,
+            "ignored": len(requested) - len(moved.members), "outcome": moved.outcome,
+            "preempting": list(moved.preempting)}
+
+
+# ── Recovery ──────────────────────────────────────────────────────────────────
+
+@router.post("/recovery/run")
+async def run_recovery( application: ApplicationService = Depends(get_application)):
+    """Manually trigger an auto-recovery pass."""
+    result = await application.recover()
+    return {"ok": True, "result": result}
+
+
+# ── AllDebrid orphan cleanup ───────────────────────────────────────────────────
+
+@router.post("/admin/cleanup-alldebrid-orphans")
+async def cleanup_alldebrid_orphans_endpoint( application: ApplicationService = Depends(get_application)):
+    """Compatibility URL for retrying already-authorized canonical cleanup."""
+    async with application.application_operation():
+        await application.engine.cleanup_pending()
+    return {"ok": True}
+
+
+# --- Usenet news-server mutation ---------------------------------------------
+#
+# Per-server Save/Add/Remove against the ONE canonical `integrations.usenet`
+# namespace. These are settings MUTATIONS, so they live here beside the other
+# scoped configuration writes and run under the same configuration write lock;
+# the transient (non-persisting) Test route stays in the validation module.
+
+USENET_NAMESPACE = "usenet"
+
+
+# DownloadPulse's own connection bounds; the floor is 1, not SAB's 0 (see
+# integrations/usenet/definition.py).
+from integrations.usenet.definition import (
+    MAX_ARTICLES_PER_REQUEST, MAX_CONNECTIONS, MAX_SERVER_TIMEOUT_SECONDS,
+    MIN_ARTICLES_PER_REQUEST, MIN_CONNECTIONS, MIN_SERVER_TIMEOUT_SECONDS,
+)
+
+
+class UsenetServerUpdate(BaseModel):
+    """One server card's own values. Absent fields are left untouched, and a
+    blank password keeps the stored one unless ``clear_password`` is set.
+    Strict: a value of the wrong JSON type is refused, never coerced; each
+    changed value then meets the server record's own rule
+    (``_mutate_usenet_servers``)."""
+    model_config = ConfigDict(strict=True)
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    ssl: bool | None = None
+    username: str | None = None
+    password: str | None = None
+    connections: int | None = Field(default=None, ge=MIN_CONNECTIONS, le=MAX_CONNECTIONS)
+    priority: int | None = Field(default=None, ge=0, le=99)
+    articles_per_request: int | None = Field(default=None, ge=MIN_ARTICLES_PER_REQUEST,
+                                             le=MAX_ARTICLES_PER_REQUEST)
+    timeout_seconds: int | None = Field(default=None, ge=MIN_SERVER_TIMEOUT_SECONDS,
+                                        le=MAX_SERVER_TIMEOUT_SECONDS)
+    enabled: bool | None = None
+    display_name: str | None = None
+    clear_password: bool = False
+    # See ``IntegrationConfigurationUpdate.verification``: the same opaque
+    # Test -> Save carriage, through the same generic acceptance owner.
+    verification: list[str] = Field(default_factory=list)
+
+    def values(self) -> dict:
+        return self.model_dump(exclude_none=True,
+                               exclude={"clear_password", "verification"})
+
+
+async def _mutate_usenet_servers(application: ApplicationService, mutate, verification=()):
+    """Apply one per-server mutation to the ONE canonical namespace.
+
+    Load -> mutate -> validate -> save -> reconfigure -> apply natively, all
+    inside the existing configuration write lock, exactly like every other
+    settings mutation. ``mutate`` receives the current options and returns
+    ``(new_options, payload)``.
+    """
+    from core.config import config_write_lock, get_settings, load_settings, save_settings, apply_settings
+    from integrations.configuration import accept_verification, normalize_settings, public_integrations
+    from integrations.definition import IntegrationSettings
+    from integrations.usenet.definition import UsenetOptions, UsenetServer
+    from integrations.usenet.servers import ServerMutationError
+
+    async with application.application_operation():
+        async with config_write_lock():
+            previous = get_settings()
+            current = load_settings()
+            entry = current.integrations.get(USENET_NAMESPACE)
+            stored = entry.options if isinstance(entry, IntegrationSettings) else {}
+            try:
+                updated, payload = mutate(UsenetOptions(**(stored or {})))
+                # Every server value this write changed meets the record's own
+                # rule; untouched stored values are not re-judged.
+                from core.settings_constraints import validate_changes
+                previous_servers = {server.get("id"): server for server in (stored or {}).get("servers", [])
+                                    if isinstance(server, dict)}
+                for server in updated.servers:
+                    validate_changes(UsenetServer, server.model_dump(), previous_servers.get(server.id))
+            except ServerMutationError as exc:
+                raise DisplayError(404, "Unknown Usenet server", code="usenet.server_unknown") from None
+            except ValidationError as exc:
+                raise _refused(exc) from None
+            except ValueError as exc:
+                raise refusal(400, _sanitize_error(exc), exc) from None
+            current.integrations = {**current.integrations, USENET_NAMESPACE: IntegrationSettings(
+                enabled=(entry.enabled if isinstance(entry, IntegrationSettings) else False),
+                priority=(entry.priority if isinstance(entry, IntegrationSettings) else 0),
+                options=updated.model_dump(),
+            )}
+            clean = normalize_settings(current, application.definitions, previous=previous)
+            clean = accept_verification(
+                clean, _integration_definition(application, USENET_NAMESPACE), verification)
+            # The SAME canonical ownership fence every other settings mutation
+            # passes through: a server change that could abandon owned native
+            # work is refused here, not re-implemented in Usenet code.
+            try:
+                await application.validate_configuration(previous, clean)
+            except ValueError as exc:
+                raise refusal(409, str(exc), exc) from None
+            save_settings(clean)
+            apply_settings(clean)
+            application.configure()
+            await journal_configuration_change(previous, clean)
+            applied = await application.apply_integration_configuration(USENET_NAMESPACE)
+    public = public_integrations(clean, application.definitions).get(USENET_NAMESPACE, {})
+    # The accepted canonical public projection of this integration, published
+    # once. A server write can change the provider's derived ``configured`` and
+    # ``verified`` state, and this module is not the only owner of how that is
+    # presented -- so the response states the identity and the projection, and
+    # the neutral acceptance seam carries them to whoever else renders them.
+    # ``servers`` remains the same projection's own server list, not a second
+    # copy of it.
+    return {"ok": True, **payload, "integration_id": USENET_NAMESPACE, "integration": public,
+            "servers": public.get("options", {}).get("servers", []),
+            **({"native": applied.public()} if applied is not None else {})}
+
+
+@router.post("/usenet/servers")
+async def create_usenet_server(payload: UsenetServerUpdate,
+                               application: ApplicationService = Depends(get_application)):
+    """Add one news server. Every existing server is left byte-identical."""
+    from integrations.usenet.servers import create_server
+
+    def mutate(options):
+        updated, created = create_server(options, payload.values(),
+                                         clear_password=payload.clear_password)
+        return updated, {"server_id": created.id}
+
+    return await _mutate_usenet_servers(application, mutate, payload.verification)
+
+
+@router.put("/usenet/servers/{server_id}")
+async def update_usenet_server(server_id: str, payload: UsenetServerUpdate,
+                               application: ApplicationService = Depends(get_application)):
+    """Save exactly one server card.
+
+    Only this record changes: unsaved edits on other cards are never persisted,
+    and a blank password keeps this server's stored credential unless the
+    operator explicitly cleared it.
+    """
+    from integrations.usenet.servers import merge_server
+
+    def mutate(options):
+        return (merge_server(options, server_id, payload.values(),
+                             clear_password=payload.clear_password),
+                {"server_id": server_id})
+
+    return await _mutate_usenet_servers(application, mutate, payload.verification)
+
+
+@router.delete("/usenet/servers/{server_id}")
+async def delete_usenet_server(server_id: str,
+                               application: ApplicationService = Depends(get_application)):
+    """Remove exactly one server, preserving every survivor's credential."""
+    from integrations.usenet.servers import remove_server
+
+    def mutate(options):
+        return remove_server(options, server_id), {"server_id": server_id, "removed": True}
+
+    return await _mutate_usenet_servers(application, mutate)

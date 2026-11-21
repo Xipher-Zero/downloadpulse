@@ -1,0 +1,254 @@
+const { test, expect } = require('@playwright/test');
+
+/* DP 1.0.13 Item 3 -- ONE Settings-wide field alignment spine, and Item 4 --
+ * the Usenet clear-password row centred as one unit.
+ *
+ * The frozen invariant is the field's left x-origin:
+ *
+ *     label.left == control.left
+ *     hint.left  == control.left
+ *
+ * measured against the VISIBLE control's OUTER left edge. Two controls make
+ * that distinction load-bearing:
+ *
+ *   - a native <select> is clipped to 1px and visually replaced by
+ *     .dp-dropdown__trigger, so the trigger is the control the operator sees;
+ *   - a directory field wraps its input and Browse button in a composite,
+ *     which is the control's outer box.
+ *
+ * Both the label's box and its rendered text are asserted, because a padded
+ * label would satisfy one and not the other. */
+
+const TOLERANCE = 0.75;
+const TABS = ['sources', 'downloads', 'extraction', 'authentication', 'notifications', 'maintenance'];
+
+const USENET_FIXTURE = {
+  enabled: true, priority: 0, name: 'Usenet', kind: 'provider_executor', configured: true,
+  presentation: {status_name: 'Usenet', premium: true, status_endpoint: null,
+    static_status: 'healthy', display_order: 20, status_group: null, status_group_label: null,
+    status_tier: 'general_family', status_tier_label: 'General'},
+  options: {
+    operation_timeout_seconds: 30, article_cache_megabytes: 1024,
+    direct_write: true, max_acquisition_retries: 3,
+    servers: [{
+      id: 'spine-fixture', host: 'news.example.com', port: 563, ssl: true,
+      username: 'operator', password: '', password_configured: true,
+      connections: 8, priority: 0, articles_per_request: 2, timeout_seconds: 60,
+      enabled: true, display_name: '',
+    }],
+  },
+};
+
+async function openSettings(page) {
+  await page.route('https://fonts.googleapis.com/**', route =>
+    route.fulfill({status: 200, contentType: 'text/css', body: ''}));
+  const live = await page.request.get('/api/settings').then(response => response.json());
+  const document_ = {...live, integrations: {...live.integrations, usenet: USENET_FIXTURE}};
+  await page.route(url => url.pathname === '/api/settings', route =>
+    (route.request().method() === 'GET'
+      ? route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(document_)})
+      : route.fallback()));
+  await page.goto('/');
+  await page.locator('#sidebar .nav-item[data-view="settings"]').click();
+  await expect(page.locator('#view-settings')).toHaveClass(/\bactive\b/);
+}
+
+/** Expand every collapsed region of one tab so nested fields really render.
+ *  Only a disclosure drawn at this viewport is one to open: a chip a card
+ *  draws only at other widths (Disk Space & Recovery's, below 780px) is not a
+ *  collapsed region here, and waiting on it would only time the test out.
+ *  Passes repeat while a drawn, collapsed one remains, so a disclosure an
+ *  opened one reveals is opened too; a drawn one that cannot be clicked fails
+ *  the test rather than being passed over. */
+async function expandAll(page, tab) {
+  await page.locator(`#view-settings [data-tab="${tab}"]:not(.dp-motion-still *)`).click();
+  await expect(page.locator(`.dp-settings-panel[data-panel="${tab}"]`)).toBeVisible();
+  const collapsed = ['.dp-settings-disclosure[aria-expanded="false"]',
+    '[data-usenet-advanced-toggle][aria-expanded="false"]', 'details:not([open]) > summary']
+    .map(selector => `.dp-settings-panel[data-panel="${tab}"] ${selector}`).join(', ');
+  for (let pass = 0; pass < 5; pass += 1) {
+    let opened = 0;
+    for (const node of await page.$$(collapsed)) {
+      if (!(await node.isVisible())) continue;
+      await node.click();
+      opened += 1;
+    }
+    await page.waitForTimeout(150);
+    if (!opened) break;
+  }
+}
+
+/** Every STACKED field of one tab, measured against the visible control's
+ *  OUTER left edge. */
+const measure = (page, tab) => page.evaluate(tab => {
+  const textRect = node => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const rect = range.getBoundingClientRect();
+    return rect.width ? rect : node.getBoundingClientRect();
+  };
+  const panel = document.querySelector(`.dp-settings-panel[data-panel="${tab}"]`);
+  const rows = [];
+  for (const field of panel.querySelectorAll('.dp-settings-field, .dp-usenet-field')) {
+    const control = field.querySelector('.dp-dropdown__trigger')
+      // The ONE compound field: a control and a trailing action inside a single
+      // border (Browse, Upload Avatar, a unit). Its own box is the control the
+      // operator sees, so the bare input inside it -- drawn borderless, one
+      // pixel in -- is not what the spine is measured against.
+      || field.querySelector(':scope > .dp-action-field')
+      || field.querySelector('.dp-settings-directory-field-control')
+      || field.querySelector('input.input, textarea.input, select.input, .dp-field');
+    if (!control) continue;
+    const box = control.getBoundingClientRect();
+    // A clipped native control is not the visible one.
+    if (box.width < 2) continue;
+    // A field whose control sits BESIDE its label is a different pattern: there
+    // is no control above the label for it to share an origin with.
+    const style = getComputedStyle(field);
+    if (style.display.includes('grid') && style.gridTemplateColumns.split(' ').length > 1) continue;
+    // A deliberately CENTRED tuning cell is a different pattern as well: its
+    // label, control and help text are each centred on the cell's own axis, so
+    // they have no shared left origin to share. Read off the rendered style,
+    // never a list of selectors.
+    if (style.justifyItems === 'center') continue;
+    const label = field.querySelector(':scope > .form-label');
+    const hint = field.querySelector(':scope > .form-hint');
+    rows.push({
+      key: (control.dataset && (control.dataset.setting || control.dataset.usenetField))
+        || field.querySelector('[data-setting]')?.dataset?.setting
+        || field.querySelector('[data-usenet-field]')?.dataset?.usenetField
+        || control.className.slice(0, 40),
+      label: label ? label.getBoundingClientRect().left - box.left : null,
+      labelText: label ? textRect(label).left - box.left : null,
+      hint: hint ? hint.getBoundingClientRect().left - box.left : null,
+      hintText: hint ? textRect(hint).left - box.left : null,
+    });
+  }
+  return rows;
+}, tab);
+
+for (const tab of TABS) {
+  test(`every stacked ${tab} field shares one left x-origin`, async ({page}) => {
+    await openSettings(page);
+    await expandAll(page, tab);
+    const rows = await measure(page, tab);
+    // A tab may legitimately have no STACKED field left: Downloads and
+    // Extraction converged on the inline grammar, where the control sits
+    // beside its title/hint rather than beneath it, so there is no shared left
+    // origin to measure. What must never happen is a tab rendering no field of
+    // EITHER grammar -- that would mean the panel stopped rendering, not that
+    // it changed shape.
+    const present = await page.locator(
+      `.dp-settings-panel[data-panel="${tab}"] .dp-settings-field, ` +
+      `.dp-settings-panel[data-panel="${tab}"] .dp-usenet-field, ` +
+      `.dp-settings-panel[data-panel="${tab}"] .dp-settings-inline-field`).count();
+    expect(present, `${tab} renders no Settings field at all`).toBeGreaterThan(0);
+    if (!rows.length) return;
+    const off = value => value !== null && Math.abs(value) > TOLERANCE;
+    const broken = rows.filter(row =>
+      off(row.label) || off(row.labelText) || off(row.hint) || off(row.hintText));
+    expect(broken.map(row => `${row.key}: label ${row.label} / text ${row.labelText}` +
+                             ` hint ${row.hint} / text ${row.hintText}`)).toEqual([]);
+  });
+}
+
+test('the Usenet server fields obey the same spine as every other tab', async ({page}) => {
+  await openSettings(page);
+  await expandAll(page, 'sources');
+  const rows = await page.evaluate(() => {
+    const card = document.querySelector('[data-usenet-collection] [data-usenet-server-id]');
+    const out = [];
+    for (const field of card.querySelectorAll('.dp-usenet-field')) {
+      const control = field.querySelector('.input');
+      const label = field.querySelector('.form-label');
+      if (!control || !label || control.getBoundingClientRect().width === 0) continue;
+      // A control drawn bare inside a compound field: the field is its outer box.
+      const outer = control.closest('.dp-action-field') || control;
+      out.push({field: control.dataset.usenetField,
+                delta: label.getBoundingClientRect().left - outer.getBoundingClientRect().left});
+    }
+    return out;
+  });
+  for (const name of ['host', 'port', 'username', 'password', 'connections', 'priority']) {
+    const row = rows.find(item => item.field === name);
+    expect(row, `Usenet ${name} field is missing`).toBeTruthy();
+    expect(Math.abs(row.delta)).toBeLessThanOrEqual(TOLERANCE);
+  }
+});
+
+test('a themed select is measured as the control the operator can see', async ({page}) => {
+  /* The native <select> is clipped to 1px and visually replaced by
+     .dp-dropdown__trigger, so the trigger is the control the spine has to
+     reason about. Report Window is now an INLINE field like every other
+     Notifications control, so the relationship to hold is the inline one: the
+     trigger occupies the control slot and is centred against the descriptive
+     block, rather than sharing a left edge with a label stacked above it. */
+  await openSettings(page);
+  await expandAll(page, 'notifications');
+  const geometry = await page.evaluate(() => {
+    const trigger = document.querySelector(
+      '.dp-settings-panel[data-panel="notifications"] .dp-dropdown__trigger');
+    if (!trigger) return null;
+    const field = trigger.closest('.dp-settings-inline-field');
+    if (!field) return null;
+    const native = field.querySelector('select.input');
+    const control = field.querySelector(':scope > .dp-settings-inline-field-control');
+    const info = field.querySelector(':scope > .dp-settings-inline-field-info');
+    const mid = node => { const b = node.getBoundingClientRect(); return b.y + b.height / 2; };
+    return {
+      nativeWidth: native ? native.getBoundingClientRect().width : null,
+      triggerInControl: control.contains(trigger),
+      rightOfInfo: trigger.getBoundingClientRect().left >= info.getBoundingClientRect().right,
+      centred: Math.abs(mid(info) - mid(trigger)),
+    };
+  });
+  expect(geometry, 'no themed select rendered on this tab').toBeTruthy();
+  // The native control really is the clipped one, so the trigger really is
+  // what the spine has to align to.
+  expect(geometry.nativeWidth).toBeLessThan(2);
+  expect(geometry.triggerInControl).toBe(true);
+  expect(geometry.rightOfInfo).toBe(true);
+  expect(geometry.centred).toBeLessThanOrEqual(TOLERANCE + 1);
+});
+
+/* DP 1.0.13: erasing a stored credential stopped being a gated checkbox that a
+ * Save committed and became an explicit destructive ACTION, asked by the ONE
+ * canonical Settings confirmation. DP 1.0.14: the action is Clear, INSIDE the
+ * Password field's own border (the shared compound field), at every width.
+ *
+ * What this spine spec owns is the relationship between the two: Clear sits
+ * at the field's trailing edge, vertically centred against the CONTROL rather
+ * than against the taller label+input stack, and the typed text ends before
+ * it -- it takes horizontal room from the field instead of adding a band. */
+test('Clear sits inside the Password field at its trailing edge', async ({page}) => {
+  await openSettings(page);
+  await expandAll(page, 'sources');
+  const geometry = await page.evaluate(() => {
+    const field = document.querySelector('[data-usenet-collection] .dp-usenet-field--password .dp-action-field');
+    if (!field) return null;
+    const input = field.querySelector('[data-usenet-field="password"]');
+    const box = input.getBoundingClientRect();
+    const label = field.closest('.dp-usenet-field').querySelector('.form-label').getBoundingClientRect();
+    const button = field.querySelector('[data-usenet-action="clear-password"]').getBoundingClientRect();
+    const outer = field.getBoundingClientRect();
+    return {
+      textEnd: box.right - parseFloat(getComputedStyle(input).paddingRight),
+      fieldLeft: outer.left, fieldRight: outer.right,
+      fieldCentreY: (outer.top + outer.bottom) / 2,
+      labelCentreY: (label.top + label.bottom) / 2,
+      buttonLeft: button.left, buttonRight: button.right,
+      buttonCentreY: (button.top + button.bottom) / 2,
+      controls: field.querySelectorAll('label, input[type="checkbox"]').length,
+    };
+  });
+  expect(geometry, 'the password field did not render').toBeTruthy();
+  // Inside the field, at its trailing edge, after the text's end.
+  expect(geometry.buttonLeft).toBeGreaterThan(geometry.fieldLeft);
+  expect(geometry.fieldRight - geometry.buttonRight).toBeLessThanOrEqual(6);
+  expect(geometry.textEnd).toBeLessThanOrEqual(geometry.buttonLeft + 0.5);
+  // Centred against the CONTROL, not against the label+input stack.
+  expect(Math.abs(geometry.buttonCentreY - geometry.fieldCentreY)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.buttonCentreY - geometry.labelCentreY)).toBeGreaterThan(2);
+  // No second confirmation representation.
+  expect(geometry.controls).toBe(0);
+});

@@ -1,0 +1,231 @@
+name: Testing Alias
+
+# Moves the rolling development alias ghcr.io/xipher-zero/downloadpulse:1.0.0-testing
+# to the immutable sha-<commit> index that Image has just published, when
+# that commit is still the 1.0.0 tip (.github/qualification/testing_alias.py
+# decides). Not a qualification or release target: the six required workflows
+# stay independently authoritative, latest, v* and internal-v* stay Release
+# Promotion's, and nothing is ever built or re-tagged per architecture.
+#
+# Called only as Image's last job, after its publication succeeded, on a
+# 1.0.0 push (a re-run included). A workflow that exists only on 1.0.0 can be
+# started by nothing else: GitHub runs workflow_dispatch, workflow_run,
+# repository_dispatch and schedule workflows only from the default branch.
+#
+# One writer: every evaluation waits its turn in ONE concurrency group with
+# `queue: max` (up to 100 waiting, first in first out, none cancelled or
+# replaced) and reads the branch tip, its image and the alias inside its turn.
+# No two registry writes overlap, and a commit that is no longer the tip never
+# writes -- a newer commit's own publication does.
+#
+# The outcome is the commit status "1.0.0-testing" on the published commit:
+# success (the alias is this commit's image), pending (superseded: no write) or
+# failure (a fault, naming the retry). It never changes Image's verdict:
+# every step continues on error.
+on:
+  workflow_call:
+
+permissions: {}
+
+env:
+  IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse
+  BRANCH: "1.0.0"
+  ALIAS_TAG: "1.0.0-testing"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  alias:
+    name: Move 1.0.0-testing to this commit's image
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/1.0.0'
+      && github.repository == 'Xipher-Zero/downloadpulse'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The one alias writer (a literal, never github.workflow, which a called
+    # workflow shares with its caller).
+    concurrency:
+      group: dp-1.0.0-testing-alias-writer
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      packages: write
+      statuses: write
+
+    steps:
+      - name: Checkout the decision owner
+        continue-on-error: true
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/qualification
+
+      - name: Read the current tip
+        id: tip
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tip="$(gh api -H 'X-GitHub-Api-Version: 2022-11-28' "repos/${GITHUB_REPOSITORY}/branches/${BRANCH}" --jq .commit.sha)"
+          [[ "$tip" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::The ${BRANCH} tip is not a full SHA"; exit 1; }
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.tip.outputs.tip == github.sha
+        continue-on-error: true
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+
+      - name: Log in to GHCR
+        if: steps.tip.outputs.tip == github.sha
+        continue-on-error: true
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve this commit's image and the alias
+        id: images
+        if: steps.tip.outputs.tip == github.sha
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_ref="${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          digest=""
+          for attempt in $(seq 1 12); do
+            if inspect="$(docker buildx imagetools inspect "$source_ref" 2>/dev/null)" && \
+               docker buildx imagetools inspect --raw "$source_ref" > index.json 2>/dev/null; then
+              digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$inspect")"
+              [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] && break
+            fi
+            if [ "$attempt" -lt 12 ]; then sleep 5; fi
+          done
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Unable to resolve $source_ref"; exit 1; }
+          alias_digest=""
+          if output="$(docker buildx imagetools inspect "${IMAGE_NAME}:${ALIAS_TAG}" 2>&1)"; then
+            alias_digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$output")"
+            [[ "$alias_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Unreadable ${ALIAS_TAG} digest"; exit 1; }
+          elif ! grep -qiE 'not found|manifest unknown' <<< "$output"; then
+            echo "::error::Unable to read ${ALIAS_TAG}: the registry did not answer"; exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "alias_digest=$alias_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Decide
+        id: decide
+        if: steps.tip.outputs.tip != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          TIP: ${{ steps.tip.outputs.tip }}
+          DIGEST: ${{ steps.images.outputs.digest }}
+          ALIAS_DIGEST: ${{ steps.images.outputs.alias_digest }}
+        run: |
+          set -euo pipefail
+          optional() { if [ -s "$1" ]; then echo "$1"; fi; }
+          python3 .github/qualification/testing_alias.py --tip "$TIP" --sha "$GITHUB_SHA" --digest "${DIGEST:-}" \
+            --index "$(optional index.json)" --alias-digest "${ALIAS_DIGEST:-}" > decision.json
+          jq . decision.json
+          echo "action=$(jq -r .action decision.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Move the alias to this commit's image
+        id: move
+        if: steps.decide.outputs.action == 'advance'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TIP: ${{ steps.tip.outputs.tip }}
+          DIGEST: ${{ steps.images.outputs.digest }}
+          PREVIOUS: ${{ steps.images.outputs.alias_digest }}
+        run: |
+          set -euo pipefail
+          # Inside this evaluation's turn of the one writer group, immediately
+          # before the write: still the tip. The write itself is bounded.
+          now="$(gh api -H 'X-GitHub-Api-Version: 2022-11-28' "repos/${GITHUB_REPOSITORY}/branches/${BRANCH}" --jq .commit.sha)"
+          if [ "$now" != "$TIP" ]; then
+            echo "::notice::${BRANCH} moved to $now before the write; no write was made"
+            echo "write=not_attempted" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          target="${IMAGE_NAME}:${ALIAS_TAG}"
+          status=0
+          timeout 120 docker buildx imagetools create --tag "$target" "${IMAGE_NAME}@${DIGEST}" || status=$?
+          # Whatever the client said, the registry is the truth: it may have
+          # accepted the write before the client lost its answer. Observe it.
+          observed=""
+          for attempt in $(seq 1 12); do
+            if output="$(docker buildx imagetools inspect "$target" 2>&1)"; then
+              observed="$(awk '/^Digest:/ {print $2; exit}' <<< "$output")"
+            elif grep -qiE 'not found|manifest unknown' <<< "$output"; then
+              observed="absent"
+            else
+              observed=""                                   # the registry did not answer
+            fi
+            [ "$observed" = "$DIGEST" ] && break
+            if [ "$status" -ne 0 ] && [ -n "$observed" ]; then break; fi
+            if [ "$attempt" -lt 12 ]; then sleep 5; fi
+          done
+          write=unknown
+          if [ "$observed" = "$DIGEST" ] && docker buildx imagetools inspect --raw "$target" > moved-index.json \
+             && python3 - "$TIP" <<'PY'
+          import json, sys
+          sys.path.insert(0, ".github/qualification")
+          from testing_alias import index_identity
+          moved = index_identity(json.load(open("moved-index.json")), sys.argv[1])
+          source = index_identity(json.load(open("index.json")), sys.argv[1])
+          sys.exit(0 if moved is not None and moved == source else 1)
+          PY
+          then
+            write=advanced
+          elif [ "$status" -ne 0 ] && { [ "$observed" = "${PREVIOUS:-absent}" ]; }; then
+            write=unchanged                                  # failed, and observed still the previous alias
+          fi
+          echo "write=$write" >> "$GITHUB_OUTPUT"
+          echo "observed=${observed:-no answer}" >> "$GITHUB_OUTPUT"
+          echo "client exit $status; registry holds ${observed:-<no answer>}; write $write"
+          [ "$write" = advanced ] || { echo "::error::${ALIAS_TAG} write $write (client exit $status, registry ${observed:-did not answer})"; exit 1; }
+
+      - name: Record the outcome
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WRITE: ${{ steps.move.outputs.write }}
+          OBSERVED: ${{ steps.move.outputs.observed }}
+          PREVIOUS: ${{ steps.images.outputs.alias_digest }}
+        run: |
+          set -euo pipefail
+          # The one authoritative outcome, on the published commit, apart from Image's verdict.
+          python3 .github/qualification/testing_alias.py --outcome decision.json --write "${WRITE:-}" \
+            --previous "${PREVIOUS:-}" > status.json \
+            || echo '{"state": "failure", "description": "1.0.0-testing state UNKNOWN: outcome unreadable, inspect the tag. Reconcile: re-run the Testing alias job."}' > status.json
+          state="$(jq -r .state status.json)"; description="$(jq -r .description status.json)"
+          {
+            echo "## ${IMAGE_NAME}:${ALIAS_TAG}"
+            if [ -s decision.json ]; then
+              jq -r '"- Commit: `\(.commit)` (1.0.0 tip: `\(.tip // "unread")`)", "- Source: `\(.source_tag // "—")`",
+                     "- Index digest: `\(.digest // "—")`", "- amd64: `\(.platforms.amd64 // "—")`",
+                     "- arm64: `\(.platforms.arm64 // "—")`", "- Alias before: `\(.previous_alias_digest // "none")`",
+                     "- Decision: **\(.action)** — \(.reason)"' decision.json
+            else
+              echo "- No decision was reached, so no write was made."
+            fi
+            if [ -n "${WRITE:-}" ]; then
+              echo "- Write: **${WRITE}** — the registry holds \`${OBSERVED:-no answer}\` (before: \`${PREVIOUS:-absent}\`)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "- Status \`${ALIAS_TAG}\` on \`${GITHUB_SHA}\`: **${state}** — ${description}" >> "$GITHUB_STEP_SUMMARY"
+          if ! gh api -X POST -H 'X-GitHub-Api-Version: 2022-11-28' "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -f state="$state" -f context="$ALIAS_TAG" -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > /dev/null; then
+            echo "::error::The ${ALIAS_TAG} commit status could not be recorded (${state}: ${description})"
+            echo "- **The ${ALIAS_TAG} commit status could not be recorded.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # Faults are failed steps and annotations too, never a silent no-op.
+          if [ "$state" = "failure" ]; then echo "::error::${description}"; exit 1; fi

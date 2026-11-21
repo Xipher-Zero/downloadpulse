@@ -1,0 +1,38 @@
+"""Final-state contracts for shared transfer progress geometry."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+STATIC = REPO_ROOT / "frontend" / "static"
+STYLE = STATIC / "style.css"
+TRANSFER = STATIC / "ui-transfer-contract.css"
+HISTORICAL = STATIC / "ui-dashboard-progress-weight.css"
+
+
+def test_superseded_dashboard_progress_weight_layer_is_not_shipped() -> None:
+    overlay = STYLE.read_text(encoding="utf-8")
+    assert "/ui-dashboard-progress-weight.css" not in overlay
+    assert not HISTORICAL.exists()
+
+
+def test_shared_transfer_contract_is_final_progress_geometry_owner() -> None:
+    overlay = STYLE.read_text(encoding="utf-8")
+    dashboard = "/ui-dashboard.css?v=24"
+    downloads = "/ui-downloads-page.css?v=30"
+    transfer_path = "/ui-transfer-contract.css?v=33"
+
+    for layer in (dashboard, downloads, transfer_path):
+        assert layer in overlay
+    assert overlay.index(dashboard) < overlay.index(downloads) < overlay.index(transfer_path)
+
+    css = TRANSFER.read_text(encoding="utf-8")
+    assert ":is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .prog," in css
+    assert ":is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .prog-fill" in css
+    # The row track's geometry is parameterized for the handheld summary's
+    # thin slot (3px, 1px round); its default -- every desktop row -- is 7px.
+    assert "height: var(--dp-row-progress-fill, 7px) !important" in css
+    assert "border-radius: var(--dp-row-progress-radius, 999px) !important" in css
+    assert "height: 3.5px !important" not in css

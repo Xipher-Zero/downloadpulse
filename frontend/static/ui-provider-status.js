@@ -1,0 +1,361 @@
+/* Neutral provider/direct-source status presentation owner.
+ *
+ * DP 1.0.12 canonical flattening: this module previously also bootstrapped
+ * every other bounded presentation owner, dynamically injecting their
+ * <script> tags on DOMContentLoaded and tolerating a load failure silently.
+ * Those modules are now direct, explicit <script defer> dependencies in
+ * index.html, loaded by the browser like any other required script -- a
+ * failure to load one is a visible page error, not a silently-continuing
+ * "ready" application. This module owns provider-status candidate
+ * discovery, observation, invalidation and rendering only.
+ */
+(function () {
+  'use strict';
+
+  let generation = 0;
+  function invalidate() { generation += 1; return generation; }
+
+  function candidates(settings) {
+    const integrations = settings?.integrations;
+    if (!integrations || typeof integrations !== 'object') return null;
+    // Aggregate participation gates, keyed by the same status_group identity
+    // the entries below already carry. Absent means open, so a panel served by
+    // an older backend behaves exactly as it did.
+    const gates = settings?.integration_groups || {};
+    const entries = Object.entries(integrations)
+      // A paired provider+executor integration (one canonical enable state)
+      // still presents as one provider family in this panel.
+      .filter(([, integration]) => (integration.kind === 'provider' || integration.kind === 'provider_executor')
+        && String(integration.presentation?.status_name || '').trim())
+      .map(([id, integration]) => {
+        const presentation = integration.presentation;
+        return {
+          id,
+          name: String(presentation.status_name),
+          enabled: integration.enabled !== false,
+          configured: Boolean(integration.configured),
+          // Canonical, backend-derived verification truth. `verifiable` says
+          // whether the question applies at all, so a source that has nothing
+          // to prove is never reported as unproven.
+          verified: Boolean(integration.verified),
+          verifiable: Boolean(integration.verification_applicable),
+          premium: Boolean(presentation.premium),
+          endpoint: String(presentation.status_endpoint || '').trim(),
+          staticStatus: String(presentation.static_status || '').trim(),
+          order: Number.isFinite(Number(presentation.display_order)) ? Number(presentation.display_order) : 100,
+          groupId: String(presentation.status_group || '').trim(),
+          groupLabel: String(presentation.status_group_label || '').trim(),
+          groupEnabled: gates[String(presentation.status_group || '').trim()]?.enabled !== false,
+          tierId: String(presentation.status_tier || '').trim(),
+          tierLabel: String(presentation.status_tier_label || '').trim(),
+          homeTierId: String(presentation.status_tier || '').trim(),
+          homeTierLabel: String(presentation.status_tier_label || '').trim(),
+          // Where an account-tiered integration belongs while its current
+          // account is of the standard service class (neutral metadata).
+          standardTierId: String(presentation.standard_status_tier || '').trim(),
+          standardTierLabel: String(presentation.standard_status_tier_label || '').trim(),
+        };
+      });
+    /* `display_order` places tiers and service families. The NAMED account
+     * providers of one tier -- those declaring the standard tier their
+     * account falls to, the same neutral fact Settings reads -- are one block,
+     * alphabetical by display name, at the position of the block's first
+     * declared entry; a service family (which declares no standard tier) keeps
+     * its own place, so a family reserved after them stays after them. No
+     * integration is named here, so a future named provider sorts into place
+     * by its name alone. Presentation only: never routing priority. */
+    const blocks = new Map();
+    for (const entry of entries) {
+      if (!entry.standardTierId) continue;
+      blocks.set(entry.homeTierId, Math.min(blocks.get(entry.homeTierId) ?? Infinity, entry.order));
+    }
+    const position = entry => entry.standardTierId ? blocks.get(entry.homeTierId) : entry.order;
+    return entries.sort((a, b) => position(a) - position(b)
+      || a.name.localeCompare(b.name, 'en', {sensitivity: 'base'}) || a.id.localeCompare(b.id));
+  }
+
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+  }
+
+  // The heading and the list are static shell markup (index.html); this owner
+  // only fills the list.
+  const statusHost = () => document.getElementById('provider-status-list');
+
+  function dotClass(state) {
+    return ({healthy:'ok', degraded:'warn', auth_required:'error', unhealthy:'error', unconfigured:'warn', unverified:'warn', unknown:'check', checking:'check', mixed:'warn', unavailable:'error', disabled:'error'})[state] || 'check';
+  }
+
+  /* Runtime health and verification are two different questions, asked in that
+   * order.
+   *
+   * A real runtime/service failure outranks everything: it is what is wrong
+   * right now, and verification cannot make it green. Only once the runtime is
+   * reporting healthy does the second question apply -- and only to a provider
+   * that can actually be asked it. A configured, verification-capable provider
+   * whose current saved configuration carries no successful proof is healthy
+   * but unproven, which is a warning, not readiness. A source with no
+   * verification subjects has nothing to prove and stays exactly as healthy as
+   * its runtime says it is.
+   *
+   * This is derived PRESENTATION, from facts the backend already publishes.
+   * Nothing here names an integration and nothing here decides, records or
+   * second-guesses what is verified. */
+  function verificationAdjusted(entry) {
+    if (entry.state !== 'healthy') return entry;
+    if (!entry.verifiable || !entry.configured || entry.verified) return entry;
+    return {...entry, state: 'unverified'};
+  }
+
+  /* An account-backed provider's CURRENT account, as its status surface
+   * publishes it in neutral terms (`status.account`): the service class
+   * decides its tier and premium standing, and a connected account that lost
+   * acquisition capability, or can acquire nothing through this provider, is
+   * degraded -- a warning, never offline; one whose usefulness is not yet
+   * known is unknown, never healthy. Without
+   * that block (an integration with no account dimension, or no account truth
+   * yet) the static presentation metadata is the whole truth. Nothing here
+   * names an integration or reads a plan. */
+  function accountAdjusted(entry) {
+    const account = entry.status?.account;
+    if (!account || typeof account !== 'object') return entry;
+    let next = entry;
+    if (account.service_class === 'standard' && entry.standardTierId && entry.standardTierLabel) {
+      next = {...next, tierId: entry.standardTierId, tierLabel: entry.standardTierLabel, premium: false};
+    }
+    if (next.state === 'healthy' && account.functional === 'degraded') next = {...next, state: 'degraded'};
+    // Whether the account can acquire anything is not yet known: never green.
+    if (next.state === 'healthy' && account.functional === 'unresolved') next = {...next, state: 'unknown'};
+    return next;
+  }
+
+  /* The group's one reported state.
+   *
+   * ``gateEnabled`` is the family's aggregate participation gate. While the
+   * gate is OPEN the existing health model runs unchanged, so a member with a
+   * real health state still decides the colour.
+   *
+   * `disabled` belongs to the GATE, not to the members, and `unavailable` is
+   * what an open gate with NO participating member reports. The distinction
+   * matters in both directions: calling the empty open gate `disabled` would
+   * make it indistinguishable from a closed one, which is the whole thing the
+   * master exists to express -- but calling it `mixed` claimed that some
+   * members still work, and none do, so the family cannot acquire anything.
+   * Both are red; neither impersonates the other. A group with no members at
+   * all likewise has nothing that could participate. */
+  function aggregateState(entries, gateEnabled = true) {
+    if (gateEnabled === false) return 'disabled';
+    if (!entries.length) return 'unavailable';
+    const enabled = entries.filter(entry => entry.enabled);
+    if (!enabled.length) return 'unavailable';
+    if (enabled.length !== entries.length) return 'mixed';
+    if (enabled.some(entry => ['unhealthy', 'auth_required'].includes(entry.state))) return 'unhealthy';
+    if (enabled.some(entry => entry.state === 'unconfigured')) return 'unconfigured';
+    if (enabled.some(entry => entry.state === 'unverified')) return 'unverified';
+    if (enabled.some(entry => ['unknown', 'checking'].includes(entry.state))) return 'unknown';
+    if (enabled.every(entry => entry.state === 'healthy')) return 'healthy';
+    return 'unknown';
+  }
+
+  // The state each indicator's dot shows, in words: the dot's own accessible
+  // name, and with its row's name the DP tooltip the compact sidebar rail
+  // gives the row once that name is no longer shown.
+  const STATES = new Set(['healthy', 'degraded', 'auth_required', 'unhealthy', 'unconfigured', 'unverified', 'unknown',
+    'checking', 'mixed', 'unavailable', 'disabled', 'inactive']);
+  function stateLabel(state) {
+    return window.DPI18n.t(`provider_status.state.${STATES.has(state) ? state : 'unknown'}`);
+  }
+  // A tier's or group's heading: the server's presentation metadata names it
+  // by an id and an English label; a known id is said in the page's language.
+  function headingWords(kind, id, label) {
+    const key = `integration.${kind}.${id}`;
+    return window.DPI18n.has(key) ? window.DPI18n.t(key) : label;
+  }
+  function indicator(className, state, dot, name, extra = '') {
+    return `<div class="conn-row ${className}"${extra} data-provider-state="${esc(state)}" data-tooltip="${esc(window.DPI18n.t('provider_status.row_tooltip', {name, state: stateLabel(state)}))}" data-tooltip-label=".dp-provider-status-name"><div class="dot ${dot}" role="img" aria-label="${esc(stateLabel(state))}"></div><span class="dp-provider-status-name">${esc(name)}</span></div>`;
+  }
+
+  // What was last drawn, so a language change draws it again (no request).
+  let lastRender = null;
+  document.addEventListener('downloadpulse:locale-changed', () => { if (lastRender) render(...lastRender); });
+
+  function render(entries, mode = 'ready') {
+    const host = statusHost();
+    if (!host) return;
+    lastRender = [entries, mode];
+    if (mode === 'loading') {
+      host.innerHTML = indicator('dp-provider-status-row', 'checking', 'check', window.DPI18n.t('provider_status.loading'));
+      return;
+    }
+    if (mode === 'unknown') {
+      host.innerHTML = indicator('dp-provider-status-row', 'unknown', 'check', window.DPI18n.t('provider_status.unavailable'));
+      return;
+    }
+    // Two levels, both driven purely by integration-owned presentation
+    // metadata: a TIER (which acquisition family this belongs to, rendered as a
+    // heading) and, inside it, the existing aggregate GROUP. Nothing here names
+    // an integration, and no tier order is declared: entries arrive already
+    // sorted by display_order, so a tier takes the position of its first entry.
+    // An integration that declares no tier is never dropped -- it renders
+    // ungrouped after the tiers, exactly as before this hierarchy existed.
+    const tiers = new Map();
+    const untiered = [];
+    // Tier ORDER is the declared presentation order of each tier's home
+    // entries, so an account-tiered entry that moved tier for its current
+    // account never reorders the tiers themselves. A seeded tier left with no
+    // rows still renders nothing.
+    for (const entry of entries) {
+      if (entry.homeTierId && entry.homeTierLabel && !tiers.has(entry.homeTierId)) {
+        tiers.set(entry.homeTierId, {id:entry.homeTierId, label:entry.homeTierLabel, rows:[], groups:new Map()});
+      }
+    }
+    const rowFor = entry =>
+      indicator('dp-provider-status-row', entry.state, dotClass(entry.state), entry.name, ` data-provider-id="${esc(entry.id)}"`);
+
+    for (const entry of entries) {
+      const bucket = entry.tierId && entry.tierLabel
+        ? (tiers.get(entry.tierId)
+            || (tiers.set(entry.tierId, {id:entry.tierId, label:entry.tierLabel, rows:[], groups:new Map()}),
+                tiers.get(entry.tierId)))
+        : null;
+      const rows = bucket ? bucket.rows : untiered;
+      const groups = bucket ? bucket.groups : null;
+      if (entry.groupId && entry.groupLabel) {
+        let group = groups ? groups.get(entry.groupId) : null;
+        if (!group) {
+          group = {id:entry.groupId, label:entry.groupLabel, gate:entry.groupEnabled, entries:[]};
+          if (groups) groups.set(entry.groupId, group);
+          rows.push(group);
+        }
+        group.entries.push(entry);
+        if (bucket && entry.premium) bucket.premium = true;
+      } else if (entry.enabled && entry.state !== 'disabled') {
+        rows.push({entry});
+        if (bucket && entry.premium) bucket.premium = true;
+      }
+    }
+
+    const markup = item => {
+      if (item.entry) return rowFor(item.entry);
+      const state = aggregateState(item.entries, item.gate);
+      return `<div class="dp-provider-status-group" data-provider-group="${esc(item.id)}">${indicator('dp-provider-status-group-row', state, dotClass(state), headingWords('group', item.id, item.label))}</div>`;
+    };
+
+    // A tier with nothing to show renders nothing: no bare heading is left behind.
+    // A tier that shows a premium integration says so (neutral presentation
+    // metadata), so the premium account composition can decide whether its
+    // heading is needed; this owner never decides that itself. A tier whose
+    // whole content is one aggregate group (and nothing else) says that too:
+    // only such a tier may fold its heading away when no premium tier exists.
+    const rendered = [...tiers.values()].filter(tier => tier.rows.length).map(tier =>
+      `<div class="dp-provider-status-tier" data-provider-tier="${esc(tier.id)}"${tier.premium ? ' data-provider-tier-premium' : ''}${tier.rows.length === 1 && !tier.rows[0].entry ? ' data-provider-tier-single-group' : ''}><div class="dp-provider-status-tier-label">${esc(headingWords('tier', tier.id, tier.label))}</div>${tier.rows.map(markup).join('')}</div>`
+    ).concat(untiered.map(markup));
+
+    host.innerHTML = rendered.length ? rendered.join('')
+      : indicator('dp-provider-status-row', 'inactive', 'warn', window.DPI18n.t('provider_status.none_enabled'));
+  }
+
+  /* Current observation, else valid last-known-good, else unresolved.
+   *
+   * A status endpoint that answered is the current observation, whatever it
+   * says. One that did not answer this time (the request failed or timed
+   * out) says nothing new about the integration, so the last answer it gave
+   * stays authoritative while it is still valid: taken under the same
+   * candidate facts (endpoint, participation, configuration, verification)
+   * and younger than the backend's own account-truth freshness (five
+   * minutes, integrations/account_entitlement.py). Only with neither is the
+   * provider unresolved. An answer becomes last-known-good only when its
+   * observation is the one rendered (``refresh``'s generation guard): an
+   * obsolete answer, or one begun before a settings save, never seeds it. */
+  const LAST_KNOWN_GOOD_MS = 5 * 60 * 1000;
+  const lastKnownGood = new Map();
+  const factsKey = candidate => [candidate.endpoint, candidate.enabled, candidate.configured,
+    candidate.verified, candidate.verifiable].join('|');
+
+  const observed = (candidate, status) =>
+    accountAdjusted(verificationAdjusted({...candidate, state:String(status?.state || 'unknown'), status}));
+
+  function remembered(candidate) {
+    const known = lastKnownGood.get(candidate.id);
+    if (!known || known.key !== factsKey(candidate) || Date.now() - known.at >= LAST_KNOWN_GOOD_MS) return null;
+    return observed(candidate, known.status);
+  }
+
+  const probed = candidate => candidate.enabled && !candidate.staticStatus && Boolean(candidate.endpoint);
+
+  /* What a candidate is known to be before (or without) asking its endpoint.
+   * Participation and static facts are settled by the accepted settings
+   * document alone; a candidate that must be asked keeps its valid
+   * last-known-good under the same facts while it is asked again, and is
+   * otherwise being checked -- never healthy, never premium, until its own
+   * endpoint says so. */
+  function settled(candidate) {
+    if (!candidate.enabled) return {...candidate, state:'disabled'};
+    if (candidate.staticStatus) return verificationAdjusted({...candidate, state:candidate.staticStatus});
+    if (!candidate.endpoint) return {...candidate, state:'unknown'};
+    return remembered(candidate) || {...candidate, state:'checking'};
+  }
+
+  async function observe(candidate) {
+    try {
+      const status = await api('GET', candidate.endpoint);
+      return {entry:observed(candidate, status), answered:{at:Date.now(), key:factsKey(candidate), status}};
+    } catch (_) {
+      return {entry:remembered(candidate) || {...candidate, state:'unknown'}, answered:null};
+    }
+  }
+
+  function publish(entries, owned) {
+    render(entries);
+    document.dispatchEvent(new CustomEvent('downloadpulse:provider-status', {detail:{entries:entries.slice(), generation:owned}}));
+  }
+
+  /* One generation owns one complete snapshot of every candidate. It is
+   * published at once from what is already settled, then again -- whole --
+   * as each endpoint answers, so a slow provider defers only its own health
+   * and never another's participation or answer. An answer is applied only
+   * while its generation is still the current one (the settings document it
+   * was asked under); an obsolete one changes nothing and seeds nothing.
+   * Resolves with the final snapshot, or null once superseded. */
+  async function refresh() {
+    const owned = invalidate();
+    let settings = null;
+    try { settings = settingsData; } catch (_) {}
+    const providers = candidates(settings);
+    if (providers === null) { render([], 'unknown'); return null; }
+    const snapshot = providers.map(settled);
+    publish(snapshot, owned);
+    await Promise.all(providers.map(async (candidate, index) => {
+      if (!probed(candidate)) return;
+      const {entry, answered} = await observe(candidate);
+      if (owned !== generation) return;
+      if (answered) lastKnownGood.set(entry.id, answered);
+      snapshot[index] = entry;
+      publish(snapshot, owned);
+    }));
+    return owned === generation ? snapshot.slice() : null;
+  }
+
+  /* A credential the settings owner replaced or erased: the last answer was
+   * about the previous credential, whose replacement changes none of the
+   * candidate facts above, so that answer no longer describes the provider --
+   * it is checked again, never re-presented, until its own endpoint answers
+   * for the current credential. */
+  function forget(id) {
+    lastKnownGood.delete(String(id));
+  }
+
+  // Provider status is administration: an account without it never observes.
+  if (!window.downloadPulseAuth?.can('administer')) return;
+  window.DPProviderStatus = Object.freeze({refresh, invalidate, forget, candidates, aggregateState});
+  render([], 'loading');
+  const reobserve = () => refresh().catch(() => render([], 'unknown'));
+  document.addEventListener('DOMContentLoaded', reobserve, {once:true});
+  // Live truth without operator activity: the backend announces that an
+  // integration's runtime status changed, and a (re)connected pulse may have
+  // missed such announcements. Neither carries a status -- each only asks this
+  // owner to re-observe the canonical endpoints, under the same generation
+  // guard as every other refresh.
+  document.addEventListener('downloadpulse:integration-status-changed', reobserve);
+  document.addEventListener('downloadpulse:pulse-connected', reobserve);
+})();

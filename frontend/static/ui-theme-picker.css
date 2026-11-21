@@ -1,0 +1,273 @@
+/* DownloadPulse theme picker (ui-theme-picker.js): a chevron in the strip to
+   the right of the mode toggle and the menu of the active mode's palettes.
+   The chevron is out of flow, so the toggle and every topbar control keep
+   their own boxes. Below 780px (the handheld shell) the chevron is the
+   toggle's attached, separate control and the menu a bottom sheet (below). */
+.topbar-theme-control .dp-theme-picker-trigger {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 3px);
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dp-radius-sm);
+  background: transparent;
+  color: var(--dp-chrome-control-text);
+  cursor: pointer;
+  transition: color .12s ease, background-color .12s ease;
+}
+.topbar-theme-control .dp-theme-picker-trigger svg {
+  width: 14px;
+  height: 14px;
+}
+.topbar-theme-control .dp-theme-picker-trigger:hover,
+.topbar-theme-control .dp-theme-picker-trigger[aria-expanded="true"] {
+  color: var(--dp-text-primary);
+  background: color-mix(in srgb, var(--dp-text-primary) 8%, transparent);
+}
+.topbar-theme-control .dp-theme-picker-trigger:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright);
+  outline-offset: -2px;
+}
+
+/* The menu: a popover in the top layer, placed by the runtime. */
+.dp-theme-picker {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  /* 264px, or as wide as its longest palette name needs in the face it is
+     drawn in (the fallback face, DejaVu Sans, sets some names wider): a name
+     is never shortened at any desktop width. */
+  width: max-content;
+  min-width: 264px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-md);
+  background: var(--dp-surface-overlay);
+  color: var(--dp-text-primary);
+  box-shadow: var(--dp-shadow-raised);
+  font-family: var(--dp-font-sans);
+}
+.dp-theme-picker:not(:popover-open) { display: none; }
+
+.dp-theme-picker-head {
+  padding: 6px 10px 9px;
+  border-bottom: 1px solid var(--dp-divider);
+}
+.dp-theme-picker-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.dp-theme-picker-note {
+  margin-top: 2px;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.dp-theme-picker-list {
+  display: grid;
+  gap: 2px;
+  padding-top: 6px;
+}
+.dp-theme-picker-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--dp-radius-sm);
+  background: transparent;
+  color: var(--dp-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: color .12s ease, background-color .12s ease;
+}
+.dp-theme-picker-option:hover,
+.dp-theme-picker-option:focus-visible {
+  color: var(--dp-text-primary);
+  background: color-mix(in srgb, var(--dp-accent-purple) 10%, transparent);
+}
+.dp-theme-picker-option:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright);
+  outline-offset: -2px;
+}
+.dp-theme-picker-option[aria-checked="true"] {
+  color: var(--dp-text-primary);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--dp-accent-purple) 15%, transparent);
+}
+.dp-theme-picker-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dp-theme-picker-check {
+  display: grid;
+  place-items: center;
+  visibility: hidden;
+  color: var(--dp-accent-purple-bright);
+}
+.dp-theme-picker-check svg { width: 15px; height: 15px; }
+.dp-theme-picker-option[aria-checked="true"] .dp-theme-picker-check { visibility: visible; }
+
+/* The Login Theme (ui-theme-picker.js, an Admin's menu only), after the
+   rows: what the sign-in page shows and Set current, the canonical small
+   secondary button (ui-components.css .dp-btn). Layout only here. */
+.dp-theme-picker-login {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 12px;
+  margin-top: 6px;
+  padding: 10px 10px 4px;
+  border-top: 1px solid var(--dp-divider);
+}
+.dp-theme-picker-login-title {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--dp-text-muted);
+}
+.dp-theme-picker-login-state {
+  display: grid;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.dp-theme-picker-login-label { color: var(--dp-text-muted); }
+.dp-theme-picker-login-value {
+  color: var(--dp-text-primary);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dp-theme-picker-login-note {
+  grid-column: 1 / -1;
+  color: var(--dp-text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.dp-theme-picker-login-note:empty { display: none; }
+
+/* A swatch is the palette's own tokens: the page background, a raised
+   surface, the accent and the second accent. */
+.dp-theme-swatch {
+  display: flex;
+  width: 52px;
+  height: 18px;
+  overflow: hidden;
+  border-radius: 5px;
+  outline: 1px solid rgba(128, 128, 128, .45);
+  outline-offset: -1px;
+}
+.dp-theme-swatch > i { flex: 1 1 0; }
+.dp-theme-swatch > [data-role="background"] { background: var(--dp-bg-app); }
+.dp-theme-swatch > [data-role="surface"] { background: var(--dp-surface-3); }
+.dp-theme-swatch > [data-role="accent"] { background: var(--dp-accent-purple-bright); }
+.dp-theme-swatch > [data-role="tone"] { background: var(--dp-accent-blue-bright); }
+
+/* The handheld shell (below 780px): the chevron is the second half of one
+   control with the mode toggle (ui-shell-mobile.css draws the pair), with a
+   hit area of its own. The menu opens from the header's edge: the popover's
+   own box is the page between the header and the dock and its scrim, so a
+   press beside the panel lands on the menu (ui-theme-picker.js closes it),
+   never on the page, and neither bar is covered; the panel (head and list)
+   rolls down from the header, clipped to that box, its list scrolling on its
+   own, and returns upward as it closes, taking no input. */
+@media (max-width: 779px) {
+  .topbar-theme-control .dp-theme-picker-trigger {
+    position: static;
+    width: 44px;
+    height: 44px;
+    border-radius: 0;
+    border-start-end-radius: var(--dp-radius-md);
+    border-end-end-radius: var(--dp-radius-md);
+  }
+  .topbar-theme-control .dp-theme-picker-trigger:focus-visible { outline-offset: -3px; }
+  .dp-theme-picker {
+    inset: var(--dp-shell-header) 0 var(--dp-shell-dock-edge) 0;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    max-height: none;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    /* Its layout is the menu's own, open or closing, so the panel keeps
+       its width and place while it rolls back up. */
+    flex-direction: column;
+    pointer-events: none;
+    transition: background-color var(--dp-motion-collapse) var(--dp-motion-ease);
+  }
+  .dp-theme-picker:popover-open {
+    display: flex;
+    pointer-events: auto;
+  }
+  /* Closing (app.js DPShellSheet), it is still open, [data-dp-sheet-exit]:
+     the scrim clears and the panel rolls back up before it is hidden. */
+  .dp-theme-picker:popover-open:not([data-dp-sheet-exit]) {
+    background: var(--dp-chrome-scrim);
+    transition-duration: var(--dp-motion-expand);
+  }
+  .dp-theme-picker-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: 100%;
+    border: 1px solid var(--dp-border-default);
+    border-top: 0;
+    border-radius: 0 0 var(--dp-radius-lg) var(--dp-radius-lg);
+    background: var(--dp-shell-panel-surface);
+    box-shadow: var(--dp-shadow-raised);
+    transform: translateY(-100%);
+    transition: transform var(--dp-motion-collapse) var(--dp-motion-ease);
+  }
+  .dp-theme-picker:popover-open:not([data-dp-sheet-exit]) .dp-theme-picker-panel {
+    transform: none;
+    transition-duration: var(--dp-motion-expand);
+  }
+  @starting-style {
+    .dp-theme-picker:popover-open:not([data-dp-sheet-exit]) { background-color: transparent; }
+    .dp-theme-picker:popover-open:not([data-dp-sheet-exit]) .dp-theme-picker-panel { transform: translateY(-100%); }
+  }
+  .dp-theme-picker-head { padding: 12px 18px 10px; }
+  .dp-theme-picker-list {
+    min-height: 0;
+    padding: 6px 10px 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .dp-theme-picker-option { min-height: 46px; }
+  /* Below the scrolling list, always in view at the panel's foot. */
+  .dp-theme-picker-login {
+    flex: none;
+    margin: 0;
+    padding: 10px 18px 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-theme-control .dp-theme-picker-trigger,
+  .dp-theme-picker-option,
+  .dp-theme-picker,
+  .dp-theme-picker-panel { transition: none; }
+}

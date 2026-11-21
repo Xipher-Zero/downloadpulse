@@ -1,0 +1,221 @@
+"""Focused contract tests for the internal direct/debrid-link workflow."""
+
+import asyncio
+import struct
+import sys
+import tempfile
+import types
+import unittest
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# The scratch verification environment intentionally has no runtime wheels.
+# Match the upstream suite's lightweight import stubs.
+# aiohttp is NOT stubbed: it is a real installed dependency, and replacing it
+# with a namespace decides for every module imported afterwards whether it sees
+# the real package -- one that needs `aiohttp.abc` then cannot import at all.
+if "aiofiles" not in sys.modules:
+    sys.modules["aiofiles"] = types.SimpleNamespace(open=lambda *args, **kwargs: None)
+if "aiosqlite" not in sys.modules:
+    sys.modules["aiosqlite"] = types.SimpleNamespace(
+        Connection=object,
+        Row=object,
+        connect=lambda *args, **kwargs: None,
+    )
+
+from db.database import _SCHEMA_COLUMNS_FILES
+from providers.alldebrid.client import AllDebridAPIError, AllDebridService
+from transfers.requests import direct_link_collection_name
+from transfers.requests import direct_link_filename
+from transfers.requests import normalize_direct_links
+
+
+class DirectLinkInputTests(unittest.TestCase):
+    def test_normalizes_deduplicates_and_preserves_order(self):
+        links = normalize_direct_links(
+            [
+                " https://host.invalid/a ",
+                "http://host.invalid/b",
+                "https://host.invalid/a",
+                "",
+            ]
+        )
+        self.assertEqual(
+            links,
+            ["https://host.invalid/a", "http://host.invalid/b"],
+        )
+
+    def test_rejects_non_http_input(self):
+        with self.assertRaisesRegex(ValueError, "Every link must be an absolute HTTP, HTTPS, FTP, SFTP, SCP, SSH or rsync URL"):
+            normalize_direct_links(["magnet:?xt=urn:btih:abc"])
+
+    def test_accepts_a_mixed_four_transport_batch(self):
+        links = ["https://a.invalid/1", "http://a.invalid/2", "ftp://a.invalid/3", "sftp://a.invalid/4", "ftp://a.invalid/3"]
+        self.assertEqual(normalize_direct_links(links), links[:4])
+
+    def test_rejects_other_schemes_and_authorityless_urls(self):
+        for link in ("ftps://a.invalid/f", "rsyncx://a.invalid/f", "file:///etc/passwd", "webdavx://a.invalid/f", "webdav:///f", "ftp:///f", "sftp://"):
+            with self.subTest(link=link):
+                with self.assertRaisesRegex(ValueError, "Every link must be an absolute HTTP, HTTPS, FTP, SFTP, SCP, SSH or rsync URL"):
+                    normalize_direct_links([link])
+
+    def test_leaves_embedded_userinfo_for_the_core_admission_boundary(self):
+        # ``TransferEngine.submit`` splits it out as USER_SUPPLIED material
+        # before anything is persisted; intake only validates the link.
+        for link in ("ftp://u:p@a.invalid/f", "sftp://u@a.invalid/f", "https://u:p@a.invalid/f", "http://:p@a.invalid/f"):
+            with self.subTest(link=link):
+                self.assertEqual(normalize_direct_links([link]), [link])
+
+    def test_empty_submission_names_every_accepted_transport(self):
+        with self.assertRaisesRegex(ValueError, "At least one HTTP, HTTPS, FTP, SFTP, SCP, SSH or rsync link, or WebDAV link, is required"):
+            normalize_direct_links(["", "  "])
+
+    def test_ftp_and_sftp_links_derive_safe_filenames_through_the_same_owner(self):
+        self.assertEqual(direct_link_filename("ftp://a.invalid/pub/My%20File.iso"), "My File.iso")
+        self.assertEqual(direct_link_filename("sftp://a.invalid:2222/data/archive.tar.gz"), "archive.tar.gz")
+        self.assertEqual(direct_link_filename("ftp://a.invalid/"), "a.invalid")
+
+    def test_caps_each_batch_at_one_hundred_links(self):
+        with self.assertRaisesRegex(ValueError, "maximum of 100"):
+            normalize_direct_links(
+                [f"https://host.invalid/file-{index}" for index in range(101)]
+            )
+
+    def test_derives_safe_filename(self):
+        self.assertEqual(
+            direct_link_filename("https://host.invalid/files/My%20File?.zip"),
+            "My File",
+        )
+        self.assertEqual(direct_link_filename("https://host.invalid"), "host.invalid")
+        self.assertEqual(
+            direct_link_filename(
+                "https://1fichier.com/?AbCdEf123&af=2701919"
+            ),
+            "1fichier.com - AbCdEf123",
+        )
+        self.assertEqual(
+            direct_link_filename("https://host.invalid/?token=secret&auth=value"),
+            "host.invalid",
+        )
+
+    def test_collection_name_uses_resolved_multipart_base(self):
+        links = [
+            "https://1fichier.com/?part1&af=2701919",
+            "https://1fichier.com/?part2&af=2701919",
+            "https://1fichier.com/?part3&af=2701919",
+        ]
+        self.assertEqual(
+            direct_link_collection_name(
+                ["sc44610-Dispatc.part3.rar"],
+                links,
+            ),
+            "sc44610-Dispatc (3 links)",
+        )
+
+    def test_collection_name_does_not_invent_common_name(self):
+        links = [
+            "https://host.invalid/a",
+            "https://host.invalid/b",
+            "https://host.invalid/c",
+        ]
+        self.assertEqual(
+            direct_link_collection_name(
+                ["alpha.mkv", "beta.srt"],
+                links,
+            ),
+            "alpha.mkv + 2 more",
+        )
+
+    def test_collection_name_falls_back_to_source_identifier(self):
+        links = [
+            "https://1fichier.com/?xo3nibyjy94ymn937127&af=2701919",
+            "https://1fichier.com/?y4eawl85julqc81h1xq0&af=2701919",
+        ]
+        self.assertEqual(
+            direct_link_collection_name([], links),
+            "1fichier.com - xo3nibyjy94ymn937127 + 1 more",
+        )
+
+    def test_schema_migrates_original_source_url(self):
+        self.assertIn(("source_url", "TEXT"), _SCHEMA_COLUMNS_FILES)
+
+
+
+
+
+class DelayedAllDebridTests(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_immediate_unlocked_link(self):
+        service = AllDebridService("test-key")
+        service._post = AsyncMock(
+            return_value={"link": "https://download.invalid/file", "filename": "file"}
+        )
+        result = await service.unlock_link("https://host.invalid/file")
+        self.assertEqual(result["link"], "https://download.invalid/file")
+        self.assertEqual(service._post.await_count, 1)
+
+    async def test_polls_delayed_generation_at_documented_interval(self):
+        service = AllDebridService("test-key")
+        service._post = AsyncMock(
+            side_effect=[
+                {"delayed": "job-42", "filename": "archive.zip", "filesize": 123},
+                {"status": 1},
+                {"status": 2, "link": "https://download.invalid/archive.zip"},
+            ]
+        )
+        with patch("providers.alldebrid.client.asyncio.sleep", new=AsyncMock()) as sleep:
+            result = await service.unlock_link("https://host.invalid/archive")
+
+        self.assertEqual(result["filename"], "archive.zip")
+        self.assertEqual(result["filesize"], 123)
+        self.assertEqual(result["link"], "https://download.invalid/archive.zip")
+        self.assertEqual(sleep.await_args_list[0].args, (5,))
+        self.assertEqual(service._post.await_count, 3)
+
+
+
+
+
+
+class DashboardContractTests(unittest.TestCase):
+
+
+
+    def test_dashboard_is_a_fixed_at_a_glance_view(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        html = (repo_root / "frontend/static/index.html").read_text()
+        js = (repo_root / "frontend/static/app.js").read_text()
+        # DP 1.0.12 canonical flattening: style.css is now a pure @import
+        # list. #content.dashboard-active / #view-dashboard:is(.active, [data-dp-motion-outgoing])'s own
+        # unscoped definitions in style.css were provably dead (ui-dashboard
+        # .css's identical unscoped copy, loaded later in the same cascade,
+        # already won) and were removed; #dash-activity-card had no such
+        # surviving duplicate and was migrated into ui-dashboard.css itself
+        # (from the retired ui-legacy-foundation.css) rather than left
+        # orphaned.
+        dashboard_css = (repo_root / "frontend/static/ui-dashboard.css").read_text()
+
+        self.assertIn('<div id="content" class="dashboard-active">', html)
+        self.assertIn('id="dash-activity-card"', html)
+        self.assertIn('class="dash-activity-table-wrap"', html)
+        self.assertIn("content.classList.toggle('dashboard-active', v === 'dashboard');", js)
+        self.assertIn("function dashboardRecentLimit()", js)
+        self.assertIn("window.matchMedia('(max-width: 779px)').matches ? 4 : 6", js)
+        # Recent Items row rendering is owned by the bounded presentation owner;
+        # app.js only holds the viewport-limit helper and the delegating entrypoint.
+        owner = (
+            repo_root / "frontend/static/ui-dashboard-transfer-presentation.js"
+        ).read_text()
+        # 1.0.14: a handheld limit of 0 draws no row but still asks for one.
+        self.assertIn("api('GET',`/torrents?limit=${Math.max(1,recentLimit)}&order=queue`)", owner)
+        self.assertIn("items=recentLimit===0?[]:", owner)
+        self.assertIn("#content.dashboard-active {\n  overflow-y: hidden;\n}", dashboard_css)
+        self.assertIn("#view-dashboard:is(.active, [data-dp-motion-outgoing]) {", dashboard_css)
+        self.assertIn("#dash-activity-card {", dashboard_css)
+
+if __name__ == "__main__":
+    unittest.main()

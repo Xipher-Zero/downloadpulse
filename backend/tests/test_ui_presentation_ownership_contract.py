@@ -1,0 +1,327 @@
+from pathlib import Path
+from i18n_node import says
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+
+
+def read(name: str) -> str:
+    return (STATIC / name).read_text(encoding="utf-8")
+
+
+def test_retired_correction_assets_and_globals_are_absent() -> None:
+    for name in (
+        "ui-correction-batch1.js", "ui-correction-batch1-final.js",
+        "ui-correction-p4-repair.js", "ui-correction-batch1.css",
+        "ui-correction-batch1-provider-card.css", "ui-presentation-loader.js",
+    ):
+        assert not (STATIC / name).exists()
+    joined = "\n".join(path.read_text(encoding="utf-8") for path in STATIC.glob("*.js"))
+    for token in ("DPUICorrectionBatch1", "DPUICorrectionBatch1Final", "DPUICorrectionP4Repair", "DPPresentationLoader"):
+        assert token not in joined
+
+
+def test_bounded_presentation_boot_is_ordered_and_loader_free() -> None:
+    # DP 1.0.12 canonical flattening: Provider Status no longer bootstraps
+    # unrelated UI modules. Every bounded presentation owner is now a direct,
+    # explicit <script defer> dependency of index.html, in dependency order,
+    # not dynamically injected by ui-provider-status.js.
+    provider = read("ui-provider-status.js")
+    assert "bootPresentationOwners" not in provider
+    assert "PRESENTATION_OWNERS" not in provider
+    assert "createElement('script')" not in provider
+    assert 'createElement("script")' not in provider
+    assert "downloadpulse:presentation-ready" not in provider
+    assert "ui-presentation-loader.js" not in provider
+    assert "DPPresentationLoader" not in provider
+
+    index = read("index.html")
+    expected = (
+        "/ui-toast-contract.js?v=2",
+        "/ui-processing-presentation.js?v=4",
+        "/ui-transfer-source-presentation.js?v=1",
+        "/ui-file-selection.js?v=2",
+        "/ui-downloads.js?v=3",
+        "/ui-dashboard-transfer-presentation.js?v=4",
+        "/ui-activity-log-runtime.js?v=6",
+        "/ui-settings-archive-passwords.js?v=3",
+    )
+    positions = []
+    for src in expected:
+        assert index.count(src) == 1, src
+        assert f'<script src="{src}" defer></script>' in index, src
+        positions.append(index.index(src))
+    assert positions == sorted(positions)
+
+
+def test_bounded_runtime_owners_are_present() -> None:
+    provider = read("ui-provider-status.js")
+    assert "ui-correction" not in provider
+    assert "createElement('script')" not in read("ui-settings-page.js")
+    # DP 1.0.12 Gate 9 fix-forward: the module no longer exports an empty
+    # window.DPDashboardTransferPresentation marker whose only consumer was
+    # a readiness test -- __dpRegisterRecentRenderer is its real, functional
+    # registration with the canonical Dashboard Recent delegation entrypoint.
+    assert "window.__dpRegisterRecentRenderer" in read("ui-dashboard-transfer-presentation.js")
+    assert "window.DPDashboardTransferPresentation" not in read("ui-dashboard-transfer-presentation.js")
+    downloads = read("ui-downloads.js")
+    assert "window.DPDownloads" in downloads and "window.loadTorrents" in downloads and "ResizeObserver" in downloads
+    from i18n_node import english
+
+    # WS3b: the date menu's words are catalog keys (downloads.date_menu.*).
+    assert all(token in downloads for token in ("downloads.date_menu.format_${v}", "'downloads.date_menu.hour12'",
+                                                "'downloads.date_menu.hour24'", "window.DPPager.render("))
+    assert [english(f"downloads.date_menu.{key}") for key in ("format_friendly", "format_international", "format_iso",
+                                                               "hour12", "hour24")] == \
+        ["Friendly", "International", "ISO", "12-hour", "24-hour"]
+    assert "window.DPProcessingPresentation" in read("ui-processing-presentation.js")
+    assert "window.DPTransferSourcePresentation" in read("ui-transfer-source-presentation.js")
+    activity = read("ui-activity-log-runtime.js")
+    assert "window.DPActivityLog" in activity and "activity_log_page_size" in activity and "next_before" in activity
+    archive = read("ui-settings-archive-passwords.js")
+    assert "window.DPArchivePasswords" in archive
+    assert all(says(archive, token) for token in ("Show all passwords", "Hide all passwords", "Escape", "Enter", "clipboardData"))
+    # Correction 7 (DP 1.0.12 UI Finishing): empty Backspace no longer has
+    # any special-cased keydown handling at all -- it is a true no-op.
+    assert "Backspace" not in archive
+
+
+def test_canonical_css_graph_uses_named_component_owners() -> None:
+    assert not (STATIC / "style-v11.css").exists()
+    style = read("style.css")
+    for owner in (
+        "ui-provider-state.css", "ui-dashboard-transfer-presentation.css",
+        "ui-downloads-page.css", "ui-activity-log-controls.css",
+        "ui-settings-archive-passwords.css", "ui-detail-files.css",
+    ):
+        assert style.count(owner) == 1
+    assert "ui-downloads-presentation.css" not in style
+    assert "ui-downloads-desktop.css" not in style
+    assert "ui-correction" not in style
+    details_files = read("ui-detail-files.css").replace(" ", "")
+    assert "width:var(--dp-detail-file-status-width,136px)" in details_files
+    # Icon-only where the Files table itself is narrow: the chip contracts around its glyph.
+    assert "@containerdp-detail-files(width<400px)" in details_files
+    assert "--dp-detail-file-status-width:35px" in details_files
+
+
+_NETWORK_GEOMETRY_FRAGMENT = '<rect x="16" y="16" width="6" height="6" rx="1"/>'
+
+
+def test_network_glyph_has_one_canonical_lucide_geometry_owner() -> None:
+    icons = read("operator-title.js")
+    assert "network:" in icons
+    assert _NETWORK_GEOMETRY_FRAGMENT in icons
+    assert 'd="M12 12V8"' in icons
+
+    # No candidate presentation runtime (or any other static JS) pastes a second
+    # copy of the Network geometry — they must call window.DPIcons.svg('network').
+    for path in STATIC.glob("*.js"):
+        if path.name == "operator-title.js":
+            continue
+        assert _NETWORK_GEOMETRY_FRAGMENT not in path.read_text(encoding="utf-8"), path.name
+
+    for owner in ("ui-detail-candidates.js", "ui-group-candidates.js"):
+        source = read(owner)
+        assert "DPIcons.svg('network'" in source or 'DPIcons.svg("network"' in source
+
+
+def test_candidate_chip_family_has_one_shared_base_visual_owner() -> None:
+    transfer = read("ui-transfer-contract.css")
+    # The shared chip material and geometry live with the reusable
+    # transfer/provider row contract.
+    assert ".dp-candidate-chip {" in transfer
+    assert ".dp-candidate-chip .dp-candidate-chip-count {" in transfer
+
+    # Surface / detail / group files own only bounded layout or interactive
+    # differences, never a second base definition of the chip material.
+    for surface in (
+        "ui-dashboard-transfer-presentation.css", "ui-downloads-page.css",
+        "ui-detail-candidates.css", "ui-group-candidates.css",
+    ):
+        assert ".dp-candidate-chip {" not in read(surface)
+    # The obsolete circular count badge rule is gone, not left dormant.
+    assert ".dp-detail-candidate-count{" not in read("ui-detail-candidates.css")
+
+
+def test_transfer_level_candidate_control_is_one_shared_group_owner() -> None:
+    # Downloads and Dashboard Recent both call the single shared group launcher
+    # owner; neither carries its own transfer-level candidate/group semantics.
+    group = read("ui-group-candidates.js")
+    assert "window.DPGroupCandidates = Object.freeze" in group
+    assert "function computeGroup" in group and "function launcherMarkup" in group
+
+    for surface in ("ui-downloads.js", "ui-dashboard-transfer-presentation.js"):
+        source = read(surface)
+        assert "DPGroupCandidates" in source and "launcherMarkup" in source
+        assert "candidateChipMarkup" not in source
+        assert "candidate_source_max" not in source
+
+    marker_owners = [
+        path.name for path in STATIC.glob("*.js")
+        if "window.DPGroupCandidates = Object.freeze" in path.read_text(encoding="utf-8")
+    ]
+    assert marker_owners == ["ui-group-candidates.js"]
+
+    provider = read("ui-provider-status.js")
+    index = read("index.html")
+    # The shared runtime is loaded once, as an ordered defer script (like the
+    # per-file candidate owner), not through the bounded presentation loader.
+    assert index.count("/ui-group-candidates.js?v=2") == 1
+    assert "ui-group-candidates.js" not in provider
+    style = read("style.css")
+    assert style.count("/ui-group-candidates.css") == 1
+    assert "@import url('/ui-group-candidates.css?v=1');" in style
+
+
+def test_candidate_detail_css_is_in_the_canonical_graph_and_not_runtime_injected() -> None:
+    style = read("style.css")
+    assert style.count("/ui-detail-candidates.css") == 1
+    assert "@import url('/ui-detail-candidates.css?v=4');" in style
+
+    runtime = read("ui-detail-candidates.js")
+    # No self-injected stylesheet and no correction/compat layer.
+    assert "createElement('link')" not in runtime
+    assert "rel = 'stylesheet'" not in runtime
+    assert "'/ui-detail-candidates.css" not in runtime
+    assert "dpDetailCandidatesStyle" not in runtime
+    assert "ui-correction" not in style
+    assert "ui-compat" not in style
+
+
+def test_import_existing_backend_capability_and_direct_source_metadata_remain() -> None:
+    routes = (ROOT / "backend" / "api" / "routes.py").read_text(encoding="utf-8")
+    definition = (ROOT / "backend" / "providers" / "general_http" / "definition.py").read_text(encoding="utf-8")
+    assert "/torrents/import-existing" in routes
+    # The Dashboard no longer offers the retired Import action: its button, its
+    # handler and its styling are gone, and no runtime deletes it after render.
+    assert "btn-import-existing" not in read("index.html")
+    assert "btn-import-existing" not in read("ui-processing-presentation.js")
+    assert "importExisting" not in read("app.js")
+    assert 'status_group="direct_sources"' in definition
+    assert 'status_group_label="Network Sources"' in definition
+
+
+# ── Universal file-selection modal ownership (specification section 62) ──────
+
+def _all_js() -> list[Path]:
+    return sorted(STATIC.glob("*.js"))
+
+
+def test_shared_modal_shell_has_exactly_one_overlay_modal_and_footer() -> None:
+    index = read("index.html")
+    assert index.count('id="overlay"') == 1
+    assert index.count('id="modal"') == 1
+    assert index.count('id="modal-footer"') == 1
+    modal_fragment = index[index.index('id="modal"'):index.index('id="toasts"')]
+    assert 'id="modal-body"' in modal_fragment
+    assert 'id="modal-footer"' in modal_fragment
+    assert 'class="modal-ftr dp-card__footer"' in modal_fragment
+    assert "dp-file-selection-overlay" not in index
+    for name in _all_js():
+        assert "dp-file-selection-overlay" not in name.read_text(encoding="utf-8"), name.name
+
+
+def test_app_js_is_the_sole_modal_coordinator_and_showdetail_owner() -> None:
+    app = read("app.js")
+    assert "const DPModal = (function" in app
+    assert "window.DPModal = DPModal" in app
+    assert "window.showDetail = showDetail" in app
+    assert "window.closeModal = closeModal" in app
+    assert "downloadpulse:detail-rendered" in app
+    assert "downloadpulse:detail-closed" in app
+    assert "requestModalClose" in app
+    for name in _all_js():
+        if name.name == "app.js":
+            continue
+        source = name.read_text(encoding="utf-8")
+        assert "window.showDetail =" not in source, name.name
+        assert "window.showDetail=" not in source, name.name
+        assert "window.closeModal =" not in source, name.name
+        assert "window.closeModal=" not in source, name.name
+
+
+def test_detail_candidates_listens_to_lifecycle_events_without_wrapping_globals() -> None:
+    runtime = read("ui-detail-candidates.js")
+    assert "window.showDetail" not in runtime
+    assert "window.closeModal" not in runtime
+    assert "dpCandidateWrapped" not in runtime
+    assert "downloadpulse:detail-rendered" in runtime
+    assert "downloadpulse:detail-closed" in runtime
+
+
+def test_file_selection_has_one_bounded_runtime_and_style_owner() -> None:
+    assert (STATIC / "ui-file-selection.js").exists()
+    assert (STATIC / "ui-file-selection.css").exists()
+
+    style = read("style.css")
+    assert style.count("/ui-file-selection.css") == 1
+    assert "@import url('/ui-file-selection.css?v=2');" in style
+
+    index = read("index.html")
+    assert index.count("/ui-file-selection.js?v=2") == 1
+    assert "ui-file-selection.js" not in read("ui-provider-status.js")
+
+    runtime = read("ui-file-selection.js")
+    assert "window.DPFileSelection = Object.freeze" in runtime
+    assert "createElement('link')" not in runtime
+    assert "createElement('style')" not in runtime
+    assert "rel = 'stylesheet'" not in runtime
+    assert "'/ui-file-selection.css" not in runtime
+    for banned in ("ui-correction", "ui-compat"):
+        assert banned not in runtime
+        assert banned not in style
+    assert "refreshAuthoritative" in runtime
+    for native in ("alldebrid", "statusCode", "magnet/files", "provider_resource_id", "selection_id"):
+        assert native not in runtime
+
+    marker_owners = [
+        path.name for path in _all_js()
+        if "window.DPFileSelection = Object.freeze" in path.read_text(encoding="utf-8")
+    ]
+    assert marker_owners == ["ui-file-selection.js"]
+
+
+def test_file_selection_boot_entry_follows_the_bounded_owner_list() -> None:
+    # DP 1.0.12 canonical flattening: ui-file-selection.js must load before
+    # ui-dashboard-transfer-presentation.js and ui-downloads.js, since both
+    # call window.DPFileSelection.chipMarkup() while building each row's
+    # markup; ui-downloads.js precedes Dashboard Recent, which draws its date
+    # cell (window.downloadsDateMarkup). All are now direct, explicit <script defer> tags in index.html,
+    # in dependency order -- not a dynamically-injected boot chain.
+    index = read("index.html")
+    ordered = (
+        "/ui-toast-contract.js?v=2",
+        "/ui-processing-presentation.js?v=4",
+        "/ui-file-selection.js?v=2",
+        "/ui-downloads.js?v=3",
+        "/ui-dashboard-transfer-presentation.js?v=4",
+        "/ui-activity-log-runtime.js?v=6",
+        "/ui-settings-archive-passwords.js?v=3",
+    )
+    positions = [index.index(item) for item in ordered]
+    assert positions == sorted(positions)
+    assert "bootPresentationOwners" not in read("ui-provider-status.js")
+
+
+def test_details_exposes_a_stable_file_selection_action_host() -> None:
+    # DP 1.0.12 Workstream B: the action moved from the generic top-of-Details
+    # #dp-detail-actions host to the Files-section header right-side slot
+    # (data-dp-file-selection-mount) -- the same location pattern the
+    # group-switch launcher (data-dp-group-candidates-mount) already uses --
+    # and the canonical visible wording is the short "Choose Files" /
+    # "Change Files" pair, never the retired longer phrasing.
+    app = read("app.js")
+    assert "data-dp-file-selection-mount" in app
+    assert 'id="dp-detail-actions"' not in app
+    runtime = read("ui-file-selection.js")
+    assert "data-dp-file-selection-mount" in runtime
+    from i18n_node import english
+
+    # WS3b: the launcher's words are catalog keys.
+    assert "'file_selection.choose'" in runtime and english("file_selection.choose") == "Choose Files"
+    assert "'file_selection.change'" in runtime and english("file_selection.change") == "Change Files"
+    # The retired longer Details-launcher wording must not resurface (the
+    # selector modal's own title bar, "Select files", is a separate, still-
+    # accurate string unrelated to the launcher label and is untouched).
+    assert "Change file selection" not in runtime

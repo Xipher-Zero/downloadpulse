@@ -1,0 +1,179 @@
+"""External delivery profiles: the Admin-owned catalog an external client's
+category selects from (``AppSettings.external_delivery``).
+
+A profile decides what a client may deliver and how a delivered path reads
+from the client's side; it never decides where DownloadPulse writes, which
+provider or executor works, or a queue position. Its ``local_root`` confines
+delivery to completed material DownloadPulse already wrote beneath it, and its
+``import_root`` is the same directory as the external client sees it (a
+shared volume mounted elsewhere). Nothing is copied, linked or moved.
+
+Written only through ``PUT /api/external/profiles`` (Admin); the whole-
+settings ``PUT /api/settings`` carries it forward unchanged.
+"""
+from __future__ import annotations
+
+import os
+import posixpath
+import re
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+from core.localization import CodedValueError, fact
+from core.settings_constraints import native_absolute, path_within
+
+# Every source kind the native submit operation accepts (``external.intake``).
+SOURCE_KINDS = ("links", "magnet", "nzb_link", "nzb", "torrent")
+MAX_PROFILES = 64
+MAX_CATEGORIES = 32
+MAX_CLIENTS = 256
+_IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+
+
+def client_flavor(root: str):
+    """The path rules of the namespace an ``import_root`` is written in: the
+    external client's. A ``/``-rooted root is a POSIX path (a client on Linux
+    or in a container, whatever this host is); anything else can only be a
+    path on this host."""
+    return posixpath if str(root).startswith("/") else os.path
+
+
+def _absolute(value: str, field: str, flavor=None) -> str:
+    """A normalized fully qualified path: DownloadPulse's own (``local_root``,
+    this host's rules) or the client's (``import_root``, ``client_flavor``)."""
+    text = str(value or "").strip()
+    flavor = flavor or os.path
+    if "\x00" in text or len(text) > 1024 or not native_absolute(text, flavor):
+        if "\x00" not in text and len(text) <= 1024 and native_absolute(flavor.normpath(text), flavor):
+            raise CodedValueError(f"{field} must be a normalized absolute path", code="profiles.path_not_normalized", params={"field": fact(field)})
+        raise CodedValueError(f"{field} must be an absolute path", code="profiles.path_not_absolute", params={"field": fact(field)})
+    normalized = flavor.normpath(text)
+    if flavor.sep == "/":
+        unnormalized = normalized != text.rstrip("/") and not (text == "/" and normalized == "/")
+    else:
+        unnormalized = normalized != text      # a drive or share root keeps its separator
+    if unnormalized:
+        raise CodedValueError(f"{field} must be a normalized absolute path", code="profiles.path_not_normalized", params={"field": fact(field)})
+    return normalized
+
+
+def category_key(value: str) -> str:
+    """How a category is compared: case-insensitively, trimmed."""
+    return str(value or "").strip().casefold()
+
+
+class DeliveryProfile(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    # The external categories that select this profile.
+    categories: list[str] = Field(default_factory=list, max_length=MAX_CATEGORIES)
+    # The external clients (``account_tokens.client_id``) allowed to use it.
+    # Explicit: an empty list admits nobody.
+    clients: list[str] = Field(default_factory=list, max_length=MAX_CLIENTS)
+    source_kinds: list[Literal["links", "magnet", "nzb_link", "nzb", "torrent"]] = Field(
+        default_factory=lambda: list(SOURCE_KINDS))
+    representation: Literal["shared_path"] = "shared_path"
+    # DownloadPulse's own view of the shared directory: the download folder or
+    # a directory beneath it.
+    local_root: str
+    # The same directory as the external client sees it; empty = the same path.
+    import_root: str = ""
+    # How long a committed delivery is advertised. Expiry withdraws the
+    # advertisement; it deletes nothing.
+    # Strict: "24", 24.0 or true is refused, never read as a whole number.
+    retention_hours: int = Field(default=168, ge=1, le=8760, strict=True)
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, value: str) -> str:
+        if not _IDENTIFIER.fullmatch(value):
+            raise CodedValueError("profile id must be lowercase letters, digits, '.', '_' or '-'", code="profiles.id_invalid")
+        return value
+
+    @field_validator("categories")
+    @classmethod
+    def _categories(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        for value in values:
+            text = str(value or "").strip()
+            if not text or len(text) > 64 or any(ord(char) < 32 for char in text):
+                raise CodedValueError("a category is 1-64 printable characters", code="profiles.category_invalid")
+            cleaned.append(text)
+        if len({category_key(item) for item in cleaned}) != len(cleaned):
+            raise CodedValueError("a profile lists a category twice", code="profiles.category_twice")
+        return cleaned
+
+    @field_validator("clients")
+    @classmethod
+    def _clients(cls, values: list[str]) -> list[str]:
+        cleaned = [str(value or "").strip() for value in values]
+        if any(not value or len(value) > 64 for value in cleaned):
+            raise CodedValueError("a client is a client ID", code="profiles.client_invalid")
+        return sorted(set(cleaned))
+
+    @field_validator("source_kinds")
+    @classmethod
+    def _kinds(cls, values: list[str]) -> list[str]:
+        return [kind for kind in SOURCE_KINDS if kind in set(values)]
+
+    @field_validator("local_root")
+    @classmethod
+    def _local_root(cls, value: str) -> str:
+        return _absolute(value, "local_root")
+
+    @field_validator("import_root")
+    @classmethod
+    def _import_root(cls, value: str) -> str:
+        text = str(value or "").strip()
+        return _absolute(text, "import_root", client_flavor(text)) if text else ""
+
+    @property
+    def effective_import_root(self) -> str:
+        return self.import_root or self.local_root
+
+    def public(self) -> dict:
+        """What a permitted client may know about the profile: never its
+        client list or DownloadPulse's own local root."""
+        return {"id": self.id, "categories": list(self.categories), "source_kinds": list(self.source_kinds),
+                "representation": self.representation, "import_root": self.effective_import_root,
+                "retention_hours": self.retention_hours}
+
+
+class ExternalDeliverySettings(BaseModel):
+    profiles: list[DeliveryProfile] = Field(default_factory=list, max_length=MAX_PROFILES)
+    # Bumped by every write: a write names the revision it read.
+    revision: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _unique(self) -> "ExternalDeliverySettings":
+        ids = [profile.id for profile in self.profiles]
+        if len(set(ids)) != len(ids):
+            raise CodedValueError("two profiles share an id", code="profiles.id_shared")
+        seen: set[str] = set()
+        for profile in self.profiles:
+            for category in profile.categories:
+                key = category_key(category)
+                if key in seen:
+                    raise CodedValueError(f"category {category!r} selects more than one profile", code="profiles.category_shared", params={"category": repr(category)})
+                seen.add(key)
+        return self
+
+    def select(self, client_id: str, category: str) -> DeliveryProfile | None:
+        """The profile ``category`` selects for ``client_id``, or ``None``
+        (unknown, or not authorized for that client: indistinguishable)."""
+        key = category_key(category)
+        for profile in self.profiles:
+            if key in {category_key(item) for item in profile.categories}:
+                return profile if client_id in profile.clients else None
+        return None
+
+    def for_client(self, client_id: str) -> list[DeliveryProfile]:
+        return [profile for profile in self.profiles if client_id in profile.clients]
+
+    def by_id(self, profile_id: str) -> DeliveryProfile | None:
+        return next((profile for profile in self.profiles if profile.id == profile_id), None)
+
+
+def confined_to(download_folder: str, local_root: str) -> bool:
+    """Whether a profile's ``local_root`` is the download folder or beneath it
+    (``path_within``: this host's separator, ``..`` and case rules)."""
+    return path_within(str(download_folder or "/download"), str(local_root or ""))

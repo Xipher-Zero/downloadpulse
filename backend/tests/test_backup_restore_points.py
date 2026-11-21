@@ -1,0 +1,2688 @@
+"""One DownloadPulse backup = one restore point, owned by services.backup.
+
+Covers the restore-point abstraction (list, create, add, save, remove), the
+validate-before-admission contract, the exact-match schema compatibility
+rule, retention independence, and the restore transaction: pre-restore safety
+backup, stage-then-validate-then-swap, the native-execution drain boundary,
+rollback, and post-restore authority through the normal startup sequence.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import sqlite3
+import time
+import uuid
+import zipfile
+from contextlib import closing
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import pytest
+import pytest_asyncio
+from fastapi import FastAPI
+
+import core.config as config
+import core.scheduler as scheduler
+import db.database as database
+from api.routes import router
+from application.service import ApplicationService
+from fake_integrations import MemoryExecutor, ParcelProvider
+from test_account_locale import supported  # noqa: F401  (a synthetic directory where de and ar are supported)
+from services import backup
+from transfers.applicability import ProviderApplicability
+from transfers.convergence_engine import TransferEngine
+from transfers.models import ExecutionState, TransferState
+from transfers.policy import TransferPolicy
+from transfers.recovery_repository import TransferRepository
+from transfers.registry import IntegrationRegistry
+from account_support import standalone_boundary
+
+pytestmark = pytest.mark.asyncio
+
+
+# --------------------------------------------------------------------------- #
+# fixtures
+# --------------------------------------------------------------------------- #
+
+@pytest_asyncio.fixture
+async def installation(tmp_path, monkeypatch):
+    """A real DB + config + backup folder; nothing in the backup path is faked."""
+    data = tmp_path / "data"
+    conf = tmp_path / "config"
+    data.mkdir()
+    conf.mkdir()
+    monkeypatch.setattr(database, "DB_PATH", data / "downloadpulse.db")
+    monkeypatch.setattr(config, "CONFIG_PATH", conf / "config.json")
+    # The run lock binds to the first event loop that waits on it; each test
+    # runs its own loop, so each gets its own (one) run lock.
+    monkeypatch.setattr(backup, "_BACKUP_RUN_LOCK", asyncio.Lock())
+    settings = config.AppSettings(backup_folder=str(tmp_path / "backups"), backup_enabled=True, backup_keep_days=7)
+    previous = config.get_settings()
+    config.apply_settings(settings)
+    config.save_settings(settings)
+    from db.migrations.v112 import migrate
+    await migrate(globally_paused=False)  # a fresh installation, exactly as startup creates it
+    yield tmp_path
+    config.apply_settings(previous)
+
+
+def _folder(root: Path) -> Path:
+    return root / "backups"
+
+
+def _visible(root: Path) -> list[str]:
+    folder = _folder(root)
+    return sorted(entry.name for entry in folder.iterdir()) if folder.exists() else []
+
+
+def _repack(package: Path, target: Path, *, drop=(), replace_members=None, extra=None) -> Path:
+    """Rewrite a real package with deliberate damage."""
+    replace_members = replace_members or {}
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(target, "w") as out:
+        for info in source.infolist():
+            if info.filename in drop:
+                continue
+            data = replace_members.get(info.filename, source.read(info.filename))
+            out.writestr(info.filename, data)
+        for name, data in (extra or {}).items():
+            out.writestr(name, data)
+    return target
+
+
+async def _chunks(path: Path, size: int = 64 * 1024):
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(size)
+            if not chunk:
+                return
+            yield chunk
+
+
+async def _saved_copy(point_id: str, destination: Path) -> Path:
+    package = backup.package_restore_point(point_id)
+    try:
+        destination.write_bytes(package.read_bytes())
+    finally:
+        package.unlink(missing_ok=True)
+    return destination
+
+
+# --------------------------------------------------------------------------- #
+# restore-point abstraction
+# --------------------------------------------------------------------------- #
+
+async def test_run_backup_is_listed_as_one_restore_point(installation):
+    result = await backup.run_backup()
+    assert not result["errors"]
+    points = backup.list_restore_points()
+    assert len(points) == 1
+    public = points[0].public()
+    assert set(public) == {"id", "created_at", "size_bytes", "contents"}
+    assert public["id"] == result["restore_point"]["id"]
+    assert public["contents"] == "DP State"
+    assert public["size_bytes"] > 0
+    # The operator-facing unit never exposes implementation files.
+    assert "downloadpulse.db" not in json.dumps(public) and "config.json" not in json.dumps(public)
+
+
+async def test_restore_point_manifest_records_the_exact_schema_version(installation):
+    point = await backup.create_restore_point()
+    manifest = json.loads((point.path / ".downloadpulse-backup.json").read_text())
+    assert manifest["schema_version"] == backup.schema_version(database.DB_PATH)
+    assert manifest["database"] == "downloadpulse.db"
+    assert manifest["timestamp"] == point.id
+
+
+async def test_create_refuses_to_leave_an_incomplete_restore_point(installation, monkeypatch):
+    def broken_copy(_source, _destination):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(backup, "_sqlite_backup", broken_copy)
+    with pytest.raises(Exception):
+        await backup.create_restore_point()
+    assert _visible(installation) == []
+
+
+async def test_looking_inside_a_backup_does_not_break_it(installation):
+    """The database member is self-contained: an ordinary read of it (an
+    operator inspecting a backup with sqlite3) leaves no sidecar behind that
+    would turn the restore point into an unrecognisable one."""
+    point = await backup.create_restore_point()
+    conn = sqlite3.connect(point.path / "downloadpulse.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        conn.execute("SELECT COUNT(*) FROM torrents").fetchone()
+    finally:
+        conn.close()
+    assert sorted(entry.name for entry in point.path.iterdir()) == [
+        ".downloadpulse-backup.json", "config.json", "downloadpulse.db"]
+    await backup.validate_restore_point(point.id)
+
+
+# --------------------------------------------------------------------------- #
+# Add Backup: validate completely, then admit
+# --------------------------------------------------------------------------- #
+
+async def _real_package(installation, name="saved.zip") -> tuple[str, Path]:
+    point = await backup.create_restore_point()
+    saved = await _saved_copy(point.id, installation / name)
+    backup.remove_restore_point(point.id)
+    return point.id, saved
+
+
+async def test_valid_package_is_admitted_with_its_own_identity(installation):
+    point_id, saved = await _real_package(installation)
+    assert backup.list_restore_points() == []
+    admitted = await backup.add_backup(_chunks(saved))
+    assert admitted.id == point_id
+    assert [point.id for point in backup.list_restore_points()] == [point_id]
+
+
+def _legacy(manifest: dict) -> dict:
+    """The manifest an earlier v1.0.13 wrote: no ``schema_version``/``database``."""
+    return {key: value for key, value in manifest.items() if key not in {"schema_version", "database"}}
+
+
+def _schema_drifted_database(package: Path, member: str) -> tuple[bytes, str]:
+    """Another version's database: a different schema, honestly recorded."""
+    with zipfile.ZipFile(package) as source:
+        raw = source.read(member)
+    path = package.with_suffix(".drift.db")
+    path.write_bytes(raw)
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE torrents ADD COLUMN drift_column TEXT")
+    conn.commit()
+    conn.close()
+    return path.read_bytes(), backup.schema_version(path)
+
+
+@pytest.mark.parametrize("damage", [
+    "not_a_zip", "traversal_member", "missing_database", "missing_config", "unknown_member",
+    "legacy_manifest_other_schema", "schema_mismatch", "manifest_disagrees_with_database", "corrupt_database", "manifest_errors", "unparseable_config",
+    "crc_corruption",
+])
+async def test_invalid_candidate_is_rejected_before_admission(installation, damage):
+    _point_id, saved = await _real_package(installation)
+    bad = installation / f"{damage}.zip"
+    manifest = json.loads(zipfile.ZipFile(saved).read(".downloadpulse-backup.json"))
+    if damage == "not_a_zip":
+        bad.write_bytes(b"this is not a DownloadPulse backup")
+    elif damage == "traversal_member":
+        _repack(saved, bad, extra={"../escape.txt": b"x"})
+    elif damage == "missing_database":
+        _repack(saved, bad, drop={"downloadpulse.db"})
+    elif damage == "missing_config":
+        _repack(saved, bad, drop={"config.json"})
+    elif damage == "unknown_member":
+        _repack(saved, bad, extra={"notes.txt": b"x"})
+    elif damage == "legacy_manifest_other_schema":
+        # A pre-change manifest records no schema: the packaged database decides.
+        drifted, _recorded = _schema_drifted_database(saved, "downloadpulse.db")
+        _repack(saved, bad, replace_members={"downloadpulse.db": drifted,
+                                             ".downloadpulse-backup.json": json.dumps(_legacy(manifest)).encode()})
+    elif damage == "schema_mismatch":
+        drifted, recorded = _schema_drifted_database(saved, "downloadpulse.db")
+        _repack(saved, bad, replace_members={"downloadpulse.db": drifted, ".downloadpulse-backup.json": json.dumps(
+            {**manifest, "schema_version": recorded}).encode()})
+    elif damage == "manifest_disagrees_with_database":
+        drifted, _recorded = _schema_drifted_database(saved, "downloadpulse.db")
+        _repack(saved, bad, replace_members={"downloadpulse.db": drifted})
+    elif damage == "corrupt_database":
+        _repack(saved, bad, replace_members={"downloadpulse.db": b"SQLite format 3\x00" + b"\x00" * 4096})
+    elif damage == "manifest_errors":
+        _repack(saved, bad, replace_members={".downloadpulse-backup.json": json.dumps(
+            {**manifest, "errors": ["database: failed"]}).encode()})
+    elif damage == "unparseable_config":
+        _repack(saved, bad, replace_members={"config.json": b"{not json"})
+    elif damage == "crc_corruption":
+        raw = bytearray(saved.read_bytes())
+        with zipfile.ZipFile(saved) as source:
+            info = source.getinfo("config.json")
+        # Flip one byte inside the stored member data, after its local header.
+        offset = info.header_offset + 30 + len(info.filename.encode()) + len(info.extra) + 2
+        raw[offset] ^= 0xFF
+        bad.write_bytes(bytes(raw))
+    before = _visible(installation)
+
+    with pytest.raises(backup.BackupRejected) as rejected:
+        await backup.add_backup(_chunks(bad))
+
+    assert rejected.value.message.startswith("Backup could not be added.")
+    if damage in {"legacy_manifest_other_schema", "schema_mismatch"}:
+        assert "unsupported version" in rejected.value.message
+    # Nothing was admitted, and no staging residue is left behind.
+    assert _visible(installation) == before
+    assert backup.list_restore_points() == []
+
+
+async def test_duplicate_restore_point_is_not_admitted_twice(installation):
+    point = await backup.create_restore_point()
+    saved = await _saved_copy(point.id, installation / "dup.zip")
+    with pytest.raises(backup.BackupRejected):
+        await backup.add_backup(_chunks(saved))
+    assert [item.id for item in backup.list_restore_points()] == [point.id]
+
+
+# --------------------------------------------------------------------------- #
+# Remove + retention
+# --------------------------------------------------------------------------- #
+
+async def test_remove_deletes_exactly_the_selected_restore_point(installation):
+    first = await backup.create_restore_point()
+    second = await backup.create_restore_point()
+    keep_days = config.get_settings().backup_keep_days
+    backup.remove_restore_point(first.id)
+    assert [point.id for point in backup.list_restore_points()] == [second.id]
+    assert config.get_settings().backup_keep_days == keep_days
+    with pytest.raises(backup.BackupRejected):
+        backup.remove_restore_point(first.id)
+
+
+async def test_remove_refuses_anything_that_is_not_a_restore_point(installation):
+    folder = _folder(installation)
+    folder.mkdir(parents=True, exist_ok=True)
+    stranger = folder / ("20260101_000000_" + "0" * 32)
+    stranger.mkdir()
+    (stranger / "keep.txt").write_text("not ours")
+    with pytest.raises(backup.BackupRejected):
+        backup.remove_restore_point(stranger.name)
+    with pytest.raises(backup.BackupRejected):
+        backup.remove_restore_point("../outside")
+    assert (stranger / "keep.txt").exists()
+
+
+async def test_retention_keeps_pruning_independently(installation):
+    old = await backup.create_restore_point()
+    stale = time.time() - 30 * 86400
+    os.utime(old.path, (stale, stale))
+    added_id, saved = await _real_package(installation, "kept.zip")
+    admitted = await backup.add_backup(_chunks(saved))
+    # Add Backup applies retention once it has admitted the copy.
+    assert old.id not in {point.id for point in backup.list_restore_points()}
+    result = await backup.run_backup()
+    remaining = {point.id for point in backup.list_restore_points()}
+    assert result["rotated"] == 0
+    # Admission time, not the package's age, starts an added backup's retention.
+    assert admitted.id == added_id and added_id in remaining
+
+
+# --------------------------------------------------------------------------- #
+# restore transaction (HTTP, real package, real SQLite, fake executor)
+# --------------------------------------------------------------------------- #
+
+def _universe(tmp_path, *, executor=None):
+    repository = TransferRepository()
+    registry = IntegrationRegistry()
+    provider = ParcelProvider()
+    provider.descriptor = replace(provider.descriptor,
+                                  request_types=frozenset({"parcel", "http", "https", "magnet", "torrent"}))
+    executor = executor or MemoryExecutor(repository.authorize_execution)
+    registry.register_provider(provider)
+    registry.register_executor(executor)
+    engine = TransferEngine(repository, registry, download_root=str(tmp_path / "files"),
+                            policy=TransferPolicy(adoption_stability_seconds=0))
+    service = ApplicationService(engine, lifecycle=(Lifecycle("a"), Lifecycle("b"), Lifecycle("c")))
+    service.test_executor = executor
+    return service
+
+
+class Lifecycle:
+    """An integration lifecycle that counts what was asked of it."""
+
+    def __init__(self, name):
+        self.name, self.starts, self.stops, self.fail_stop = name, 0, 0, False
+
+    async def start(self):
+        self.starts += 1
+
+    async def stop(self):
+        self.stops += 1
+        if self.fail_stop:
+            raise RuntimeError(f"{self.name} would not stop")
+
+
+def _counts(service):
+    return {item.name: (item.stops, item.starts) for item in service.lifecycle}
+
+
+@pytest_asyncio.fixture
+async def served(installation, monkeypatch):
+    monkeypatch.setattr(
+        ParcelProvider, "applicability",
+        property(lambda _provider: ProviderApplicability(generic_schemes=frozenset({"http", "https"}))),
+    )
+    scheduler_calls = []
+
+    async def start_scheduler(service=None):
+        scheduler_calls.append(("start", service))
+
+    async def stop_scheduler():
+        scheduler_calls.append(("stop", None))
+
+    monkeypatch.setattr("core.scheduler.start_scheduler", start_scheduler)
+    monkeypatch.setattr("core.scheduler.stop_scheduler", stop_scheduler)
+    monkeypatch.setattr("core.scheduler.scheduler_running", lambda: True)
+    composed = []
+
+    def compose():
+        service = _universe(installation)
+        composed.append(service)
+        return service
+
+    application = _universe(installation)
+    await application.engine.initialize()
+    app = FastAPI()
+    standalone_boundary(app)
+    app.state.application = application
+    app.state.compose = compose
+    app.include_router(router, prefix="/api")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        yield app, client, composed, scheduler_calls
+
+
+async def _submit(app, client, name):
+    response = await client.post("/api/links/add", json={"links": [f"https://fake.example/{name}"]})
+    assert response.status_code == 200, response.text
+    service = app.state.application
+    await service.resolve_pending()
+    await service.reconcile_executions()
+    return response.json()["id"]
+
+
+async def _ids(app):
+    return sorted(item.id for item in await app.state.application.repository.active())
+
+
+async def test_restore_replaces_state_and_keeps_the_safety_backup(served):
+    app, client, composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    point_b = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    later = await _submit(app, client, "later")
+    assert await _ids(app) == sorted([kept, later])
+    before_restore = app.state.application
+
+    response = await client.post("/api/admin/backups/restore", json={"id": point_b})
+    assert response.status_code == 200, response.text
+    report = response.json()
+
+    # B is the sole authority now, served by a freshly composed universe.
+    assert app.state.application is composed[-1] and app.state.application is not before_restore
+    assert await _ids(app) == [kept]
+    # The safety backup of A exists, is listed, and restores A.
+    listed = (await client.get("/api/admin/backups")).json()["backups"]
+    safety = report["safety_backup"]["id"]
+    assert safety in {item["id"] for item in listed} and point_b in {item["id"] for item in listed}
+    again = await client.post("/api/admin/backups/restore", json={"id": safety})
+    assert again.status_code == 200, again.text
+    assert await _ids(app) == sorted([kept, later])
+
+
+async def test_restore_drains_every_native_execution_before_the_swap(served, monkeypatch):
+    app, client, _composed, _calls = served
+    transfer_id = await _submit(app, client, "active")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    old = app.state.application
+    attempt = (await old.repository.artifacts(transfer_id))[0].execution
+    assert old.test_executor.jobs[attempt.attempt_id].state == ExecutionState.RUNNING
+    at_swap = []
+    original = backup.StagedRestore.activate
+
+    def observing_activate(staged):
+        at_swap.append(len(database_live_rows()))
+        return original(staged)
+
+    def database_live_rows():
+        with sqlite3.connect(database.DB_PATH) as conn:
+            return conn.execute(
+                "SELECT e.id FROM execution_attempts e JOIN download_files f ON f.execution_attempt_id=e.id "
+                "WHERE e.authorized=1").fetchall()
+
+    monkeypatch.setattr(backup.StagedRestore, "activate", observing_activate)
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+    assert response.status_code == 200, response.text
+    drain = response.json()["drain"]
+    assert drain["live_before"] == 1 and drain["live_after"] == 0
+    assert at_swap == [0]
+    # The pre-restore native job was stopped by its own executor ...
+    assert old.test_executor.jobs[attempt.attempt_id].state == ExecutionState.CANCELLED
+    # ... and the safety backup holds the transfer as paused, never cancelled.
+    safety = backup.restore_point(response.json()["safety_backup"]["id"])
+    with sqlite3.connect(safety.path / "downloadpulse.db") as conn:
+        status = conn.execute("SELECT status FROM torrents WHERE id=?", (transfer_id,)).fetchone()[0]
+    assert status != "cancelled"
+
+
+async def test_restored_active_history_is_reconciled_by_normal_startup(served):
+    app, client, composed, calls = served
+    transfer_id = await _submit(app, client, "historical")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    old = app.state.application
+    old_attempt = (await old.repository.artifacts(transfer_id))[0].execution
+
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+    assert response.status_code == 200, response.text
+
+    fresh = app.state.application
+    assert fresh is composed[-1]
+    # No pre-restore handle crossed: the fresh executor never saw the old job.
+    # The restore ran no recovery pass of its own; normal startup
+    # reconciliation -- the execution loop's first cycle once integrations
+    # have started (the scheduler is stubbed here) -- is what observes it.
+    assert old_attempt.attempt_id not in fresh.test_executor.jobs
+    assert ("observe", old_attempt) not in fresh.test_executor.calls
+    await fresh.integrations_started()
+    await fresh.reconcile_executions()
+    assert ("observe", old_attempt) in fresh.test_executor.calls
+    assert ("start", fresh) in calls
+    assert (await fresh.repository.get(transfer_id)).state != TransferState.CANCELLED
+
+
+async def test_invalid_restore_point_leaves_everything_unchanged(served):
+    app, client, _composed, calls = served
+    kept = await _submit(app, client, "kept")
+    point = backup.restore_point((await client.post("/api/admin/backup")).json()["restore_point"]["id"])
+    (point.path / "downloadpulse.db").write_bytes(b"corrupted")
+    later = await _submit(app, client, "later")
+    before = app.state.application
+    calls.clear()
+
+    response = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("Backup could not be restored.")
+    assert "left unchanged" in response.json()["detail"]
+    assert app.state.application is before
+    assert await _ids(app) == sorted([kept, later])
+    assert not await before.repository.globally_paused()
+    assert calls == []  # nothing was even quiesced
+    assert len(backup.list_restore_points()) == 1  # no safety backup for a refused restore
+
+
+async def test_staging_failure_after_quiescence_leaves_state_unchanged(served, monkeypatch):
+    app, client, _composed, calls = served
+    kept = await _submit(app, client, "kept")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    later = await _submit(app, client, "later")
+    before = app.state.application
+
+    def refuse(_staged):
+        raise backup.BackupRejected("restore", "staged database failed validation")
+
+    monkeypatch.setattr(backup.StagedRestore, "validate", refuse)
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+
+    assert response.status_code == 400
+    assert "left unchanged" in response.json()["detail"]
+    assert app.state.application is before
+    assert await _ids(app) == sorted([kept, later])
+    # Processing is returned to the state it was in, and the scheduler runs again.
+    assert not await before.repository.globally_paused()
+    assert calls[-1] == ("start", before)
+    assert not list(database.DB_PATH.parent.glob(".dp-restore-*"))
+
+
+async def test_restored_integration_readiness_never_holds_the_restore(served):
+    # The restored universe starts through the same lifetime owner: its core
+    # state is proven before the swap is accepted, but a restored integration
+    # that is still starting is neither a reason to wait nor to roll back.
+    app, client, composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    await _submit(app, client, "later")
+    release, starting = asyncio.Event(), asyncio.Event()
+    compose = app.state.compose
+
+    def compose_with_a_slow_integration():
+        service = compose()
+        slow = service.lifecycle[0]
+
+        async def held_start():
+            starting.set()
+            await release.wait()
+            slow.starts += 1
+
+        slow.start = held_start
+        return service
+
+    app.state.compose = compose_with_a_slow_integration
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+
+    assert response.status_code == 200, response.text
+    restored = app.state.application
+    assert restored is composed[-1]
+    await asyncio.wait_for(starting.wait(), timeout=5)
+    assert await _ids(app) == [kept]
+    assert _counts(restored)["a"] == (0, 0)  # still converging, and not reported started
+    release.set()
+    await restored.integrations_started()
+    assert _counts(restored) == {"a": (0, 1), "b": (0, 1), "c": (0, 1)}
+
+
+async def test_failed_restored_startup_rolls_back_to_the_pre_restore_state(served, monkeypatch):
+    app, client, composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    later = await _submit(app, client, "later")
+
+    import application.lifetime as lifetime
+    original = lifetime.start_application
+    attempts = []
+
+    async def failing_once(service):
+        attempts.append(service)
+        if len(attempts) == 1:
+            raise RuntimeError("restored startup failed")
+        return await original(service)
+
+    monkeypatch.setattr(lifetime, "start_application", failing_once)
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+
+    assert response.status_code == 400
+    assert "left unchanged" in response.json()["detail"]
+    assert await _ids(app) == sorted([kept, later])
+    assert app.state.application is composed[-1] and app.state.application is attempts[-1]
+    assert not list(database.DB_PATH.parent.glob(".dp-restore-*"))
+
+
+async def test_restore_refuses_to_swap_while_a_native_execution_cannot_be_released(served):
+    app, client, _composed, _calls = served
+    transfer_id = await _submit(app, client, "stuck")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    later = await _submit(app, client, "later")
+    service = app.state.application
+    executor = service.test_executor
+
+    async def unconfirmed(handle):
+        from transfers.models import ExecutionObservation
+        return ExecutionObservation(handle, ExecutionState.UNKNOWN)
+
+    executor.cancel = unconfirmed
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+
+    assert response.status_code == 409
+    assert "left unchanged" in response.json()["detail"]
+    assert await _ids(app) == sorted([transfer_id, later])
+    assert app.state.application is service
+
+
+async def test_an_interrupted_swap_is_reversed_before_startup(installation):
+    point = await backup.create_restore_point()
+    _set_user_version(7)  # live state diverges from the backup after it was taken
+    kept_config = config.CONFIG_PATH.read_bytes()
+    staged = await backup.stage_restore(point.id)
+    staged.validate()
+    staged.activate()  # the process "dies" here: no commit, no rollback
+    assert _user_version() == 0
+
+    assert backup.recover_interrupted_restore() is True
+
+    assert _user_version() == 7
+    assert config.CONFIG_PATH.read_bytes() == kept_config
+    assert not list(database.DB_PATH.parent.glob(".dp-restore-*"))
+    assert backup.recover_interrupted_restore() is False
+
+
+def _set_user_version(value: int) -> None:
+    conn = sqlite3.connect(database.DB_PATH)
+    conn.execute(f"PRAGMA user_version={int(value)}")
+    conn.commit()
+    conn.close()
+
+
+def _user_version() -> int:
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+async def test_save_endpoint_returns_the_same_portable_unit_add_accepts(served):
+    _app, client, _composed, _calls = served
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    saved = await client.get(f"/api/admin/backups/{point}/package")
+    assert saved.status_code == 200
+    assert f"downloadpulse-backup-{point}.zip" in saved.headers["content-disposition"]
+    removed = await client.delete(f"/api/admin/backups/{point}")
+    assert removed.status_code == 200
+    added = await client.post("/api/admin/backups",
+                              content=saved.content, headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    assert added.json()["backup"]["id"] == point
+    rejected = await client.post("/api/admin/backups", content=b"nope", headers={"Content-Type": "application/zip"})
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == ("Backup could not be added. "
+                                         "The selected file is not a valid DownloadPulse backup.")
+
+
+async def test_staging_abandoned_before_any_swap_is_dropped_at_startup(installation):
+    point = await backup.create_restore_point()
+    staged = await backup.stage_restore(point.id)  # the process "dies" before activation
+    assert list(database.DB_PATH.parent.glob(".dp-restore-*"))
+    live = backup.schema_version(database.DB_PATH)
+
+    assert backup.recover_interrupted_restore() is False  # nothing was swapped
+
+    assert not list(database.DB_PATH.parent.glob(".dp-restore-*"))
+    assert not list(config.CONFIG_PATH.parent.glob(".dp-restore-*"))
+    assert backup.schema_version(database.DB_PATH) == live
+    del staged
+
+
+
+# --------------------------------------------------------------------------- #
+# Gate 10 corrections: pre-change backups, refusal lifecycle, size contract
+# --------------------------------------------------------------------------- #
+
+async def test_a_pre_change_backup_saves_removes_adds_and_restores(served):
+    """A restore point written before manifests recorded ``schema_version`` and
+    ``database`` -- with the WAL-mode database copy that code produced -- is
+    judged by its own database: compatible, so the whole lifecycle works."""
+    app, client, _composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    point = backup.restore_point((await client.post("/api/admin/backup")).json()["restore_point"]["id"])
+    manifest_path = point.path / ".downloadpulse-backup.json"
+    manifest_path.write_text(json.dumps(_legacy(json.loads(manifest_path.read_text()))))
+    conn = sqlite3.connect(point.path / "downloadpulse.db")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    later = await _submit(app, client, "later")
+
+    saved = await client.get(f"/api/admin/backups/{point.id}/package")
+    assert saved.status_code == 200
+    assert (await client.delete(f"/api/admin/backups/{point.id}")).status_code == 200
+    added = await client.post("/api/admin/backups",
+                              content=saved.content, headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    assert added.json()["backup"]["id"] == point.id
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+    assert restored.status_code == 200, restored.text
+    assert await _ids(app) == [kept]
+    assert later not in await _ids(app)
+
+
+async def test_a_drain_refusal_touches_no_integration_lifecycle(served):
+    app, client, _composed, calls = served
+    await _submit(app, client, "stuck")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    service = app.state.application
+
+    async def unconfirmed(handle):
+        from transfers.models import ExecutionObservation
+        return ExecutionObservation(handle, ExecutionState.UNKNOWN)
+
+    service.test_executor.cancel = unconfirmed
+    calls.clear()
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+
+    assert response.status_code == 409
+    # Integrations were never stopped, so nothing is started again: no
+    # startup sequence runs for an application whose state was not replaced.
+    assert _counts(service) == {"a": (0, 0), "b": (0, 0), "c": (0, 0)}
+    assert calls == [("stop", None), ("start", service)]
+    assert not await service.repository.globally_paused()
+    assert app.state.application is service
+
+
+async def test_a_partial_integration_stop_restarts_only_what_was_stopped(served):
+    app, client, _composed, calls = served
+    kept = await _submit(app, client, "kept")
+    point = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    later = await _submit(app, client, "later")
+    service = app.state.application
+    a, b, c = service.lifecycle
+    # Stops run c, b, a: c stops, b fails, and a is still asked to stop (every
+    # integration gets its stop attempt); the refusal restarts c and a, never b.
+    b.fail_stop = True
+    calls.clear()
+    points = [item.id for item in backup.list_restore_points()]
+
+    response = await client.post("/api/admin/backups/restore", json={"id": point})
+
+    assert response.status_code == 409
+    assert "left unchanged" in response.json()["detail"]
+    assert _counts(service) == {"a": (1, 1), "b": (1, 0), "c": (1, 1)}
+    assert calls == [("stop", None), ("start", service)]
+    assert app.state.application is service
+    assert await _ids(app) == sorted([kept, later])
+    assert not await service.repository.globally_paused()
+    assert [item.id for item in backup.list_restore_points()] == points  # no safety backup was taken
+
+
+async def test_a_refusal_after_every_integration_stopped_restarts_each_once(served):
+    app, client, _composed, calls = served
+    await _submit(app, client, "kept")
+    point = backup.restore_point((await client.post("/api/admin/backup")).json()["restore_point"]["id"])
+    service = app.state.application
+    last = service.lifecycle[0]  # stops run c, b, a
+
+    async def stop_then_damage():
+        last.stops += 1
+        # The restore point breaks after pre-validation passed, so the refusal
+        # comes at revalidation -- once every integration is already stopped.
+        (point.path / "downloadpulse.db").write_bytes(b"corrupted")
+
+    last.stop = stop_then_damage
+    calls.clear()
+
+    response = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert response.status_code == 400
+    assert "left unchanged" in response.json()["detail"]
+    assert _counts(service) == {"a": (1, 1), "b": (1, 1), "c": (1, 1)}
+    assert calls == [("stop", None), ("start", service)]
+    assert not await service.repository.globally_paused()
+    assert app.state.application is service
+
+
+async def test_add_backup_has_no_size_ceiling_of_its_own_but_is_bounded_by_storage(installation, monkeypatch):
+    import main
+
+    # Whatever Save Backup produces is admissible again: neither the backup
+    # owner nor the HTTP body limit holds a fixed package size.
+    assert not hasattr(backup, "MAX_PACKAGE_BYTES")
+    seen = []
+
+    async def inner(scope, receive, send):
+        seen.append(scope["path"])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guard = main.RequestBodyLimitMiddleware(inner, max_bytes=1024)
+    huge = str(8 * 1024 ** 3).encode()
+    statuses = {}
+    for path in ("/api/admin/backups", "/api/links/add"):
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await guard({"type": "http", "method": "POST", "path": path,
+                     "headers": [(b"content-length", huge)]}, receive, send)
+        statuses[path] = sent[0]["status"]
+    assert statuses == {"/api/admin/backups": 204, "/api/links/add": 413}
+
+    # After ingress, what the package unpacks to must fit too: storage with
+    # room for the (compressed) zip but not for its declared members.
+    _point_id, saved = await _real_package(installation)
+    with zipfile.ZipFile(saved) as package:
+        declared = sum(info.file_size for info in package.infolist())
+    assert declared > 2 * saved.stat().st_size
+    real = backup.shutil.disk_usage
+
+    def cramped(path):
+        return real(path)._replace(free=2 * saved.stat().st_size)
+
+    monkeypatch.setattr(backup.shutil, "disk_usage", cramped)
+    with pytest.raises(backup.BackupRejected) as rejected:
+        await backup.add_backup(_chunks(saved))
+    assert rejected.value.reason == "space"
+    assert backup.list_restore_points() == []
+
+
+async def test_add_backup_refuses_a_stream_beyond_the_available_storage_while_it_arrives(served, monkeypatch):
+    """The ingress budget is the Backup Folder's free space: an upload larger
+    than that is refused while it streams, before the filesystem fills."""
+    _app, client, _composed, _calls = served
+    existing = (await client.post("/api/admin/backup")).json()["restore_point"]["id"]
+    before = sorted(entry.name for entry in backup.restore_point(existing).path.iterdir())
+    folder = backup.restore_point(existing).path.parent
+    budget = 1024 * 1024
+    real = backup.shutil.disk_usage
+    monkeypatch.setattr(backup.shutil, "disk_usage", lambda path: real(path)._replace(free=budget))
+    chunk, total, sent = b"\0" * 65536, 64 * 1024 * 1024, []
+
+    async def body():
+        while sum(sent) < total:
+            sent.append(len(chunk))
+            yield chunk
+
+    response = await client.post("/api/admin/backups", content=body(),
+                                 headers={"Content-Type": "application/zip"})
+
+    assert response.status_code == 507
+    assert response.json()["detail"] == ("Backup could not be added. "
+                                         "There is not enough free space in the Backup Folder for this backup.")
+    # Refused early: the stream stopped being read at the budget, far short of the upload.
+    assert budget <= sum(sent) <= budget + 2 * len(chunk) < total
+    # No incomplete staging, and the managed backups are exactly as they were.
+    assert [entry.name for entry in folder.iterdir() if entry.name.startswith(".dp-")] == []
+    assert [point.id for point in backup.list_restore_points()] == [existing]
+    assert sorted(entry.name for entry in backup.restore_point(existing).path.iterdir()) == before
+
+
+
+# --------------------------------------------------------------------------- #
+# the pinned pre-change restore point
+# --------------------------------------------------------------------------- #
+
+# Written by the pinned baseline's own backup service (6b691ef7), before the
+# transfer-owned selection-intent tables existed.
+BASELINE_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-6b691ef7.zip"
+
+
+def _managed_database(point) -> Path:
+    return point.path / json.loads((point.path / ".downloadpulse-backup.json").read_text())["database"]
+
+
+def _digest(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+async def test_the_pinned_pre_change_backup_is_upgraded_on_a_private_copy_and_restored(served):
+    """T12: admitted and validated by its own recorded schema, upgraded only
+    on the private staged copy through the canonical bootstrap, which then
+    equals the running schema; the managed backup is never modified."""
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=BASELINE_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        assert backup._fingerprint(conn) != live
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before and sorted(entry.name for entry in point.path.iterdir()) == sorted(
+        [".downloadpulse-backup.json", "config.json", managed.name])
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        assert [row[0] for row in conn.execute("SELECT id FROM torrents")] == [1]
+        assert conn.execute("SELECT COUNT(*) FROM transfer_file_selection_intents").fetchone()[0] == 0
+        assert conn.execute("SELECT decision FROM transfer_file_selections").fetchall() == [("explicit",)]
+    finally:
+        conn.close()
+
+
+# Written by the pinned baseline's own backup service (8b009d04), immediately
+# before the event journal existed: one transfer and its legacy "events" row.
+PRE_JOURNAL_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-8b009d04.zip"
+
+
+async def test_the_pinned_pre_journal_backup_restores_an_empty_journal_holding_only_its_restore(served):
+    """Validated by its own recorded schema, upgraded on the private staged
+    copy only, and activated: the restored journal starts empty -- the legacy
+    row is kept, never converted -- the replaced database's history is gone
+    with it, and the restore itself is recorded only in the restored database,
+    after activation."""
+    from db import event_journal
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    await event_journal.record_now(event_journal.JournalEvent(
+        "administration", "administration.marker", "info", "recorded before the restore", "installation"))
+    added = await client.post("/api/admin/backups", content=PRE_JOURNAL_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    with backup._open_frozen(_managed_database(point)) as conn:
+        assert backup._fingerprint(conn) in backup._UPGRADABLE_SCHEMAS and backup._fingerprint(conn) != live
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["journal_recorded"] is True
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        assert conn.execute("SELECT message FROM events").fetchall() == [("Transfer accepted",)]
+        assert conn.execute("SELECT event_type, subject_id FROM event_journal").fetchall() == [
+            ("administration.backup_restored", point.id)]
+        assert conn.execute("SELECT name FROM torrents").fetchall() == [("pre-journal.bin",)]
+    finally:
+        conn.close()
+
+
+# Written by the pinned baseline's own backup service (52012d4d), immediately
+# before transfers carried an operator queue promotion: one transfer and its
+# execution attempt.
+PRE_QUEUE_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-52012d4d.zip"
+
+
+async def test_the_pinned_pre_queue_backup_restores_with_no_queue_promotion(served):
+    """Validated by its own recorded schema, upgraded on the private staged
+    copy only through the canonical bootstrap, and activated: its transfer and
+    attempt are kept unchanged, its queue priority stays as recorded, and the
+    transfer holds no promotion it never had."""
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_QUEUE_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        assert backup._fingerprint(conn) in backup._UPGRADABLE_SCHEMAS and backup._fingerprint(conn) != live
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        assert conn.execute("SELECT name, priority, queue_promotion FROM torrents").fetchall() == [
+            ("pre-queue.bin", 0, None)]
+        assert conn.execute("SELECT COUNT(*) FROM execution_attempts").fetchone() == (1,)
+    finally:
+        conn.close()
+
+
+# Written by the pinned baseline's own backup service (03123a72), immediately
+# before accounts existed: its configuration holds that installation's one
+# local credential (operator / pre-account-secret), with password sign-in on.
+PRE_ACCOUNT_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-03123a72.zip"
+
+
+async def test_the_pinned_pre_account_backup_restores_its_operator_as_the_default_admin(served):
+    """Upgraded on the private staged copy only, then started: the backup's
+    configuration-file credential becomes the default Admin's and leaves the
+    file, the replaced accounts are gone with the replaced database, and no
+    session issued before the restore survives it."""
+    from auth import accounts
+    from auth.models import Principal
+    from auth.passwords import verify_password
+    from auth.sessions import session_store
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    replaced = await accounts.create_local_account("replaced-admin", "secret-pw", role="admin")
+    token, _ = session_store.create(Principal.password_session(replaced), lifetime_seconds=3600)
+    added = await client.post("/api/admin/backups", content=PRE_ACCOUNT_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    with backup._open_frozen(_managed_database(point)) as conn:
+        assert backup._fingerprint(conn) in backup._UPGRADABLE_SCHEMAS and backup._fingerprint(conn) != live
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert backup.schema_version(database.DB_PATH) == live
+    assert session_store.resolve(token) is None
+    assert await accounts.get_account(replaced.id) is None
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and operator.role is accounts.Role.ADMIN
+    assert verify_password(password_hash, "pre-account-secret")
+    persisted = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+    assert persisted["auth_password_enabled"] is True
+    assert not {"auth_username", "auth_password", "auth_password_hash"} & set(persisted)
+
+
+async def test_a_backup_that_would_leave_no_usable_admin_is_refused_before_anything_changes(served, tmp_path):
+    """A restore replaces every account and authentication setting. One whose
+    restored state no Admin could sign in to -- here a pre-account OIDC-only
+    installation, whose operator is bound to no account -- is refused before
+    anything is quiesced, backed up or replaced."""
+    app, client, _composed, calls = served
+    with zipfile.ZipFile(PRE_ACCOUNT_BACKUP) as package:
+        document = json.loads(package.read("config.json"))
+    for key in ("auth_username", "auth_password_hash"):
+        document.pop(key)
+    document.update(auth_password_enabled=False, auth_oidc_enabled=True, oidc_issuer_url="https://id.example/",
+                    oidc_client_id="downloadpulse", oidc_allow_all=True, public_base_url="https://pulse.example")
+    package = _repack(PRE_ACCOUNT_BACKUP, tmp_path / "oidc-only.zip",
+                      replace_members={"config.json": json.dumps(document)})
+    added = await client.post("/api/admin/backups", content=package.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    before, live = app.state.application, backup.schema_version(database.DB_PATH)
+    calls.clear()
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": added.json()["backup"]["id"]})
+
+    assert restored.status_code == 400
+    assert backup.NO_USABLE_ADMIN in restored.json()["detail"]
+    assert "left unchanged" in restored.json()["detail"]
+    assert app.state.application is before and calls == []
+    assert backup.schema_version(database.DB_PATH) == live
+    assert len(backup.list_restore_points()) == 1  # no safety backup for a refused restore
+
+
+# Written by the pinned Stage 1 build's own backup service (e77455d5),
+# immediately before submitter demand and Integration tokens: one transfer and
+# its request (no demand of any kind), and the operator's Admin password.
+PRE_DEMAND_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-e77455d5.zip"
+
+
+async def test_the_pinned_pre_demand_backup_restores_with_ownerless_legacy_demand(served):
+    """Upgraded on the private staged copy only: its transfer gets exactly one
+    ``legacy`` demand that names no owner (nobody is credited with history),
+    it holds no API token, and its accounts are kept."""
+    from auth import accounts
+    from auth.passwords import verify_password
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_DEMAND_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    with backup._open_frozen(_managed_database(point)) as conn:
+        assert backup._fingerprint(conn) in backup._UPGRADABLE_SCHEMAS and backup._fingerprint(conn) != live
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        assert conn.execute("SELECT transfer_id, account_id, origin, withdrawn_at FROM transfer_demands").fetchall() \
+            == [(1, None, "legacy", None)]
+        assert conn.execute("SELECT COUNT(*) FROM account_tokens").fetchone() == (0,)
+    finally:
+        conn.close()
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and verify_password(password_hash, "stage1-secret")
+
+
+# Written by the pinned build's own backup service (262a2595), immediately
+# before an account could enter its own email: a password Admin (operator /
+# pre-self-email-secret), a User with their own notification configuration,
+# three OIDC identities (email verified, stated unverified, none), one active
+# and one revoked Integration token, and one transfer whose demand is the
+# verified OIDC account's.
+PRE_SELF_EMAIL_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-262a2595.zip"
+
+
+async def test_the_pinned_pre_self_email_backup_restores_every_account_fact_with_no_self_entered_email(served):
+    """Upgraded on the private staged copy only through the canonical
+    bootstrap: accounts, OIDC bindings, demand ownership, tokens (the revoked
+    one still revoked and attributable) and notification configuration come
+    back as recorded, and no restored email is marked self-entered."""
+    from auth import accounts
+    from auth.passwords import verify_password
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_SELF_EMAIL_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "email_self_entered" not in {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        people = {row[0]: row[1:] for row in conn.execute(
+            "SELECT display_name, role, origin, email, email_verified, email_verified_known, email_self_entered "
+            "FROM accounts WHERE protected IS NULL")}
+        assert people == {
+            "Operator": ("admin", "local", "", 0, 0, 0),
+            "Reader": ("user", "local", "", 0, 0, 0),
+            "vera": ("user", "oidc", "vera@example.com", 1, 1, 0),
+            "una": ("user", "oidc", "una@example.com", 0, 1, 0),
+            "quiet": ("readonly", "oidc", "", 0, 0, 0),
+        }
+        ids = {row[0]: row[1] for row in conn.execute("SELECT display_name, id FROM accounts")}
+        assert sorted(conn.execute("SELECT subject, account_id FROM account_oidc_bindings").fetchall()) == sorted([
+            ("quiet-subject", ids["quiet"]), ("unverified-subject", ids["una"]), ("verified-subject", ids["vera"])])
+        assert conn.execute("SELECT transfer_id, account_id, origin, withdrawn_at FROM transfer_demands").fetchall() \
+            == [(1, ids["vera"], "submission", None)]
+        assert conn.execute("SELECT label, revoked_at IS NOT NULL FROM account_tokens ORDER BY label").fetchall() == [
+            ("kept-token", 0), ("retired-token", 1)]
+        assert conn.execute("SELECT account_id FROM account_notifications").fetchall() == [(ids["Reader"],)]
+    finally:
+        conn.close()
+    assert [token["label"] for token in await accounts.list_tokens(accounts.DEFAULT_INTEGRATION_ID)] == ["kept-token"]
+    from services import account_notifications
+    reader = await account_notifications.load(ids["Reader"])
+    assert (reader.discord_username, reader.stats_report_interval_hours) == ("Reader Bot", 12)
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.role is accounts.Role.ADMIN and verify_password(password_hash, "pre-self-email-secret")
+    # A restored account without an email may now enter one; one with an email may not.
+    await accounts.set_own_email(ids["quiet"], "quiet@example.com")
+    with pytest.raises(accounts.AccountRefused):
+        await accounts.set_own_email(ids["vera"], "other@example.com")
+
+
+# Written by the unchanged build immediately before external clients
+# (39affb81) with its own backup service: a password Admin (operator /
+# pre-external-secret), a "Sonarr" Integration account with one active and one
+# revoked token, and one transfer whose demand that active token submitted.
+PRE_EXTERNAL_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-39affb81.zip"
+
+
+async def test_the_pinned_pre_external_backup_restores_with_each_token_its_own_client(served):
+    """The previous build's real restore point, upgraded on its private staged
+    copy only through the canonical bootstrap: the external-client tables
+    arrive empty, every restored token is its own external client, its demand
+    survives as recorded, and the restored installation admits an external
+    job against that demand ledger normally."""
+    from auth import accounts
+    from auth.models import Principal
+    from auth.passwords import verify_password
+    from external.profiles import DeliveryProfile, ExternalDeliverySettings
+    from external.service import ExternalClients
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_EXTERNAL_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "client_id" not in {row[1] for row in conn.execute("PRAGMA table_info(account_tokens)")}
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name LIKE 'external_%'").fetchall() == []
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        tokens = conn.execute("SELECT id, client_id, label, revoked_at IS NOT NULL FROM account_tokens "
+                              "ORDER BY label").fetchall()
+        assert [(label, revoked, token == client_id) for token, client_id, label, revoked in tokens] == [
+            ("sonarr-main", 0, True), ("sonarr-old", 1, True)]
+        sonarr = conn.execute("SELECT id FROM accounts WHERE display_name='Sonarr'").fetchone()[0]
+        assert conn.execute("SELECT id, account_id, credential_id, origin, withdrawn_at FROM transfer_demands"
+                            ).fetchall() == [("demand-pre-external", sonarr, tokens[0][0], "submission", None)]
+        for table in ("external_jobs", "external_deliveries", "external_controls"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone() == (0,)
+    finally:
+        conn.close()
+    operator, password_hash = await accounts.local_credential("operator")
+    assert verify_password(password_hash, "pre-external-secret")
+    # The restored client works: its token's binding admits an external job.
+    account = await accounts.get_account(sonarr)
+    principal = Principal.integration_token(account, tokens[0][0], tokens[0][1])
+    from core import config as live_config
+    settings = live_config.get_settings()
+    live_config.apply_settings(settings.model_copy(update={"external_delivery": ExternalDeliverySettings(profiles=[
+        DeliveryProfile(id="tv", categories=["tv"], clients=[tokens[0][1]], local_root=settings.download_folder)])}))
+    try:
+        job, created = await ExternalClients(app.state.application).submit(principal, {
+            "idempotency_key": "after-restore", "category": "tv",
+            "source": {"kind": "magnet", "magnet": "magnet:?xt=urn:btih:" + "d" * 40 + "&dn=after.bin"}})
+    finally:
+        live_config.apply_settings(settings)
+    assert created and job["phase"] in {"accepted", "queued", "processing"}
+
+
+# Written by the unchanged build immediately before execution attempts carried
+# their executor's reported sources (4d7c8e45) with its own backup service:
+# one transfer whose execution attempt was recorded running.
+PRE_CONTRIBUTORS_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-4d7c8e45.zip"
+PRE_CONTRIBUTORS_ATTEMPT = "7b75b754cc884c06b06bc062163eecbf"
+
+
+async def test_the_pinned_pre_contributors_backup_keeps_its_attempts_with_no_reported_sources(served):
+    """The previous build's real restore point, upgraded on its private staged
+    copy only through the canonical bootstrap: every historical execution
+    attempt survives exactly as recorded, the new ``contributors`` column
+    arrives NULL ("not reported") for each, and Details reads them as
+    unknown -- nothing is reconstructed."""
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_CONTRIBUTORS_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "contributors" not in {row[1] for row in conn.execute("PRAGMA table_info(execution_attempts)")}
+        historical = conn.execute("SELECT id, transfer_id, artifact_id, executor_id, state, handle, progress "
+                                  "FROM execution_attempts ORDER BY id").fetchall()
+    assert [row[0] for row in historical] == [PRE_CONTRIBUTORS_ATTEMPT]
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        assert conn.execute("SELECT id, transfer_id, artifact_id, executor_id, state, handle, progress "
+                            "FROM execution_attempts ORDER BY id").fetchall() == historical
+        assert conn.execute("SELECT id, contributors FROM execution_attempts").fetchall() == [
+            (PRE_CONTRIBUTORS_ATTEMPT, None)]
+    finally:
+        conn.close()
+    assert await app.state.application.repository.execution_contributors(historical[0][1]) is None
+
+
+# Written by the released v1.0.13 build (34d4e8b2) with its own backup service,
+# the schema 1.0.14 kept until account appearance: a password Admin (operator /
+# pre-appearance-secret), a User (reader) with their own notification
+# configuration and a ReadOnly User (viewer).
+PRE_APPEARANCE_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.13-34d4e8b2.zip"
+
+
+async def test_the_released_1013_backup_restores_every_account_with_the_native_appearance(served):
+    """Upgraded on the private staged copy only through the canonical
+    bootstrap: every account, credential and notification configuration comes
+    back as recorded, the new ``account_appearance`` table arrives empty, and
+    each restored account then has -- and may change -- its own appearance."""
+    from auth import accounts
+    from auth.passwords import verify_password
+    from services import account_appearance, account_notifications
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_APPEARANCE_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "account_appearance" not in {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        people = {row[0]: row[1:] for row in conn.execute(
+            "SELECT display_name, role, origin, id FROM accounts WHERE protected IS NULL")}
+        assert {name: facts[:2] for name, facts in people.items()} == {
+            "Operator": ("admin", "local"), "Reader": ("user", "local"), "Viewer": ("readonly", "local")}
+        assert conn.execute("SELECT count(*) FROM account_appearance").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM login_appearance").fetchone() == (0,)
+    finally:
+        conn.close()
+    assert await account_appearance.login() == {"mode": "dark", "palette": "downloadpulse-dark"}
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.role is accounts.Role.ADMIN and verify_password(password_hash, "pre-appearance-secret")
+    reader_id = people["Reader"][2]
+    assert (await account_notifications.load(reader_id)).discord_username == "Reader Bot"
+    for _name, (_role, _origin, account_id) in people.items():
+        assert await account_appearance.load(account_id) == account_appearance.DEFAULT
+    saved = await account_appearance.update(reader_id, account_appearance.AppearanceUpdate(
+        mode="light", light_palette="nord-light"))
+    assert saved == {"mode": "light", "dark_palette": "downloadpulse-dark", "light_palette": "nord-light"}
+    assert await account_appearance.load(people["Viewer"][2]) == account_appearance.DEFAULT
+
+
+# Written by the 1.0.14 build immediately before usernames were the account's
+# own (0f2c2825) with its own backup service: the default Admin with a password
+# (operator / pre-username-secret), a local User (reader), an OIDC-only User
+# first signed in as bigsky whose display name is now Sierra, and an OIDC-only
+# ReadOnly User whose display name, reader, is the local User's username.
+PRE_USERNAME_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-0f2c2825.zip"
+
+
+async def test_a_backup_from_before_account_usernames_restores_every_account_with_one(served):
+    """Upgraded on the private staged copy only through the canonical
+    bootstrap: each local credential's name is its account's username and
+    still signs in with its password; each OIDC-only account takes its stored
+    display name, made unique; and the credentials keep passwords alone."""
+    from auth import accounts
+    from auth.passwords import verify_password
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_USERNAME_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    people = {row["display_name"]: (row["username"], row["role"], row["has_password"])
+              for row in await accounts.list_accounts()}
+    assert people == {"Administrator": ("operator", "admin", True), "Automation": ("", "integration", False),
+                      "Reader": ("reader", "user", True), "Sierra": ("Sierra", "user", False),
+                      "reader": ("reader-2", "readonly", False)}
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and verify_password(password_hash, "pre-username-secret")
+    conn = sqlite3.connect(database.DB_PATH)
+    try:
+        assert [row[1] for row in conn.execute("PRAGMA table_info(account_local_credentials)")] == [
+            "account_id", "password_hash", "updated_at"]
+    finally:
+        conn.close()
+
+
+# Written by the 1.0.14 build immediately before the installation's login
+# appearance (be62e8d2) with its own backup service: the default Admin with a
+# password (operator / pre-login-appearance-secret), an Admin (ann) whose own
+# appearance is Light / Catppuccin Latte, and a User (reader) with Dracula.
+PRE_LOGIN_APPEARANCE_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-be62e8d2.zip"
+
+
+async def test_a_backup_from_before_the_login_appearance_restores_with_the_native_one(served):
+    """Upgraded on the private staged copy only through the canonical
+    bootstrap: the new ``login_appearance`` table arrives empty, so the sign-in
+    page is DownloadPulse Dark -- no Admin's own appearance is read to choose
+    one -- and every account keeps its own appearance and password."""
+    from auth import accounts
+    from auth.passwords import verify_password
+    from services import account_appearance
+
+    app, client, _composed, _calls = served
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=PRE_LOGIN_APPEARANCE_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "login_appearance" not in {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert conn.execute("SELECT count(*) FROM login_appearance").fetchone() == (0,)
+    assert await account_appearance.login() == {"mode": "dark", "palette": "downloadpulse-dark"}
+    people = {row["username"]: row["id"] for row in await accounts.list_accounts() if row["username"]}
+    assert await account_appearance.load(people["ann"]) == {
+        "mode": "light", "dark_palette": "downloadpulse-dark", "light_palette": "catppuccin-latte"}
+    assert (await account_appearance.load(people["reader"]))["dark_palette"] == "dracula"
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and verify_password(password_hash, "pre-login-appearance-secret")
+
+
+async def test_a_new_backup_brings_back_the_login_appearance_it_recorded(served):
+    from auth import accounts
+    from services import account_appearance
+
+    _app, client, _composed, _calls = served
+    admin = (await accounts.create_local_account("ann", "ann-secret", role="admin")).id
+    await account_appearance.update(admin, account_appearance.AppearanceUpdate(mode="light",
+                                                                               light_palette="flexoki-light"))
+    await account_appearance.publish(admin, account_appearance.LoginAppearance(mode="light", palette="flexoki-light"))
+    point = await backup.create_restore_point()
+    await account_appearance.update(admin, account_appearance.AppearanceUpdate(mode="dark", dark_palette="dracula"))
+    await account_appearance.publish(admin, account_appearance.LoginAppearance(mode="dark", palette="dracula"))
+    assert await account_appearance.login() == {"mode": "dark", "palette": "dracula"}
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert await account_appearance.login() == {"mode": "light", "palette": "flexoki-light"}
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert conn.execute("SELECT id, mode, palette FROM login_appearance").fetchall() == [
+            (1, "light", "flexoki-light")]
+
+
+async def test_an_unregistered_neighbour_of_the_pinned_schema_is_refused_and_changes_nothing(served, tmp_path):
+    """Only the exact pinned predecessor is upgradable: the same backup with a
+    schema one column away is an unsupported version, refused before
+    admission, and the active installation is untouched."""
+    app, client, _composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    live, live_digest = backup.schema_version(database.DB_PATH), _digest(database.DB_PATH)
+    drifted, recorded = _schema_drifted_database(PRE_SELF_EMAIL_BACKUP, "downloadpulse.db")
+    assert recorded not in backup._UPGRADABLE_SCHEMAS and recorded != live
+    manifest = json.loads(zipfile.ZipFile(PRE_SELF_EMAIL_BACKUP).read(".downloadpulse-backup.json"))
+    package = _repack(PRE_SELF_EMAIL_BACKUP, tmp_path / "neighbour.zip", replace_members={
+        "downloadpulse.db": drifted, ".downloadpulse-backup.json": json.dumps({**manifest, "schema_version": recorded})})
+
+    refused = await client.post("/api/admin/backups", content=package.read_bytes(),
+                                headers={"Content-Type": "application/zip"})
+
+    assert refused.status_code == 400 and "unsupported version" in refused.json()["detail"]
+    assert backup.list_restore_points() == []
+    assert backup.schema_version(database.DB_PATH) == live and _digest(database.DB_PATH) == live_digest
+    assert await _ids(app) == [kept]
+
+
+async def test_a_failed_upgrade_of_the_staged_copy_leaves_the_live_state_and_the_backup_untouched(
+        served, monkeypatch):
+    app, client, _composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    added = await client.post("/api/admin/backups", content=BASELINE_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    point = backup.restore_point(added.json()["backup"]["id"])
+    before = _digest(_managed_database(point))
+
+    async def broken(path=None):
+        raise RuntimeError("upgrade failed")
+
+    monkeypatch.setattr(database, "init_db", broken)
+    response = await client.post("/api/admin/backups/restore", json={"id": point.id})
+    assert response.status_code == 400
+    assert await _ids(app) == [kept]
+    assert _digest(_managed_database(point)) == before
+    assert not list(database.DB_PATH.parent.glob(".dp-restore-*"))
+    assert not (database.DB_PATH.parent / ".dp-restore-journal.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# scheduled cadence (durable, restart-safe) + age OR count retention
+# --------------------------------------------------------------------------- #
+
+class _Stopped(Exception):
+    """The end of one scheduler lifetime in a test."""
+
+
+def _clock(monkeypatch) -> list[float]:
+    """The backup owner's wall clock, under the test's control."""
+    clock = [time.time()]
+    monkeypatch.setattr(backup, "time", SimpleNamespace(time=lambda: clock[0]), raising=False)
+    monkeypatch.setattr(backup, "_schedule_retry_at", 0.0, raising=False)
+    return clock
+
+
+async def _scheduler_lifetime(monkeypatch, clock) -> None:
+    """One process start of the real backup loop: its readiness delay and its
+    first pass. The next sleep ends that lifetime, as a restart would."""
+    sleeps = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) > 1:
+            raise _Stopped
+        clock[0] += seconds
+
+    monkeypatch.setattr(scheduler, "application", None)
+    monkeypatch.setattr(scheduler, "asyncio", SimpleNamespace(sleep=sleep))
+    with pytest.raises(_Stopped):
+        await scheduler.backup_loop()
+
+
+def _policy(**values) -> None:
+    """Persist backup settings as the operator would (the fixture restores)."""
+    settings = config.get_settings().model_copy(update=values)
+    config.apply_settings(settings)
+    config.save_settings(settings)
+
+
+def _age(point_path: Path, seconds: float) -> None:
+    stamp = time.time() - seconds
+    os.utime(point_path, (stamp, stamp))
+
+
+async def _seed(count: int, age_of) -> list[str]:
+    """``count`` valid managed restore points, copies of one real one, each
+    ``age_of(index)`` seconds old. Returns their ids, newest first."""
+    origin = await backup.create_restore_point()
+    folder = origin.path.parent
+    now = time.time()
+    seeded = []
+    for index in range(count):
+        stamp = now - age_of(index)
+        point_id = f"{datetime.fromtimestamp(stamp, timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
+        target = folder / point_id
+        shutil.copytree(origin.path, target)
+        manifest = target / ".downloadpulse-backup.json"
+        manifest.write_text(json.dumps({**json.loads(manifest.read_text()), "timestamp": point_id}))
+        os.utime(target, (stamp, stamp))
+        seeded.append((stamp, point_id))
+    backup.remove_restore_point(origin.id)
+    return [point_id for _stamp, point_id in sorted(seeded, reverse=True)]
+
+
+def _listed() -> list[str]:
+    return [point.id for point in backup.list_restore_points()]
+
+
+async def test_restarts_inside_the_backup_interval_take_no_scheduled_backup(installation, monkeypatch):
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)  # a fresh installation: its first scheduled backup
+    first = _listed()
+    assert len(first) == 1
+    for _restart in range(4):  # restarted ten minutes later, again and again
+        clock[0] += 600
+        await _scheduler_lifetime(monkeypatch, clock)
+    assert _listed() == first
+    clock[0] += 24 * 3600  # 24 hours after the scheduled backup, not after a start
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 2
+
+
+async def test_manual_imported_and_safety_backups_never_move_the_scheduled_clock(installation, monkeypatch):
+    clock = _clock(monkeypatch)
+    _imported_id, saved = await _real_package(installation, "imported.zip")
+    await _scheduler_lifetime(monkeypatch, clock)  # the scheduled backup at T
+    clock[0] += 23 * 3600
+    await backup.run_backup()  # Run Backup
+    await backup.add_backup(_chunks(saved))  # Add Backup
+    await backup.create_restore_point()  # a mandatory pre-restore / pre-reset safety backup
+    count = len(_listed())
+    await _scheduler_lifetime(monkeypatch, clock)  # T + 23 h: not due
+    assert len(_listed()) == count
+    clock[0] += 3600
+    await _scheduler_lifetime(monkeypatch, clock)  # T + 24 h: due, however recent the others are
+    assert len(_listed()) == count + 1
+
+
+async def test_forty_backups_from_two_days_converge_to_the_newest_seven_without_a_new_backup(
+        installation, monkeypatch):
+    _policy(backup_enabled=False, backup_keep_days=7, backup_max_retained=7)
+    seeded = await _seed(40, lambda index: 2 * 86400 - index * 60)  # every one within age retention
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)  # a start: retention only, creation is disabled
+    assert _listed() == seeded[:7]
+
+
+@pytest.mark.parametrize("outcome", ["restored", "refused", "rolled_back"])
+async def test_a_restore_keeps_its_source_and_safety_backup_until_it_resolves_under_a_one_backup_limit(
+        served, monkeypatch, outcome):
+    app, client, _composed, _calls = served
+    import application.lifetime as lifetime
+    if outcome == "refused":
+        def refused(_staged):
+            raise RuntimeError("staged state is not valid")
+        monkeypatch.setattr(backup.StagedRestore, "validate", refused)
+    elif outcome == "rolled_back":
+        original_start, attempts = lifetime.start_application, []
+
+        async def failing_once(service):
+            attempts.append(service)
+            if len(attempts) == 1:
+                raise RuntimeError("restored startup failed")
+            return await original_start(service)
+
+        monkeypatch.setattr(lifetime, "start_application", failing_once)
+    _policy(backup_enabled=False, backup_max_retained=1)
+    clock = _clock(monkeypatch)
+    extra = await backup.create_restore_point()
+    source = await backup.create_restore_point()
+    _age(extra.path, 300)
+    _age(source.path, 200)
+    original = backup.stage_restore
+    during = []
+
+    async def staged_while_a_retention_pass_lands(point_id):
+        await _scheduler_lifetime(monkeypatch, clock)
+        during.append(set(_listed()))
+        return await original(point_id)
+
+    monkeypatch.setattr(backup, "stage_restore", staged_while_a_retention_pass_lands)
+    response = await client.post("/api/admin/backups/restore", json={"id": source.id})
+    assert response.status_code == (200 if outcome == "restored" else 400), response.text
+    safety = next(point_id for point_id in during[0] if point_id not in {source.id, extra.id})
+    assert {source.id, safety} <= during[0]  # both still needed: neither is pruned
+    assert extra.id not in during[0]  # nothing protects it from the count limit
+    assert _listed() == [safety]  # the restore resolved: the ordinary policy converges
+
+
+def _record() -> dict:
+    return json.loads((database.DB_PATH.parent / ".dp-backup-schedule.json").read_text())
+
+
+async def test_a_fresh_installation_records_its_first_scheduled_backup_beside_the_live_database(
+        installation, monkeypatch):
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)
+    record_path = database.DB_PATH.parent / ".dp-backup-schedule.json"
+    assert record_path.is_file() and (record_path.stat().st_mode & 0o777) == 0o600
+    assert _record() == {"last_scheduled": clock[0], "pending": None}
+    assert len(_listed()) == 1
+    assert not _folder(installation).joinpath(".dp-backup-schedule.json").exists()
+
+
+async def test_disable_reenable_and_interval_changes_follow_the_last_scheduled_backup(installation, monkeypatch):
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)  # scheduled at T
+    start = clock[0]
+    _policy(backup_enabled=False)
+    clock[0] = start + 25 * 3600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 1  # disabled: due, but never created
+    assert _record()["last_scheduled"] == start
+    _policy(backup_enabled=True, backup_interval_hours=48)
+    await _scheduler_lifetime(monkeypatch, clock)  # re-enabled, lengthened: T + 26 h is not due
+    assert len(_listed()) == 1
+    _policy(backup_interval_hours=6)
+    await _scheduler_lifetime(monkeypatch, clock)  # shortened: due at once, exactly once
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 2
+    second = _record()["last_scheduled"]
+    clock[0] = second + 5 * 3600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 2
+    clock[0] = second + 6 * 3600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 3
+
+
+async def test_a_failed_scheduled_backup_records_no_success_and_is_retried_on_a_bounded_cadence(
+        installation, monkeypatch):
+    clock = _clock(monkeypatch)
+    real_backup, attempts = backup._sqlite_backup, []
+
+    def full_disk(source, destination):
+        attempts.append(destination)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(backup, "_sqlite_backup", full_disk)
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert _listed() == [] and len(attempts) == 1
+    assert _record()["last_scheduled"] is None  # no false success
+    assert not [entry for entry in _folder(installation).iterdir() if entry.name.startswith(".dp-staging-")]
+    for _pass in range(3):  # the loop keeps evaluating every few minutes...
+        clock[0] += 300
+        await _scheduler_lifetime(monkeypatch, clock)
+    assert len(attempts) == 1  # ...but a failure is not retried immediately and continuously
+    monkeypatch.setattr(backup, "_sqlite_backup", real_backup)
+    clock[0] += 3600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 1
+    assert _record() == {"last_scheduled": clock[0], "pending": None}
+
+
+async def test_an_upgraded_installation_bootstraps_its_clock_once_from_its_newest_backup(installation, monkeypatch):
+    seeded = await _seed(5, lambda index: 3600 * (index + 1))  # backups 1..5 hours old, no record yet
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)  # the first start of the new build
+    assert _listed() == seeded  # no extra copy
+    newest = backup.restore_point(seeded[0]).path.stat().st_mtime
+    assert _record()["last_scheduled"] == newest
+    await backup.run_backup()  # later manual backups never re-derive the clock
+    clock[0] = newest + 24 * 3600 + 1
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 7
+
+
+@pytest.mark.parametrize("damage", ["missing", "malformed", "future", "symlink"])
+async def test_a_missing_damaged_or_future_record_never_floods(installation, monkeypatch, damage):
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)
+    record_path = database.DB_PATH.parent / ".dp-backup-schedule.json"
+    if damage == "missing":
+        record_path.unlink()
+    elif damage == "malformed":
+        record_path.write_text('{"last_scheduled": "yesterday"')
+    elif damage == "future":
+        record_path.write_text(json.dumps({"last_scheduled": clock[0] + 10 * 86400, "pending": None}))
+    else:
+        elsewhere = installation / "elsewhere.json"
+        elsewhere.write_text(json.dumps({"last_scheduled": 0, "pending": None}))
+        record_path.unlink()
+        record_path.symlink_to(elsewhere)
+    for _restart in range(3):
+        clock[0] += 600
+        await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 1
+    assert not record_path.is_symlink()
+    clock[0] += 24 * 3600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 2  # one interval later, never never
+
+
+async def test_changing_the_backup_folder_does_not_reset_the_scheduled_clock(installation, monkeypatch):
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)
+    recorded = _record()
+    _policy(backup_folder=str(installation / "elsewhere"))
+    clock[0] += 3600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert _listed() == []  # nothing new in the new folder: not due
+    assert _record() == recorded
+
+
+async def test_the_record_is_no_restore_point_and_survives_restore_even_inside_the_data_directory(
+        installation, monkeypatch):
+    _policy(backup_folder=str(database.DB_PATH.parent), backup_max_retained=1, backup_keep_days=1)
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)
+    record_path = database.DB_PATH.parent / ".dp-backup-schedule.json"
+    recorded = record_path.read_bytes()
+    point = backup.list_restore_points()[0]
+    assert ".dp-backup-schedule.json" not in point.public()["id"]
+    assert ".dp-backup-schedule.json" not in json.loads((point.path / ".downloadpulse-backup.json").read_text())["files"]
+    old = time.time() - 30 * 86400
+    os.utime(record_path, (old, old))
+    assert await backup.apply_retention() == (0, 0)  # never counted, never aged out
+    staged = await backup.stage_restore(point.id)
+    staged.validate()
+    staged.activate()
+    assert all(".dp-backup-schedule.json" not in move for pair in staged.moves for move in pair)
+    assert backup.recover_interrupted_restore() is True  # an interrupted restore, reversed
+    staged = await backup.stage_restore(point.id)
+    staged.validate()
+    staged.activate()
+    staged.commit()  # and a completed one
+    assert record_path.read_bytes() == recorded
+
+
+async def test_a_crash_between_the_restore_point_and_its_record_takes_no_second_backup(installation, monkeypatch):
+    clock = _clock(monkeypatch)
+
+    class Crash(BaseException):
+        pass
+
+    real_write = backup._write_schedule
+
+    def crashing_settlement(last, pending=None):
+        if pending is None and last is not None:
+            raise Crash  # the process dies after the restore point, before its record
+        real_write(last, pending)
+
+    monkeypatch.setattr(backup, "_write_schedule", crashing_settlement)
+    with pytest.raises(Crash):
+        await backup.run_scheduled_backup()
+    monkeypatch.setattr(backup, "_write_schedule", real_write)
+    created = _listed()
+    assert len(created) == 1 and _record()["pending"] == created[0]
+    clock[0] += 600
+    await _scheduler_lifetime(monkeypatch, clock)  # the restart settles it as the success it was
+    assert _listed() == created and _record()["pending"] is None
+
+
+async def test_a_crash_inside_a_scheduled_backup_is_never_a_success(installation, monkeypatch):
+    clock = _clock(monkeypatch)
+
+    class Crash(BaseException):
+        pass
+
+    real_backup = backup._sqlite_backup
+
+    def dies(source, destination):
+        raise Crash
+
+    monkeypatch.setattr(backup, "_sqlite_backup", dies)
+    with pytest.raises(Crash):
+        await backup.run_scheduled_backup()
+    monkeypatch.setattr(backup, "_sqlite_backup", real_backup)
+    assert _listed() == [] and _record()["pending"] is not None
+    clock[0] += 600
+    await _scheduler_lifetime(monkeypatch, clock)
+    assert len(_listed()) == 1  # due, exactly once
+    assert _record()["pending"] is None
+
+
+async def test_concurrent_scheduled_passes_take_one_backup_for_one_due_interval(installation, monkeypatch):
+    _clock(monkeypatch)
+    await asyncio.gather(backup.run_scheduled_backup(), backup.run_scheduled_backup(), backup.run_backup())
+    scheduled = _record()
+    assert len(_listed()) == 2  # one scheduled, one Run Backup
+    await backup.run_scheduled_backup()
+    assert len(_listed()) == 2 and _record() == scheduled
+
+
+async def test_a_backup_older_than_the_age_limit_is_pruned_below_the_count_limit(installation, monkeypatch):
+    _policy(backup_enabled=False, backup_keep_days=7, backup_max_retained=7)
+    seeded = await _seed(3, lambda index: [3600, 7200, 8 * 86400][index])
+    assert await backup.apply_retention() == (1, 0)
+    assert _listed() == seeded[:2]
+
+
+async def test_every_kind_of_restore_point_counts_and_an_added_one_ranks_by_admission(installation, monkeypatch):
+    imported_id, saved = await _real_package(installation, "imported.zip")  # the OLDEST identity
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)
+    scheduled = _listed()[0]
+    manual = (await backup.run_backup())["timestamp"]
+    safety = (await backup.create_restore_point()).id
+    for point_id, seconds in ((scheduled, 400), (manual, 300), (safety, 200)):
+        _age(backup.restore_point(point_id).path, seconds)
+    _policy(backup_max_retained=2)
+    admitted = await backup.add_backup(_chunks(saved))  # admitted now: the newest by admission
+    assert admitted.id == imported_id
+    assert set(_listed()) == {imported_id, safety}
+
+
+async def test_a_tie_in_creation_time_is_broken_by_identity(installation, monkeypatch):
+    _policy(backup_enabled=False, backup_max_retained=1)
+    seeded = await _seed(2, lambda index: 3600)
+    stamp = time.time() - 3600
+    for point_id in seeded:
+        os.utime(backup.restore_point(point_id).path, (stamp, stamp))
+    assert await backup.apply_retention() == (0, 1)
+    assert _listed() == [max(seeded)]
+
+
+async def test_retention_never_touches_or_counts_anything_it_does_not_own(installation, monkeypatch):
+    _policy(backup_enabled=False, backup_keep_days=1, backup_max_retained=1)
+    seeded = await _seed(2, lambda index: [3600, 7200][index])
+    folder = _folder(installation)
+    outside = installation / "outside-point"
+    shutil.copytree(backup.restore_point(seeded[0]).path, outside)
+    strangers = {
+        "20200101_000000": "dir",  # restore-point name, no manifest
+        "20200101_000001_" + "1" * 32: "foreign-manifest",
+        "20200101_000002_" + "2" * 32: "symlink",
+        "20200101_000003": "file",
+        ".dp-staging-" + "3" * 32: "dir",
+        ".dp-package-" + "4" * 32 + ".zip": "file",
+        "downloadpulse-backup-20200101_000004.zip": "file",
+        "notes.txt": "file",
+    }
+    for name, kind in strangers.items():
+        entry = folder / name
+        if kind == "dir":
+            entry.mkdir()
+            (entry / "keep.txt").write_text("keep")
+        elif kind == "foreign-manifest":
+            entry.mkdir()
+            (entry / ".downloadpulse-backup.json").write_text(json.dumps({"kind": "someone-else"}))
+        elif kind == "symlink":
+            entry.symlink_to(outside, target_is_directory=True)
+        else:
+            entry.write_text("keep")
+        old = time.time() - 365 * 86400
+        os.utime(entry, (old, old), follow_symlinks=False)
+    assert await backup.apply_retention() == (0, 1)  # only the older of its own two
+    assert _listed() == seeded[:1]
+    assert {entry.name for entry in folder.iterdir()} == set(strangers) | {seeded[0]}
+    assert (outside / ".downloadpulse-backup.json").exists()
+
+
+async def test_an_upgrade_prunes_thirty_daily_backups_to_the_newest_seven_at_its_first_start(
+        installation, monkeypatch, caplog):
+    _policy(backup_keep_days=30)
+    document = json.loads(config.CONFIG_PATH.read_text())
+    document.pop("backup_max_retained", None)  # written before the setting existed
+    config.CONFIG_PATH.write_text(json.dumps(document))
+    upgraded = config.load_settings()
+    assert upgraded.backup_max_retained == 7 and upgraded.backup_keep_days == 30
+    config.apply_settings(upgraded)
+    seeded = await _seed(30, lambda index: index * 86400 + 3600)  # daily, all within 30 days
+    clock = _clock(monkeypatch)
+    caplog.set_level("INFO", logger="downloadpulse.backup")
+    await _scheduler_lifetime(monkeypatch, clock)  # no confirmation, no new backup
+    assert _listed() == seeded[:7]
+    summaries = [record.getMessage() for record in caplog.records if "retention removed" in record.getMessage()]
+    assert summaries == ["Backup retention removed 23 backup(s): 0 older than 30 day(s), 23 beyond the newest 7"]
+
+
+async def test_the_count_setting_defaults_validates_and_round_trips(installation):
+    from core.config_validator import validate_and_sanitise
+    from pydantic import ValidationError
+
+    assert config.AppSettings().backup_max_retained == 7
+    assert validate_and_sanitise(config.AppSettings(backup_max_retained=0)).backup_max_retained == 1
+    assert validate_and_sanitise(config.AppSettings(backup_max_retained=1000)).backup_max_retained == 365
+    with pytest.raises(ValidationError):
+        config.AppSettings(backup_max_retained="many")
+    _policy(backup_max_retained=12)
+    assert config.load_settings().backup_max_retained == 12
+    assert config.AppSettings().stats_snapshot_keep_days == 30  # statistics retention is its own
+
+
+async def test_an_interrupted_restore_keeps_both_points_until_startup_recovery_resolves_it(
+        installation, monkeypatch):
+    """Gate 5: a scheduled backup, restarts without duplicates, then a restore
+    under a one-backup limit that dies after its safety backup -- before the
+    swap and, separately, after it -- and the next start."""
+    clock = _clock(monkeypatch)
+    await _scheduler_lifetime(monkeypatch, clock)
+    clock[0] += 600
+    await _scheduler_lifetime(monkeypatch, clock)
+    source = _listed()
+    assert len(source) == 1  # no duplicate after the restart
+    folder = _folder(installation)
+    (folder / "notes.txt").write_text("keep")
+    _policy(backup_max_retained=1)
+    _age(backup.restore_point(source[0]).path, 120)
+
+    for crash in ("before_swap", "after_swap"):
+        # The restore, in a process that dies after its safety backup; what it
+        # held in memory dies with it.
+        safety = await backup.create_restore_point()
+        staged = await backup.stage_restore(source[0])
+        if crash == "after_swap":
+            staged.validate()
+            staged.activate()
+            # Even out of order, an undecided swap prunes nothing.
+            assert await backup.apply_retention() == (0, 0)
+        assert set(_listed()) == {source[0], safety.id}
+        # The next start: interrupted-restore recovery first...
+        assert backup.recover_interrupted_restore() is (crash == "after_swap")
+        assert set(_listed()) == {source[0], safety.id}
+        # ...and only then the scheduler's first pass reconciles retention.
+        clock[0] += 600
+        await _scheduler_lifetime(monkeypatch, clock)
+        assert _listed() == [safety.id]
+        assert (folder / "notes.txt").exists()
+        source = [safety.id]
+        _age(backup.restore_point(safety.id).path, 120)
+    lifespan = (Path(__file__).parents[1] / "main.py").read_text()
+    assert lifespan.index("recover_interrupted_restore()") < lifespan.index("await start_application(")
+
+
+def _interleaved_journal(monkeypatch) -> list[tuple[str, str, str | None]]:
+    """The backup journal, recording what each operation reported. The first
+    operation to report waits there until the second has reported, so the
+    second runs to completion -- creation and retention -- in between."""
+    reported, second = [], asyncio.Event()
+
+    async def journal(event_type, message, point_id, detail=None):
+        reported.append((event_type, point_id, detail))
+        if len(reported) == 1:
+            await asyncio.wait_for(second.wait(), 10)
+        else:
+            second.set()
+        return True
+
+    monkeypatch.setattr(backup, "journal_backup", journal)
+    return reported
+
+
+@pytest.mark.parametrize("first", ["manual", "scheduled"])
+async def test_concurrent_manual_and_scheduled_backups_report_truthfully_under_a_one_backup_limit(
+        installation, monkeypatch, first):
+    _policy(backup_max_retained=1)
+    _clock(monkeypatch)
+    backup._write_schedule(None)  # a scheduled backup has never been taken: it is due
+    reported = _interleaved_journal(monkeypatch)
+    operations = {"manual": backup.run_backup, "scheduled": backup.run_scheduled_backup}
+    order = [first, "scheduled" if first == "manual" else "manual"]
+    done = dict(zip(order, await asyncio.gather(*(operations[name]() for name in order))))
+
+    manual, scheduled = done["manual"], done["scheduled"]
+    assert manual["restore_point"]["id"] == manual["timestamp"]
+    assert manual["backed_up"] == sorted(["config.json", database.DB_PATH.name])
+    assert scheduled is not None and scheduled.id != manual["timestamp"]
+    # Exactly what each operation reported, and one point is left: the newer.
+    later = order[1]
+    later_id = manual["timestamp"] if later == "manual" else scheduled.id
+    earlier_id = scheduled.id if later == "manual" else manual["timestamp"]
+    assert _listed() == [later_id]
+    pruned_detail = "1 older backup(s) removed by retention (0 by age, 1 by count)"
+    assert sorted(reported) == sorted([
+        ("administration.backup_created", earlier_id, None),
+        ("administration.backup_created", later_id, pruned_detail),
+    ])
+    assert manual["rotated"] == (1 if later == "manual" else 0)
+
+
+async def test_add_backup_and_a_concurrent_scheduled_backup_report_truthfully_under_a_one_backup_limit(
+        installation, monkeypatch):
+    _imported_id, saved = await _real_package(installation, "imported.zip")
+    _policy(backup_max_retained=1)
+    _clock(monkeypatch)
+    backup._write_schedule(None)
+    reported = _interleaved_journal(monkeypatch)
+    admitted, scheduled = await asyncio.gather(backup.add_backup(_chunks(saved)), backup.run_scheduled_backup())
+    assert admitted.size_bytes > 0 and admitted.id == _imported_id
+    assert _listed() == [scheduled.id]
+    assert sorted(reported) == sorted([
+        ("administration.backup_added", admitted.id, None),
+        ("administration.backup_created", scheduled.id,
+         "1 older backup(s) removed by retention (0 by age, 1 by count)"),
+    ])
+
+
+# ── the transfer-scoped recovery-audit index: one schema step, recorded ──────
+
+TRANSFER_AUDIT_INDEX = "idx_application_events_transfer_kind"
+# Written by the 1.0.14 build immediately before the transfer-scoped
+# recovery-audit index (523d3c7b) with its own backup service: a password Admin
+# (operator / pre-index-secret) and two transfers whose recovery-audit rows
+# interleave (7 for transfer 1, 3 for transfer 2).
+PRE_INDEX_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-523d3c7b.zip"
+# The same build and backup service, on an installation that, like one migrated
+# from before 1.0.12, still holds the four tables that migration keeps (empty
+# here; their definitions are the October 31 2026 production backup's, so this
+# schema is exactly that backup's).
+PRE_INDEX_RETAINED_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-523d3c7b-retained-legacy-tables.zip"
+
+
+def _versions(path) -> list[str]:
+    with closing(sqlite3.connect(path)) as conn:
+        return sorted(row[0] for row in conn.execute("SELECT version FROM schema_migrations"))
+
+
+def _has_audit_index(path) -> bool:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                            (TRANSFER_AUDIT_INDEX,)).fetchone() is not None
+
+
+def _audit_rows(conn) -> list[tuple]:
+    return conn.execute("SELECT id, transfer_id, detail, claimed, created_at FROM application_events "
+                        "WHERE kind='recovery_audit' ORDER BY id").fetchall()
+
+
+async def test_a_fresh_installation_holds_the_index_and_its_version(installation):
+    assert _has_audit_index(database.DB_PATH)
+    assert _versions(database.DB_PATH) == ["1.0.12", database.TRANSFER_AUDIT_INDEX_STEP]
+    await database.init_db()                                  # every later start: idempotent
+    assert _versions(database.DB_PATH) == ["1.0.12", database.TRANSFER_AUDIT_INDEX_STEP]
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        plan = [row[3] for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT detail FROM application_events WHERE transfer_id=? "
+            "AND kind='recovery_audit' ORDER BY id DESC", (1,))]
+    assert plan == [f"SEARCH application_events USING INDEX {TRANSFER_AUDIT_INDEX} (transfer_id=? AND kind=?)"]
+
+
+async def test_a_failed_index_creation_records_no_version(installation):
+    """The version is written only after its index exists: when the index
+    cannot be created the bootstrap fails and claims nothing."""
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        conn.execute(f"DROP INDEX {TRANSFER_AUDIT_INDEX}")
+        conn.execute("DELETE FROM schema_migrations WHERE version=?", (database.TRANSFER_AUDIT_INDEX_STEP,))
+        conn.execute(f"CREATE TABLE {TRANSFER_AUDIT_INDEX}(x)")   # the name is taken: CREATE INDEX fails
+        conn.commit()
+    with pytest.raises(sqlite3.OperationalError):
+        await database.init_db()
+    assert _versions(database.DB_PATH) == ["1.0.12"]
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        conn.execute(f"DROP TABLE {TRANSFER_AUDIT_INDEX}")
+        conn.commit()
+    await database.init_db()
+    assert _has_audit_index(database.DB_PATH)
+    assert _versions(database.DB_PATH) == ["1.0.12", database.TRANSFER_AUDIT_INDEX_STEP]
+
+
+async def _restore_pre_index(client, fixture) -> tuple[Path, str, str]:
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=fixture.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (TRANSFER_AUDIT_INDEX,)).fetchone() is None
+    return managed, live, point.id
+
+
+async def test_a_backup_from_before_the_audit_index_restores_through_the_staged_upgrade(served):
+    """Upgraded on the private staged copy only, through the canonical
+    bootstrap: the index and its version arrive, every recovery-audit row comes
+    back byte for byte in its order, and each transfer's trail reads only its
+    own rows."""
+    from auth import accounts
+    from auth.passwords import verify_password
+    from transfers.repository import TransferRepository
+
+    _app, client, _composed, _calls = served
+    managed, live, point_id = await _restore_pre_index(client, PRE_INDEX_BACKUP)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded_rows = _audit_rows(conn)
+        recorded_markers = sorted(row[0] for row in conn.execute("SELECT version FROM schema_migrations"))
+    assert recorded_markers == ["1.0.12"] and len(recorded_rows) == 10
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point_id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _has_audit_index(database.DB_PATH)
+    assert _versions(database.DB_PATH) == ["1.0.12", database.TRANSFER_AUDIT_INDEX_STEP]
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert _audit_rows(conn) == recorded_rows
+    async with database.get_db() as db:
+        for transfer_id in (1, 2):
+            own = [row for row in recorded_rows if row[1] == transfer_id]
+            rows = await db.fetchall("SELECT detail FROM application_events WHERE transfer_id=? "
+                                     "AND kind='recovery_audit' ORDER BY id DESC", (transfer_id,))
+            assert [row["detail"] for row in rows] == [row[2] for row in reversed(own)]
+        facts = await TransferRepository._historical_audit_facts(db, 1001, 1)
+    assert facts["candidate_generation"] == 2                # finish_claim rows 0 and 4 changed the candidate
+    _operator, password_hash = await accounts.local_credential("operator")
+    assert verify_password(password_hash, "pre-index-secret")
+
+
+async def test_the_october_31_schema_restores_on_the_installation_that_holds_its_tables(served):
+    """An installation migrated from before 1.0.12 keeps four tables a fresh
+    one never has, so its own schema -- the October 31 2026 production
+    backup's -- is pinned too; its backup restores through the same staged
+    upgrade, the kept tables untouched."""
+    _app, client, _composed, _calls = served
+    with zipfile.ZipFile(PRE_INDEX_RETAINED_BACKUP) as package, closing(sqlite3.connect(":memory:")) as scratch:
+        scratch.deserialize(package.read("downloadpulse.db"))
+        kept = [row[0] for row in scratch.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('adc_aria2_owned_gids',"
+            "'downloadpulse_aria2_owned_gids','flexget_runs','saved_searches') ORDER BY name")]
+        fingerprint = backup._fingerprint(scratch)
+    assert len(kept) == 4
+    assert fingerprint == "sha256:3039fea1b7b3d838b4b9f2784330b1dca7e6baae025abc100e9007fc15898cae"
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:   # the live installation holds them as well
+        for ddl in kept:
+            conn.execute(ddl)
+        conn.commit()
+    _managed, live, point_id = await _restore_pre_index(client, PRE_INDEX_RETAINED_BACKUP)
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point_id})
+
+    assert restored.status_code == 200, restored.text
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _has_audit_index(database.DB_PATH)
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert conn.execute("SELECT count(*) FROM saved_searches").fetchone() == (0,)
+        assert len(_audit_rows(conn)) == 4
+
+
+async def test_a_backup_taken_with_the_index_restores_without_an_upgrade(served):
+    app, client, _composed, _calls = served
+    kept = await _submit(app, client, "kept")
+    point = await backup.create_restore_point()
+    with backup._open_frozen(_managed_database(point)) as conn:
+        assert backup._fingerprint(conn) == backup.schema_version(database.DB_PATH)
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (TRANSFER_AUDIT_INDEX,)).fetchone()
+    await _submit(app, client, "later")
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+    assert restored.status_code == 200, restored.text
+    assert await _ids(app) == [kept]
+    assert _has_audit_index(database.DB_PATH)
+    assert _versions(database.DB_PATH) == ["1.0.12", database.TRANSFER_AUDIT_INDEX_STEP]
+
+
+async def test_a_wipe_keeps_the_index_and_its_version(served):
+    from services import db_maintenance
+
+    app, client, _composed, _calls = served
+    await _submit(app, client, "wiped")
+    live = backup.schema_version(database.DB_PATH)
+    await db_maintenance.wipe_database(verified_quiesced=True)
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _has_audit_index(database.DB_PATH)
+    assert _versions(database.DB_PATH) == ["1.0.12", database.TRANSFER_AUDIT_INDEX_STEP]
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert conn.execute("SELECT count(*) FROM application_events").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM torrents").fetchone() == (0,)
+
+
+# ── temporary provider quota holds: one table, empty in older backups ────────
+
+# Written by the 1.0.14 build immediately before temporary provider quota holds
+# (4180f015) with its own backup service: a password Admin (operator /
+# pre-quota-hold-secret) and two transfers.
+PRE_QUOTA_HOLD_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-4180f015.zip"
+# The same build and backup service on an installation that still holds the four
+# tables a migration from before 1.0.12 keeps (empty; definitions as the
+# October 31 2026 production backup's), with one transfer.
+PRE_QUOTA_HOLD_RETAINED_BACKUP = (Path(__file__).parent / "fixtures"
+                                  / "backup-1.0.14-4180f015-retained-legacy-tables.zip")
+QUOTA_HOLD_COLUMNS = ["integration_id", "account_scope", "scope_kind", "scope_key", "held_since", "refused_at",
+                      "requalify_at", "probe_artifact_id", "probe_until", "refusals", "cleared_at", "updated_at"]
+HOLD_KEY = ("debridlink", "v1-opaque-account", "account", "")
+
+
+def _quota_hold_rows(path) -> list[tuple]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute("SELECT integration_id,account_scope,scope_kind,scope_key,refusals "
+                            "FROM provider_quota_holds ORDER BY scope_kind").fetchall()
+
+
+async def test_a_fresh_installation_holds_the_empty_quota_hold_table(installation):
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert [row[1] for row in conn.execute("PRAGMA table_info(provider_quota_holds)")] == QUOTA_HOLD_COLUMNS
+    assert _quota_hold_rows(database.DB_PATH) == []
+    live = backup.schema_version(database.DB_PATH)
+    await database.init_db()                                  # every later start: idempotent
+    assert backup.schema_version(database.DB_PATH) == live
+    assert live not in backup._UPGRADABLE_SCHEMAS
+
+
+@pytest.mark.parametrize("fixture,transfers", [(PRE_QUOTA_HOLD_BACKUP, 2), (PRE_QUOTA_HOLD_RETAINED_BACKUP, 1)],
+                         ids=["fresh", "retained_legacy_tables"])
+async def test_a_backup_from_before_quota_holds_restores_through_the_staged_upgrade(served, fixture, transfers):
+    """Upgraded on the private staged copy only, through the canonical
+    bootstrap: the table arrives empty, every recorded row comes back and
+    the restore point itself is never upgraded."""
+    from auth import accounts
+    from auth.passwords import verify_password
+
+    _app, client, _composed, _calls = served
+    if fixture is PRE_QUOTA_HOLD_RETAINED_BACKUP:
+        with zipfile.ZipFile(fixture) as package, closing(sqlite3.connect(":memory:")) as scratch:
+            scratch.deserialize(package.read("downloadpulse.db"))
+            kept = [row[0] for row in scratch.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('adc_aria2_owned_gids',"
+                "'downloadpulse_aria2_owned_gids','flexget_runs','saved_searches') ORDER BY name")]
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:   # the live installation holds them as well
+            for ddl in kept:
+                conn.execute(ddl)
+            conn.commit()
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=fixture.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='provider_quota_holds'").fetchone() is None
+        recorded_transfers = conn.execute("SELECT id, name, status FROM torrents ORDER BY id").fetchall()
+    assert len(recorded_transfers) == transfers
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _quota_hold_rows(database.DB_PATH) == []
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert conn.execute("SELECT id, name, status FROM torrents ORDER BY id").fetchall() == recorded_transfers
+    _operator, password_hash = await accounts.local_credential("operator")
+    assert verify_password(password_hash, "pre-quota-hold-secret")
+
+
+async def test_a_backup_taken_with_a_quota_hold_brings_it_back_and_a_wipe_forgets_it(served):
+    from services import db_maintenance
+
+    _app, client, _composed, _calls = served
+    repository = TransferRepository()
+    assert await repository.hold_quota(HOLD_KEY, asked_at=100.0, now=101.0, requalify_seconds=300.0)
+    point = await backup.create_restore_point()
+    with backup._open_frozen(_managed_database(point)) as conn:
+        assert backup._fingerprint(conn) == backup.schema_version(database.DB_PATH)
+    await repository.clear_quota_holds((HOLD_KEY,), answered_at=150.0)
+    assert await repository.quota_hold_until((HOLD_KEY,), 1, 160.0) is None
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _quota_hold_rows(database.DB_PATH) == [("debridlink", "v1-opaque-account", "account", "", 1)]
+    assert await repository.quota_hold_until((HOLD_KEY,), 1, 160.0) == pytest.approx(401.0)
+    live = backup.schema_version(database.DB_PATH)
+    await db_maintenance.wipe_database(verified_quiesced=True)
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _quota_hold_rows(database.DB_PATH) == []
+
+
+# ── an account's Easy / Advanced presentation: one nullable column ──────────
+
+# Written by the 1.0.14 build immediately before an account's presentation
+# (574bef2d) with its own backup service: the default Admin with a password
+# (operator / pre-presentation-secret), an Admin (ann) whose own appearance is
+# Light / Catppuccin Latte, and a User (una) with Dracula and her own Discord
+# notifications (a syntactically valid, made-up webhook).
+PRE_PRESENTATION_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-574bef2d.zip"
+# The same build, backup service and accounts on an installation that also
+# holds the four tables a migration from before 1.0.12 keeps (empty; the
+# definitions of the 4180f015 retained-legacy-tables fixture).
+PRE_PRESENTATION_RETAINED_BACKUP = (Path(__file__).parent / "fixtures"
+                                    / "backup-1.0.14-574bef2d-retained-legacy-tables.zip")
+RETAINED_LEGACY_TABLES = ("adc_aria2_owned_gids", "downloadpulse_aria2_owned_gids", "flexget_runs", "saved_searches")
+
+
+def _presentation_rows(path) -> list[tuple]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute("SELECT account_id, presentation_mode FROM account_appearance "
+                            "ORDER BY account_id").fetchall()
+
+
+async def test_a_fresh_installation_holds_the_presentation_column_and_starts_advanced(installation):
+    from auth.accounts import DEFAULT_ADMIN_ID
+    from services import account_appearance
+
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert [row[1] for row in conn.execute("PRAGMA table_info(account_appearance)")] == [
+            "account_id", "mode", "dark_palette", "light_palette", "updated_at", "presentation_mode", "locale"]
+    assert await account_appearance.load_presentation(DEFAULT_ADMIN_ID) == "advanced"
+    live = backup.schema_version(database.DB_PATH)
+    await database.init_db()                                  # every later start: idempotent
+    assert backup.schema_version(database.DB_PATH) == live
+    assert live not in backup._UPGRADABLE_SCHEMAS
+
+
+@pytest.mark.parametrize("fixture", [PRE_PRESENTATION_BACKUP, PRE_PRESENTATION_RETAINED_BACKUP],
+                         ids=["fresh", "retained_legacy_tables"])
+async def test_a_backup_from_before_the_presentation_restores_advanced_with_every_account_kept(served, fixture):
+    """Upgraded on the private staged copy only, through the canonical
+    bootstrap: the column arrives NULL -- Advanced -- for every account, and
+    every theme, notification document and password comes back as recorded."""
+    from auth import accounts
+    from auth.passwords import verify_password
+    from services import account_appearance, account_notifications
+
+    _app, client, _composed, _calls = served
+    if fixture is PRE_PRESENTATION_RETAINED_BACKUP:
+        with zipfile.ZipFile(fixture) as package, closing(sqlite3.connect(":memory:")) as scratch:
+            scratch.deserialize(package.read("downloadpulse.db"))
+            kept = [row[0] for row in scratch.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?) ORDER BY name",
+                RETAINED_LEGACY_TABLES)]
+        assert len(kept) == 4
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:   # the live installation holds them as well
+            for ddl in kept:
+                conn.execute(ddl)
+            conn.commit()
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=fixture.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "presentation_mode" not in {row[1] for row in conn.execute("PRAGMA table_info(account_appearance)")}
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before                       # the restore point itself is never upgraded
+    assert backup.schema_version(database.DB_PATH) == live
+    people = {row["username"]: row["id"] for row in await accounts.list_accounts() if row["username"]}
+    assert {account_id: mode for account_id, mode in _presentation_rows(database.DB_PATH)} == {
+        people["ann"]: None, people["una"]: None}
+    for account_id in (people["ann"], people["una"], accounts.DEFAULT_ADMIN_ID):
+        assert await account_appearance.load_presentation(account_id) == "advanced"
+    assert await account_appearance.load(people["ann"]) == {
+        "mode": "light", "dark_palette": "downloadpulse-dark", "light_palette": "catppuccin-latte"}
+    assert (await account_appearance.load(people["una"]))["dark_palette"] == "dracula"
+    notifications = await account_notifications.load(people["una"])
+    assert notifications.discord_notifications_enabled is True
+    assert notifications.discord_webhook_url == "https://discord.com/api/webhooks/900001/fixture-pre-presentation"
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and verify_password(password_hash, "pre-presentation-secret")
+
+
+async def test_a_new_backup_brings_back_each_presentation_and_a_wipe_keeps_them(served):
+    from auth import accounts
+    from services import account_appearance, db_maintenance
+
+    _app, client, _composed, _calls = served
+    ann = (await accounts.create_local_account("ann", "ann-secret", role="admin")).id
+    await account_appearance.update(ann, account_appearance.AppearanceUpdate(mode="light"))
+    await account_appearance.set_presentation(ann, "easy")
+    await account_appearance.set_presentation(accounts.DEFAULT_ADMIN_ID, "easy")
+    point = await backup.create_restore_point()
+    with backup._open_frozen(_managed_database(point)) as conn:
+        assert backup._fingerprint(conn) == backup.schema_version(database.DB_PATH)
+    await account_appearance.set_presentation(ann, "advanced")
+    await account_appearance.set_presentation(accounts.DEFAULT_ADMIN_ID, "advanced")
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert await account_appearance.load_presentation(ann) == "easy"
+    assert await account_appearance.load_presentation(accounts.DEFAULT_ADMIN_ID) == "easy"
+    assert (await account_appearance.load(ann))["mode"] == "light"
+    # The wipe keeps every account's own appearance record, its presentation with it.
+    live = backup.schema_version(database.DB_PATH)
+    rows = _presentation_rows(database.DB_PATH)
+    await db_maintenance.wipe_database(verified_quiesced=True)
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _presentation_rows(database.DB_PATH) == rows
+    assert await account_appearance.load_presentation(ann) == "easy"
+
+
+# ── an account's interface language: one more nullable column ───────────────
+
+# Written by the 1.0.14 build immediately before an account's interface
+# language (cf0ed370) with its own backup service: the default Admin with a
+# password (operator / pre-locale-secret), an Admin (ann) with Light /
+# Catppuccin Latte and the Easy presentation, and a User (una) with Dracula
+# and her own Discord notifications (a syntactically valid, made-up webhook).
+PRE_LOCALE_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-cf0ed370.zip"
+PRE_LOCALE_RETAINED_BACKUP = (Path(__file__).parent / "fixtures"
+                              / "backup-1.0.14-cf0ed370-retained-legacy-tables.zip")
+
+
+def _locale_rows(path) -> list[tuple]:
+    with closing(sqlite3.connect(path)) as conn:
+        return conn.execute("SELECT account_id, locale, presentation_mode FROM account_appearance "
+                            "ORDER BY account_id").fetchall()
+
+
+async def test_a_fresh_installation_holds_the_locale_column_and_starts_english(installation):
+    from auth.accounts import DEFAULT_ADMIN_ID
+    from services import account_appearance
+
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        assert [row[1] for row in conn.execute("PRAGMA table_info(account_appearance)")] == [
+            "account_id", "mode", "dark_palette", "light_palette", "updated_at", "presentation_mode", "locale"]
+    assert (await account_appearance.load_locale(DEFAULT_ADMIN_ID))["locale"] == "en"
+    live = backup.schema_version(database.DB_PATH)
+    await database.init_db()
+    assert backup.schema_version(database.DB_PATH) == live
+    assert live not in backup._UPGRADABLE_SCHEMAS
+
+
+@pytest.mark.parametrize("fixture", [PRE_LOCALE_BACKUP, PRE_LOCALE_RETAINED_BACKUP], ids=["fresh", "retained_legacy_tables"])
+async def test_a_backup_from_before_the_locale_restores_english_with_every_account_kept(served, fixture):
+    """Upgraded on the private staged copy only: the column arrives NULL --
+    English -- and every theme, presentation, notification document and
+    password comes back as recorded."""
+    from auth import accounts
+    from auth.passwords import verify_password
+    from services import account_appearance, account_notifications
+
+    _app, client, _composed, _calls = served
+    if fixture is PRE_LOCALE_RETAINED_BACKUP:
+        with zipfile.ZipFile(fixture) as package, closing(sqlite3.connect(":memory:")) as scratch:
+            scratch.deserialize(package.read("downloadpulse.db"))
+            kept = [row[0] for row in scratch.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?) ORDER BY name",
+                RETAINED_LEGACY_TABLES)]
+        assert len(kept) == 4
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:
+            for ddl in kept:
+                conn.execute(ddl)
+            conn.commit()
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=fixture.read_bytes(), headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        assert "locale" not in {row[1] for row in conn.execute("PRAGMA table_info(account_appearance)")}
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before
+    assert backup.schema_version(database.DB_PATH) == live
+    people = {row["username"]: row["id"] for row in await accounts.list_accounts() if row["username"]}
+    assert {account_id: (tag, mode) for account_id, tag, mode in _locale_rows(database.DB_PATH)} == {
+        people["ann"]: (None, "easy"), people["una"]: (None, None)}
+    for account_id in (people["ann"], people["una"], accounts.DEFAULT_ADMIN_ID):
+        assert (await account_appearance.load_locale(account_id))["locale"] == "en"
+    assert await account_appearance.load_presentation(people["ann"]) == "easy"
+    assert (await account_appearance.load(people["ann"]))["light_palette"] == "catppuccin-latte"
+    assert (await account_notifications.load(people["una"])).discord_webhook_url.endswith("/900002/fixture-pre-locale")
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and verify_password(password_hash, "pre-locale-secret")
+
+
+async def test_a_new_backup_brings_back_each_language_and_a_wipe_keeps_them(served, supported):
+    # ``supported``: a synthetic catalog directory where de and ar are supported
+    # (only supported locales are an account's language; test_account_locale).
+    from auth import accounts
+    from services import account_appearance, db_maintenance
+
+    _app, client, _composed, _calls = served
+    ann = (await accounts.create_local_account("ann", "ann-secret", role="admin")).id
+    await account_appearance.set_locale(ann, "de")
+    await account_appearance.set_presentation(ann, "easy")
+    await account_appearance.set_locale(accounts.DEFAULT_ADMIN_ID, "ar")
+    point = await backup.create_restore_point()
+    await account_appearance.set_locale(ann, "ar")
+    await account_appearance.set_locale(accounts.DEFAULT_ADMIN_ID, "en")
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert (await account_appearance.load_locale(ann))["locale"] == "de"
+    assert (await account_appearance.load_locale(accounts.DEFAULT_ADMIN_ID))["locale"] == "ar"
+    assert await account_appearance.load_presentation(ann) == "easy"
+    live = backup.schema_version(database.DB_PATH)
+    rows = _locale_rows(database.DB_PATH)
+    await db_maintenance.wipe_database(verified_quiesced=True)
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _locale_rows(database.DB_PATH) == rows
+
+
+def _saved_default() -> str | None:
+    return json.loads(config.CONFIG_PATH.read_text(encoding="utf-8")).get("default_locale")
+
+
+async def test_the_default_language_comes_back_with_its_backup_and_a_wipe_keeps_it(served, supported):
+    """The installation's default language is a setting in the configuration
+    file: a restore brings back the backup's, a database wipe never touches
+    it, and the previous release's backup -- which has none -- restores it
+    unset (English), with no account's own choice changed."""
+    from auth import accounts
+    from services import account_appearance, db_maintenance
+
+    _app, client, _composed, _calls = served
+    await account_appearance.set_locale(accounts.DEFAULT_ADMIN_ID, "ar")
+    await account_appearance.set_default_locale("de")
+    point = await backup.create_restore_point()
+    await account_appearance.set_default_locale("ar")
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert config.get_settings().default_locale == "de" and _saved_default() == "de"
+    await db_maintenance.wipe_database(verified_quiesced=True)
+    assert config.get_settings().default_locale == "de" and _saved_default() == "de"
+
+    with zipfile.ZipFile(PRE_DEMAND_BACKUP) as package:
+        assert "default_locale" not in json.loads(package.read("config.json"))
+    added = await client.post("/api/admin/backups", content=PRE_DEMAND_BACKUP.read_bytes(),
+                              headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    previous = await client.post("/api/admin/backups/restore", json={"id": added.json()["backup"]["id"]})
+    assert previous.status_code == 200, previous.text
+    assert config.get_settings().default_locale is None and _saved_default() is None
+    assert account_appearance.default_locale() == {"locale": "en", "configured": None}
+
+
+async def test_the_broad_settings_write_cannot_change_the_default_language(served, supported):
+    from services import account_appearance
+
+    _app, client, _composed, _calls = served
+    await account_appearance.set_default_locale("de")
+    document = (await client.get("/api/settings")).json()
+    for name in document.pop("compatibility_fields"):
+        document.pop(name, None)
+    for name in ("integrations", "integration_groups", "transfer_policy", "execution_runtime_limits"):
+        document.pop(name, None)
+    document = {k: v for k, v in document.items() if k in config.AppSettings.model_fields}
+    for submitted in ("ar", None):
+        written = await client.put("/api/settings", json={**document, "default_locale": submitted,
+                                                          "log_level": "DEBUG"})
+        assert written.status_code == 200, written.text
+        assert written.json()["default_locale"] == "de" and written.json()["log_level"] == "DEBUG"
+        assert config.get_settings().default_locale == "de" and _saved_default() == "de"
+
+
+# ── the setup wizard's lifecycle: two tables, absent from older backups ─────
+
+# Written by the 1.0.14 build immediately before the setup wizard's lifecycle
+# (40e567fd) with its own backup service: the default Admin with a password
+# (operator / pre-setup-secret), an Admin (ann, Easy) and a User (una), with
+# Username & Password enabled -- an installation set up before the wizard.
+PRE_SETUP_BACKUP = Path(__file__).parent / "fixtures" / "backup-1.0.14-40e567fd.zip"
+# The same build and backup service on an installation that still holds the
+# four tables a migration from before 1.0.12 keeps (definitions of the
+# cf0ed370 retained-legacy-tables fixture).
+PRE_SETUP_RETAINED_BACKUP = (Path(__file__).parent / "fixtures"
+                             / "backup-1.0.14-40e567fd-retained-legacy-tables.zip")
+
+
+def _setup_rows(path) -> tuple[list, list]:
+    with closing(sqlite3.connect(path)) as conn:
+        return (conn.execute("SELECT initial_setup_complete, initial_phase, bootstrap_account_id "
+                             "FROM installation_setup").fetchall(),
+                conn.execute("SELECT account_id, phase FROM account_setup_rerun ORDER BY account_id").fetchall())
+
+
+@pytest.mark.parametrize("fixture", [PRE_SETUP_BACKUP, PRE_SETUP_RETAINED_BACKUP], ids=["fresh", "retained_legacy_tables"])
+async def test_a_backup_from_before_the_setup_wizard_restores_as_a_finished_setup(served, fixture):
+    """Upgraded on the private staged copy only: both tables arrive empty --
+    the restored installation's setup is finished, it opens no wizard -- and
+    every account and password comes back as recorded."""
+    from auth import accounts
+    from auth.passwords import verify_password
+    from services import account_appearance, setup_lifecycle
+
+    _app, client, _composed, _calls = served
+    if fixture is PRE_SETUP_RETAINED_BACKUP:
+        with zipfile.ZipFile(fixture) as package, closing(sqlite3.connect(":memory:")) as scratch:
+            scratch.deserialize(package.read("downloadpulse.db"))
+            kept = [row[0] for row in scratch.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?) ORDER BY name",
+                RETAINED_LEGACY_TABLES)]
+        assert len(kept) == 4
+        with closing(sqlite3.connect(database.DB_PATH)) as conn:
+            for ddl in kept:
+                conn.execute(ddl)
+            conn.commit()
+    live = backup.schema_version(database.DB_PATH)
+    added = await client.post("/api/admin/backups", content=fixture.read_bytes(), headers={"Content-Type": "application/zip"})
+    assert added.status_code == 200, added.text
+    point = backup.restore_point(added.json()["backup"]["id"])
+    managed = _managed_database(point)
+    before = _digest(managed)
+    with backup._open_frozen(managed) as conn:
+        recorded = backup._fingerprint(conn)
+        assert recorded in backup._UPGRADABLE_SCHEMAS and recorded != live
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert not {"installation_setup", "account_setup_rerun"} & tables
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _digest(managed) == before
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _setup_rows(database.DB_PATH) == ([], [])
+    assert (await setup_lifecycle.initial_setup()).complete is True
+    people = {row["username"]: row["id"] for row in await accounts.list_accounts() if row["username"]}
+    assert {"operator", "ann", "una"} <= set(people)
+    assert await account_appearance.load_presentation(people["ann"]) == "easy"
+    operator, password_hash = await accounts.local_credential("operator")
+    assert operator.id == accounts.DEFAULT_ADMIN_ID and verify_password(password_hash, "pre-setup-secret")
+
+
+async def test_a_new_backup_brings_back_the_setup_and_each_rerun_and_a_wipe_keeps_them(served):
+    from auth import accounts
+    from services import db_maintenance, setup_lifecycle
+
+    _app, client, _composed, _calls = served
+    ann = (await accounts.create_local_account("ann", "ann-secret", role="admin")).id
+    with closing(sqlite3.connect(database.DB_PATH)) as conn:
+        conn.execute("INSERT OR REPLACE INTO installation_setup(id, initial_setup_complete, initial_phase, "
+                     "updated_at) VALUES(1, 1, NULL, 'synthetic')")
+        conn.commit()
+    await setup_lifecycle.set_rerun(ann, "premium_services")
+    point = await backup.create_restore_point()
+    await setup_lifecycle.end_rerun(ann)
+
+    restored = await client.post("/api/admin/backups/restore", json={"id": point.id})
+
+    assert restored.status_code == 200, restored.text
+    assert _setup_rows(database.DB_PATH) == ([(1, None, None)], [(ann, "premium_services")])
+    live = backup.schema_version(database.DB_PATH)
+    rows = _setup_rows(database.DB_PATH)
+    await db_maintenance.wipe_database(verified_quiesced=True)
+    assert backup.schema_version(database.DB_PATH) == live
+    assert _setup_rows(database.DB_PATH) == rows

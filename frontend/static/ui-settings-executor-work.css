@@ -1,0 +1,191 @@
+/* Executor Work: the operational view of what DownloadPulse's executors are
+   doing with the work DownloadPulse gave them.
+
+   Nothing in this file is named after an executor, because nothing about the
+   surface is: one row grammar serves every executor there is or will be. */
+
+/* The header is the canonical hinted Settings card header
+   (ui-settings-page.css): identity, the one-line copy on the header's own
+   midpoint while it fits, and the rail -- its Help. */
+#view-settings .dp-executor-work-copy {
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: center;
+}
+
+#view-settings .dp-executor-work-card > .card-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Break-glass guidance: the ONE Settings caution (.dp-settings-caution, the
+   Database Reset Controls warning) supplies all of its material -- what the
+   surface is, then when to use it. This states only where the callout sits in
+   this card: bounded and centred, spaced by the body's own gap. */
+#view-settings .dp-executor-work-context {
+  width: min(100%, 900px);
+  margin: 0 auto;
+  text-align: center;
+}
+
+#view-settings .dp-executor-work-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 18px;
+  min-width: 0;
+}
+
+#view-settings .dp-executor-work-metrics {
+  min-width: 118px;
+  flex: 0 0 auto;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 2px;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: center;
+  white-space: nowrap;
+}
+
+#view-settings .dp-executor-work-metrics [data-dp-executor-work-speed] {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+#view-settings .dp-executor-work-filters {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+#view-settings .dp-executor-work-list {
+  min-height: 0;
+  max-height: 470px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+#view-settings .dp-executor-work-list .dp-executor-work-item {
+  margin-bottom: 10px;
+}
+
+#view-settings .dp-executor-work-list .dp-executor-work-item[hidden] {
+  display: none !important;
+}
+
+#view-settings .dp-executor-work-list .dp-executor-work-item:last-child {
+  margin-bottom: 0;
+}
+
+#view-settings .dp-executor-work-filter-empty {
+  margin-top: 6px;
+}
+
+@media (max-width: 1180px) {
+  #view-settings .dp-executor-work-control-row { gap: 12px; }
+}
+
+@media (max-width: 940px) {
+  #view-settings .dp-executor-work-control-row { flex-wrap: wrap; justify-content: flex-end; }
+}
+
+@media (max-width: 760px) {
+  #view-settings .dp-executor-work-control-row { align-items: center; flex-wrap: wrap; }
+  #view-settings .dp-executor-work-filters { max-width: 100%; overflow-x: auto; }
+  #view-settings .dp-executor-work-list { max-height: 420px; }
+}
+
+/* ── One row of executor work ─────────────────────────────────────────── */
+
+.dp-executor-work-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(180deg, var(--surface), var(--bg));
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The row's first line at every width: the identity takes what is left and
+   yields it, the action rail keeps its own width at the trailing edge. */
+.dp-executor-work-item-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.dp-executor-work-identity {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* One line, cut with an ellipsis -- the Downloads name's grammar
+   (ui-transfer-contract.css .t-name); its DP tooltip carries the whole name. */
+.dp-executor-work-name {
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Which executor holds this work -- a DownloadPulse display identity, never a
+   native job reference. */
+.dp-executor-work-owner {
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dp-executor-work-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 8px;
+  font-size: 11px;
+}
+
+.dp-executor-work-k {
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: 9px;
+}
+
+.dp-executor-work-v {
+  color: var(--text);
+  margin-top: 2px;
+  font-family: var(--mono);
+}
+
+.dp-executor-work-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.dp-executor-work-error { color: var(--red); font-size: 11px; }
+
+@media (max-width: 760px) {
+  .dp-executor-work-facts { grid-template-columns: repeat(2, minmax(90px, 1fr)); }
+}

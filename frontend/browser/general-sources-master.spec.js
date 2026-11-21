@@ -1,0 +1,480 @@
+const { test, expect } = require('@playwright/test');
+
+/* DP 1.0.13 Items 5 and 10 -- the Network Sources master gate, and every
+ * Services Enable toggle as an immediate canonical control.
+ *
+ * The master is an aggregate PARTICIPATION gate. It never edits a child's
+ * stored preference, in either direction, and the group's Provider Status row
+ * never disappears.
+ *
+ * This file is the ONE spec file that writes `integrations.general_http.enabled`,
+ * `integrations.general_scp.enabled`, `integrations.general_rsync.enabled`,
+ * `integrations.general_webdav.enabled`, `integrations.multimeta.enabled` and
+ * `integrations.media.enabled` (spec files share one backend and run
+ * concurrently); SCP, rsync, WebDAV, Multimeta and Media Downloads move with
+ * (S)FTP in every case below, so "every child" really is every Network Sources
+ * member. The HTTP(S) Enable's persistence, reload and
+ * independence proofs live here for that reason.
+ */
+
+const GROUP = 'direct_sources';
+const CHILDREN = ['general_http', 'general_ftp', 'general_scp', 'general_rsync', 'general_webdav', 'multimeta',
+  'media'];
+
+async function isolateExternalFonts(page) {
+  await page.route('https://fonts.googleapis.com/**', route =>
+    route.fulfill({status: 200, contentType: 'text/css', body: ''}));
+}
+
+const canonical = page => page.request.get('/api/settings').then(r => r.json());
+
+async function setChildren(page, http, ftp, scp = ftp, rsync = ftp, webdav = ftp, multimeta = ftp, media = ftp) {
+  await page.request.patch('/api/integrations/general_http/configuration', {data: {enabled: http}});
+  await page.request.patch('/api/integrations/general_ftp/configuration', {data: {enabled: ftp}});
+  await page.request.patch('/api/integrations/general_scp/configuration', {data: {enabled: scp}});
+  await page.request.patch('/api/integrations/general_rsync/configuration', {data: {enabled: rsync}});
+  await page.request.patch('/api/integrations/general_webdav/configuration', {data: {enabled: webdav}});
+  await page.request.patch('/api/integrations/multimeta/configuration', {data: {enabled: multimeta}});
+  await page.request.patch('/api/integrations/media/configuration', {data: {enabled: media}});
+}
+
+async function setMaster(page, enabled) {
+  const response = await page.request.patch(
+    `/api/integration-groups/${GROUP}/configuration`, {data: {enabled}});
+  expect(response.ok(), 'the generic group mutation route rejected the write').toBeTruthy();
+  return response.json();
+}
+
+async function openSources(page) {
+  await page.goto('/');
+  await page.locator('#sidebar .nav-item[data-view="settings"]').click();
+  await expect(page.locator('#view-settings')).toHaveClass(/\bactive\b/);
+  await page.locator('#view-settings [data-tab="sources"]:not(.dp-motion-still *)').click();
+  await expect(page.locator('.dp-settings-panel[data-panel="sources"]')).toBeVisible();
+}
+
+const masterTrack = page => page.locator(
+  `label[for="dp-settings-integration-group-${GROUP}-enabled"] .ttrack`);
+const childTrack = (page, id) => page.locator(
+  `label[for="dp-settings-integration-${id}-enabled"] .ttrack`);
+
+/* Services cards arrive COLLAPSED: expansion is local presentation
+ * state, never a projection of enabled/configured/verified state. A General
+ * Sources member toggle lives inside that group's body, so operating one means
+ * opening the card first -- exactly what the operator does, through the one
+ * canonical disclosure. The master's own toggle is in the header and is always
+ * reachable. */
+async function reveal(page, id) {
+  const label = page.locator(`label[for="dp-settings-integration-${id}-enabled"]`);
+  if (await label.isVisible()) return;
+  const disclosure = page.locator('.dp-settings-general-sources .dp-settings-disclosure');
+  if ((await disclosure.getAttribute('aria-expanded')) !== 'true') await disclosure.click();
+  await expect(label).toBeVisible();
+}
+
+/** Operate one member toggle, opening the group card if it is still closed. */
+async function flipChild(page, id) {
+  await reveal(page, id);
+  await childTrack(page, id).click();
+}
+
+const groupState = page => page.evaluate(group => {
+  const node = document.querySelector(`#provider-status-list [data-provider-group="${group}"]`);
+  if (!node) return null;
+  return node.querySelector('.conn-row').dataset.providerState;
+}, GROUP);
+
+/* Render the status panel from one EXPLICIT canonical document.
+ *
+ * The aggregate colour is a property of the renderer, so it is driven with
+ * metadata rather than by mutating the live installation: the Settings specs
+ * run in parallel workers against one backend, and a spec that rewrites shared
+ * integration state to prove a colour would be racing every other spec that
+ * owns that same state. The durable semantics below still use the real API --
+ * they are about durability and have to. */
+async function renderStatus(page, {http, ftp, scp = ftp, rsync = ftp, webdav = ftp, multimeta = ftp, media = ftp,
+  master}) {
+  const live = await page.request.get('/api/settings').then(r => r.json());
+  await page.goto('/');
+  await page.evaluate(([entries, gates]) => {
+    settingsData = {...(settingsData || {}), integrations: entries, integration_groups: gates};
+  }, [
+    {...live.integrations,
+     general_http: {...live.integrations.general_http, enabled: http},
+     general_ftp: {...live.integrations.general_ftp, enabled: ftp},
+     general_scp: {...live.integrations.general_scp, enabled: scp},
+     general_rsync: {...live.integrations.general_rsync, enabled: rsync},
+     general_webdav: {...live.integrations.general_webdav, enabled: webdav},
+     multimeta: {...live.integrations.multimeta, enabled: multimeta},
+     media: {...live.integrations.media, enabled: media}},
+    {[GROUP]: {enabled: master, label: 'Network Sources', members: CHILDREN}},
+  ]);
+  await page.evaluate(() => window.DPProviderStatus.refresh());
+}
+
+/* This spec drives REAL canonical state, so it restores exactly what it found
+ * rather than a state of its own choosing -- forcing "everything on" would be
+ * a silent mutation that the next spec in the run inherits. */
+let original = null;
+
+test.beforeAll(async ({request}) => {
+  const settings = await request.get('/api/settings').then(r => r.json());
+  original = {
+    http: settings.integrations.general_http.enabled,
+    ftp: settings.integrations.general_ftp.enabled,
+    scp: settings.integrations.general_scp.enabled,
+    rsync: settings.integrations.general_rsync.enabled,
+    webdav: settings.integrations.general_webdav.enabled,
+    multimeta: settings.integrations.multimeta.enabled,
+    media: settings.integrations.media.enabled,
+    master: settings.integration_groups?.[GROUP]?.enabled !== false,
+  };
+});
+
+test.afterAll(async ({request}) => {
+  if (!original) return;
+  await request.patch('/api/integrations/general_http/configuration', {data: {enabled: original.http}});
+  await request.patch('/api/integrations/general_ftp/configuration', {data: {enabled: original.ftp}});
+  await request.patch('/api/integrations/general_scp/configuration', {data: {enabled: original.scp}});
+  await request.patch('/api/integrations/general_rsync/configuration', {data: {enabled: original.rsync}});
+  await request.patch('/api/integrations/general_webdav/configuration', {data: {enabled: original.webdav}});
+  await request.patch('/api/integrations/multimeta/configuration', {data: {enabled: original.multimeta}});
+  await request.patch('/api/integrations/media/configuration', {data: {enabled: original.media}});
+  await request.patch(`/api/integration-groups/${GROUP}/configuration`, {data: {enabled: original.master}});
+});
+
+test.beforeEach(async ({page}) => {
+  await isolateExternalFonts(page);
+});
+
+// --- state semantics ---------------------------------------------------------
+
+test('an upgraded installation starts with the group master enabled', async ({page}) => {
+  await setMaster(page, true);
+  const settings = await canonical(page);
+  expect(settings.integration_groups[GROUP].enabled).toBe(true);
+  expect(settings.integration_groups[GROUP].label).toBe('Network Sources');
+});
+
+test('master OFF does not rewrite either child preference', async ({page}) => {
+  await setChildren(page, true, false);
+  const before = await canonical(page);
+  await setMaster(page, false);
+  const after = await canonical(page);
+  for (const child of CHILDREN) {
+    expect(after.integrations[child].enabled,
+      `${child} preference was rewritten by the master`).toBe(before.integrations[child].enabled);
+  }
+  expect(after.integrations.general_http.enabled).toBe(true);
+  expect(after.integrations.general_ftp.enabled).toBe(false);
+});
+
+test('master ON restores participation from the surviving child preferences', async ({page}) => {
+  await setChildren(page, true, false);
+  await setMaster(page, false);
+  await setMaster(page, true);
+  const settings = await canonical(page);
+  expect(settings.integrations.general_http.enabled).toBe(true);
+  expect(settings.integrations.general_http.effective_enabled).toBe(true);
+  expect(settings.integrations.general_ftp.enabled).toBe(false);
+  expect(settings.integrations.general_ftp.effective_enabled).toBe(false);
+});
+
+test('a child toggled while the master is OFF changes only the child', async ({page}) => {
+  await setChildren(page, true, false);
+  await setMaster(page, false);
+  await openSources(page);
+  await flipChild(page, 'general_ftp');
+  await expect.poll(async () => (await canonical(page)).integrations.general_ftp.enabled).toBe(true);
+  const settings = await canonical(page);
+  expect(settings.integration_groups[GROUP].enabled, 'the child toggle moved the master').toBe(false);
+  expect(settings.integrations.general_ftp.effective_enabled).toBe(false);
+});
+
+// --- Provider Status aggregate ----------------------------------------------
+
+test('green when the master is on and every child is enabled', async ({page}) => {
+  await renderStatus(page, {http: true, ftp: true, master: true});
+  await expect.poll(() => groupState(page)).toBe('healthy');
+});
+
+test('yellow when the master is on and one child is disabled', async ({page}) => {
+  await renderStatus(page, {http: true, ftp: false, master: true});
+  await expect.poll(() => groupState(page)).toBe('mixed');
+});
+
+test('yellow when every member is enabled except Multimeta', async ({page}) => {
+  // Multimeta is a peer like any other: the group's own aggregate, never a
+  // Multimeta-specific rule, reports the one member that does not participate.
+  await renderStatus(page, {http: true, ftp: true, multimeta: false, master: true});
+  await expect.poll(() => groupState(page)).toBe('mixed');
+});
+
+test('red when the master is off, whatever the children prefer', async ({page}) => {
+  await renderStatus(page, {http: true, ftp: true, master: false});
+  await expect.poll(() => groupState(page)).toBe('disabled');
+});
+
+test('red when the master is on and EVERY child is disabled', async ({page}) => {
+  // An open gate with no participating member cannot acquire anything, so
+  // yellow ("some still work") was untrue. It reports red through its own
+  // neutral zero-participant state rather than by pretending the master is
+  // off, which remains a different and still-meaningful thing.
+  await renderStatus(page, {http: false, ftp: false, master: true});
+  await expect.poll(() => groupState(page)).toBe('unavailable');
+  expect(await page.locator(`#provider-status-list [data-provider-group="${GROUP}"] .dot`)
+    .getAttribute('class')).toContain('error');
+});
+
+test('the closed gate and the empty open gate stay distinguishable', async ({page}) => {
+  // Both are red, and neither is allowed to impersonate the other.
+  await renderStatus(page, {http: false, ftp: false, master: true});
+  await expect.poll(() => groupState(page)).toBe('unavailable');
+  await renderStatus(page, {http: true, ftp: true, master: false});
+  await expect.poll(() => groupState(page)).toBe('disabled');
+  for (const [http, ftp] of [[true, true], [true, false]]) {
+    await renderStatus(page, {http, ftp, master: true});
+    await expect.poll(() => groupState(page),
+      `master ON with http=${http} ftp=${ftp} must not report the gate closed`).not.toBe('disabled');
+  }
+});
+
+test('the Network Sources row renders, with a state, in every one of those states', async ({page}) => {
+  const expected = {
+    'true|true|true': 'healthy',
+    'true|false|true': 'mixed',
+    'false|false|true': 'unavailable',
+    'true|true|false': 'disabled',
+    'false|false|false': 'disabled',
+  };
+  for (const [http, ftp, master] of [[true, true, true], [true, false, true],
+                                     [false, false, true], [true, true, false], [false, false, false]]) {
+    await renderStatus(page, {http, ftp, master});
+    const row = page.locator(`#provider-status-list [data-provider-group="${GROUP}"]`);
+    await expect(row, `http=${http} ftp=${ftp} master=${master}`).toHaveCount(1);
+    await expect(row).toContainText('Network Sources');
+    await expect.poll(() => groupState(page),
+      `http=${http} ftp=${ftp} master=${master}`).toBe(expected[`${http}|${ftp}|${master}`]);
+  }
+});
+
+// --- immediate control semantics --------------------------------------------
+
+test('the master toggle persists on change, with no page-level save', async ({page}) => {
+  await setMaster(page, true);
+  await openSources(page);
+  await expect(masterTrack(page)).toHaveCount(1);
+  await masterTrack(page).click();
+  await expect.poll(async () => (await canonical(page)).integration_groups[GROUP].enabled).toBe(false);
+  await page.reload();
+  await openSources(page);
+  await expect(page.locator(`[data-integration-group-enabled="${GROUP}"]`)).not.toBeChecked();
+});
+
+test('every Services enable control is immediate', async ({page}) => {
+  // The expected controls are whatever the server publishes as Services
+  // members -- every integration that declares a status tier -- plus the group
+  // gates they declare, so a newly registered integration is covered by
+  // existing, and one whose control is missing (or a control nothing
+  // publishes) fails.
+  const {integrations} = await canonical(page);
+  const members = Object.entries(integrations).filter(([, entry]) => entry?.presentation?.status_tier)
+    .map(([identity]) => identity);
+  const groups = [...new Set(Object.values(integrations).map(entry => entry?.presentation?.status_group)
+    .filter(Boolean))];
+  expect(groups).toContain(GROUP);
+  await openSources(page);
+  const controls = await page.$$eval(
+    '.dp-settings-panel[data-panel="sources"] [data-integration-enabled], ' +
+    '.dp-settings-panel[data-panel="sources"] [data-integration-group-enabled]',
+    nodes => nodes.map(n => n.dataset.integrationEnabled || n.dataset.integrationGroupEnabled));
+  expect(controls.length).toBe(new Set(controls).size);
+  expect(new Set(controls)).toEqual(new Set([...members, ...groups]));
+});
+
+/* The suite's designated NEUTRAL whole-settings probe.
+ *
+ * Every spec file shares one backend and files run concurrently, so a case may
+ * only read back keys its own file owns. `disk_guard_resume_hysteresis_gb` is
+ * owned by no case at all: nothing asserts its value, which is exactly why it
+ * can be written from anywhere to make the ONE remaining whole-settings write
+ * happen. Each file writes its own disjoint pair of values, so the draft it
+ * types always differs from what is stored and the commit always occurs; and
+ * because nobody reads it, it is deliberately not restored.
+ *
+ * What this proves is that a whole-settings write HAPPENED while this page
+ * held a stale draft -- the assertions that follow are about this page's own
+ * canonical values, which this file owns exclusively. */
+async function writeTheWholeSettingsDocument(page) {
+  const current = await page.request.get('/api/settings').then(r => r.json());
+  const draft = Number(current.disk_guard_resume_hysteresis_gb) === 14.4 ? 14.5 : 14.4;
+  const written = page.waitForResponse(
+    r => r.url().includes('/api/settings') && r.request().method() === 'PUT', {timeout: 15000});
+  await page.locator('#view-settings [data-tab="downloads"]:not(.dp-motion-still *)').click();
+  const probe = page.locator('#dp-settings-field-disk-guard-resume-hysteresis-gb');
+  await probe.fill(String(draft));
+  await probe.blur();
+  await written;
+}
+
+/** Operate one member toggle to `value` through the operator's control. */
+async function setChild(page, id, value) {
+  await reveal(page, id);
+  const input = page.locator(`[data-integration-enabled="${id}"]`);
+  if ((await input.isChecked()) !== value) await childTrack(page, id).click();
+  await expect(input).toBeChecked({checked: value});
+}
+
+test('HTTP(S) and (S)FTP toggles persist independently, survive reload and never touch aria2',
+  async ({page}) => {
+    const aria2 = (await canonical(page)).integrations.aria2.enabled;
+    const read = async () => {
+      const s = await canonical(page);
+      return [s.integrations.general_http.enabled, s.integrations.general_ftp.enabled, s.integrations.aria2.enabled];
+    };
+    await openSources(page);
+    for (const [http, ftp] of [[true, false], [false, true], [true, true]]) {
+      await setChild(page, 'general_http', http);
+      await setChild(page, 'general_ftp', ftp);
+      await expect.poll(read).toEqual([http, ftp, aria2]);
+      // A fresh page renders both toggles from canonical state.
+      await openSources(page);
+      await reveal(page, 'general_http');
+      await expect(page.locator('[data-integration-enabled="general_http"]')).toBeChecked({checked: http});
+      await expect(page.locator('[data-integration-enabled="general_ftp"]')).toBeChecked({checked: ftp});
+    }
+  });
+
+test('a failed member enable mutation restores the committed state and reports it', async ({page}) => {
+  /* The refused write is answered here and never reaches the backend, so the
+   * proof is the request the page sent and the state it returns to -- the
+   * state it last committed. */
+  await openSources(page);
+  await reveal(page, 'general_ftp');
+  const toggle = page.locator('[data-integration-enabled="general_ftp"]');
+  const before = await toggle.isChecked();
+  const sent = [];
+  await page.route(url => /\/api\/integrations\/general_ftp\/configuration$/.test(url.pathname),
+    route => {
+      sent.push(route.request().postDataJSON());
+      return route.fulfill({status: 502, contentType: 'application/json',
+        body: JSON.stringify({detail: 'integration configuration rejected'})});
+    });
+  await flipChild(page, 'general_ftp');
+  // The visible control returns to committed truth, and the error is surfaced.
+  await expect(page.locator('#toasts .toast')).toContainText(/reject|error|fail/i);
+  expect(sent).toEqual([{enabled: !before}]);
+  await expect(toggle).toBeChecked({checked: before});
+});
+
+test('no visible member toggle reports ON while canonical state is OFF', async ({page}) => {
+  await openSources(page);
+  const {integrations} = await canonical(page);
+  for (const id of CHILDREN) {
+    expect(await page.locator(`[data-integration-enabled="${id}"]`).isChecked(), id)
+      .toBe(integrations[id].enabled !== false);
+  }
+});
+
+test('a later whole-settings write cannot replay a stale master or child value', async ({page}) => {
+  await setChildren(page, true, true);
+  await setMaster(page, true);
+  await openSources(page);
+  await masterTrack(page).click();
+  await expect.poll(async () => (await canonical(page)).integration_groups[GROUP].enabled).toBe(false);
+  await flipChild(page, 'general_ftp');
+  await expect.poll(async () => (await canonical(page)).integrations.general_ftp.enabled).toBe(false);
+
+  // The ONE whole-settings write that still exists: an unrelated field
+  // committing at its own boundary. Every Settings page is a field-boundary
+  // surface now, so no act collects the page at all.
+  await writeTheWholeSettingsDocument(page);
+  await openSources(page);
+
+  const settings = await canonical(page);
+  expect(settings.integration_groups[GROUP].enabled, 'a later write replayed a stale master').toBe(false);
+  expect(settings.integrations.general_ftp.enabled, 'a later write replayed a stale child').toBe(false);
+});
+
+test('a rejected master write leaves the control on canonical state', async ({page}) => {
+  await setMaster(page, true);
+  await openSources(page);
+  await page.route(url => url.pathname.startsWith('/api/integration-groups/'), route =>
+    route.fulfill({status: 500, contentType: 'application/json', body: JSON.stringify({detail: 'nope'})}));
+  await masterTrack(page).click();
+  await expect(page.locator(`[data-integration-group-enabled="${GROUP}"]`)).toBeChecked();
+  expect((await canonical(page)).integration_groups[GROUP].enabled).toBe(true);
+});
+
+test('an unknown group id is refused', async ({page}) => {
+  const response = await page.request.patch(
+    '/api/integration-groups/not_a_real_group/configuration', {data: {enabled: false}});
+  expect(response.status()).toBe(404);
+});
+
+
+// --- immediate Provider Status convergence (no page-level save) -------------
+
+/* The REAL operator controls against the REAL backend.
+ *
+ * The renderer-unit cases above drive one explicit canonical document, which
+ * proves the colour rule but not the convergence: an accepted scoped mutation
+ * used to update only the Settings page's own copy, so the status renderer --
+ * which reads the one global document -- kept serving pre-mutation state until
+ * some unrelated act happened to perform a fresh GET. */
+test.describe.serial('immediate Network Sources status convergence', () => {
+  test('master and member toggles converge the sidebar status with no page-level save', async ({page}) => {
+    await setChildren(page, true, true);
+    await setMaster(page, true);
+    await openSources(page);
+    await expect.poll(() => groupState(page)).toBe('healthy');
+
+    await flipChild(page, 'general_ftp');
+    await expect.poll(async () => (await canonical(page)).integrations.general_ftp.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'one member off did not converge').toBe('mixed');
+
+    // The SCP, rsync, WebDAV and Multimeta members' Enables are the same immediate canonical control.
+    await flipChild(page, 'general_scp');
+    await expect.poll(async () => (await canonical(page)).integrations.general_scp.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'two members off did not converge').toBe('mixed');
+    await flipChild(page, 'general_rsync');
+    await expect.poll(async () => (await canonical(page)).integrations.general_rsync.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'three members off did not converge').toBe('mixed');
+    // WebDAV joins the same group through the same metadata and the same control.
+    await flipChild(page, 'general_webdav');
+    await expect.poll(async () => (await canonical(page)).integrations.general_webdav.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'four members off did not converge').toBe('mixed');
+    // Multimeta too: one more peer of the same group and control.
+    await flipChild(page, 'multimeta');
+    await expect.poll(async () => (await canonical(page)).integrations.multimeta.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'five members off did not converge').toBe('mixed');
+    // Media Downloads: the same group, the same control.
+    await flipChild(page, 'media');
+    await expect.poll(async () => (await canonical(page)).integrations.media.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'six members off did not converge').toBe('mixed');
+
+    await flipChild(page, 'general_http');
+    await expect.poll(async () => (await canonical(page)).integrations.general_http.enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'all members off did not converge').toBe('unavailable');
+
+    await masterTrack(page).click();
+    await expect.poll(async () => (await canonical(page)).integration_groups[GROUP].enabled).toBe(false);
+    await expect.poll(() => groupState(page), 'the closed gate did not converge').toBe('disabled');
+
+    // Nothing above could have gone through a page-level write: there is none.
+    await expect(page.locator('#view-settings [data-action="save"]')).toHaveCount(0);
+  });
+
+  test('the accepted mutation is published to the one settings document', async ({page}) => {
+    await setChildren(page, true, true);
+    await setMaster(page, true);
+    await openSources(page);
+    await flipChild(page, 'general_http');
+    await expect.poll(async () => (await canonical(page)).integrations.general_http.enabled).toBe(false);
+    // Both frontend references to Settings state agree, because there is one
+    // synchronisation owner and the acceptance helpers converge through it.
+    await expect.poll(() => page.evaluate(() => {
+      try { return settingsData?.integrations?.general_http?.enabled; } catch (_) { return 'unreadable'; }
+    })).toBe(false);
+  });
+});

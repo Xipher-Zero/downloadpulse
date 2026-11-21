@@ -1,0 +1,1525 @@
+"""Canonical transfer engine with provider-transition hard-stop enforcement.
+
+Semantic recovery/control decisions belong solely to
+``transfers.convergence_engine.TransferEngine`` (DP 1.0.12 canonical
+lifecycle/recovery/completion rework, CANON-001 closure). This class and its
+bases (``_engine_recovery.TransferEngine``, ``_engine_base.TransferEngine``)
+contain only neutral provider-continuation, materialization, and factual
+mechanics -- no lower class here decides or applies a recovery outcome. This
+public owner closes the admitted-resource continuation seam so every provider
+I/O path honors the registry's bound-route enablement/health contract, and
+attaches transitional recovery compatibility to factual provider/executor
+failures (via ``policy.compatibility``) before lifecycle policy consumes them.
+"""
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+import logging
+
+from transfers import _engine_base, file_selection as fs
+from transfers._repository_base import manifest_child_identity, manifest_member_requests, terminal_cleanup_authority
+from transfers.input_required import split_user_supplied
+from transfers._engine_recovery import TransferEngine as _RecoveryTransferEngine
+from transfers.applicability import ApplicabilityUnresolved
+from transfers.contracts import (
+    ActiveCapacitySource, CachedResolution, Inventory, Manifest, ResourceLookup, UpstreamSelection,
+    speculative_preparation,
+)
+from transfers.errors import (
+    Category, Domain, MutationOutcome, Origin, Recovery, Retryability, Stage, TransferError, unknown_failure,
+)
+from transfers.policy import provider_attributable, recovery_action
+from transfers.registry import ProviderRoute
+from transfers.models import (
+    ActiveCapacity, AvailabilityState, CachePresence, Capability, CleanupAuthority, NormalizedError, Ownership,
+    ProviderObservation, ResolutionResult,
+    ResourceState,
+)
+
+logger = logging.getLogger(__name__)
+
+# A takeover observation that fails with one of these is no transient read
+# failure: the adapter's answer itself is invalid or unsafe, and the takeover
+# fails closed exactly as before (``_promoted_standby``).
+_TAKEOVER_FAIL_CLOSED = frozenset({
+    Category.INVALID_ADAPTER_RESPONSE, Category.PROVIDER_PROTOCOL_VIOLATION,
+    Category.DESTINATION_BLOCKED, Category.EGRESS_POLICY_VIOLATION, Category.UNSAFE_REDIRECT,
+    Category.TLS_IDENTITY_FAILURE, Category.SECURITY_POLICY_REJECTED,
+})
+
+# The bound on one provider's read-only availability answer while a root is
+# routed; a provider that does not answer in time is UNKNOWN for that decision.
+AVAILABILITY_TIMEOUT_SECONDS = 5.0
+# One observation round asks each competing provider, in one batched read,
+# about at most this many unbound BitTorrent roots; the answer it gave for a
+# root routed later is that root's once, and only while it is this fresh.
+AVAILABILITY_ROUND_LIMIT = 100
+# The bound on one provider's read-only active-capacity answer.
+ACTIVE_CAPACITY_TIMEOUT_SECONDS = 5.0
+AVAILABILITY_ROUND_FRESH_SECONDS = 30.0
+# A root whose primary route has begun -- the only root a speculative backup
+# preparation is ever made for.
+_STANDBY_ROOT_STATES = frozenset({"waiting", "materializing", "resolved"})
+# Refusals that say only "not now": a backup that met them is deferred, not
+# failed. Neither is ever an account, route, health or transfer fact.
+_STANDBY_DEFERRABLE = frozenset({Category.RATE_LIMITED, Category.CONCURRENCY_LIMITED, Category.QUOTA_EXCEEDED})
+# A provider resource that no longer exists: nothing left to observe.
+_STANDBY_ENDED_RESOURCE = frozenset({ResourceState.ABSENT, ResourceState.EXPIRED})
+
+
+class TransferEngine(_RecoveryTransferEngine):
+    """Recovery-qualified engine plus authoritative bound-provider continuation."""
+
+    async def resolve_pending(self):
+        """The resolution pass, serialized with collection affinity and
+        followed by direct-link aggregation, then -- only once its primary work
+        has drained and outside that serialization -- the speculative backup
+        preparations it leaves room for."""
+        lock = getattr(self, "_collection_resolution_lock", None)
+        if lock is None:
+            lock = self._collection_resolution_lock = asyncio.Lock()
+        async with lock:
+            # Owed creation reconciliations first: anything found is handed to
+            # the one cleanup cadence the pass then drains.
+            await self._settle_unowned_creations()
+            blocked = await self._prepare_collection_affinity()
+            self._collection_affinity_blocked = blocked
+            try:
+                result = await super().resolve_pending()
+                for transfer in await self.repository.active():
+                    if transfer.source == "direct_link":
+                        await self._aggregate(transfer.id)
+            finally:
+                self._collection_affinity_blocked = set()
+        await self._prepare_standbys()
+        return result
+
+    async def _request_failure(self, record, error, *, attempts=None, waiting=False, routed=True):
+        """Attach legacy recovery fields only after factual integration output."""
+        return await super()._request_failure(
+            record, self.policy.compatibility(error), attempts=attempts, waiting=waiting, routed=routed,
+        )
+
+    def _bound_resource_provider(self, record):
+        """Resolve an admitted resource owner through the canonical registry gate.
+
+        Administrative disablement deliberately parks the existing logical work:
+        the durable provider/resource binding remains intact and no provider I/O,
+        retry consumption, terminal failure, or route competition occurs until
+        the same provider is re-enabled.
+        """
+        if record.resource is None:
+            return None
+        provider_id = record.resource.provider_id
+        try:
+            return self.registry.provider_for_bound_route(provider_id, record.resolvable)
+        except TransferError as exc:
+            configured = self.registry.providers.get(provider_id)
+            if (
+                exc.error.category == Category.PROVIDER_UNAVAILABLE
+                and configured is not None
+                and not configured.descriptor.enabled
+            ):
+                return None
+            raise
+
+    @staticmethod
+    def _split_member_credentials(entries):
+        sanitized, supplied = [], []
+        for entry in entries:
+            requests = []
+            for alternate, request in manifest_member_requests(entry):
+                payload, values = split_user_supplied(request.payload)
+                if values:
+                    request = replace(request, payload=payload)
+                    supplied.append((entry.relative_path, alternate, payload, values))
+                requests.append(request)
+            sanitized.append(replace(entry, request=requests[0], alternates=tuple(requests[1:])))
+        return tuple(sanitized), supplied
+
+    async def _resolve(self, record):
+        attempt = None
+        provider = None
+        try:
+            if record.parent_id is not None and not await self.repository.member_generation_current(record):
+                # A member of a superseded, held or not yet committed
+                # decomposition generation is not resolved: its root's next
+                # fan-out advances it (or, held, nothing does) -- rebuilding it
+                # now would only produce work no generation authorizes.
+                await self.repository.poll_after(record.id, self.clock() + self.policy.resource_poll_interval)
+                return
+            if record.parent_id is None and record.resource is None:
+                held = await self.repository.uncertain_resolution(record.id)
+                if held is not None:
+                    # A creation that may have happened is settled before
+                    # anything else may create: never a second one blindly.
+                    return await self._settle_uncertain_resolution(record, *held)
+            if record.parent_id is None and record.resource is None:
+                # Provider cleanup fence: a retired predecessor generation sharing
+                # this transfer's source fingerprint still has outstanding,
+                # not-yet-abandoned provider cleanup that could act on the shared
+                # native resource. Admit stays fresh, but hold the first
+                # provider-resource creation (provider.resolve) as ordinary
+                # waiting/retry state — no attempt consumed, no error — until no
+                # predecessor cleanup operation can execute.
+                if await self.repository.predecessor_cleanup_barrier(record.transfer_id):
+                    await self.repository.poll_after(
+                        record.id, self.clock() + self.policy.resource_poll_interval,
+                    )
+                    return
+            if record.resource and record.parent_id is None:
+                previous_provider = self._bound_resource_provider(record)
+                if previous_provider is None:
+                    return
+                provider = previous_provider
+                if not isinstance(previous_provider, ResourceLookup):
+                    raise TransferError(self._error(
+                        Category.UNSUPPORTED_CAPABILITY, Stage.RECONCILIATION,
+                    ))
+                previous = await previous_provider.observe(record.resource)
+                await self.repository.resource_observation(
+                    record.transfer_id, previous.resource, previous.state,
+                )
+                await self._converge_root_observation_name(record, previous)
+                previous_error = previous.error or None
+                restartable = previous.state in {ResourceState.EXPIRED, ResourceState.ABSENT} or (
+                    previous.state == ResourceState.UNAVAILABLE
+                    and previous_error is not None
+                    and previous_error.retryability not in {Retryability.NEVER, Retryability.UNKNOWN}
+                    and previous_error.domain != Domain.SECURITY
+                    and recovery_action(previous_error) in {Recovery.RETRY, Recovery.RERESOLVE, Recovery.BACKOFF}
+                )
+                if previous_error and not restartable:
+                    raise TransferError(self.policy.compatibility(previous_error))
+                if previous.state in {ResourceState.PREPARING, ResourceState.AVAILABLE}:
+                    await self.repository.poll_after(record.id, self.clock(), waiting=True)
+                    return
+                if not restartable:
+                    raise TransferError(self._error(
+                        Category.UNMAPPED_PROVIDER_ERROR,
+                        Stage.RECONCILIATION,
+                        domain=Domain.PROVIDER,
+                    ))
+                if (
+                    previous.state != ResourceState.ABSENT
+                    and record.resource.ownership in {Ownership.CREATED, Ownership.ADOPTED}
+                ):
+                    await self.repository.cleanup_intent(
+                        record.transfer_id, record.resource.id, CleanupAuthority.OWNED,
+                    )
+                    await self._cleanup_pending()
+                    if any(
+                        resource.id == record.resource.id and pending
+                        for resource, _state, pending
+                        in await self.repository.resources(record.transfer_id)
+                    ):
+                        raise TransferError(self._error(
+                            Category.REMOTE_CLEANUP_FAILED,
+                            Stage.CLEANUP,
+                            domain=Domain.CLEANUP,
+                        ))
+
+            # The basis is read before the route is decided: admission opens
+            # the decision only while it still holds.
+            basis = await self.repository.route_basis(record.id)
+            route = await self._route(record)
+            await self._record_route_hold(record, route)
+            provider = route.require()
+            cached = False
+            if record.alternative_group is not None and record.parent_id is None and not record.attempts:
+                # The selected alternative of an explicit group, never yet
+                # resolved: an alternative the provider already holds is
+                # preferred over acquiring this one, without creating anything.
+                chosen = await self._cached_alternative(record, provider)
+                if chosen is not None and chosen.id != record.id:
+                    if await self.repository.select_alternative(record.id, chosen.id):
+                        self._resolution_opportunity(record.transfer_id)
+                        return
+                cached = chosen is not None and chosen.id == record.id
+            async with self._resolution_slot():
+                if not await self._live(record.transfer_id, admission=True):
+                    return
+                # An operator's explicit route replacement opened this route's
+                # attempt already: resolution adopts it rather than opening another.
+                attempt = (await self.repository.begin_pinned_resolution(record.id, provider.descriptor.id)
+                           or await self.repository.begin_resolution(
+                               record.id, provider.descriptor.id, routing_decision=self._route_evidence(record, route),
+                               expected_request=record.request, expected_basis=basis,
+                           ))
+                if attempt is None:
+                    return
+                # The route is chosen; a backup that provider already prepared
+                # for this root is taken over instead of resolving again.
+                result = None if cached else await self._promoted_standby(record, provider)
+                if result is None:
+                    if not cached and not await self._make_primary_room(record, provider):
+                        # Full, and not (yet) freed by confirmed cleanup: no
+                        # productive call above the provider's effective
+                        # maximum. The constrained resource is the provider's
+                        # capacity, but DownloadPulse made this decision -- the
+                        # provider was never asked -- so its origin is core;
+                        # routing and backoff read it exactly as a refusal.
+                        raise TransferError(NormalizedError(
+                            Domain.PROVIDER, Category.CONCURRENCY_LIMITED, Stage.RESOLUTION, Retryability.BACKOFF,
+                            origin=Origin.CORE, integration_id=provider.descriptor.id))
+                    # The provider may create the root's resource now: the
+                    # reconciliation is owed BEFORE the call, so a process that
+                    # ends mid-call leaves it, never a bare interrupted attempt.
+                    armed = (not cached and record.parent_id is None and self._reconcilable(provider, record)
+                             and await self.repository.arm_creation(attempt.id, self.clock()))
+                    try:
+                        result = await self._primary_resolution(record, provider, cached)
+                    except TransferError as exc:
+                        if armed and exc.error.mutation != MutationOutcome.UNCERTAIN:
+                            # Definitively nothing created: nothing owed.
+                            await self.repository.settle_creation(attempt.id)
+                        raise
+                    except Exception as exc:
+                        if not armed:
+                            raise
+                        # No normalized outcome at all: nothing proves the
+                        # creation did not happen, so it is uncertain and the
+                        # armed obligation is reconciled -- never a failure the
+                        # provider re-enters from to create again.
+                        raise TransferError(replace(unknown_failure(
+                            exc, integration_id=provider.descriptor.id, domain=Domain.PROVIDER,
+                            stage=Stage.RESOLUTION, secrets=(str(record.request.payload),)),
+                            mutation=MutationOutcome.UNCERTAIN)) from None
+                    if armed and (result is None or result.observation is None):
+                        # An answer naming no resource of the provider: nothing
+                        # owed. One naming a resource settles when it is bound.
+                        await self.repository.settle_creation(attempt.id)
+            if cached and result is None:
+                # Held when asked, no longer held now: nothing was created, and
+                # the group continues from its first dormant alternative.
+                if await self.repository.defer_alternative(attempt, self._error(
+                        Category.RESOLUTION_TEMPORARILY_FAILED, Stage.RESOLUTION,
+                        domain=Domain.RESOLUTION, retryability=Retryability.BACKOFF)):
+                    self._resolution_opportunity(record.transfer_id)
+                return
+            await self._apply_resolution(record, attempt, provider, result)
+        except ApplicabilityUnresolved:
+            return
+        except Exception as exc:
+            error = exc.error if isinstance(exc, TransferError) else unknown_failure(
+                exc,
+                integration_id=provider.descriptor.id if provider else "",
+                domain=Domain.PROVIDER,
+                stage=Stage.RESOLUTION,
+                secrets=(str(record.request.payload),),
+            )
+            error = self.policy.compatibility(error)
+            if (attempt and error.mutation == MutationOutcome.UNCERTAIN and record.parent_id is None
+                    and self._reconcilable(provider, record)
+                    and await self.repository.hold_uncertain_resolution(
+                        attempt, error, self.clock() + self.policy.resource_poll_interval)):
+                # The provider may have created the resource even though no
+                # answer named it: the attempt stays open -- never a failure
+                # that frees the route for another creation -- until the
+                # provider's own inventory settles whether it exists.
+                return
+            if attempt and await self.repository.resolution(
+                    attempt, ResolutionResult(ResourceState.UNKNOWN, error=error)) is None:
+                # The attempt's route ended meanwhile (an operator switch released
+                # it): its failure is no longer its request's to carry.
+                return
+            await self._request_failure(
+                record, error, attempts=record.attempts + (1 if attempt else 0), routed=attempt is not None,
+            )
+
+    def _reconcilable(self, provider, record) -> bool:
+        """Whether a creation ``provider`` may have made for ``record`` can be
+        found again: the provider reads its own complete inventory, and the
+        request names the content-derived identity (fingerprint) that inventory
+        reports. Nothing else is authoritative enough to take ownership."""
+        return (provider is not None and isinstance(provider, Inventory)
+                and bool(str(getattr(record.request, "fingerprint", "") or "")))
+
+    async def _creation_reconciliation(self, provider, record, snapshots: dict) -> tuple[str, object]:
+        """THE settlement of a creation that may have happened -- a root's
+        primary resolution or its backup preparation -- from the provider's
+        read-only inventory, never by asking it to create anything:
+
+        * ``("found", observation)``: exactly one of the provider's own
+          resources carries the request's fingerprint;
+        * ``("absent", None)``: a complete inventory holds none;
+        * ``("unsettled", None)``: anything less certain -- several matches,
+          an incomplete or unreadable inventory, a provider that cannot be
+          asked now.
+
+        ``snapshots`` shares one inventory read per provider within a pass."""
+        fingerprint = str(getattr(record.request, "fingerprint", "") or "").casefold()
+        if (not fingerprint or provider is None or not provider.descriptor.enabled
+                or not isinstance(provider, Inventory)):
+            return "unsettled", None
+        if provider.descriptor.id not in snapshots:
+            try:
+                snapshots[provider.descriptor.id] = await provider.inventory()
+            except Exception as exc:
+                logger.debug("creation reconciliation provider=%s: %s", provider.descriptor.id, type(exc).__name__)
+                snapshots[provider.descriptor.id] = None
+        snapshot = snapshots[provider.descriptor.id]
+        if snapshot is None or snapshot.error is not None:
+            return "unsettled", None
+        matches = [observed for observed in snapshot.observations
+                   if observed.resource.provider_id == provider.descriptor.id
+                   and str(observed.fingerprint or "").casefold() == fingerprint
+                   and observed.state != ResourceState.ABSENT]
+        if not matches and snapshot.complete:
+            return "absent", None
+        if len(matches) == 1:
+            return "found", matches[0]
+        return "unsettled", None
+
+    async def _settle_unowned_creations(self) -> None:
+        """Reconcile every creation DownloadPulse may have caused that no route
+        or backup pass owns any more: a primary attempt whose route ended
+        before settling it, or whose transfer was deleted or finished, and a
+        backup claim left ``creating`` on such a transfer. Through THE
+        creation reconciliation, before the one cleanup cadence drains:
+
+        * found: bound to its transfer as DownloadPulse's resource with the
+          cleanup intent its transfer's state calls for
+          (``_unowned_cleanup``), so the one cleanup cadence removes it;
+        * absent: settled -- nothing was created;
+        * unsettled: reconciled again later -- never silently abandoned, and
+          never by creating anything.
+        """
+        now, snapshots = self.clock(), {}
+        later = now + self.policy.max_retry_delay
+        for item in await self.repository.unowned_creations(now):
+            outcome, found = await self._unowned_reconciliation(item, snapshots)
+            if outcome == "unsettled":
+                await self.repository.defer_creation_reconciliation(item["attempt_id"], later)
+            elif outcome == "absent":
+                await self.repository.settle_creation(item["attempt_id"])
+            else:
+                await self.repository.settle_creation(
+                    item["attempt_id"], transfer_id=item["transfer_id"],
+                    resource=replace(found.resource, ownership=Ownership.ADOPTED), state=found.state,
+                    cleanup=self._unowned_cleanup(item))
+        for item in await self.repository.unowned_standby_creations(now):
+            outcome, found = await self._unowned_reconciliation(item, snapshots)
+            if outcome == "unsettled":
+                await self.repository.defer_standby_reconciliation(item["id"], later)
+                continue
+            if outcome == "found":
+                try:
+                    await self.repository.bind_standby(
+                        item["id"], item["transfer_id"], replace(found.resource, ownership=Ownership.ADOPTED),
+                        found.state, now, cleanup=self._unowned_cleanup(item))
+                    continue
+                except TransferError as exc:
+                    error = exc.error                       # another live transfer holds it: not ours
+            else:
+                error = NormalizedError(Domain.PROVIDER, Category.RESOURCE_NOT_FOUND, Stage.RECONCILIATION,
+                                        Retryability.NEVER, integration_id=item["provider_id"])
+            await self.repository.fail_standby(item["id"], error, now)
+
+    async def _unowned_reconciliation(self, item: dict, snapshots: dict) -> tuple[str, object]:
+        record = next((request for request in await self.repository.requests(item["transfer_id"])
+                       if request.id == item["request_id"]), None)
+        if record is None:
+            return "unsettled", None
+        return await self._creation_reconciliation(self.registry.providers.get(item["provider_id"]), record,
+                                                   snapshots)
+
+    @staticmethod
+    def _unowned_cleanup(item: dict) -> str | None:
+        """A found creation of a transfer that is no longer live is owed what
+        that transfer's end authorizes (``terminal_cleanup_authority``): a
+        deleted transfer's by what its Delete recorded -- the operator's
+        "remove from the provider", or a retirement by the final external
+        demand (what DownloadPulse owns) -- and of a transfer whose route ended
+        or that finished, it is surplus DownloadPulse owns."""
+        return terminal_cleanup_authority(item["status"], item["delete_remote"])
+
+    async def _settle_uncertain_resolution(self, record, attempt, error: NormalizedError) -> None:
+        """Settle a root's open primary creation the provider may have made.
+
+        Found: it IS the root's resource -- adopted onto the very attempt that
+        made it, so it is observed, cleaned up and owned exactly like any
+        other. Absent: nothing was created, and the attempt ends as the
+        ordinary failure it then was (provider exhaustion, re-entry and
+        failover unchanged). Unsettled: it waits for another reading under the
+        ordinary resolution retry budget -- never an indefinite wait. Once that
+        is spent, whether the provider created it is still unknown, so the
+        provider can never be asked to create it again for this root: its
+        route ends for good (``Retryability.NEVER``) and another legitimate
+        provider proceeds, or the root fails truthfully -- while the owed
+        reconciliation itself continues (``_settle_unowned_creations``)."""
+        provider = self.registry.providers.get(attempt.provider_id)
+        outcome, found = await self._creation_reconciliation(provider, record, {})
+        if outcome == "found":
+            adopted = replace(found, resource=replace(found.resource, ownership=Ownership.ADOPTED),
+                              request=record.resolvable)
+            await self._apply_resolution(record, attempt, provider, ResolutionResult(
+                adopted.state, observation=adopted, error=adopted.error))
+            return
+        if outcome == "absent":
+            await self.repository.settle_creation(attempt.id)
+            error = replace(error, mutation=MutationOutcome.NOT_COMMITTED)     # absence proven
+        if outcome == "unsettled":
+            decision = self.policy.retry_resolution(self._error(
+                Category.RECONCILIATION_FAILED, Stage.RECONCILIATION, domain=Domain.RECONCILIATION,
+                retryability=Retryability.BACKOFF), record.attempts, self.clock())
+            if decision.retry_at is not None:
+                if await self.repository.hold_uncertain_resolution(attempt, error, decision.retry_at,
+                                                                   consume_attempt=True):
+                    return
+            else:
+                # The ROUTE stops waiting; the obligation does not end with it:
+                # the creation is still reconciled -- and, if found, cleaned
+                # up -- by ``_settle_unowned_creations``.
+                await self.repository.defer_creation_reconciliation(
+                    attempt.id, self.clock() + self.policy.max_retry_delay)
+                error = NormalizedError(
+                    Domain.PROVIDER, Category.RECONCILIATION_FAILED, Stage.RECONCILIATION, Retryability.NEVER,
+                    origin=Origin.PROVIDER, integration_id=attempt.provider_id, mutation=MutationOutcome.UNCERTAIN,
+                    diagnostic="whether the provider created the resource could not be settled")
+        if await self.repository.resolution(attempt, ResolutionResult(ResourceState.UNKNOWN, error=error)) is not None:
+            await self._request_failure(record, error, attempts=record.attempts)
+
+    async def _resolution_provider_group(self, record) -> str:
+        """The provider a request's resolution would go to, read without
+        deciding anything (``_route``'s order, minus every effect): its bound
+        route, a bound resource's provider, a member's root provider, else
+        the first of the one canonical competition with no availability
+        answer -- never asked for, never recorded, so an availability-ordered
+        root may in the end be routed elsewhere. Unknown is ``""``."""
+        bound = await self.repository.bound_route_provider(record.id)
+        if bound:
+            return bound
+        if record.resource is not None:
+            return record.resource.provider_id
+        competition = await self._competition(record)
+        if record.parent_id is not None:
+            root = await self.repository.bound_route_provider(record.parent_id)
+            if root and any(provider.descriptor.id == root for provider in self.registry.eligible_providers(
+                    record.resolvable, declined=competition["declined"], exhausted=competition["exhausted"],
+                    acquisition=False, generic_closed=competition["generic_closed"])):
+                return root
+        route = self.registry.provider_route(record.resolvable, **competition)
+        return route.provider.descriptor.id if route.provider is not None else ""
+
+    async def _route_provider(self, record):
+        """The provider this request's resolution belongs to: its bound route,
+        else the first of the one canonical competition."""
+        return (await self._route(record)).require()
+
+    async def _route(self, record) -> ProviderRoute:
+        """``_route_provider``'s one decision with the routing decision that
+        made it (none for a bound route: it is never decided again)."""
+        bound_provider_id = await self.repository.bound_route_provider(record.id)
+        if bound_provider_id:
+            return ProviderRoute(self.registry.provider_for_bound_route(bound_provider_id, record.resolvable))
+        competition = await self._competition(record)
+        if record.parent_id is not None:
+            # A member continues the route that decomposed it: its root's
+            # current provider takes it whenever that provider is one of its
+            # own legitimate claimants -- so a root whose route was replaced
+            # fans its members out to the provider it is on now.
+            root_provider_id = await self.repository.bound_route_provider(record.parent_id)
+            following = next((provider for provider in self.registry.eligible_providers(
+                record.resolvable, declined=competition["declined"], exhausted=competition["exhausted"],
+                acquisition=False, generic_closed=competition["generic_closed"])
+                if provider.descriptor.id == root_provider_id), None) if root_provider_id else None
+            if following is not None:
+                return ProviderRoute(following)
+        # Only a root's new acquisition is ever asked about, and only where an
+        # answer can change the order -- never merely to have it recorded.
+        availability = (await self._root_availability(record, competition)
+                        if record.parent_id is None and self.registry.availability_orders(record.resolvable)
+                        else None)
+        return self.registry.provider_route(record.resolvable, availability=availability, **competition)
+
+    async def _competition(self, record) -> dict:
+        """The facts of ``record``'s one canonical provider competition."""
+        return {
+            "declined": await self.repository.declined_route_providers(record.id),
+            # A provider whose route ended on a transient failure rejoins
+            # once its re-entry instant has passed.
+            "exhausted": await self.repository.exhausted_route_providers(record.id, self.clock()),
+            # A member continues the route that decomposed it: it is
+            # never new acquisition, so account entitlement never gates it.
+            "acquisition": record.parent_id is None,
+            # A collection specialized authority owns never reopens generic
+            # competition for any of its requests.
+            "generic_closed": await self.repository.collection_route_authority(record.transfer_id),
+        }
+
+    async def _root_availability(self, record, competition) -> dict[str, AvailabilityState]:
+        """Each provider competing for this unbound BitTorrent root with its
+        read-only availability. The answer an earlier round already gave for
+        it is used once, while fresh; otherwise one round observes it together
+        with the other unbound BitTorrent roots waiting to be routed, so a
+        provider that batches is asked once for all of them. An answer only
+        ever prefers among the root's competitors at the moment it is routed."""
+        answers = getattr(self, "_availability_answers", None)
+        if answers is None:
+            answers = self._availability_answers = {}
+            self._availability_round_lock = asyncio.Lock()
+        # Concurrent routing waits for a round in progress instead of
+        # starting its own: that round may already be observing this root.
+        async with self._availability_round_lock:
+            now = self.clock()
+            for request_id, (observed_at, _states) in list(answers.items()):
+                if now - observed_at > AVAILABILITY_ROUND_FRESH_SECONDS:
+                    answers.pop(request_id, None)
+            earlier = answers.pop(record.id, None)
+            if earlier is not None:
+                return earlier[1]
+            roots = [(record, competition)]
+            for item in await self._availability_round_roots(record, answers):
+                roots.append((item, await self._competition(item)))
+            observed = await self._observe_availability(roots)
+            for item, _competition in roots[1:]:
+                answers[item.id] = (now, observed[item.id])
+            return observed[record.id]
+
+    async def _availability_round_roots(self, record, answers) -> list:
+        """The other unbound BitTorrent roots waiting to be routed (this
+        root's transfer first), up to the round's bound."""
+        found = []
+        transfers = sorted(await self.repository.active(), key=lambda item: item.id != record.transfer_id)
+        for transfer in transfers:
+            for item in await self.repository.requests(transfer.id):
+                if len(found) >= AVAILABILITY_ROUND_LIMIT - 1:
+                    return found
+                if (item.id == record.id or item.id in answers or item.parent_id is not None
+                        or item.state != "pending" or not self.registry.availability_orders(item.resolvable)
+                        or await self.repository.bound_route_provider(item.id)):
+                    continue
+                found.append(item)
+        return found
+
+    async def _observe_availability(self, roots) -> dict[str, dict[str, AvailabilityState]]:
+        """``{request_id: {provider_id: state}}`` for each root's competitors:
+        each provider that declares ``AVAILABILITY`` is asked once, about every
+        root it competes for, within the bound; everyone else -- and any root
+        whose provider failed, timed out or answered malformed -- is UNKNOWN.
+        Concurrent, creates nothing, never a routing failure. Nobody outside a
+        root's competition is asked about it."""
+        observed, asked = {}, {}
+        for item, competition in roots:
+            competitors = self.registry.eligible_providers(item.resolvable, **competition)
+            observed[item.id] = {provider.descriptor.id: AvailabilityState.UNKNOWN for provider in competitors}
+            for provider in competitors:
+                if Capability.AVAILABILITY in provider.descriptor.capabilities:
+                    asked.setdefault(provider.descriptor.id, (provider, []))[1].append(item)
+
+        async def observe(provider, items) -> None:
+            try:
+                states = await asyncio.wait_for(provider.availability(tuple(item.resolvable for item in items)),
+                                                AVAILABILITY_TIMEOUT_SECONDS)
+            except Exception as exc:
+                logger.debug("availability unknown provider=%s: %s", provider.descriptor.id, type(exc).__name__)
+                return
+            if (not isinstance(states, tuple) or len(states) != len(items)
+                    or not all(isinstance(state, AvailabilityState) for state in states)):
+                return
+            for item, state in zip(items, states):
+                observed[item.id][provider.descriptor.id] = state
+
+        await asyncio.gather(*(observe(provider, items) for provider, items in asked.values()))
+        return observed
+
+    async def _prepare_standbys(self) -> None:
+        """Speculative backup preparation, after the pass's primary work.
+
+        For a root whose primary route has begun, each other provider still in
+        its TASK1 competition whose account is entitled and that allows a
+        speculative preparation of it (``speculative_preparation_allowed``)
+        may prepare it as a backup, through that provider's ordinary
+        ``resolve`` inside ``speculative_preparation``. A durable claim
+        (``begin_standby``) comes first, so a root never holds two for one
+        provider and an interrupted attempt is reconciled rather than
+        repeated. Before each attempt the pass yields if any primary
+        resolution is runnable, and it makes at most the resolution
+        concurrency's worth of attempts. A backup never touches the root's
+        route, request state, primary resource, entitlement or health, and is
+        never a candidate. Bound backups are observed first."""
+        lock = getattr(self, "_standby_lock", None)
+        if lock is None:
+            lock = self._standby_lock = asyncio.Lock()
+        if lock.locked():
+            return
+        async with lock:
+            if await self.repository.globally_paused():
+                return
+            transfers = await self.repository.active()
+            capacities: dict[tuple[str, str], ActiveCapacity | None] = {}
+            await self._observe_standbys(transfers)
+            await self._retire_disallowed_standbys(transfers)
+            await self._settle_released_standbys(transfers)
+            await self._readiness_promotions(transfers)
+            # An interrupted claim nothing proved absent is never attempted
+            # again in this pass: it may already hold a resource.
+            unsettled = await self._reconcile_standby_claims(transfers)
+            budget = max(1, self.policy.resolution_concurrency)
+            for transfer in transfers:
+                if not await self._live(transfer.id, admission=True):
+                    continue
+                for record in await self.repository.requests(transfer.id):
+                    if record.parent_id is not None or record.state not in _STANDBY_ROOT_STATES:
+                        continue
+                    primary = await self.repository.bound_route_provider(record.id)
+                    if not primary:
+                        continue
+                    # A provider whose route of this root was released, or
+                    # whose resource here still owes cleanup, prepares no
+                    # backup: it would recreate what was just given back.
+                    fenced = await self.repository.standby_fenced_providers(transfer.id, record.id)
+                    for provider in self._standby_providers(record, primary, await self._competition(record)):
+                        if (record.id, provider.descriptor.id) in unsettled or provider.descriptor.id in fenced:
+                            continue
+                        if budget <= 0 or await self.repository.primary_resolution_runnable(self.clock()):
+                            return
+                        key = (provider.descriptor.id, record.resolvable.kind)
+                        if key not in capacities:
+                            capacities[key] = await self._active_capacity(provider, record.resolvable)
+                        claimed = await self.repository.begin_standby(
+                            transfer.id, record.id, provider.descriptor.id, self.clock())
+                        if claimed is None:
+                            continue
+                        fact = capacities[key]
+                        if fact is not None and fact.maximum is not None and fact.occupancy is not None \
+                                and fact.occupancy >= fact.maximum:
+                            # Full: no productive call at all; the backup waits
+                            # through the ordinary deferral and its backoff.
+                            full = self._error(Category.CONCURRENCY_LIMITED, Stage.RESOLUTION,
+                                               domain=Domain.PROVIDER, retryability=Retryability.BACKOFF)
+                            await self.repository.defer_standby(
+                                claimed[0], full, self._standby_retry_at(full, claimed[1]), self.clock())
+                            continue
+                        budget -= 1
+                        if await self._prepare_standby(record, provider, *claimed):
+                            # What the new backup occupies is the provider's to
+                            # say (a cached one occupies nothing): read again.
+                            capacities.pop(key, None)
+
+    def _standby_providers(self, record, primary: str, competition) -> list:
+        """The providers that may prepare ``record`` as a backup now: its
+        TASK1 competitors other than its primary, entitled, and allowing it."""
+        request = record.resolvable
+        return [provider for provider in self.registry.eligible_providers(request, **competition)
+                if provider.descriptor.id != primary
+                and self.registry.entitlement_for(provider, request) is True
+                and self.registry.speculative_preparation_allowed(provider, request)]
+
+    def _retains_replaced_route(self, record, provider_id: str) -> bool:
+        """Whether a root route replaced away from ``provider_id`` keeps that
+        provider's resource as its backup of the root: exactly that provider's
+        own Prepare Backup Torrents policy for the root
+        (``speculative_preparation_allowed``), the same answer that lets it
+        prepare a backup at all. An operator switch and a readiness yield ask
+        the same question; off (or unknown), the resource is given back."""
+        provider = self.registry.providers.get(str(provider_id))
+        return provider is not None and self.registry.speculative_preparation_allowed(provider, record.resolvable)
+
+    def _standby_retry_at(self, error: NormalizedError, attempts: int) -> float:
+        """When a deferred backup may be tried again: the existing retry
+        policy's doubling delay, capped, never sooner than the provider asked."""
+        delay = min(self.policy.max_retry_delay, self.policy.retry_delay * 2 ** max(0, attempts))
+        return self.clock() + max(delay, float(error.retry_after_seconds or 0))
+
+    async def _prepare_standby(self, record, provider, standby_id: str, attempts: int) -> bool:
+        """One speculative preparation attempt. A resource it yields is bound
+        to the root as a backup (``True``); a refusal that only says "not now"
+        defers the backup; any other failure ends only this backup."""
+        try:
+            async with self._resolution_slot():
+                with speculative_preparation():
+                    result = await provider.resolve(record.resolvable)
+            result = self._authoritative_provider_result(provider.descriptor.id, result,
+                                                         request_kind=record.resolvable.kind)
+            observation = result.observation
+            if observation is not None:
+                # A resource the provider holds is recorded even when it
+                # reports a problem: it is ours to observe and to clean up.
+                bound = await self.repository.bind_standby(standby_id, record.transfer_id, observation.resource,
+                                                           observation.state, self.clock())
+                if bound:
+                    await self._select_on_bound_standby(record, provider, observation, standby_id)
+                return True
+            raise TransferError(result.error or self._error(
+                Category.INVALID_ADAPTER_RESPONSE, Stage.RESOLUTION, domain=Domain.PROVIDER,
+                retryability=Retryability.NEVER))
+        except Exception as exc:
+            error = exc.error if isinstance(exc, TransferError) else unknown_failure(
+                exc, integration_id=provider.descriptor.id, domain=Domain.PROVIDER, stage=Stage.RESOLUTION,
+                secrets=(str(record.request.payload),))
+            if error.mutation == MutationOutcome.UNCERTAIN and self._reconcilable(provider, record):
+                # The backup may exist although no answer named it: the claim
+                # stays ``creating`` -- exactly what an interrupted attempt
+                # leaves -- so the next pass settles it from the provider's
+                # inventory before anything is created again.
+                await self.repository.uncertain_standby(standby_id, error, self.clock())
+            else:
+                await self._standby_failure(standby_id, error, attempts)
+            logger.debug("backup preparation provider=%s request=%s: %s", provider.descriptor.id, record.id,
+                         error.category.value)
+            return False
+
+    async def _standby_failure(self, standby_id: str, error: NormalizedError, attempts: int) -> None:
+        """A backup attempt that created nothing: a refusal that only says
+        "not now" defers it; any other failure ends only this backup."""
+        if error.category in _STANDBY_DEFERRABLE or error.retryability == Retryability.BACKOFF:
+            await self.repository.defer_standby(standby_id, error, self._standby_retry_at(error, attempts),
+                                                self.clock())
+        else:
+            await self.repository.fail_standby(standby_id, error, self.clock())
+
+    async def _reconcile_standby_claims(self, transfers) -> set[tuple[str, str]]:
+        """A ``creating`` claim found when a pass starts may already hold a
+        resource: an interrupted attempt (passes never overlap), or one whose
+        provider gave no usable answer (its uncertain error kept on the
+        claim). It is settled by THE creation reconciliation
+        (``_creation_reconciliation``) -- never by asking the provider to
+        create anything:
+
+        * found: that is the backup, bound as ADOPTED;
+        * absent: it was never created -- an uncertain attempt ends as the
+          ordinary failure it then was (``_standby_failure``); an interrupted
+          one gets its one ordinary attempt while the provider allows a
+          backup, and otherwise ends here (``RESOURCE_NOT_FOUND``);
+        * unsettled: nothing changes.
+
+        Returns the ``(request_id, provider_id)`` of every claim this pass
+        could not settle and must not attempt again: only a claim proven
+        absent and still allowed an ordinary attempt is left out of it.
+        """
+        snapshots: dict[str, object] = {}
+        unsettled: set[tuple[str, str]] = set()
+        for transfer in transfers:
+            for item in await self.repository.standbys(transfer.id):
+                if item["state"] != "creating":
+                    continue
+                key = (item["request_id"], item["provider_id"])
+                unsettled.add(key)
+                provider = self.registry.providers.get(item["provider_id"])
+                record = next((request for request in await self.repository.requests(transfer.id)
+                               if request.id == item["request_id"]), None)
+                if record is None:
+                    continue
+                outcome, found = await self._creation_reconciliation(provider, record, snapshots)
+                uncertain = item.get("error") is not None and item["error"].mutation == MutationOutcome.UNCERTAIN
+                if outcome == "absent":
+                    unsettled.discard(key)
+                    if uncertain:
+                        # Absence proven: the failure created nothing after all.
+                        await self._standby_failure(item["id"], replace(
+                            item["error"], mutation=MutationOutcome.NOT_COMMITTED), int(item.get("attempts") or 0))
+                    elif not self.registry.speculative_preparation_allowed(provider, record.resolvable):
+                        await self.repository.fail_standby(item["id"], NormalizedError(
+                            Domain.PROVIDER, Category.RESOURCE_NOT_FOUND, Stage.RECONCILIATION,
+                            Retryability.NEVER, integration_id=provider.descriptor.id), self.clock())
+                elif outcome == "found":
+                    unsettled.discard(key)
+                    try:
+                        await self.repository.bind_standby(
+                            item["id"], transfer.id, replace(found.resource, ownership=Ownership.ADOPTED),
+                            found.state, self.clock())
+                    except Exception as exc:
+                        error = exc.error if isinstance(exc, TransferError) else unknown_failure(
+                            exc, integration_id=provider.descriptor.id, domain=Domain.PROVIDER,
+                            stage=Stage.RECONCILIATION)
+                        await self.repository.fail_standby(item["id"], error, self.clock())
+        return unsettled
+
+    async def _active_capacity(self, provider, request) -> ActiveCapacity | None:
+        """``provider``'s own active-capacity fact for ``request`` (bounded,
+        creates nothing): ``None`` when the request has no such capacity
+        there; an unreadable answer is a capacity with nothing known."""
+        if not isinstance(provider, ActiveCapacitySource):
+            return None
+        try:
+            fact = await asyncio.wait_for(provider.active_capacity(request), ACTIVE_CAPACITY_TIMEOUT_SECONDS)
+        except Exception as exc:
+            logger.debug("active capacity unknown provider=%s: %s", provider.descriptor.id, type(exc).__name__)
+            return ActiveCapacity()
+        return fact if isinstance(fact, ActiveCapacity) else None
+
+    async def _make_primary_room(self, record, provider) -> bool:
+        """Whether a root's productive creation may go ahead at ``provider``.
+
+        Primary work outranks DownloadPulse's own backups, never the provider's
+        effective maximum (the account's, lowered by the operator's ceiling):
+        when that capacity is full, exactly the backups needed to free one
+        slot are given back, and the creation goes ahead only once their
+        cleanup has CONFIRMED the slots free. ``False`` -- no productive call
+        -- while the capacity is full and not confirmed freed (too few
+        backups of DownloadPulse's to give back, or their cleanup still
+        pending). An unknown maximum or occupancy, or a member request,
+        always goes ahead: the provider's own answer is then final."""
+        if record.parent_id is not None:
+            return True
+        fact = await self._active_capacity(provider, record.resolvable)
+        if fact is None or fact.maximum is None or fact.occupancy is None:
+            return True
+        needed = fact.occupancy - fact.maximum + 1
+        if needed <= 0:
+            return True
+        held = await self.repository.reclaimable_standbys(provider.descriptor.id)
+        if len(held) < needed:
+            return False
+        return await self._reclaim(held[:needed]) >= needed
+
+    async def _primary_resolution(self, record, provider, cached: bool) -> ResolutionResult | None:
+        """The root's productive resolution. A refusal that says the
+        provider's concurrent active capacity is exhausted -- on a request
+        that has such capacity there -- while DownloadPulse holds a backup on
+        that provider reclaims ONE backup and retries ONCE; anything else,
+        or a second refusal, is the ordinary refusal."""
+        def call():
+            return provider.resolve_cached(record.resolvable) if cached else provider.resolve(record.resolvable)
+
+        try:
+            return await call()
+        except TransferError as exc:
+            if cached or not await self._reclaim_after_refusal(record, provider, exc.error):
+                raise
+        return await call()
+
+    async def _reclaim_after_refusal(self, record, provider, error: NormalizedError) -> bool:
+        if record.parent_id is not None or error.category != Category.CONCURRENCY_LIMITED:
+            return False
+        if await self._active_capacity(provider, record.resolvable) is None:
+            return False
+        held = await self.repository.reclaimable_standbys(provider.descriptor.id)
+        return bool(held) and await self._reclaim(held[:1]) > 0
+
+    async def _settle_released_standbys(self, transfers) -> None:
+        """A backup whose resource the ordinary cleanup owner has since
+        confirmed gone -- a reclamation whose cleanup finished on a later
+        cadence, or a resource the provider dropped -- no longer holds
+        anything: its claim returns to deferred so the ordinary cadence may
+        prepare it again."""
+        for transfer in transfers:
+            for item in await self.repository.standbys(transfer.id):
+                if (item["state"] == "bound" and not item.get("promoted_at")
+                        and item["resource_state"] == ResourceState.ABSENT.value):
+                    await self.repository.release_standby(item["id"], self.clock())
+
+    async def _retire_disallowed_standbys(self, transfers) -> None:
+        """A backup its provider no longer allows -- Prepare Backup Torrents
+        turned off since it was prepared, or since a replaced route was kept
+        as one -- is given back through the one reclamation (``_reclaim``:
+        the existing OWNED cleanup authority), never left holding a slot
+        nobody wants. Only what primary work could also take back
+        (``reclaimable_standbys``: DownloadPulse's own, nothing already
+        cleaning it up, not known gone) of an enabled provider; a disabled
+        provider's backup is parked, exactly as its observation is. The
+        released claim prepares nothing again while the provider says no."""
+        for transfer in transfers:
+            items = [item for item in await self.repository.standbys(transfer.id)
+                     if item["state"] == "bound" and not item.get("promoted_at") and item["resource"] is not None]
+            if not items:
+                continue
+            records = {record.id: record for record in await self.repository.requests(transfer.id)}
+            retired = []
+            for item in items:
+                provider = self.registry.providers.get(item["provider_id"])
+                record = records.get(item["request_id"])
+                if (provider is None or not provider.descriptor.enabled or record is None
+                        or self.registry.speculative_preparation_allowed(provider, record.resolvable)):
+                    continue
+                retired.extend(held for held in await self.repository.reclaimable_standbys(item["provider_id"])
+                               if held["id"] == item["id"])
+            if retired:
+                await self._reclaim(retired)
+
+    async def _reclaim(self, held) -> int:
+        """Give back backups through the existing cleanup authority; a slot
+        counts as free only once its cleanup confirmed the resource gone.
+        Returns how many were freed."""
+        for item in held:
+            await self.repository.cleanup_intent(item["transfer_id"], item["resource"].id, CleanupAuthority.OWNED)
+        await self._cleanup_pending()
+        freed = 0
+        for item in held:
+            if await self.repository.release_standby(item["id"], self.clock()):
+                freed += 1
+        return freed
+
+    async def _promoted_standby(self, record, provider) -> ResolutionResult | None:
+        """The one promotion owner. Once the router has made ``provider`` this
+        root's route, a backup that provider already prepared for the root is
+        taken over as its resource -- read with the provider's own
+        ``observe``, never created again -- and the rest of the lifecycle is
+        the ordinary sequential one. ``None`` when there is nothing to take
+        over (no live backup, a provider that cannot observe one, or a backup
+        the provider reports gone, which is recorded as such): ordinary
+        resolution proceeds. Promotion never chooses a provider.
+
+        The backup's identity is already DownloadPulse's (its binding), so an
+        observation that merely fails -- a timeout, a transient or unmapped
+        provider error -- is no proof it is gone and no failure of the route:
+        it is taken over unready (``UNKNOWN``, the error kept as the
+        observation's evidence) and the ordinary observation of a bound
+        resource decides what happens next, under its own budget. An invalid
+        or unsafe adapter answer (``_TAKEOVER_FAIL_CLOSED``) or an answer
+        naming another resource still fails closed."""
+        if not isinstance(provider, ResourceLookup):
+            return None
+        held = await self.repository.promotable_standby(record.id, provider.descriptor.id)
+        if held is None:
+            return None
+        standby_id, resource = held
+        try:
+            observed = await provider.observe(resource)
+        except Exception as exc:
+            error = exc.error if isinstance(exc, TransferError) else unknown_failure(
+                exc, integration_id=provider.descriptor.id, domain=Domain.PROVIDER, stage=Stage.RESOLUTION,
+                secrets=(str(record.request.payload),))
+            if error.category in _TAKEOVER_FAIL_CLOSED:
+                raise TransferError(error) from None
+            await self.repository.promote_standby(standby_id, self.clock())
+            unknown = ProviderObservation(resource, ResourceState.UNKNOWN, error=error, request=record.resolvable)
+            return ResolutionResult(ResourceState.UNKNOWN, observation=unknown)
+        if observed.resource.provider_id != provider.descriptor.id or observed.resource.id != resource.id:
+            raise TransferError(self._error(Category.INVALID_ADAPTER_RESPONSE, Stage.RESOLUTION,
+                                            domain=Domain.PROVIDER, retryability=Retryability.NEVER))
+        if observed.state in _STANDBY_ENDED_RESOURCE:
+            await self.repository.observe_standby(standby_id, record.transfer_id, observed.resource, observed.state,
+                                                  self.clock())
+            return None
+        await self.repository.promote_standby(standby_id, self.clock())
+        observation = replace(observed, request=record.resolvable)
+        return ResolutionResult(observation.state, observation=observation, error=observation.error)
+
+    async def _readiness_promotions(self, transfers) -> None:
+        """The backup coordinator's readiness pass, right after its backups
+        were observed: every root whose own route is still PREPARING (its
+        bound resource's last observation) while a backup of it is AVAILABLE
+        is offered to ``_readiness_promotion``. A committed yield brings the
+        next resolution pass now (the persisted readiness deadline the
+        scheduler honours): convergence waits for no further poll, while
+        readiness itself is still discovered at the provider poll cadence."""
+        yielded = False
+        for transfer in transfers:
+            ready = {item["request_id"] for item in await self.repository.standbys(transfer.id)
+                     if item["state"] == "bound" and not item.get("promoted_at")
+                     and item["resource_state"] == ResourceState.AVAILABLE.value}
+            if not ready:
+                continue
+            states = {resource.id: state for resource, state, _pending in await self.repository.resources(transfer.id)}
+            for record in await self.repository.requests(transfer.id):
+                if (record.id in ready and record.parent_id is None and record.resource is not None
+                        and states.get(record.resource.id) == ResourceState.PREPARING):
+                    yielded = await self._readiness_promotion(record) or yielded
+        if yielded:
+            now = self.clock()
+            self.resolution_deadline = now if self.resolution_deadline is None else min(self.resolution_deadline, now)
+
+    async def _readiness_promotion(self, record) -> bool:
+        """THE readiness-driven yield: a root route whose bound resource its
+        provider still reports PREPARING is replaced by a backup already
+        prepared for the root, through the one route replacement
+        (``replace_root_route`` under ``readiness_promotion``) and the one
+        promotion seam that ordinary resolution then runs. ``True`` when the
+        replacement committed.
+
+        Only while nothing executes: a root the switch read model serves (one
+        BitTorrent root) of a live, unpaused transfer (no global pause),
+        outside collection route authority, never
+        past a committed selection, fan-out or download
+        (``root_crossed_execution_boundary``). Never away from a route the
+        operator chose or a readiness yield opened, nor from the provider the
+        request prefers. The target is the first PREPARED backup in the
+        canonical competition's own order (``manual_route_switch.route_providers``
+        / ``standby_choice``), observed again now. The released route is not
+        a failure: no retry budget, no exhaustion; the replaced resource is
+        kept as its provider's backup when that provider's Prepare Backup
+        Torrents allows it (``_retains_replaced_route``), exactly as an
+        operator switch keeps it, and otherwise given back where DownloadPulse
+        owns it.
+
+        Decided outside any resolution unit (``_readiness_promotions``), so
+        the replaced root is ordinary runnable work of the next pass."""
+        from transfers import manual_route_switch
+
+        repository = self.repository
+        if record.resource is None:
+            return False
+        current = record.resource.provider_id
+        # A root this applies to at all (one BitTorrent root) is the switch
+        # read model's own decision (``route_providers`` reports nothing for
+        # any other), never a request-kind branch here.
+        if record.parent_id is not None or current in {record.request.preferred_provider,
+                                                       record.resolvable.preferred_provider}:
+            return False
+        if (not await self._live(record.transfer_id, admission=True)
+                or await repository.collection_route_authority(record.transfer_id)):
+            return False
+        latest = await repository.latest_root_route(record.id)
+        # A route a readiness yield itself opened is never yielded again
+        # (anti-flapping by route state); an operator's switch is a choice of
+        # route, not a lock: while it still waits for usable material, the
+        # same yield applies to it.
+        if (not latest or latest["provider_id"] != current or latest["state"] in {"exhausted", "released"}
+                or latest["operation"] == repository.READINESS_PROMOTION):
+            return False
+        if await repository.root_crossed_execution_boundary(record.id):
+            return False
+        status = await manual_route_switch.route_providers(self, record.transfer_id)
+        target = next((entry["provider_id"] for entry in (status or {}).get("providers", ())
+                       if entry["status"] == manual_route_switch.PREPARED and entry["provider_id"] != current), None)
+        target_provider = self.registry.providers.get(target) if target else None
+        if target_provider is None or not isinstance(target_provider, ResourceLookup):
+            return False
+        held = await repository.promotable_standby(record.id, target)
+        if held is None:
+            return False
+        standby_id, resource = held
+        try:
+            observed = await target_provider.observe(resource)
+        except Exception as exc:
+            logger.debug("readiness promotion target unobservable provider=%s: %s", target, type(exc).__name__)
+            return False
+        if observed.resource.provider_id != target or observed.resource.id != resource.id:
+            return False
+        await repository.observe_standby(standby_id, record.transfer_id, observed.resource, observed.state,
+                                         self.clock())
+        if observed.state != ResourceState.AVAILABLE:
+            return False
+        # The primary is released only while its provider still says it is
+        # preparing -- read now, not from its last poll.
+        primary = self.registry.providers.get(current)
+        if primary is None or not primary.descriptor.enabled or not isinstance(primary, ResourceLookup):
+            return False                                  # a disabled provider's route is parked: no I/O
+        try:
+            preparing = await primary.observe(record.resource)
+        except Exception as exc:
+            logger.debug("readiness promotion primary unobservable provider=%s: %s", current, type(exc).__name__)
+            return False
+        await repository.resource_observation(record.transfer_id, preparing.resource, preparing.state)
+        if preparing.state != ResourceState.PREPARING:
+            return False
+        outcome = await repository.replace_root_route(
+            record.id, expected_attempt_id=str(latest["id"]), expected_provider_id=current,
+            target_provider_id=target, operation=repository.READINESS_PROMOTION,
+            retain_replaced=self._retains_replaced_route(record, current), now=self.clock())
+        if outcome != "replaced":
+            return False
+        await self._cleanup_pending()
+        return True
+
+    async def _observe_standbys(self, transfers) -> None:
+        """Each bound backup's resource as its provider observes it, at most
+        once per resource poll interval. A disabled provider's backup is
+        parked, exactly like a parked primary; an observation that fails
+        changes nothing."""
+        for transfer in transfers:
+            for item in await self.repository.standbys(transfer.id):
+                resource = item["resource"]
+                if item["state"] != "bound" or resource is None or item.get("promoted_at"):
+                    continue
+                if item["resource_state"] and ResourceState(item["resource_state"]) in _STANDBY_ENDED_RESOURCE:
+                    continue
+                if self.clock() - float(item["observed_at"] or 0) < self.policy.resource_poll_interval:
+                    continue
+                provider = self.registry.providers.get(resource.provider_id)
+                if provider is None or not provider.descriptor.enabled or not isinstance(provider, ResourceLookup):
+                    continue
+                try:
+                    observed = await provider.observe(resource)
+                except Exception as exc:
+                    logger.debug("backup observation provider=%s: %s", resource.provider_id, type(exc).__name__)
+                    continue
+                if observed.resource.provider_id != resource.provider_id:
+                    continue
+                manifest = getattr(observed.file_manifest, "entries", None)
+                await self.repository.observe_standby(item["id"], transfer.id, observed.resource, observed.state,
+                                                      self.clock(),
+                                                      manifest_entries=None if manifest is None else len(manifest))
+                await self._select_on_standby(transfer.id, item["request_id"], provider, observed, item["id"])
+
+    async def _select_on_bound_standby(self, record, provider, observation, standby_id: str) -> None:
+        """A backup just bound whose creation answer already lists its files
+        and waits for its selection (transfer 661) is handed the root's
+        established selection now, from that answer -- not one backup poll
+        later, which is when its first observation is due. The one selection
+        owner (``_select_on_standby``) decides, sends and reads back exactly
+        as for an observed backup. This pass's readiness promotion has already
+        run, so a read-back that found it AVAILABLE brings the next pass now
+        through the persisted readiness deadline the scheduler honours (the
+        same wake a committed yield uses)."""
+        if not isinstance(provider, UpstreamSelection):
+            return
+        await self._select_on_standby(record.transfer_id, record.id, provider, observation, standby_id)
+        ready = any(item["id"] == standby_id and item["resource_state"] == ResourceState.AVAILABLE.value
+                    for item in await self.repository.standbys(record.transfer_id))
+        if ready:
+            now = self.clock()
+            self.resolution_deadline = now if self.resolution_deadline is None else min(self.resolution_deadline, now)
+
+    async def _select_on_standby(self, transfer_id: int, request_id: str, provider, observed,
+                                 standby_id: str) -> None:
+        """Hand a backup held by a provider that executes only what is
+        selected on its own resource (``UpstreamSelection``) the root's
+        ESTABLISHED decision (``repository.standby_selection``: every file for
+        ALL, the operator's subset exactly), so it prepares as any backup does
+        and its own observation can report it ready -- which the one
+        readiness yield then acts on. Nothing is sent while nothing is
+        decided, for a transfer that may no longer begin work, or for a
+        resource that is not still waiting. One provider call per
+        observation, read first by the provider itself; a failure changes
+        nothing and the next observation tries again.
+
+        A selection the provider says it applied (``synchronize_selection``
+        answered ``True``: its resource changed) is read back once, at once
+        -- the same policy as a route's own selection -- and that reading is
+        the backup's observation: a provider ready as soon as it is told what
+        to deliver is recorded AVAILABLE in this pass, so the readiness
+        promotion that follows in the same pass can act on it, instead of the
+        next backup poll. Still preparing, it waits for that ordinary poll; a
+        read that fails, or that names another resource, records nothing.
+        Nothing is ever sent twice here: the next observation's
+        synchronization reads first."""
+        if (not isinstance(provider, UpstreamSelection) or observed.error is not None
+                or observed.state != ResourceState.PREPARING or observed.file_manifest is None):
+            return
+        if not await self._live(transfer_id, admission=True):
+            return
+        record = next((item for item in await self.repository.requests(transfer_id) if item.id == request_id), None)
+        if record is None or record.parent_id is not None:
+            return
+        members = await self.repository.standby_selection(record, observed.file_manifest)
+        if not members:
+            return
+        try:
+            submitted = await provider.synchronize_selection(observed.resource, members, submit=True)
+        except Exception as exc:
+            logger.debug("backup selection provider=%s request=%s: %s", observed.resource.provider_id,
+                         request_id, type(exc).__name__)
+            return
+        if not submitted or not await self._live(transfer_id, admission=True):
+            return
+        try:
+            readback = await provider.observe(observed.resource)
+        except Exception as exc:
+            logger.debug("backup selection read-back provider=%s request=%s: %s", observed.resource.provider_id,
+                         request_id, type(exc).__name__)
+            return
+        if (readback.resource.provider_id != observed.resource.provider_id
+                or readback.resource.id != observed.resource.id):
+            return
+        manifest = getattr(readback.file_manifest, "entries", None)
+        await self.repository.observe_standby(standby_id, transfer_id, readback.resource, readback.state,
+                                              self.clock(),
+                                              manifest_entries=None if manifest is None else len(manifest))
+
+    @staticmethod
+    def _route_evidence(record, route: ProviderRoute) -> str | None:
+        """The decision a ROOT request's route attempt records, encoded; a
+        member's route belongs to the route that decomposed it. Visibility
+        only: an encoding failure records nothing and changes nothing."""
+        if record.parent_id is not None or route.decision is None:
+            return None
+        try:
+            return route.decision.encode()
+        except Exception as exc:
+            logger.debug("routing decision not recorded request=%s: %s", record.id, type(exc).__name__)
+            return None
+
+    async def _record_route_hold(self, record, route: ProviderRoute) -> None:
+        """A root decision that starts no route attempt -- held, or nothing
+        can take the request -- is recorded on the request. An unchanged hold
+        is written once, not every cycle. A recording failure is contained:
+        it never changes what routing does next."""
+        holds = getattr(self, "_route_holds", None)
+        if holds is None:
+            holds = self._route_holds = {}
+        if route.provider is not None:
+            holds.pop(record.id, None)
+            return
+        encoded = self._route_evidence(record, route)
+        if encoded is None or holds.get(record.id) == encoded:
+            return
+        try:
+            await self.repository.record_route_decision(record.id, encoded)
+        except Exception as exc:
+            logger.debug("routing hold not recorded request=%s: %s", record.id, type(exc).__name__)
+            return
+        holds[record.id] = encoded
+
+    async def _cached_alternative(self, record, provider):
+        """The first alternative of ``record``'s explicit group, in submitted
+        order, that ``provider`` -- the route of ``record`` and of every
+        alternative asked about -- already holds; ``None`` when none is, or
+        the provider cannot say. Only ``record`` itself and never-attempted
+        dormant alternatives are asked; nothing is created by asking."""
+        if not isinstance(provider, CachedResolution):
+            return None
+        asked = []
+        for item in await self.repository.requests(record.transfer_id):
+            if item.parent_id is not None or item.alternative_group != record.alternative_group:
+                continue
+            if item.id != record.id:
+                if item.state != "skipped" or item.attempts:
+                    continue
+                try:
+                    if await self._route_provider(item) is not provider:
+                        continue
+                except (ApplicabilityUnresolved, TransferError):
+                    continue
+            asked.append(item)
+        try:
+            presence = await provider.cache_presence(tuple(item.resolvable for item in asked))
+        except Exception:
+            return None
+        if len(presence) != len(asked):
+            return None
+        return next((item for item, fact in zip(asked, presence) if fact == CachePresence.HIT), None)
+
+    async def _observe_resource(self, record):
+        provider = None
+        first_commitment = False
+        try:
+            provider = self._bound_resource_provider(record)
+            if provider is None:
+                return first_commitment
+            if not isinstance(provider, ResourceLookup):
+                raise TransferError(self._error(
+                    Category.UNSUPPORTED_CAPABILITY,
+                    Stage.RECONCILIATION,
+                    domain=Domain.REQUEST,
+                    retryability=Retryability.NEVER,
+                ))
+            # One observation decides this unit -- or two, when the first one
+            # hands a provider that declares upstream selection its selection
+            # (``verifying``): what the provider then holds is read back once,
+            # at once, and that second observation is the one the single
+            # decision below acts on. Never a third, never a second mutation.
+            for verifying in (False, True):
+                if verifying and not await self._live(record.transfer_id, admission=True):
+                    return first_commitment
+                observation = await provider.observe(record.resource)
+                await self.repository.resource_observation(
+                    record.transfer_id, observation.resource, observation.state,
+                )
+                await self._converge_root_observation_name(record, observation)
+                if not await self._live(record.transfer_id, admission=True):
+                    return first_commitment
+                # Fail-closed materialization guard. Whatever path bound this
+                # resource (resolution, adoption, reuse, restart reconciliation,
+                # recovery, failover, a future provider), the canonical selection owner
+                # decides here, before any manifest can expand, whether a generation
+                # governs this (request, binding): it creates the current one if the
+                # request needs selection and none exists, and reports ``held`` if it
+                # cannot. A missing generation is therefore never read as ALL -- only a
+                # request that genuinely never needed selection reaches the executable
+                # manifest ungoverned.
+                authority = await self._secure_root_selection(
+                    record, provider, observation, resource=record.resource,
+                )
+                if authority.held:
+                    await self.repository.poll_after(
+                        record.id, self.clock() + self.policy.resource_poll_interval,
+                    )
+                    return first_commitment
+                binding_id = authority.binding_id
+                selecting = authority.governed
+                if not (selecting and isinstance(provider, UpstreamSelection) and observation.error is None
+                        and observation.state in {ResourceState.PREPARING, ResourceState.AVAILABLE}):
+                    break
+                # A provider that executes only what is selected on its own
+                # resource waits for DownloadPulse's decision, never past it:
+                # the one gate settles the decision (the operator's choice,
+                # Close/X, the decision timeout or a single file) while the
+                # resource is still preparing, and a decision still open is
+                # the operator's wait -- no preparation stall, no failure.
+                # Once settled, the provider is handed exactly what the
+                # generation's proof authorizes, before anything executes.
+                gate = await self.repository.file_selection_gate(
+                    record.id, binding_id, now=self.clock(), poll_interval=self.policy.resource_poll_interval,
+                    resource_available=observation.state == ResourceState.AVAILABLE,
+                )
+                if gate == fs.SelectionGate.WAIT_FOR_DECISION:
+                    return first_commitment
+                if gate != fs.SelectionGate.PROCEED:
+                    break
+                members = await self.repository.upstream_selection(
+                    record, binding_id, observation.file_manifest, now=self.clock())
+                if members is None or not await provider.synchronize_selection(
+                        observation.resource, members, submit=not verifying):
+                    break
+                if verifying:
+                    # Read back, the resource still waits for a selection:
+                    # nothing more is sent in this unit, and the ordinary
+                    # poll reads it again (and settles it read-first).
+                    await self.repository.poll_after(
+                        record.id, self.clock() + self.policy.resource_poll_interval,
+                    )
+                    logger.info("Request %s: upstream selection read back on %s: not yet applied; next poll in %g s",
+                                record.id, provider.descriptor.id, self.policy.resource_poll_interval)
+                    return first_commitment
+            if verifying:
+                logger.info("Request %s: upstream selection read back on %s: %s%s", record.id,
+                            provider.descriptor.id, observation.state.value,
+                            f"; next poll in {self.policy.resource_poll_interval:g} s"
+                            if observation.state == ResourceState.PREPARING and observation.error is None else "")
+
+            if observation.error:
+                await self._request_failure(record, observation.error, waiting=True)
+            elif observation.state == ResourceState.AVAILABLE:
+                if not isinstance(provider, Manifest):
+                    raise TransferError(self._error(
+                        Category.UNSUPPORTED_CAPABILITY,
+                        Stage.CANDIDATE_PREPARATION,
+                        domain=Domain.REQUEST,
+                        retryability=Retryability.NEVER,
+                    ))
+                if selecting:
+                    # Provider-side acquisition is done; only local executable
+                    # materialization is held while the interactive selector's
+                    # user-decision hold, or the bounded post-AVAILABLE
+                    # manifest-acquisition grace, is still legitimately open. The
+                    # gate decision AND the scheduling of the wait it produces
+                    # are one atomic transaction (specification section 8), so a
+                    # settled EXPLICIT/ALL can never have a stale WAIT recreate a
+                    # future retry_at. Re-uses the ordinary resolution wakeup
+                    # cadence; no new loop, no browser polling.
+                    gate = await self.repository.file_selection_gate(
+                        record.id, binding_id, now=self.clock(),
+                        poll_interval=self.policy.resource_poll_interval,
+                        resource_available=True,
+                    )
+                    if gate != fs.SelectionGate.PROCEED:
+                        return first_commitment
+                # The freshly observed provider resource, not the one frozen
+                # onto the request row at its first resolution attempt:
+                # ``transfer_requests.resource`` is written by
+                # ``TransferRepository.resolution()`` and inventory adoption
+                # only, never refreshed by ``resource_observation()``, so it can
+                # lag behind whatever the provider has since learned about the
+                # SAME canonical resource. Core has already accepted
+                # ``observation.resource`` as the durable binding two statements
+                # above; handing the provider back its own latest statement is
+                # the only self-consistent input for the executable manifest.
+                # Entirely provider-agnostic: core never inspects the opaque
+                # ``context``, and a provider whose ``observe()`` returns the
+                # resource unchanged sees no difference at all.
+                try:
+                    entries = await provider.manifest(observation.resource)
+                except TransferError as exc:
+                    if not provider_attributable(exc.error):
+                        raise
+                    # The resource is AVAILABLE: a provider that then cannot
+                    # state its executable members has failed its own route,
+                    # not left DownloadPulse waiting on the resource. Its route
+                    # failure goes to the one provider-failure owner (exhaustion,
+                    # re-entry, the next claimant), never the resource wait.
+                    await self._request_failure(record, exc.error)
+                    return first_commitment
+                # Decomposition is an admission boundary: a member resource
+                # that carries credentials is split exactly like a submission.
+                entries, supplied = self._split_member_credentials(entries)
+                entries = tuple({
+                    _engine_base.codec.dump(entry): entry for entry in entries
+                }.values())
+                if not entries:
+                    raise TransferError(self._error(
+                        Category.RESOLUTION_TEMPORARILY_FAILED,
+                        Stage.CANDIDATE_PREPARATION,
+                        domain=Domain.RESOLUTION,
+                        retryability=Retryability.BACKOFF,
+                    ))
+                # FILE vs COLLECTION, decided once on the FULL executable
+                # manifest: a manifest whose one and only member is the
+                # resource itself (its member path IS the resource's
+                # authoritative name -- a single-file torrent) is a file, not a
+                # collection of one, so it gets no collection folder of its own
+                # name. Neutral facts only; no provider is consulted.
+                if len(entries) == 1 and observation.name and entries[0].relative_path == observation.name:
+                    entries = (replace(entries[0], whole_resource=True),)
+                paths = [
+                    str(_engine_base.destination(self.root, entry.relative_path)).casefold()
+                    for entry in entries
+                ]
+                if len(paths) != len(set(paths)):
+                    raise TransferError(self._error(
+                        Category.PATH_POLICY_VIOLATION,
+                        Stage.CANDIDATE_PREPARATION,
+                        domain=Domain.SECURITY,
+                    ))
+                # Core filters the full executable manifest to the authorized
+                # subset (ALL / confirmed EXPLICIT) and durably records the
+                # materialization-commit fact before child fan-out. A confirmed
+                # subset that can no longer be proven fails closed here.
+                if selecting:
+                    authorized = await self.repository.commit_selected_manifest(
+                        record, entries, now=self.clock(),
+                    )
+                    if authorized.held:
+                        # The new generation is not provably the established
+                        # decomposition: the root holds, nothing fans out, and
+                        # every member and file stays exactly as it is.
+                        await self.repository.poll_after(
+                            record.id, self.clock() + self.policy.resource_poll_interval,
+                        )
+                        return first_commitment
+                    first_commitment = bool(getattr(authorized, "first_commitment", False))
+                else:
+                    authorized = entries
+                await self.repository.manifest(
+                    record, authorized, selection_id=getattr(authorized, "selection_id", None),
+                )
+                members = {entry.relative_path for entry in authorized}
+                # Material supplied under the provider's own member path goes to
+                # the member the selection proof placed that path at
+                # (``coordinates``); a path it placed nowhere, or at a member it
+                # also placed another path at, is withheld -- never guessed.
+                coordinates = getattr(authorized, "coordinates", None) or {}
+                placed = [coordinates[path] for path in coordinates]
+                for relative_path, alternate, address, values in supplied:
+                    if coordinates:
+                        relative_path = coordinates.get(relative_path)
+                        if relative_path is None or placed.count(relative_path) != 1:
+                            continue
+                    if relative_path in members:
+                        await self._admit_supplied(record.transfer_id,
+                                                   manifest_child_identity(record.id, relative_path, alternate),
+                                                   address, values)
+            elif observation.state in {ResourceState.ABSENT, ResourceState.EXPIRED}:
+                error = self._error(
+                    Category.RESOURCE_EXPIRED
+                    if observation.state == ResourceState.EXPIRED
+                    else Category.RESOURCE_NOT_FOUND,
+                    Stage.RESOLUTION,
+                    domain=Domain.PROVIDER,
+                    retryability=Retryability.AFTER_RERESOLUTION,
+                )
+                await self._request_failure(record, error, waiting=True)
+            elif observation.state in {ResourceState.UNKNOWN, ResourceState.UNAVAILABLE}:
+                raise TransferError(self._error(
+                    Category.UNMAPPED_PROVIDER_ERROR,
+                    Stage.RECONCILIATION,
+                    domain=Domain.PROVIDER,
+                ))
+            elif observation.state == ResourceState.PREPARING:
+                # A remote preparation that makes no useful progress for the
+                # operator's Stalled Timeout is this provider's failure: it
+                # spends the route's ordinary budget and then exhausts it.
+                idle = await self.repository.preparation_idle(
+                    record.transfer_id, observation.resource, observation.progress.completed_bytes, self.clock())
+                if 0 < self.policy.stalled_after_seconds <= idle:
+                    await self._request_failure(record, NormalizedError(
+                        Domain.PROVIDER, Category.TRANSFER_STALLED, Stage.RESOLUTION, Retryability.BACKOFF,
+                        origin=Origin.CORE, integration_id=provider.descriptor.id,
+                        diagnostic="remote preparation made no progress"), waiting=True)
+                else:
+                    await self.repository.poll_after(
+                        record.id, self.clock() + self.policy.resource_poll_interval,
+                    )
+            return first_commitment
+        except Exception as exc:
+            error = exc.error if isinstance(exc, TransferError) else unknown_failure(
+                exc,
+                integration_id=provider.descriptor.id if provider else "",
+                domain=Domain.PROVIDER,
+                stage=Stage.RECONCILIATION,
+            )
+            await self._request_failure(record, error, waiting=True)

@@ -1,0 +1,283 @@
+"""Accepted Statistics page contract with direct canonical base ownership."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+INDEX = STATIC / "index.html"
+APP = STATIC / "app.js"
+STATS = STATIC / "ui-statistics.js"
+STATS_CSS = STATIC / "ui-statistics-page.css"
+STATS_ICON = STATIC / "icons" / "dp" / "statistics.svg"
+ICON_MANIFEST = STATIC / "icons" / "dp" / "manifest.json"
+
+_STATS_DETAIL_IO_PATTERNS = (
+    re.compile(r"""\bapi\(\s*['\"]GET['\"]\s*,\s*['\"]/stats/detail"""),
+    re.compile(r"""\bfetch\(\s*['\"]/stats/detail"""),
+    re.compile(r"""\brequest\(\s*['\"]GET['\"]\s*,\s*['\"]/stats/detail"""),
+)
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def statistics_view() -> str:
+    html = read(INDEX)
+    start = html.index("<!-- Statistics -->")
+    end = html.index("<!-- Help -->", start)
+    return html[start:end]
+
+
+def statistics_detail_io_owners() -> list[str]:
+    owners = []
+    for path in sorted(STATIC.glob("*.js")):
+        source = read(path)
+        if any(pattern.search(source) for pattern in _STATS_DETAIL_IO_PATTERNS):
+            owners.append(path.name)
+    return owners
+
+
+def test_statistics_composition_is_direct_static_owner_not_runtime_convergence() -> None:
+    view = statistics_view()
+    source = read(STATS)
+    app = read(APP)
+    style = read(STATIC / "style.css")
+    for fragment in ('class="view card dp-statistics-master" id="view-stats"', 'class="card-header dp-stats-master-header"', 'class="card-body dp-stats-master-body"', 'class="dash-kpi-strip dp-stats-history-grid"', 'class="scard dp-stats-chart dp-list-workspace-surface"', 'class="dp-stats-breakdown-grid"', "By The Numbers", "Vibes are not a performance metric."):
+        assert fragment in view
+    # The shorter wordings the handheld header draws where the full ones do not fit.
+    # (Each wording is a catalog message the markup names, 1.0.14 localization; the same English.)
+    assert ('data-short="Statistics" data-shortest="Stats" data-i18n="stats.title" '
+            'data-i18n-attr="data-short:stats.title_short;data-shortest:stats.title_shortest">By The Numbers<') in view
+    assert ('data-short="Vibes aren\'t metrics." data-shortest="Just data." data-i18n="stats.subtitle" '
+            'data-i18n-attr="data-short:stats.subtitle_short;data-shortest:stats.subtitle_shortest">Vibes are not a performance metric.<') in view
+    from i18n_node import english
+    assert [english(f"stats.{key}") for key in ("title", "title_short", "title_shortest", "subtitle", "subtitle_short", "subtitle_shortest")] == [
+        "By The Numbers", "Statistics", "Stats", "Vibes are not a performance metric.", "Vibes aren't metrics.", "Just data."]
+    assert "split-grid" not in view
+    assert "📈" not in view
+    assert "ensureStatisticsArchitecture" not in source
+    assert "decorateChartHeader" not in source
+    assert "applySharedSurfaceClass" not in source
+    assert "moveDashboardKpisToStatistics" not in app
+    assert "decorateHistoricalKpis" not in app
+    assert "dash-kpi-strip--dashboard" not in read(INDEX)
+    assert not (STATIC / "ui-statistics.css").exists()
+    assert "/ui-statistics.css" not in style
+
+
+def test_statistics_period_labels_use_canonical_downloadpulse_copy_without_changing_values() -> None:
+    view = statistics_view()
+    expected = (
+        ('1h', '1Hour'),
+        ('24h', '1Day'),
+        ('7d', '7Days'),
+        ('30d', '30Days'),
+        ('1y', '1Year'),
+        ('all', 'All Time'),
+    )
+    from i18n_node import english
+    keys = {'1h': 'hour', '24h': 'day', '7d': 'week', '30d': 'month', '1y': 'year', 'all': 'all'}
+    positions = []
+    for period, label in expected:
+        fragment = f'data-period="{period}" onclick="setStatsPeriod(this)" data-i18n="stats.period.{keys[period]}">{label}</div>'
+        assert fragment in view and english(f"stats.period.{keys[period]}") == label
+        positions.append(view.index(fragment))
+    assert positions == sorted(positions)
+    for legacy_label in ('>1h</div>', '>24h</div>', '>7d</div>', '>7Day</div>', '>30d</div>', '>1y</div>', '>All time</div>'):
+        assert legacy_label not in view
+
+
+def test_statistics_reviewed_primary_and_historical_order_copy_are_locked_in_base() -> None:
+    view = statistics_view()
+    source = read(STATS)
+    css = read(STATS_CSS)
+    primary = [
+        'data-dp-stats-metric="downloads"', 'data-dp-stats-metric="completed"',
+        'data-dp-stats-metric="progress"', 'data-dp-stats-metric="success"',
+        'data-dp-stats-metric="data"',
+    ]
+    positions = [view.index(item) for item in primary]
+    assert positions == sorted(positions)
+    historical = ["i-last-day", "i-last-week", "i-avg-duration", "i-success-rate", "i-avg-size"]
+    positions = [view.index(item) for item in historical]
+    assert positions == sorted(positions)
+    for reviewed_copy in (
+        "Last 24 Hours", "Completed downloads over the last 24 hours.",
+        "Last 7 Days", "Completed downloads over the last 7 days.",
+        "MEAN DOWNLOAD TIME", "LIFETIME SUCCESS RATE", "MEAN DOWNLOAD SIZE",
+        "Share of all recorded, finished downloads completed successfully.",
+    ):
+        assert reviewed_copy in view
+    # One whole sentence per period, the catalog's (stats.metric.success.description).
+    from i18n_node import english
+    success = english("stats.metric.success.description")
+    for flavor in (
+        "Share of finished downloads completed successfully during the last hour.",
+        "Share of finished downloads completed successfully during the last 24 hours.",
+        "Share of finished downloads completed successfully during the last 7 days.",
+        "Share of finished downloads completed successfully during the last 30 days.",
+        "Share of finished downloads completed successfully during the last year.",
+        "Share of finished downloads completed successfully across all recorded history.",
+    ):
+        assert "{" + flavor + "}" in success
+    assert "t(`stats.metric.${key}.description`, {period: periodWord(period)})" in source
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr))" in css
+    assert "grid-template-rows: 18px 48px minmax(28px, auto)" in css
+    assert "grid-template-rows: 18px 28px minmax(24px, auto)" in css
+
+
+def test_statistics_period_has_one_authority_and_a_handheld_control_projecting_it() -> None:
+    view = statistics_view()
+    source = read(STATS)
+    app = read(APP)
+    css = read(STATS_CSS)
+    # setStatsPeriod is the one way the period changes: the active filter, then its one load.
+    assert "function setStatsPeriod" not in app
+    assert "window.setStatsPeriod = setStatsPeriod;" in source
+    assert source.count("loadDetailedStats(tab.dataset.period)") == 1
+    assert "const active = document.querySelector('#stats-period-tabs .ftab.active');" in source
+    # The handheld control: a popover listbox read from the filters each time it opens.
+    assert ('<button type="button" id="stats-period" class="btn btn-ghost dp-stats-period-trigger" popovertarget="stats-period-menu" '
+            'aria-haspopup="listbox" aria-expanded="false" aria-label="Statistics period" data-i18n-attr="aria-label:stats.period.label">') in view
+    assert 'data-dp-lucide="clock"' in view
+    assert ('<div id="stats-period-menu" class="dp-dropdown-menu dp-stats-period-menu" popover="auto" role="listbox" '
+            'aria-label="Statistics period" data-i18n-attr="aria-label:stats.period.label"></div>') in view
+    assert "if (tab) setStatsPeriod(tab);" in source
+    # From 780px the filters, below it the control: never both.
+    assert "#view-stats .dp-stats-period-trigger {\n  display: none;\n}" in css
+    assert "  #view-stats #stats-period-tabs {\n    display: none;\n  }" in css
+
+
+def test_statistics_handheld_shows_two_period_cards_side_by_side_and_desktop_keeps_every_card() -> None:
+    view = statistics_view()
+    css = read(STATS_CSS)
+    # Every card stays in the page (all are shown from 780px, as before).
+    for metric in ("downloads", "completed", "progress", "success", "data"):
+        assert f'data-dp-stats-metric="{metric}"' in view
+    assert 'class="dp-stats-row-separator"' in view and 'class="dash-kpi-strip dp-stats-history-grid"' in view
+    assert ('<span class="dp-stats-label-wide" data-i18n="stats.metric.data.label">Total Data Downloaded</span>'
+            '<span class="dp-stats-label-handheld" data-i18n="stats.metric.data.label_handheld">Data Transferred</span>') in view
+    # Below 780px only: the other three cards, the separator and the history row are not shown;
+    # the two cards scale their label and value and centre their block.
+    handheld = css[css.rindex("@media (max-width: 779px) {"):]
+    assert ('#view-stats #detail-stat-cards > :is([data-dp-stats-metric="completed"], [data-dp-stats-metric="progress"], '
+            '[data-dp-stats-metric="success"]),\n  #view-stats .dp-stats-row-separator,\n  #view-stats .dp-stats-history-grid {\n    display: none;') in handheld
+    for rule in ("container-type: inline-size;", "font-size: min(13px, 10.8cqi);", "font-size: min(36px, 19cqi);",
+                 "grid-template-rows: 18px auto auto !important;", "align-content: center !important;",
+                 "justify-content: center !important;", "padding: 17px 16px !important;"):
+        assert rule in handheld, rule
+
+
+def test_queue_health_compatibility_surface_is_physically_removed() -> None:
+    combined = chr(10).join(read(path) for path in (INDEX, APP, STATS))
+    assert "i-queue-health" not in combined
+    assert "i-queue-copy" not in combined
+    assert "Queue Health" not in statistics_view()
+
+def test_breakdowns_keep_reviewed_labels_adaptive_top_ten_and_two_column_behavior() -> None:
+    source = read(STATS)
+    css = read(STATS_CSS)
+    view = statistics_view()
+    for heading in ("Transfer Disposition", "File Status", "Events Severity", "Transfer Methods"):
+        assert heading in view
+    for old in ("Monitor Levels", "Most Used Sources"):
+        assert old not in view and old not in source
+    from i18n_node import english
+    for key, label in (("completed", "Completed"), ("deleted", "Deleted"), ("error", "Error"), ("missing", "Missing"),
+                       ("duplicate", "Duplicate"), ("unknown", "Unknown")):
+        assert english(f"stats.status.{key}") == label
+    # Events Severity: fixed order and its own labels (the catalog's); the stored values stay.
+    assert "[['error', 'stats.severity.error'], ['warning', 'stats.severity.warning'], ['info', 'stats.severity.info']]" in source
+    assert [english(f"stats.severity.{key}") for key in ("error", "warning", "info")] == ["Errors", "Warnings", "Informational"]
+    # Transfer Methods: the server names each method; no submission-channel labels remain.
+    for old in ("Debrid Link", "Magnet Link", "Uploaded File", "Unknown Source", "SOURCE_LABELS"):
+        assert old not in source
+    assert "MAX_VISIBLE = 10" in source
+    assert "TWO_COLUMN_THRESHOLD = 6" in source
+    assert "entries.slice(0, MAX_VISIBLE)" in source
+    assert "Math.ceil(visible.length / 2)" in source
+    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in css
+    assert "dp-stats-overflow" in source
+    assert "dp-stats-overflow" in css
+
+
+def test_completion_chart_header_is_static_and_runtime_only_hydrates_data_and_palette() -> None:
+    source = read(STATS)
+    css = read(STATS_CSS)
+    view = statistics_view()
+    for fragment in (
+        'class="dp-icon dp-stats-chart-title-icon"', '/icons/dp/card-download.svg',
+        'class="dp-stats-chart-heading" data-i18n="stats.chart.title">Completions</span>',
+        'id="chart-title" class="dp-stats-chart-subtitle" data-i18n="stats.chart.subtitle" data-i18n-values=\'{"period":"week"}\'>Completed downloads in the last 7 days.',
+    ):
+        assert fragment in view
+    from i18n_node import english
+    subtitle = english("stats.chart.subtitle")
+    for flavor in (
+        "Completed downloads in the last hour.", "Completed downloads in the last 24 hours.",
+        "Completed downloads in the last 7 days.", "Completed downloads in the last 30 days.",
+        "Completed downloads in the last year.", "Completed downloads across all recorded history.",
+    ):
+        assert "{" + flavor + "}" in subtitle
+    assert "statisticsPurpleGradient" in source
+    assert "min-height: 72px" in css
+    assert "var(--dp-feature-icon-size, 51px)" in css
+
+
+def test_statistics_detail_io_has_one_frontend_owner_without_wrapper() -> None:
+    assert statistics_detail_io_owners() == ["ui-statistics.js"]
+    source = read(STATS)
+    assert "window.loadDetailedStats = loadDetailedStats;" in source
+    assert "window.loadDetailedStats = wrapped" not in source
+
+
+def test_statistics_supplied_feature_art_is_true_vector_and_registered() -> None:
+    raw = read(STATS_ICON)
+    lowered = raw.lower()
+    manifest = json.loads(read(ICON_MANIFEST))
+    assert "<svg" in lowered
+    assert "viewbox=" in lowered
+    assert "<path" in lowered
+    assert "<image" not in lowered
+    assert "data:image" not in lowered
+    assert manifest["icons"]["statistics"] == "statistics.svg"
+
+
+def test_statistics_is_live_through_the_one_stream_with_bounded_reads_and_no_toggle() -> None:
+    stats = read(STATS)
+    app = read(APP)
+    index = read(INDEX)
+    # One application EventSource; app.js only forwards neutral hints.
+    assert app.count("new EventSource(") == 1
+    for forwarded in ("'stats_changed'", "'statistics_changed'", "'ping'"):
+        listener = app[app.index(forwarded):]
+        listener = listener[:listener.index("\n        );")]
+        assert "downloadpulse:statistics-invalidated" in listener or "downloadpulse:pulse-heartbeat" in listener, forwarded
+        assert "loadDetailedStats" not in listener and "/stats/detail" not in listener, forwarded
+    # The heartbeat also ages the Overall & Rolling row, through its own owner, only while shown.
+    ping = app[app.index("'ping'"):]
+    ping = ping[:ping.index("\n        );")]
+    assert "getElementById('view-stats')?.classList.contains('active')" in ping and "loadStats()" in ping
+    # The Statistics owner opens no stream, runs no timer loop, stores nothing.
+    for absent in ("EventSource", "setInterval", "localStorage", "sessionStorage"):
+        assert absent not in stats, absent
+    for listened in ("downloadpulse:statistics-invalidated", "downloadpulse:pulse-connected",
+                     "downloadpulse:pulse-heartbeat", "downloadpulse:navigation"):
+        assert f"document.addEventListener('{listened}'" in stats, listened
+    # Admission: one request in flight, measured spacing, a queued re-read never lost.
+    assert "REFRESH_SPACING_MS = 2000, REFRESH_SPACING_MAX_MS = 10000, LATENCY_SPACING_FACTOR = 5" in stats
+    assert "if (inflight) {" in stats and "if (queued) {" in stats
+    # A live re-read moves the existing chart; only an explicit load draws it anew.
+    assert "if (live && canvas._ci) { updateCompletionChart(canvas._ci, daily); return; }" in stats
+    live = stats[stats.index("function updateCompletionChart("):stats.index("function renderCompletionChart(")]
+    assert "destroy" not in live and "new Chart" not in live
+    assert "reducedMotion.matches" in live and "chart.update('none')" in live
+    # No live toggle or control was added to the page.
+    view = index[index.index('id="view-stats"'):]
+    view = view[:view.index('<!--', 1)] if '<!--' in view[1:] else view
+    assert "Auto Refresh" not in view and 'role="switch"' not in view

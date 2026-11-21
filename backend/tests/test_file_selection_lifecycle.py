@@ -1,0 +1,1470 @@
+"""Gate A — durable file-selection lifecycle under an injected fake clock.
+
+Every window/hold assertion here advances a fake clock. No test waits a real
+second, and restart is always a fresh repository reading the persisted absolute
+deadline.
+"""
+from __future__ import annotations
+
+import pytest
+import pytest_asyncio
+
+import db.database as database
+from fake_integrations import MemoryExecutor, ParcelProvider
+from file_selection_support import Clock, executable, file_manifest, seed_window
+from transfers import file_selection as fs
+from transfers.engine import TransferEngine
+from transfers.errors import Category, TransferError
+from transfers.models import ResourceState, TransferRequest
+from transfers.policy import TransferPolicy
+from transfers.registry import IntegrationRegistry
+from transfers.repository import TransferRepository
+
+
+@pytest_asyncio.fixture
+async def repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "file-selection.db")
+    await database.init_db()
+    return TransferRepository()
+
+
+class RecordingExecutor(MemoryExecutor):
+    def __init__(self, authorize):
+        super().__init__(authorize)
+        self.started = []
+
+    async def start(self, request, handle):
+        self.started.append(request)
+        return await super().start(request, handle)
+
+
+@pytest_asyncio.fixture
+async def core(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "fs-engine.db")
+    await database.init_db()
+    repository = TransferRepository()
+    registry = IntegrationRegistry()
+    provider = ParcelProvider(file_manifest=True)
+    executor = RecordingExecutor(repository.authorize_execution)
+    registry.register_provider(provider)
+    registry.register_executor(executor)
+    clock = Clock(1000.0)
+    engine = TransferEngine(
+        repository, registry, download_root=str(tmp_path / "payloads"),
+        policy=TransferPolicy(adoption_stability_seconds=0, resource_poll_interval=1,
+                              retry_delay=0, resolution_retry_delay=0, max_active_executions=8),
+        clock=clock,
+    )
+    await engine.initialize()
+    from types import SimpleNamespace
+    return SimpleNamespace(engine=engine, repository=repository, registry=registry,
+                           provider=provider, executor=executor, clock=clock)
+
+
+async def _engine_submit(core, *, payload="show", selection_mode="interactive"):
+    return await core.engine.submit(
+        (TransferRequest("parcel", payload, name="show", selection_mode=selection_mode),),
+        deduplicate=False)
+
+
+async def window(repo, clock, *, initially_available, tag="t"):
+    seed = await seed_window(transfer_hash=tag * 40)
+    row = await repo.begin_file_selection_window(
+        seed.request_id, seed.transfer_id, seed.provider_resource_id, seed.provider_id,
+        initially_available=initially_available, now=clock(),
+    )
+    assert row is not None
+    return seed
+
+
+# --------------------------------------------------------------------------- #
+# Default ALL
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_no_window_means_full_list_and_proceed(repo):
+    seed = await seed_window(transfer_hash="n" * 40)
+    entries = executable(("a", "a", 1), ("b", "b", 2))
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=1000.0) == fs.SelectionGate.PROCEED
+    result = await repo.commit_selected_manifest(seed.record, entries, now=1000.0)
+    assert result == entries
+    # No selection generation ever existed for this resource, so this call
+    # never crossed the durable manifest-commit boundary -- never a "first
+    # commitment" to report (Section 11).
+    assert result.first_commitment is False
+
+
+# --------------------------------------------------------------------------- #
+# Cached / immediately-available lifecycle
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_cached_holds_for_manifest_then_times_out_to_all(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.WAIT_FOR_MANIFEST
+    clock.set(1060.0)
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.PROCEED
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "all" and view["decision_reason"] == fs.DecisionReason.MANIFEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_cached_single_file_manifest_proceeds_as_all_without_a_hold(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.advance(5)
+    await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("only", "only.bin", 9)), now=clock())
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.PROCEED
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision_reason"] == fs.DecisionReason.SINGLE_FILE
+    assert view["decision_deadline"] is None
+
+
+@pytest.mark.asyncio
+async def test_cached_multi_file_manifest_opens_a_120s_hold_anchored_to_arrival(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1005.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2), ("c", "s/c", 3)), now=clock(),
+    )
+    assert canonical is not None and canonical.file_count == 3
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision_deadline"] == 1005.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert view["auto_offer"] is True
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=1100.0) == fs.SelectionGate.WAIT_FOR_DECISION
+
+
+@pytest.mark.asyncio
+async def test_cached_confirm_before_deadline_commits_explicit_subset(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1005.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 10), ("b", "s/b", 20), ("c", "s/c", 30)), now=clock(),
+    )
+    keep = [canonical.entries[0].entry_id, canonical.entries[2].entry_id]
+    clock.set(1050.0)
+    result = await repo.confirm_file_selection(seed.transfer_id, canonical.manifest_id, keep, now=clock(),
+    )
+    assert result.outcome == fs.SelectionOutcome.CONFIRMED
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.PROCEED
+    full = executable(("a", "s/a", 10), ("b", "s/b", 20), ("c", "s/c", 30))
+    authorized = await repo.commit_selected_manifest(seed.record, full, now=clock())
+    assert [e.relative_path for e in authorized] == ["s/a", "s/c"]
+
+
+@pytest.mark.asyncio
+async def test_cached_close_releases_hold_and_all_wins(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1005.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock(),
+    )
+    clock.set(1050.0)
+    result = await repo.dismiss_file_selection(seed.transfer_id, canonical.manifest_id, now=clock(),
+    )
+    assert result.outcome == fs.SelectionOutcome.DISMISSED and result.decision == "all"
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "all" and view["decision_reason"] == fs.DecisionReason.CLOSED
+    full = executable(("a", "s/a", 1), ("b", "s/b", 2))
+    assert await repo.commit_selected_manifest(seed.record, full, now=clock()) == full
+
+
+@pytest.mark.asyncio
+async def test_cached_timeout_at_120s_settles_all_and_discards_no_draft(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1010.0)
+    await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock(),
+    )
+    clock.set(1010.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS)
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.PROCEED
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "all" and view["decision_reason"] == fs.DecisionReason.DECISION_TIMEOUT
+    assert view["selected_entry_ids"] == []
+
+
+# --------------------------------------------------------------------------- #
+# A settled concrete ALL is the transfer's intent: the executable manifest
+# proves every member of it, or nothing commits
+# --------------------------------------------------------------------------- #
+
+THREE = (("a", "s/a", 10), ("b", "s/b", 20), ("c", "s/c", 30))
+
+
+async def _settled_all(repo, how):
+    """ALL settled on a usable three-file manifest by its real owner: Close/X
+    (``dismiss_file_selection``) or the decision timeout (the gate)."""
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True, tag="w" if how == "closed" else "x")
+    clock.set(1005.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(*THREE),
+                                                now=clock())
+    if how == "closed":
+        clock.set(1050.0)
+        assert (await repo.dismiss_file_selection(seed.transfer_id, canonical.manifest_id, now=clock())).decision == "all"
+    else:
+        clock.set(1005.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS)
+        assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id,
+                                              now=clock()) == fs.SelectionGate.PROCEED
+    return seed, clock
+
+
+async def _intent(request_id):
+    async with database.get_db() as db:
+        if not await db.fetchone("SELECT 1 FROM transfer_file_selection_intents WHERE request_id=?", (request_id,)):
+            return None
+        return [(row["relative_path"], row["expected_bytes"]) for row in await db.fetchall(
+            "SELECT relative_path,expected_bytes FROM transfer_file_selection_intent_entries WHERE request_id=? "
+            "ORDER BY relative_path", (request_id,))]
+
+
+async def _decision(seed):
+    async with database.get_db() as db:
+        row = await db.fetchone(
+            "SELECT decision,decision_reason,manifest_committed_at FROM transfer_file_selections WHERE request_id=?",
+            (seed.request_id,))
+        children = await db.fetchone("SELECT COUNT(*) AS n FROM transfer_requests WHERE parent_id=?",
+                                     (seed.request_id,))
+    return row["decision"], row["decision_reason"], row["manifest_committed_at"], children["n"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["closed", "decision_timeout"])
+async def test_a_settled_concrete_all_never_commits_a_partial_executable_set(repo, how):
+    """FB-2 / T12."""
+    seed, clock = await _settled_all(repo, how)
+    settled = await _decision(seed)
+    assert await _intent(seed.request_id) == [("s/a", 10), ("s/b", 20), ("s/c", 30)]
+    with pytest.raises(TransferError) as refused:
+        await repo.commit_selected_manifest(seed.record, executable(("b", "s/b", 20)), now=clock())
+    assert (refused.value.error.category, refused.value.error.diagnostic) == (
+        Category.RESOURCE_STATE_CONFLICT, "selected_path_missing")
+    assert await _decision(seed) == settled and settled[0] == "all" and settled[2:] == (None, 0)
+    assert await _intent(seed.request_id) == [("s/a", 10), ("s/b", 20), ("s/c", 30)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["closed", "decision_timeout"])
+async def test_a_settled_concrete_all_commits_when_every_member_is_executable(repo, how):
+    """T13."""
+    seed, clock = await _settled_all(repo, how)
+    full = executable(*THREE)
+    authorized = await repo.commit_selected_manifest(seed.record, full, now=clock())
+    assert authorized == full and authorized.first_commitment is True
+    decision, _reason, committed, _children = await _decision(seed)
+    assert (decision, committed) == ("all", clock())
+    assert await _intent(seed.request_id) == [("s/a", 10), ("s/b", 20), ("s/c", 30)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["default_materialization", "manifest_timeout"])
+async def test_an_operational_all_without_intent_commits_every_executable_member(repo, how):
+    """T14: no durable intent -- ALL is what the provider executes, as before."""
+    clock = Clock(1000.0)
+    if how == "default_materialization":
+        seed = await seed_window(transfer_hash="y" * 40)
+        assert await repo.begin_file_selection_window(
+            seed.request_id, seed.transfer_id, seed.provider_resource_id, seed.provider_id,
+            initially_available=True, now=clock(), interactive=False) is not None
+        await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(*THREE), now=clock())
+    else:
+        seed = await window(repo, clock, initially_available=True, tag="z")
+        clock.set(1060.0)
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id,
+                                          now=clock()) == fs.SelectionGate.PROCEED
+    partial = executable(("b", "s/b", 20))
+    assert await repo.commit_selected_manifest(seed.record, partial, now=clock()) == partial
+    decision, reason, committed, _children = await _decision(seed)
+    assert (decision, reason, committed) == ("all", how, clock())
+    assert await _intent(seed.request_id) is None
+
+
+# --------------------------------------------------------------------------- #
+# Restart / deadline survival
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_hold_deadline_survives_restart_without_resetting(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1000.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2), ("c", "s/c", 3)), now=clock(),
+    )
+    deadline = 1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+
+    restarted = TransferRepository()
+    # 50 seconds still remain when the process comes back at fake t = deadline - 50.
+    assert await restarted.file_selection_gate(seed.request_id, seed.provider_resource_id, now=deadline - 50) == fs.SelectionGate.WAIT_FOR_DECISION
+    view = await restarted.file_selection_presentation(seed.transfer_id, now=deadline - 50)
+    assert view["decision_deadline"] == deadline
+
+    # A restart after the persisted absolute deadline processes expiry at once.
+    after = TransferRepository()
+    assert await after.file_selection_gate(seed.request_id, seed.provider_resource_id, now=deadline + 1) == fs.SelectionGate.PROCEED
+    settled = await after.file_selection_presentation(seed.transfer_id, now=deadline + 1)
+    assert settled["decision"] == "all"
+
+    # Re-opening the window with a much later clock must not move either deadline
+    # or re-anchor availability.
+    reopened = await after.begin_file_selection_window(
+        seed.request_id, seed.transfer_id, seed.provider_resource_id, seed.provider_id,
+        initially_available=True, now=99999.0,
+    )
+    assert reopened["available_at"] == 1000.0
+    assert reopened["hold_until"] == deadline
+
+
+@pytest.mark.asyncio
+async def test_available_grace_anchor_is_not_reset_by_a_later_begin_call(repo):
+    clock = Clock(2000.0)
+    seed = await window(repo, clock, initially_available=True)
+    again = await repo.begin_file_selection_window(
+        seed.request_id, seed.transfer_id, seed.provider_resource_id, seed.provider_id,
+        initially_available=True, now=2500.0,
+    )
+    assert again["available_at"] == 2000.0
+    assert again["manifest_wait_until"] == 2000.0 + fs.POST_AVAILABLE_MANIFEST_GRACE_SECONDS
+
+
+# --------------------------------------------------------------------------- #
+# Uncached / preparing lifecycle
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_uncached_multi_file_manifest_receives_a_decision_hold(repo):
+    # An automatically actionable multi-file offer must always precede
+    # irreversible ALL materialization (specification section 5). A PREPARING /
+    # uncached origin does not disqualify the 120s decision hold: it opens in
+    # the same transaction that queues the offer, anchored to the manifest's
+    # arrival, and the gate WAITs.
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1010.0)
+    await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock(),
+    )
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision_deadline"] == 1010.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert view["initially_available"] is False          # provenance fact preserved
+    assert view["auto_offer"] is True                    # active decision hold
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.WAIT_FOR_DECISION
+    # The hold expires to default ALL as a decision timeout.
+    clock.set(1010.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS)
+    assert await repo.file_selection_gate(seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.PROCEED
+    settled = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert settled["decision"] == "all" and settled["decision_reason"] == fs.DecisionReason.DECISION_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_uncached_manifest_long_after_submission_still_auto_opens(repo):
+    # Correction §4/§12/§14b — the RETIRED submission-relative 60s cutoff. A
+    # multi-file manifest that first arrives 61s (or any time) after submission,
+    # while the provider is still preparing, MUST still anchor the 120s
+    # user-decision hold from its arrival and auto-present the selector. This
+    # assertion set fails on the pre-correction model.
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1061.0)
+    canonical = await repo.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock())
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision_deadline"] == 1061.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert view["auto_offer"] is True
+    assert view["mutable"] is True
+    offers = await repo.active_file_selection_offers(now=clock())
+    assert [o["manifest_id"] for o in offers] == [canonical.manifest_id]
+    # Still gated on the decision (resource has not yet reported AVAILABLE for a
+    # direct-repo seed either way — the hold governs).
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        resource_available=False) == fs.SelectionGate.WAIT_FOR_DECISION
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_hold_survives_restart_without_resetting(repo):
+    # Section 21 E — the absolute decision deadline is durable; a restart neither
+    # extends it nor opens a fresh window.
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1039.0)
+    await repo.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(("a", "s/a", 1), ("b", "s/b", 2), ("c", "s/c", 3)), now=clock())
+    deadline = 1039.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+
+    before = TransferRepository()
+    assert await before.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=deadline - 40) == fs.SelectionGate.WAIT_FOR_DECISION
+    assert (await before.file_selection_presentation(
+        seed.transfer_id, now=deadline - 40))["decision_deadline"] == deadline
+
+    after = TransferRepository()
+    assert await after.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=deadline + 1) == fs.SelectionGate.PROCEED
+    settled = await after.file_selection_presentation(seed.transfer_id, now=deadline + 1)
+    assert settled["decision"] == "all"
+    assert settled["decision_reason"] == fs.DecisionReason.DECISION_TIMEOUT
+
+    reopened = await after.begin_file_selection_window(
+        seed.request_id, seed.transfer_id, seed.provider_resource_id, seed.provider_id,
+        initially_available=False, now=99999.0)
+    assert reopened["hold_until"] == deadline                   # unchanged
+    # A PREPARING-origin generation with a live decision hold never anchors the
+    # post-AVAILABLE grace; it stays at its "not started" sentinel.
+    assert reopened["available_at"] is None
+    assert reopened["manifest_wait_until"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Correction §19 — uncached long preparation must not consume decision time
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_uncached_long_preparation_does_not_start_or_lose_the_decision_window(repo):
+    clock = Clock(1000.0)                                       # T = 0
+    seed = await window(repo, clock, initially_available=False)
+
+    # T+1 .. T+180: PREPARING, no manifest. No decision deadline, no auto-offer,
+    # and NO 60s submission-relative timeout converts it to ALL.
+    for offset in (1, 60, 61, 120, 180):
+        clock.set(1000.0 + offset)
+        gate = await repo.file_selection_gate(
+            seed.request_id, seed.provider_resource_id, now=clock(),
+            poll_interval=30, resource_available=False)
+        assert gate == fs.SelectionGate.WAIT_FOR_MANIFEST
+        view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+        assert view["decision"] == "pending"
+        assert view["decision_deadline"] is None
+        assert view["auto_offer"] is False
+    row = await _selection_row(seed.transfer_id)
+    assert row["available_at"] is None                          # grace never started while PREPARING
+
+    # T+240: the first actionable multi-file manifest arrives (still PREPARING).
+    clock.set(1240.0)
+    canonical = await repo.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(*[(f[0], f[1], f[2]) for f in FILES6]), now=clock())
+    assert canonical is not None
+    row = await _selection_row(seed.transfer_id)
+    assert row["hold_until"] == 1240.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert row["auto_offer_queued_at"] == 1240.0
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=1300.0,
+        poll_interval=30, resource_available=False) == fs.SelectionGate.WAIT_FOR_DECISION
+
+    # T+300: Confirm a subset while the provider is STILL preparing.
+    clock.set(1300.0)
+    keep = [canonical.entries[2].entry_id]
+    assert (await repo.confirm_file_selection(
+        seed.transfer_id, canonical.manifest_id, keep, now=clock())).outcome == fs.SelectionOutcome.CONFIRMED
+
+    # T+330: provider becomes AVAILABLE — no second window, no restarted timer,
+    # only the confirmed subset materializes.
+    clock.set(1330.0)
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=True) == fs.SelectionGate.PROCEED
+    authorized = await repo.commit_selected_manifest(seed.record, executable(*FILES6), now=clock())
+    assert [e.relative_path for e in authorized] == [canonical.entries[2].relative_path]
+
+
+# --------------------------------------------------------------------------- #
+# Correction §5 / §20 — the 60s grace only runs AFTER AVAILABLE, never PREPARING
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_post_available_grace_starts_only_at_first_available_observation(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+
+    # 100 seconds of PREPARING: the grace clock has not started.
+    for offset in (10, 50, 100):
+        clock.set(1000.0 + offset)
+        assert await repo.file_selection_gate(
+            seed.request_id, seed.provider_resource_id, now=clock(),
+            poll_interval=30, resource_available=False) == fs.SelectionGate.WAIT_FOR_MANIFEST
+    assert (await _selection_row(seed.transfer_id))["available_at"] is None
+
+    # T=1100: first AVAILABLE observation, still no usable manifest. The 60s
+    # grace is anchored HERE, not at submission or first PREPARING.
+    clock.set(1100.0)
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=True) == fs.SelectionGate.WAIT_FOR_MANIFEST
+    row = await _selection_row(seed.transfer_id)
+    assert row["available_at"] == 1100.0
+    assert row["manifest_wait_until"] == 1100.0 + fs.POST_AVAILABLE_MANIFEST_GRACE_SECONDS
+
+    # T=1130 (< grace end 1160): a usable manifest arrives -> 120s hold from now.
+    clock.set(1130.0)
+    canonical = await repo.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock())
+    assert canonical is not None
+    row = await _selection_row(seed.transfer_id)
+    assert row["hold_until"] == 1130.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=True) == fs.SelectionGate.WAIT_FOR_DECISION
+
+
+@pytest.mark.asyncio
+async def test_post_available_grace_expires_to_all_when_no_manifest_arrives(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+
+    clock.set(1100.0)                                           # first AVAILABLE, grace -> 1160
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=True) == fs.SelectionGate.WAIT_FOR_MANIFEST
+
+    clock.set(1159.0)                                           # still inside the grace
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=True) == fs.SelectionGate.WAIT_FOR_MANIFEST
+    assert (await _selection_row(seed.transfer_id))["decision"] == "pending"
+
+    clock.set(1160.0)                                           # grace expired, no manifest
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=True) == fs.SelectionGate.PROCEED
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "all" and view["decision_reason"] == fs.DecisionReason.MANIFEST_TIMEOUT
+
+
+# --------------------------------------------------------------------------- #
+# Correction §23 — restart while PREPARING > 60s must not convert to ALL
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_restart_while_preparing_past_60s_stays_selection_eligible(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+
+    # 200 seconds of PREPARING, then the process restarts.
+    restarted = TransferRepository()
+    clock.set(1200.0)
+    gate = await restarted.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock(),
+        poll_interval=30, resource_available=False)
+    assert gate == fs.SelectionGate.WAIT_FOR_MANIFEST          # NOT settled to ALL
+    view = await restarted.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "pending" and view["mutable"] is True
+    assert view["decision_deadline"] is None
+
+    # A manifest that arrives after the restart still opens the full 120s hold.
+    canonical = await restarted.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock())
+    assert canonical is not None
+    assert (await _selection_row(seed.transfer_id))["hold_until"] == 1200.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_cold_load_recovers_active_offer(repo):
+    # A cold-loading / reconnecting browser recovers the open offer for the full
+    # life of the decision hold. Manifest at t=39; browser reads at t=70.
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1039.0)
+    canonical = await repo.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(("a", "s/a", 1), ("b", "s/b", 2), ("c", "s/c", 3)), now=clock())
+    deadline = 1039.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS       # t = 1159
+
+    clock.set(1070.0)                                           # well inside the 120s hold
+    offers = await repo.active_file_selection_offers(now=clock())
+    assert [o["manifest_id"] for o in offers] == [canonical.manifest_id]
+    assert offers[0]["decision_deadline"] == deadline
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["auto_offer"] is True and view["mutable"] is True
+    assert view["decision_deadline"] == deadline
+    assert await repo.file_selection_gate(
+        seed.request_id, seed.provider_resource_id, now=clock()) == fs.SelectionGate.WAIT_FOR_DECISION
+
+
+@pytest.mark.asyncio
+async def test_uncached_confirm_persists_and_survives_until_materialization(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1010.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 10), ("b", "s/b", 20)), now=clock(),
+    )
+    result = await repo.confirm_file_selection(seed.transfer_id, canonical.manifest_id, [canonical.entries[0].entry_id], now=clock(),
+    )
+    assert result.outcome == fs.SelectionOutcome.CONFIRMED
+
+    # Provider only becomes AVAILABLE much later; the subset is still authoritative.
+    clock.set(5000.0)
+    restarted = TransferRepository()
+    view = await restarted.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "explicit" and view["selected_entry_ids"] == [canonical.entries[0].entry_id]
+    authorized = await restarted.commit_selected_manifest(
+        seed.record, executable(("a", "s/a", 10), ("b", "s/b", 20)), now=clock(),
+    )
+    assert [e.relative_path for e in authorized] == ["s/a"]
+
+
+@pytest.mark.asyncio
+async def test_available_before_confirmation_settles_all_and_locks_selection(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1010.0)
+    await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock(),
+    )
+    full = executable(("a", "s/a", 1), ("b", "s/b", 2))
+    first = await repo.commit_selected_manifest(seed.record, full, now=clock())
+    assert first == full
+    assert first.first_commitment is True    # default-ALL settlement is still a real first commitment
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "all" and view["mutable"] is False
+    replay = await repo.commit_selected_manifest(seed.record, full, now=clock())
+    assert replay == full and replay.first_commitment is False
+
+
+# --------------------------------------------------------------------------- #
+# Close/X on an uncached offer, and the Details re-entry point staying open
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_manifest_long_after_submission_close_settles_all_and_releases(repo):
+    # Correction §3.3/§12/§14b — a multi-file manifest arriving long after
+    # submission opens a real decision hold, so Close/X on it settles ALL and
+    # releases immediately, exactly like any other live hold.
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=False)
+    clock.set(1061.0)
+    canonical = await repo.record_file_manifest(
+        seed.request_id, seed.provider_resource_id,
+        file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock())
+    result = await repo.dismiss_file_selection(seed.transfer_id, canonical.manifest_id, now=clock())
+    assert result.outcome == fs.SelectionOutcome.DISMISSED and result.decision == "all"
+    view = await repo.file_selection_presentation(seed.transfer_id, now=clock())
+    assert view["decision"] == "all" and view["decision_reason"] == fs.DecisionReason.CLOSED
+    assert view["decision_deadline"] is None
+    assert view["auto_offer"] is False
+    full = executable(("a", "s/a", 1), ("b", "s/b", 2))
+    assert await repo.commit_selected_manifest(seed.record, full, now=clock()) == full
+
+
+@pytest.mark.asyncio
+async def test_stale_manifest_id_cannot_confirm_or_dismiss(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1005.0)
+    await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 1), ("b", "s/b", 2)), now=clock(),
+    )
+    stale = "0" * 32
+    confirm = await repo.confirm_file_selection(seed.transfer_id, stale, ["x"], now=clock())
+    assert confirm.outcome == fs.SelectionOutcome.CONFLICT and confirm.detail == "stale_manifest"
+    dismiss = await repo.dismiss_file_selection(seed.transfer_id, stale, now=clock())
+    assert dismiss.outcome == fs.SelectionOutcome.CONFLICT and dismiss.detail == "stale_manifest"
+
+
+# --------------------------------------------------------------------------- #
+# A non-debrid provider drives the real core (specification section 58)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_fake_non_debrid_provider_exercises_file_manifest_through_real_core(repo):
+    clock = Clock(1000.0)
+    provider = ParcelProvider(identity="parcel-lab", file_manifest=True)
+    registry = IntegrationRegistry()
+    registry.register_provider(provider)
+
+    files = [("s01.mkv", "Season 1/s01.mkv", 100), ("s02.mkv", "Season 1/s02.mkv", 200),
+             ("notes.txt", "notes.txt", 0)]
+    resolution = provider.parcel("show", state=ResourceState.AVAILABLE, files=files)
+    observation = resolution.observation
+    assert observation.file_manifest is not None                 # provider reports facts only
+
+    seed = await seed_window(transfer_hash="p" * 40, provider_id=provider.descriptor.id)
+    await repo.begin_file_selection_window(
+        seed.request_id, seed.transfer_id, seed.provider_resource_id, provider.descriptor.id,
+        initially_available=True, now=clock(),
+    )
+    clock.advance(3)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, observation.file_manifest, now=clock())
+    assert canonical.file_count == 3
+
+    keep = [e.entry_id for e in canonical.entries if e.relative_path != "notes.txt"]
+    clock.advance(20)
+    confirmed = await repo.confirm_file_selection(seed.transfer_id, canonical.manifest_id, keep, now=clock())
+    assert confirmed.outcome == fs.SelectionOutcome.CONFIRMED
+
+    # The provider later returns its ordinary full executable SourceEntry list.
+    executable_manifest = executable(*files)
+    authorized = await repo.commit_selected_manifest(seed.record, executable_manifest, now=clock())
+    assert sorted(e.relative_path for e in authorized) == ["Season 1/s01.mkv", "Season 1/s02.mkv"]
+
+    # No concrete provider/executor identity is stored in the neutral manifest tables.
+    async with database.get_db() as db:
+        rows = await db.fetchall("SELECT name, relative_path FROM transfer_file_manifest_entries")
+    blob = repr(rows).casefold()
+    for token in ("alldebrid", "aria2", "memory:", "http", "endpoint"):
+        assert token not in blob
+
+
+@pytest.mark.asyncio
+async def test_duplicate_confirm_is_idempotent_and_never_double_commits(repo):
+    clock = Clock(1000.0)
+    seed = await window(repo, clock, initially_available=True)
+    clock.set(1005.0)
+    canonical = await repo.record_file_manifest(seed.request_id, seed.provider_resource_id, file_manifest(("a", "s/a", 10), ("b", "s/b", 20)), now=clock(),
+    )
+    keep = [canonical.entries[0].entry_id]
+    first = await repo.confirm_file_selection(seed.transfer_id, canonical.manifest_id, keep, now=clock())
+    second = await repo.confirm_file_selection(seed.transfer_id, canonical.manifest_id, keep, now=clock())
+    assert first.outcome == fs.SelectionOutcome.CONFIRMED
+    assert second.outcome == fs.SelectionOutcome.CONFIRMED and second.detail == "idempotent"
+    async with database.get_db() as db:
+        rows = await db.fetchall(
+            """SELECT e.entry_id FROM transfer_file_selection_entries e
+               JOIN transfer_file_selections s ON s.id=e.selection_id
+               WHERE s.request_id=?""", (seed.request_id,))
+    assert len(rows) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Full lifecycle through the real engine + fake provider + executor
+# --------------------------------------------------------------------------- #
+
+FILES6 = [
+    ("e1.mkv", "S1/e1.mkv", 10), ("e2.mkv", "S1/e2.mkv", 20), ("e3.mkv", "S1/e3.mkv", 30),
+    ("e4.mkv", "S1/e4.mkv", 40), ("e5.mkv", "S1/e5.mkv", 50), ("nfo.txt", "nfo.txt", 0),
+]
+
+
+async def _selection_row(transfer_id):
+    async with database.get_db() as db:
+        return await db.fetchone(
+            "SELECT * FROM transfer_file_selections WHERE transfer_id=? ORDER BY created_at DESC LIMIT 1",
+            (transfer_id,))
+
+
+async def _members(core, transfer_id):
+    return [r for r in await core.repository.requests(transfer_id) if r.parent_id]
+
+
+@pytest.mark.asyncio
+async def test_engine_cached_multi_file_holds_then_times_out_to_all(core):
+    core.provider.responses.append(
+        core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+
+    # Held: no executable manifest fetched, no children yet.
+    assert ("manifest", "parcel-lab:A") not in core.provider.calls
+    assert await _members(core, transfer.id) == []
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["decision_deadline"] == 1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+
+    core.clock.set(1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS + 1)
+    await core.engine.tick()
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == sorted(f[1] for f in FILES6)
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["decision"] == "all" and view["decision_reason"] == fs.DecisionReason.DECISION_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_engine_cached_confirm_materializes_only_subset_and_executor_is_selection_blind(core):
+    core.provider.responses.append(
+        core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    keep = [view["entries"][1]["entry_id"], view["entries"][3]["entry_id"]]   # e2, e4
+    result = await core.repository.confirm_file_selection(
+        transfer.id, view["manifest_id"], keep, now=core.clock())
+    assert result.outcome == fs.SelectionOutcome.CONFIRMED
+
+    core.clock.advance(5)
+    for _ in range(6):
+        await core.engine.tick()
+        core.clock.advance(1)
+
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == ["S1/e2.mkv", "S1/e4.mkv"]
+    artifacts = await core.repository.artifacts(transfer.id)
+    assert sorted(a.name for a in artifacts) == ["e2.mkv", "e4.mkv"]
+
+    # The executor was invoked only for those 2 and received ordinary canonical
+    # work: no manifest id, selection state, provider file index, or native tree.
+    assert len(core.executor.started) == 2
+    for request in core.executor.started:
+        candidate = request.work.subject.candidate
+        blob = repr(request).casefold()
+        for token in ("manifest", "selection", "entry_id", "file_manifest", "bitmask"):
+            assert token not in blob
+        assert not candidate.context or set(candidate.context) <= {"copy_ticket", "destination"}
+        assert candidate.relative_path in {"S1/e2.mkv", "S1/e4.mkv"}
+
+
+@pytest.mark.asyncio
+async def test_engine_confirmed_subset_never_broadens_when_late_manifest_drops_a_path(core):
+    core.provider.responses.append(
+        core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    keep = [view["entries"][0]["entry_id"], view["entries"][4]["entry_id"]]     # e1, e5
+    await core.repository.confirm_file_selection(transfer.id, view["manifest_id"], keep, now=core.clock())
+
+    # The executable manifest the provider later returns is missing e5.
+    core.provider.members["parcel-lab:A"] = executable(
+        ("e1.mkv", "S1/e1.mkv", 10), ("e2.mkv", "S1/e2.mkv", 20))
+
+    core.clock.advance(5)
+    for _ in range(4):
+        await core.engine.tick()
+        core.clock.advance(1)
+
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["decision"] == "explicit"                       # never degraded to ALL
+    row = await _selection_row(transfer.id)
+    assert row["manifest_committed_at"] is None                 # request contained, not committed
+    assert await _members(core, transfer.id) == []              # no children, no broadening
+
+
+# --------------------------------------------------------------------------- #
+# TASK_DownloadPulse_1.0.12_File_Selection_Projection_and_NOW_Control_Corrections
+# Section 10/14.2 -- resolve_pending() must surface the exact transfer id(s)
+# whose canonical selected-manifest commitment changed THIS cycle, so the
+# application layer can target the existing semantic _publish() instead of
+# discovering the change indirectly (or not at all).
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_resolve_pending_reports_exactly_the_transfer_crossing_first_manifest_commitment(core):
+    core.provider.responses.append(
+        core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    transfer = await _engine_submit(core)
+    held = await core.engine.resolve_pending()
+    assert transfer.id not in held      # still inside the decision hold -- no commitment yet
+
+    core.provider.responses.append(
+        core.provider.parcel("B", state=ResourceState.AVAILABLE, files=[("x.mkv", "x.mkv", 5)]))
+    unrelated = await _engine_submit(core, payload="B", selection_mode="all")
+    also_held = await core.engine.resolve_pending()
+    assert transfer.id not in also_held
+    assert unrelated.id not in also_held   # a non-selecting ("all") transfer never crosses this boundary
+
+    core.clock.set(1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS + 1)
+    settled = await core.engine.resolve_pending()
+    assert settled == {transfer.id}        # exactly the one transfer that crossed the boundary this cycle
+    row = await _selection_row(transfer.id)
+    assert row["manifest_committed_at"] is not None
+
+    replay = await core.engine.resolve_pending()
+    assert transfer.id not in replay       # settled/resolved -- re-driving must not re-report it
+
+
+# --------------------------------------------------------------------------- #
+# PREPARING-origin decision window (specification sections 4-9, regression
+# matrix section 21). The production reproducer: a torrent begins PREPARING and,
+# on one later observation, becomes AVAILABLE *and* exposes its first complete
+# multi-file manifest. An automatically actionable offer must never coexist with
+# immediate irreversible ALL materialization.
+# --------------------------------------------------------------------------- #
+
+async def _preparing_then_available_with_manifest(core, *, manifest_at=1039.0):
+    """Drive a transfer from PREPARING to an AVAILABLE observation that carries
+    the first complete multi-file manifest. ``manifest_at`` may be any time
+    after submission — provider preparation is open-ended."""
+    from dataclasses import replace as _replace
+
+    prepare = core.provider.parcel("A", state=ResourceState.PREPARING)
+    core.provider.members["parcel-lab:A"] = executable(*FILES6)
+    core.provider.responses.append(prepare)
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+
+    row = await _selection_row(transfer.id)
+    assert row["initially_available"] == 0 and row["hold_until"] is None
+
+    core.clock.set(manifest_at)
+    core.provider.resources["parcel-lab:A"] = _replace(
+        prepare.observation, state=ResourceState.AVAILABLE, file_manifest=file_manifest(*FILES6))
+    await core.engine.resolve_pending()
+    return transfer
+
+
+@pytest.mark.asyncio
+async def test_preparing_then_available_with_manifest_gets_a_bounded_decision_window(core):
+    # Section 21 A — the exact real-world reproducer. This assertion set fails on
+    # the pre-correction implementation, which allowed default_materialization to
+    # commit ALL ~12ms after the offer was queued.
+    transfer = await _preparing_then_available_with_manifest(core, manifest_at=1039.0)
+
+    row = await _selection_row(transfer.id)
+    assert row["initially_available"] == 0                      # provenance fact preserved
+    assert row["hold_until"] == 1039.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert row["decision"] == "pending"
+    assert row["manifest_committed_at"] is None
+    assert row["auto_offer_queued_at"] == 1039.0
+
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["auto_offer"] is True
+    assert view["decision_deadline"] == 1039.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    assert view["initially_available"] is False
+
+    gate = await core.repository.file_selection_gate(
+        row["request_id"], row["provider_resource_id"], now=core.clock())
+    assert gate == fs.SelectionGate.WAIT_FOR_DECISION
+
+    # No executable manifest was fetched, no child request created, no executor
+    # attempt started — even after further scheduler passes inside the hold.
+    for _ in range(4):
+        await core.engine.tick()
+        core.clock.advance(1)
+    assert ("manifest", "parcel-lab:A") not in core.provider.calls
+    assert await _members(core, transfer.id) == []
+    assert core.executor.started == []
+    row = await _selection_row(transfer.id)
+    assert row["decision"] == "pending" and row["manifest_committed_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_confirm_before_deadline_persists_subset_only(core):
+    # Section 21 B.
+    transfer = await _preparing_then_available_with_manifest(core, manifest_at=1039.0)
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    keep = [view["entries"][2]["entry_id"]]                     # e3 only
+    core.clock.set(1090.0)
+    result = await core.repository.confirm_file_selection(
+        transfer.id, view["manifest_id"], keep, now=core.clock())
+    assert result.outcome == fs.SelectionOutcome.CONFIRMED
+
+    for _ in range(6):
+        await core.engine.tick()
+        core.clock.advance(1)
+
+    members = await _members(core, transfer.id)
+    assert [r.entry.relative_path for r in members] == ["S1/e3.mkv"]
+    artifacts = await core.repository.artifacts(transfer.id)
+    assert [a.name for a in artifacts] == ["e3.mkv"]
+    assert len(core.executor.started) == 1
+    row = await _selection_row(transfer.id)
+    assert row["decision"] == "explicit"
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_close_during_hold_releases_and_all_materializes(core):
+    # Section 21 C.
+    transfer = await _preparing_then_available_with_manifest(core, manifest_at=1039.0)
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    core.clock.set(1080.0)
+    result = await core.repository.dismiss_file_selection(
+        transfer.id, view["manifest_id"], now=core.clock())
+    assert result.outcome == fs.SelectionOutcome.DISMISSED and result.decision == "all"
+
+    row = await _selection_row(transfer.id)
+    assert row["decision"] == "all" and row["decision_reason"] == fs.DecisionReason.CLOSED
+
+    for _ in range(6):
+        await core.engine.tick()
+        core.clock.advance(1)
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == sorted(f[1] for f in FILES6)
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_hold_times_out_to_all(core):
+    # Section 21 D.
+    transfer = await _preparing_then_available_with_manifest(core, manifest_at=1039.0)
+    core.clock.set(1039.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS + 1)
+    for _ in range(6):
+        await core.engine.tick()
+        core.clock.advance(1)
+
+    row = await _selection_row(transfer.id)
+    assert row["decision"] == "all"
+    assert row["decision_reason"] == fs.DecisionReason.DECISION_TIMEOUT
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == sorted(f[1] for f in FILES6)
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_repeated_observations_do_not_extend_the_deadline(core):
+    # Section 21 F — one offer event, one deadline, no extension on re-poll.
+    from dataclasses import replace as _replace
+    transfer = await _preparing_then_available_with_manifest(core, manifest_at=1039.0)
+    original_deadline = (await _selection_row(transfer.id))["hold_until"]
+
+    for step in range(5):
+        core.clock.set(1039.0 + (step + 1) * 10)               # still inside the hold
+        core.provider.resources["parcel-lab:A"] = _replace(
+            core.provider.resources["parcel-lab:A"], file_manifest=file_manifest(*FILES6))
+        await core.engine.resolve_pending()
+
+    row = await _selection_row(transfer.id)
+    assert row["hold_until"] == original_deadline               # never reset / extended
+    assert row["auto_offer_queued_at"] == 1039.0
+    async with database.get_db() as db:
+        events = await db.fetchall(
+            "SELECT 1 FROM application_events WHERE transfer_id=? AND kind='file_selection_available'",
+            (transfer.id,))
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_confirm_before_available_persists_subset_only(core):
+    # A confirm placed while the resource is still PREPARING (manifest already
+    # visible) survives to materialization; the hold is established the moment
+    # the first actionable multi-file manifest arrives.
+    from dataclasses import replace as _replace
+
+    prepare = core.provider.parcel("A", state=ResourceState.PREPARING)
+    core.provider.members["parcel-lab:A"] = executable(*FILES6)
+    core.provider.responses.append(prepare)
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+
+    core.clock.set(1010.0)
+    core.provider.resources["parcel-lab:A"] = _replace(
+        prepare.observation, file_manifest=file_manifest(*FILES6))
+    await core.engine.resolve_pending()
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["decision_deadline"] == 1010.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    keep = [view["entries"][2]["entry_id"]]                     # e3 only
+    await core.repository.confirm_file_selection(transfer.id, view["manifest_id"], keep, now=core.clock())
+
+    core.clock.set(1050.0)
+    core.provider.resources["parcel-lab:A"] = _replace(
+        prepare.observation, state=ResourceState.AVAILABLE, file_manifest=file_manifest(*FILES6))
+    for _ in range(6):
+        await core.engine.tick()
+        core.clock.advance(1)
+
+    members = await _members(core, transfer.id)
+    assert [r.entry.relative_path for r in members] == ["S1/e3.mkv"]
+    row = await _selection_row(transfer.id)
+    assert row["decision"] == "explicit"
+
+
+@pytest.mark.asyncio
+async def test_preparing_origin_single_file_manifest_never_holds(core):
+    # Section 21 I — a single-file resource gets no selector and no hold.
+    from dataclasses import replace as _replace
+    prepare = core.provider.parcel("A", state=ResourceState.PREPARING)
+    core.provider.members["parcel-lab:A"] = executable(("only.mkv", "only.mkv", 5))
+    core.provider.responses.append(prepare)
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+
+    core.clock.set(1030.0)
+    core.provider.resources["parcel-lab:A"] = _replace(
+        prepare.observation, state=ResourceState.AVAILABLE,
+        file_manifest=file_manifest(("only.mkv", "only.mkv", 5)))
+    for _ in range(4):
+        await core.engine.tick()
+        core.clock.advance(1)
+
+    row = await _selection_row(transfer.id)
+    assert row["hold_until"] is None
+    assert row["decision"] == "all" and row["decision_reason"] == fs.DecisionReason.SINGLE_FILE
+    members = await _members(core, transfer.id)
+    assert [r.entry.relative_path for r in members] == ["only.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_retry_after_child_creation_keeps_only_the_selected_children(core):
+    core.provider.responses.append(
+        core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    keep = [view["entries"][0]["entry_id"], view["entries"][1]["entry_id"]]
+    await core.repository.confirm_file_selection(transfer.id, view["manifest_id"], keep, now=core.clock())
+
+    core.clock.advance(5)
+    for _ in range(6):
+        await core.engine.tick()
+        core.clock.advance(1)
+    before = sorted(r.entry.relative_path for r in await _members(core, transfer.id))
+    assert before == ["S1/e1.mkv", "S1/e2.mkv"]
+
+    for _ in range(8):
+        await core.engine.tick()
+        core.clock.advance(1)
+    after = sorted(r.entry.relative_path for r in await _members(core, transfer.id))
+    assert after == ["S1/e1.mkv", "S1/e2.mkv"]           # no unselected child ever appears
+    artifacts = await core.repository.artifacts(transfer.id)
+    assert sorted(a.name for a in artifacts) == ["e1.mkv", "e2.mkv"]
+
+
+# --------------------------------------------------------------------------- #
+# Hold release / immediate materialization
+# (TASK_File_Selection_Hold_Release_Correction §16-17). A decision hold exists
+# only while the decision is pending: Confirm / Close resolves it and atomically
+# releases the scheduler retry_at the file-selection gate created — never a
+# coexisting provider backoff on the same request (§9a).
+# --------------------------------------------------------------------------- #
+
+from types import SimpleNamespace as _NS
+
+from transfers.errors import Category, Domain, NormalizedError, Recovery, Retryability, Stage
+from transfers.models import ProviderObservation
+
+
+async def _hold_release_engine(tmp_path, *, db_name="hold-release.db", poll_interval=30,
+                               resolution_retry_delay=0, clock=None):
+    repository = TransferRepository()
+    registry = IntegrationRegistry()
+    provider = ParcelProvider(file_manifest=True)
+    executor = RecordingExecutor(repository.authorize_execution)
+    registry.register_provider(provider)
+    registry.register_executor(executor)
+    clock = clock or Clock(1000.0)
+    engine = TransferEngine(
+        repository, registry, download_root=str(tmp_path / "payloads"),
+        policy=TransferPolicy(adoption_stability_seconds=0, resource_poll_interval=poll_interval,
+                              retry_delay=0, resolution_retry_delay=resolution_retry_delay,
+                              max_active_executions=8, max_attempts=8),
+        clock=clock,
+    )
+    await engine.initialize()
+    return _NS(engine=engine, repository=repository, registry=registry,
+               provider=provider, executor=executor, clock=clock)
+
+
+@pytest_asyncio.fixture
+async def hold_core(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "hold-release.db")
+    await database.init_db()
+    return await _hold_release_engine(tmp_path)
+
+
+async def _root_request_row(transfer_id):
+    async with database.get_db() as db:
+        return await db.fetchone(
+            "SELECT * FROM transfer_requests WHERE transfer_id=? AND parent_id IS NULL "
+            "ORDER BY ordinal LIMIT 1", (transfer_id,))
+
+
+async def _cached_multi_gated(core):
+    """Submit an AVAILABLE multi-file torrent and resolve once: the engine records
+    the manifest, opens the 120s hold, and parks the request on the gate wait."""
+    core.provider.responses.append(
+        core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    transfer = await _engine_submit(core)
+    await core.engine.resolve_pending()
+    row = await _root_request_row(transfer.id)
+    assert row["state"] == "waiting" and float(row["retry_at"]) > core.clock()
+    assert ("manifest", "parcel-lab:A") not in core.provider.calls
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["decision_deadline"] == 1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS
+    return transfer, view
+
+
+@pytest.mark.asyncio
+async def test_confirm_releases_gate_wait_and_materialises_without_advancing_the_clock(hold_core):
+    """§16 primary reproducer — fails on 4469e8a, where Confirm settles EXPLICIT
+    but leaves request.retry_at = now + poll_interval so the next resolution
+    cycle returns without materialising until that timestamp."""
+    core = hold_core
+    transfer, view = await _cached_multi_gated(core)
+    keep = [view["entries"][1]["entry_id"], view["entries"][3]["entry_id"]]     # e2, e4
+
+    result = await core.repository.confirm_file_selection(
+        transfer.id, view["manifest_id"], keep, now=core.clock())
+    assert result.outcome == fs.SelectionOutcome.CONFIRMED
+
+    row = await _root_request_row(transfer.id)
+    assert float(row["retry_at"]) <= core.clock()               # gate wait released, same txn
+    sel = await _selection_row(transfer.id)
+    assert sel["decision"] == "explicit" and sel["decision_reason"] == fs.DecisionReason.CONFIRMED
+    assert sel["decision_at"] == core.clock() and sel["manifest_committed_at"] is None
+
+    await core.engine.resolve_pending()                         # NO core.clock.advance()
+
+    assert ("manifest", "parcel-lab:A") in core.provider.calls
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == ["S1/e2.mkv", "S1/e4.mkv"]
+    sel = await _selection_row(transfer.id)
+    assert sel["manifest_committed_at"] is not None
+    assert (await core.repository.file_selection_presentation(
+        transfer.id, now=core.clock()))["decision_deadline"] is None
+
+
+@pytest.mark.parametrize("confirm_at", [1001.0, 1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS - 1])
+@pytest.mark.asyncio
+async def test_confirm_at_t1_and_near_deadline_proceed_immediately(tmp_path, monkeypatch, confirm_at):
+    """§17 B/C — Confirm one second in, and one second before the deadline, both
+    proceed at once; the final second is never waited."""
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / f"t-{confirm_at}.db")
+    await database.init_db()
+    core = await _hold_release_engine(tmp_path, clock=Clock(1000.0))
+    transfer, view = await _cached_multi_gated(core)
+    core.clock.set(confirm_at)
+    await core.repository.confirm_file_selection(
+        transfer.id, view["manifest_id"], [view["entries"][0]["entry_id"]], now=core.clock())
+    assert float((await _root_request_row(transfer.id))["retry_at"]) <= core.clock()
+    await core.engine.resolve_pending()                         # clock still == confirm_at
+    members = await _members(core, transfer.id)
+    assert [r.entry.relative_path for r in members] == ["S1/e1.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_close_releases_gate_wait_and_all_materialises_immediately(hold_core):
+    """§17 E — Close/X settles default ALL and releases the gate wait; ALL
+    materialises without waiting for the old poll timestamp."""
+    core = hold_core
+    transfer, view = await _cached_multi_gated(core)
+
+    result = await core.repository.dismiss_file_selection(
+        transfer.id, view["manifest_id"], now=core.clock())
+    assert result.outcome == fs.SelectionOutcome.DISMISSED and result.decision == "all"
+
+    sel = await _selection_row(transfer.id)
+    assert sel["decision"] == "all" and sel["decision_reason"] == fs.DecisionReason.CLOSED
+    assert float((await _root_request_row(transfer.id))["retry_at"]) <= core.clock()
+
+    await core.engine.resolve_pending()                         # no clock advance
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == sorted(f[1] for f in FILES6)
+    view = await core.repository.file_selection_presentation(transfer.id, now=core.clock())
+    assert view["decision"] == "all" and view["decision_deadline"] is None
+
+
+@pytest.mark.asyncio
+async def test_unanswered_hold_still_waits_the_full_window(hold_core):
+    """§17 A/F — with no user action the request stays gated for the full 120s;
+    the default timeout is unchanged."""
+    core = hold_core
+    transfer, _ = await _cached_multi_gated(core)
+
+    for step in (30, 60, 90, 119):
+        core.clock.set(1000.0 + step)
+        await core.engine.resolve_pending()
+        assert await _members(core, transfer.id) == []
+        assert (await _root_request_row(transfer.id))["state"] == "waiting"
+
+    core.clock.set(1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS + 1)
+    await core.engine.resolve_pending()
+    sel = await _selection_row(transfer.id)
+    assert sel["decision"] == "all" and sel["decision_reason"] == fs.DecisionReason.DECISION_TIMEOUT
+    members = await _members(core, transfer.id)
+    assert sorted(r.entry.relative_path for r in members) == sorted(f[1] for f in FILES6)
+
+
+@pytest.mark.asyncio
+async def test_confirm_does_not_release_an_unrelated_provider_backoff(hold_core):
+    """§9a / §17 K — a provider observation error schedules a 90s backoff on the
+    same request while the file-selection hold is still active. Confirm releases
+    only the selection-induced wait; the longer, legitimate backoff is retained
+    because that path records an ``error`` and the gate-wait path never does."""
+    from dataclasses import replace as _replace
+    core = hold_core
+    transfer, view = await _cached_multi_gated(core)
+    base_resource = core.provider.resources["parcel-lab:A"].resource
+
+    assert (await _root_request_row(transfer.id))["error"] is None   # gate wait is clean
+
+    backoff = NormalizedError(
+        Domain.PROVIDER, Category.RATE_LIMITED, Stage.RECONCILIATION,
+        retryability=Retryability.BACKOFF, recovery=Recovery.RETRY, retry_after_seconds=90.0)
+    core.provider.resources["parcel-lab:A"] = ProviderObservation(
+        base_resource, ResourceState.UNAVAILABLE, error=backoff)
+    core.clock.set(1000.0 + 31)                                 # past the gate poll
+    await core.engine.resolve_pending()
+    row = await _root_request_row(transfer.id)
+    assert row["error"] is not None
+    backoff_deadline = float(row["retry_at"])
+    assert backoff_deadline >= core.clock() + 89
+
+    assert (await _selection_row(transfer.id))["decision"] == "pending"
+    result = await core.repository.confirm_file_selection(
+        transfer.id, view["manifest_id"], [view["entries"][0]["entry_id"]], now=core.clock())
+    assert result.outcome == fs.SelectionOutcome.CONFIRMED
+
+    row = await _root_request_row(transfer.id)
+    assert float(row["retry_at"]) == backoff_deadline           # unrelated backoff untouched
+    assert row["error"] is not None
+
+    # It resumes after the legitimate backoff, not before it.
+    core.provider.resources["parcel-lab:A"] = _replace(
+        ProviderObservation(base_resource, ResourceState.AVAILABLE,
+                            file_manifest=file_manifest(*FILES6)))
+    core.clock.set(backoff_deadline + 1)
+    await core.engine.resolve_pending()
+    members = await _members(core, transfer.id)
+    assert [r.entry.relative_path for r in members] == ["S1/e1.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_restart_after_confirm_before_materialisation_resumes_immediately(tmp_path, monkeypatch):
+    """§17 I — a fresh engine/repository on the same DB after Confirm sees
+    decision=explicit and an already-released retry_at, and materialises the
+    confirmed subset on the first cycle."""
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "restart.db")
+    await database.init_db()
+    clock = Clock(1000.0)
+    core = await _hold_release_engine(tmp_path, clock=clock)
+    transfer, view = await _cached_multi_gated(core)
+    keep = [view["entries"][2]["entry_id"]]
+    await core.repository.confirm_file_selection(transfer.id, view["manifest_id"], keep, now=core.clock())
+
+    restarted = await _hold_release_engine(tmp_path, clock=clock)
+    restarted.provider.members["parcel-lab:A"] = executable(*FILES6)
+    restarted.provider.resources["parcel-lab:A"] = core.provider.parcel(
+        "A", state=ResourceState.AVAILABLE, files=FILES6).observation
+
+    assert float((await _root_request_row(transfer.id))["retry_at"]) <= clock()   # release survived
+    await restarted.engine.resolve_pending()                    # no clock advance
+    members = [r for r in await restarted.repository.requests(transfer.id) if r.parent_id]
+    assert [r.entry.relative_path for r in members] == ["S1/e3.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_loses_race_to_timeout_and_never_rewrites_retry_at(hold_core):
+    """§17 G — if the timeout/materialisation settled ALL first, a late Confirm
+    returns a conflict and must not rewrite scheduler state."""
+    core = hold_core
+    transfer, view = await _cached_multi_gated(core)
+
+    core.clock.set(1000.0 + fs.IMMEDIATE_DECISION_HOLD_SECONDS + 1)
+    await core.engine.resolve_pending()
+    sel = await _selection_row(transfer.id)
+    assert sel["decision"] == "all" and sel["manifest_committed_at"] is not None
+    row_before = dict(await _root_request_row(transfer.id))
+
+    late = await core.repository.confirm_file_selection(
+        transfer.id, view["manifest_id"], [view["entries"][0]["entry_id"]], now=core.clock())
+    assert late.outcome == fs.SelectionOutcome.CONFLICT
+    assert dict(await _root_request_row(transfer.id)) == row_before   # no scheduler-state rewrite
+
+
+# --------------------------------------------------------------------------- #
+# Same-object resubmission + alternate resource-binding paths
+#
+# The interactive lifecycle must never depend on HOW a provider resource got
+# bound to a root: ``interactive`` + no selection generation is not ``all``.
+# --------------------------------------------------------------------------- #
+
+async def _children_of(transfer_id):
+    async with database.get_db() as db:
+        return await db.fetchall(
+            "SELECT * FROM transfer_requests WHERE transfer_id=? AND parent_id IS NOT NULL", (transfer_id,))
+
+
+async def _generations_of(transfer_id):
+    async with database.get_db() as db:
+        return await db.fetchall(
+            "SELECT * FROM transfer_file_selections WHERE transfer_id=? ORDER BY created_at, id", (transfer_id,))
+
+
+async def _bind_without_resolution(core, transfer, native="A", *, state=ResourceState.AVAILABLE):
+    """Bind an observed provider resource to the root the way a non-resolution
+    path would: a binding row + ``state='waiting'`` + ``resource`` set, with NO
+    resolution attempt and NO selection generation (the durable shape of the
+    production transfer that expanded every file)."""
+    from transfers import codec
+
+    observation = core.provider.parcel(native, state=state, files=FILES6).observation
+    async with database.get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        await TransferRepository._resource(db, transfer.id, observation.resource, state)
+        await db.execute("UPDATE transfer_requests SET state='waiting', resource=? WHERE transfer_id=?",
+                         (codec.dump(observation.resource), transfer.id))
+        await db.commit()
+    return observation.resource
+
+
+@pytest.mark.asyncio
+async def test_interactive_readd_after_a_completed_subset_opens_a_fresh_pending_generation(hold_core):
+    core = hold_core
+    a, view_a = await _cached_multi_gated(core)
+    keep = [view_a["entries"][0]["entry_id"]]
+    await core.repository.confirm_file_selection(a.id, view_a["manifest_id"], keep, now=core.clock())
+    await core.engine.resolve_pending()
+    assert [r.entry.relative_path for r in await core.repository.requests(a.id) if r.parent_id] == ["S1/e1.mkv"]
+
+    await core.engine.delete(a.id, remote=False)
+    core.provider.responses.append(core.provider.parcel("A", state=ResourceState.AVAILABLE, files=FILES6))
+    b = await core.engine.submit(
+        (TransferRequest("parcel", "show", name="show", selection_mode="interactive"),), deduplicate=False)
+    await core.engine.resolve_pending()
+
+    view_b = await core.repository.file_selection_presentation(b.id, now=core.clock())
+    assert view_b["selection_id"] != view_a["selection_id"] and view_b["manifest_id"] != view_a["manifest_id"]
+    assert view_b["decision"] == "pending" and view_b["selected_entry_ids"] == []
+    assert await _children_of(b.id) == []                                # zero children before any decision
+    assert core.executor.started == []                                   # zero execution before any decision
+
+    other = [view_b["entries"][3]["entry_id"]]
+    await core.repository.confirm_file_selection(b.id, view_b["manifest_id"], other, now=core.clock())
+    await core.engine.resolve_pending()
+    assert [r.entry.relative_path for r in await core.repository.requests(b.id) if r.parent_id] == ["S1/e4.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_a_root_bound_by_a_non_resolution_path_gets_its_generation_and_holds(hold_core):
+    core = hold_core
+    b = await _engine_submit(core)                                        # interactive, never resolved
+    resource = await _bind_without_resolution(core, b)
+    assert await _generations_of(b.id) == []
+
+    for _ in range(3):
+        await core.engine.resolve_pending()
+        core.clock.advance(1)
+    gens = await _generations_of(b.id)
+    assert len(gens) == 1 and gens[0]["decision"] == "pending"            # created, never inferred "all"
+    assert gens[0]["provider_resource_id"] == await core.repository.resource_binding_id(b.id, resource.id)
+    assert await _children_of(b.id) == [] and await core.repository.artifacts(b.id) == ()
+    assert core.executor.started == []
+
+    view = await core.repository.file_selection_presentation(b.id, now=core.clock())
+    await core.repository.confirm_file_selection(
+        b.id, view["manifest_id"], [view["entries"][1]["entry_id"]], now=core.clock())
+    await core.engine.resolve_pending()
+    assert [r.entry.relative_path for r in await core.repository.requests(b.id) if r.parent_id] == ["S1/e2.mkv"]
+
+
+@pytest.mark.asyncio
+async def test_an_alternate_binding_never_inherits_a_predecessor_transfers_subset(hold_core):
+    core = hold_core
+    a, view_a = await _cached_multi_gated(core)
+    await core.repository.confirm_file_selection(
+        a.id, view_a["manifest_id"], [view_a["entries"][0]["entry_id"]], now=core.clock())
+    await core.engine.resolve_pending()
+    await core.engine.delete(a.id, remote=False)
+
+    b = await _engine_submit(core, payload="again")
+    await _bind_without_resolution(core, b)                               # same canonical resource as A
+    await core.engine.resolve_pending()
+    gens = await _generations_of(b.id)
+    assert len(gens) == 1 and gens[0]["id"] != view_a["selection_id"] and gens[0]["decision"] == "pending"
+    assert await _children_of(b.id) == []
+
+
+@pytest.mark.asyncio
+async def test_all_mode_bound_by_an_alternate_path_still_materializes_everything(hold_core):
+    """Control: explicit ALL is untouched -- its decomposition generation is
+    decided ALL (never a selection), full fan-out."""
+    core = hold_core
+    b = await _engine_submit(core, selection_mode="all")
+    await _bind_without_resolution(core, b)
+    await core.engine.resolve_pending()
+    assert [(row["interactive"], row["decision"]) for row in await _generations_of(b.id)] == [(0, "all")]
+    assert len(await _children_of(b.id)) == len(FILES6)
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_that_already_owns_a_generation_stays_interactive_when_its_policy_field_says_all(hold_core):
+    """Legacy databases: a generation persisted before ``selection_mode`` existed
+    still governs a re-binding, even though the request now deserializes as ALL."""
+    core = hold_core
+    a, view_a = await _cached_multi_gated(core)
+    async with database.get_db() as db:
+        await db.execute("UPDATE transfer_requests SET payload=REPLACE(payload,'interactive','all') "
+                         "WHERE transfer_id=?", (a.id,))
+        await db.commit()
+    root = (await core.repository.requests(a.id))[0]
+    assert root.request.selection_mode == "all"
+    authority = await core.repository.ensure_selection_generation(
+        root, core.provider.descriptor.id, root.resource, available=True, file_manifest=None, now=core.clock())
+    assert authority.governed and len(await _generations_of(a.id)) == 1   # preserved, not recreated

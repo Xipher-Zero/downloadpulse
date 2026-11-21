@@ -1,0 +1,190 @@
+/* DownloadPulse Provider Status shell support.
+ *
+ * The neutral provider-status runtime and ui-provider-state.css own the visible
+ * provider list/title. This sheet retains only premium-account composition and
+ * shell-level aria2/DB exception presentation.
+ */
+
+/* The crown source belongs to the provider account-detail presentation. Later
+   shell calibration owns its final size, placement and glow without redefining
+   the asset itself. */
+#sidebar .sidebar-footer #premium-row::before {
+  content: '';
+  background: url('/icons/dp/crown.svg?v=11') center / contain no-repeat;
+}
+
+/* aria2 and DB are exception-only in Provider Status. Healthy/checking states
+   stay out of the normal panel; warnings and errors surface below a separator. */
+#sidebar .sidebar-footer .conn-row:has(#dot-aria2),
+#sidebar .sidebar-footer .conn-row:has(#dot-db) {
+  display: none !important;
+}
+#sidebar .sidebar-footer .conn-row:has(#dot-aria2.warn),
+#sidebar .sidebar-footer .conn-row:has(#dot-aria2.error),
+#sidebar .sidebar-footer .conn-row:has(#dot-db.warn),
+#sidebar .sidebar-footer .conn-row:has(#dot-db.error) {
+  display: flex !important;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--dp-chrome-sidebar-divider);
+}
+body.light #sidebar .sidebar-footer .conn-row:has(#dot-aria2.warn),
+body.light #sidebar .sidebar-footer .conn-row:has(#dot-aria2.error),
+body.light #sidebar .sidebar-footer .conn-row:has(#dot-db.warn),
+body.light #sidebar .sidebar-footer .conn-row:has(#dot-db.error) {
+  border-top-color: var(--dp-chrome-sidebar-divider);
+}
+
+/* Respect the application's explicit hidden state. Earlier Dashboard
+   calibration used display:grid!important, which could otherwise resurrect
+   the premium row when the provider reports a non-premium account. */
+#sidebar .sidebar-footer #premium-row[style*="display:none"],
+#sidebar .sidebar-footer #premium-row[style*="display: none"] {
+  display: none !important;
+}
+
+#sidebar .sidebar-footer #premium-row:not([style*="display:none"]):not([style*="display: none"]) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  width: max-content !important;
+  max-width: 100% !important;
+  margin: 0 auto 6px !important;
+  padding: 0 0 9px !important;
+}
+
+/* Under height pressure (app.js fitSidebarScale) the whole crown section --
+   the crown, every account line beside it and the separator beneath it --
+   gives up its place before the sidebar is scaled: it leaves the flow and is
+   not drawn, read or reachable, while keeping the size it would take, so the
+   sidebar knows when it fits again; it returns as soon as it does. The
+   premium services' own indicators stay. */
+#sidebar[data-sidebar-crown-yield] .sidebar-footer #premium-row {
+  position: absolute !important;
+  visibility: hidden !important;
+  pointer-events: none;
+}
+
+#sidebar .sidebar-footer #premium-row::before {
+  position: static !important;
+  inset: auto !important;
+  transform: none !important;
+  flex: 0 0 36px !important;
+  width: 36px !important;
+  min-width: 36px !important;
+  height: 36px !important;
+  margin: 0 -8px !important;
+  background-position: center !important;
+  background-size: 36px 36px !important;
+  background-repeat: no-repeat !important;
+}
+
+#sidebar .sidebar-footer #lbl-premium {
+  display: flex !important;
+  flex: 0 0 auto !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: max-content !important;
+  max-width: none !important;
+  margin: 0 !important;
+  text-align: center !important;
+  white-space: normal !important;
+  font-size: 10.5px !important;
+  line-height: 1.38 !important;
+  letter-spacing: -.012em !important;
+}
+
+/* The premium account owner (ui-premium-account-status.js) emits one complete
+   two-line subscription block per healthy premium account; the row's single
+   crown centres against the whole stack. */
+#sidebar .sidebar-footer #lbl-premium::before {
+  content: none !important;
+}
+
+#sidebar .sidebar-footer .dp-provider-premium-until,
+#sidebar .sidebar-footer .dp-provider-premium-days {
+  display: block !important;
+  white-space: nowrap !important;
+}
+#sidebar .sidebar-footer .dp-provider-premium-days {
+  margin-top: 1px;
+}
+#sidebar .sidebar-footer .dp-provider-premium-account {
+  display: block !important;
+}
+#sidebar .sidebar-footer .dp-provider-premium-account + .dp-provider-premium-account {
+  margin-top: 5px;
+}
+/* Several accounts: one compact line each, stacked tightly under the crown. */
+#sidebar .sidebar-footer .dp-provider-premium-account--compact {
+  white-space: nowrap !important;
+}
+#sidebar .sidebar-footer .dp-provider-premium-account--compact + .dp-provider-premium-account--compact {
+  margin-top: 1px;
+}
+
+/* Tier headings follow the premium account composition. With no premium
+   account shown (the owner publishes the count on #premium-row only when there
+   is one), a premium tier's rows stay but its "Premium Services" heading has
+   nothing to introduce; and with no premium tier at all, a remaining tier
+   whose only content is one aggregate group has
+   nothing to be distinguished from. A tier that holds a provider row of its
+   own -- an account-backed provider currently of the standard class --
+   keeps its heading. */
+#sidebar .sidebar-footer:has(#premium-row:not([data-premium-accounts]))
+  .dp-provider-status-tier[data-provider-tier-premium] > .dp-provider-status-tier-label,
+#sidebar .sidebar-footer:has(#premium-row:not([data-premium-accounts])):not(:has(.dp-provider-status-tier[data-provider-tier-premium]))
+  .dp-provider-status-tier[data-provider-tier-single-group] > .dp-provider-status-tier-label {
+  display: none;
+}
+
+/* Internal operational rows remain exception-only under the existing shell
+   contract and center when they surface a warning/failure. */
+#sidebar .sidebar-footer .conn-row:has(#dot-aria2.warn),
+#sidebar .sidebar-footer .conn-row:has(#dot-aria2.error),
+#sidebar .sidebar-footer .conn-row:has(#dot-db.warn),
+#sidebar .sidebar-footer .conn-row:has(#dot-db.error) {
+  width: 100%;
+  justify-content: center !important;
+  align-items: center !important;
+}
+
+/* The compact desktop sidebar rail (901-1559px, ui-shell-structural.css):
+   the crown alone above its separator, the tiers without their headings, and
+   an aria2/DB exception as its dot beneath its separator. Each text stays the
+   row's accessible text; the DP tooltip says it on hover or focus. */
+@media (min-width: 780px) and (max-width: 1559px) {
+  #sidebar:not(.sidebar-overlay-open) .sidebar-footer :is(#lbl-premium, .dp-provider-status-tier-label, .conn-row:has(#dot-aria2, #dot-db) > span) {
+    position: absolute;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    opacity: 0;
+  }
+}
+
+/* Provider Status tiers: an acquisition-family heading above the rows that
+   belong to it. Classification and ordering are integration-owned presentation
+   metadata; this only paints the heading. */
+.sidebar-footer .dp-provider-status-tier + .dp-provider-status-tier {
+  margin-top: 8px;
+}
+
+.sidebar-footer .dp-provider-status-tier-label {
+  margin: 0 0 3px;
+  color: var(--text3);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  /* The heading centres over the family it names; the provider rows beneath
+     keep their own left alignment. */
+  text-align: center;
+}
+
+body.light .sidebar-footer .dp-provider-status-tier-label {
+  color: var(--text2);
+}

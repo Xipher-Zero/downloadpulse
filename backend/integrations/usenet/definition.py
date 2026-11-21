@@ -1,0 +1,298 @@
+"""Usenet registration: ONE canonical integration owning provider + executor.
+
+Usenet is a one-to-one provider/executor pairing, so `integrations.usenet` is
+the single canonical namespace and `integrations.usenet.enabled` is the single
+canonical enable state governing BOTH halves. There is no second namespace and
+no second boolean to keep synchronized.
+
+This definition lives under ``integrations/`` rather than ``providers/`` or
+``executors/`` on purpose: it is the integration-level artifact that PAIRS the
+two halves, so it is the only module that legitimately imports both. The
+architectural boundary each tree enforces -- no provider imports an executor,
+no executor imports a provider -- therefore stays intact.
+"""
+from __future__ import annotations
+
+from uuid import uuid4
+
+from typing import Annotated
+
+from pydantic import BaseModel, Field
+
+from core.settings_constraints import HostName
+
+from integrations.definition import (
+    IntegrationDefinition, IntegrationPresentation, VerificationSubject,
+)
+
+def _field(item, name, default):
+    return item.get(name, default) if isinstance(item, dict) else getattr(item, name, default)
+
+
+def server_usable(item) -> bool:
+    """Could this one news server actually acquire?
+
+    Enabled, addressable, and allowed at least one connection. A server with
+    zero connections cannot acquire anything, so counting it would report
+    Usenet ready when it is not. Configurations written before the floor
+    existed can still carry 0, so this is checked here rather than trusted from
+    validation alone.
+
+    One predicate, used both to decide whether Usenet is configured at all and
+    to decide which servers have to be covered before it is verified.
+    """
+    if not _field(item, "enabled", True):
+        return False
+    if not str(_field(item, "host", "") or "").strip():
+        return False
+    try:
+        return int(_field(item, "connections", 0) or 0) >= MIN_CONNECTIONS
+    except (TypeError, ValueError):
+        return False
+
+
+def usable_servers(options: dict) -> int:
+    """How many news servers could actually acquire."""
+    return sum(1 for item in ((options or {}).get("servers") or []) if server_usable(item))
+
+
+# SABnzbd 5.1.3 `config.py ConfigServer` allows 0..500. DownloadPulse's floor is
+# 1, deliberately narrower: 0 is how SAB switches a server off, and DP already
+# has an explicit per-server Enable control for that. A DP server left at 0
+# would read as enabled while the native side cannot open a single connection
+# to it -- configured, testable, and incapable of acquiring.
+MIN_CONNECTIONS, MAX_CONNECTIONS = 1, 500
+MIN_PRIORITY, MAX_PRIORITY = 0, 99
+# SAB sorts servers ascending by priority: 0 is the highest priority.
+PRIORITY_HELP = "Lower values have priority."
+
+# Acquisition tuning bounds, each characterized against the bundled SABnzbd
+# 5.1.3 (source tree plus live probes). DownloadPulse's range is never WIDER than
+# the native one, so a persisted canonical value can never be silently rewritten
+# by the service into something the operator did not choose.
+#
+#   article cache   `misc.cache_limit`, an OptionStr in K/M/G notation with no
+#                   range of its own; the running cache is clamped to
+#                   min(value, 4 GiB on 64-bit, available memory). 0 = no cache.
+#   direct write    `misc.direct_write`, OptionBool, native default True.
+#   acquisition     `misc.max_art_tries`, OptionNumber, default 3, native
+#   retries         minval 2 (a smaller request is clamped up), no maxval.
+#   articles/req    `servers.<id>.pipelining_requests`, default 2, clamps 1..20.
+#   server timeout  `servers.<id>.timeout` seconds, default 60, clamps 20..240.
+#
+# All of them apply live: cache_limit and direct_write through registered
+# option callbacks, max_art_tries because it is read per attempt, and the
+# per-server values because a server write re-initialises that server.
+MIN_ARTICLE_CACHE_MB, MAX_ARTICLE_CACHE_MB = 0, 4096
+MIN_ACQUISITION_RETRIES, MAX_ACQUISITION_RETRIES = 2, 25
+MIN_ARTICLES_PER_REQUEST, MAX_ARTICLES_PER_REQUEST = 1, 20
+MIN_SERVER_TIMEOUT_SECONDS, MAX_SERVER_TIMEOUT_SECONDS = 20, 240
+
+
+def _new_server_id() -> str:
+    return uuid4().hex
+
+
+class UsenetServer(BaseModel):
+    """One configured NNTP server.
+
+    Fields are exactly those SABnzbd's server configuration supports. There is
+    deliberately no API/API-key field: SAB's NNTP server authentication is
+    username/password only (characterized against SABnzbd 5.1.3), so exposing
+    one would be a dead setting.
+    """
+    # Canonical, stable record identity. It is what a per-server Save, Test or
+    # Remove addresses, so editing one card can never disturb another. Never a
+    # list index and never derived from the host: two servers may share a host.
+    id: str = Field(default_factory=_new_server_id)
+    # A written address is one host name or IP address (``HostName``); a stored
+    # one is left as it is.
+    host: Annotated[str, HostName()] = ""
+    port: int = Field(default=563, ge=1, le=65535)
+    ssl: bool = True
+    username: str = ""
+    password: str = Field(default="", repr=False)
+    connections: int = Field(default=8, ge=MIN_CONNECTIONS, le=MAX_CONNECTIONS)
+    priority: int = Field(default=0, ge=MIN_PRIORITY, le=MAX_PRIORITY)
+    # How many articles are requested from this server without waiting for each
+    # reply, and how long this server may take to answer before the connection
+    # is treated as failed. Both are per-server acquisition behaviour.
+    articles_per_request: int = Field(default=2, ge=MIN_ARTICLES_PER_REQUEST,
+                                      le=MAX_ARTICLES_PER_REQUEST)
+    timeout_seconds: int = Field(default=60, ge=MIN_SERVER_TIMEOUT_SECONDS,
+                                 le=MAX_SERVER_TIMEOUT_SECONDS)
+    enabled: bool = True
+    # Operator-facing display name. Empty means "derive from host"; a non-empty
+    # value is an explicit override that survives later host edits.
+    display_name: str = ""
+
+
+class UsenetOptions(BaseModel):
+    """Everything an operator configures for Usenet.
+
+    Deliberately absent: any endpoint or credential for the acquisition
+    service itself. That service is bundled, DownloadPulse-private and
+    DownloadPulse-owned; its endpoint and control-plane key are runtime state,
+    never settings, so there is nothing here for an operator to point at.
+    """
+    # --- DownloadPulse -> acquisition-service communication ---
+    # How long DownloadPulse waits for its own download service to answer. This is
+    # a service-communication timeout, never a news-server timeout.
+    operation_timeout_seconds: int = Field(default=30, ge=5, le=300)
+    # --- executor-wide acquisition tuning ---
+    article_cache_megabytes: int = Field(default=1024, ge=MIN_ARTICLE_CACHE_MB,
+                                         le=MAX_ARTICLE_CACHE_MB)
+    direct_write: bool = True
+    # Native news-server acquisition retry per article. Emphatically NOT the
+    # DownloadPulse transfer retry count, core recovery attempts, or a provider
+    # retry count -- those are universal transfer policy and live elsewhere.
+    max_acquisition_retries: int = Field(default=3, ge=MIN_ACQUISITION_RETRIES,
+                                         le=MAX_ACQUISITION_RETRIES)
+    # --- NNTP server collection ---
+    servers: list[UsenetServer] = Field(default_factory=list)
+
+    def configured(self) -> bool:
+        """Usenet is configured only when it can actually acquire.
+
+        The bundled service always exists, so its presence is never evidence
+        of configuration: at least one enabled, addressable news server must be
+        configured. Enabled with zero servers is Enabled + Unconfigured.
+        """
+        return usable_servers(self.model_dump()) > 0
+
+    def public(self) -> dict:
+        """Projection with every per-server credential removed.
+
+        Server passwords are nested secrets: the plain model dump would carry
+        them onto public settings surfaces, so this projection replaces each
+        with a presence flag only.
+        """
+        result = self.model_dump()
+        result["servers"] = [
+            {**server, "password": "", "password_configured": bool(server.get("password"))}
+            for server in result.get("servers", [])
+        ]
+        return result
+
+
+def _verification_subjects(options: UsenetOptions):
+    """What a Usenet Test actually proves, per news server.
+
+    The Test is per server and exercises exactly the connection material below
+    -- the same values ``/usenet/servers/test`` sends. Display name, priority
+    and acquisition tuning are not part of a connection proof and must not
+    revoke one; they would only belong here if the Test started validating
+    them, which it does not.
+
+    EVERY saved server is a subject, so switching one off and on again does not
+    throw away a proof that is still true. Only a server that can actually
+    participate is REQUIRED, so a disabled or unusable one never blocks the
+    aggregate answer for the servers that do.
+    """
+    return tuple(VerificationSubject(
+        server.id,
+        {"host": str(server.host or "").strip(), "port": int(server.port),
+         "ssl": bool(server.ssl), "username": str(server.username or ""),
+         "password": str(server.password or ""), "connections": int(server.connections)},
+        server_usable(server),
+    ) for server in options.servers)
+
+
+def build(options: UsenetOptions, environment):
+    """Build BOTH halves of the pairing from one canonical configuration.
+
+    The acquisition service is internal: its endpoint and credential come from
+    the DownloadPulse-owned runtime, never from ``options``.
+    """
+    from executors.sabnzbd.admin import SabnzbdAdministration
+    from executors.sabnzbd.client import SabEndpoint, SabnzbdClient
+    from executors.sabnzbd.executor import SabnzbdConfiguration, SabnzbdExecutor
+    from executors.sabnzbd import runtime as service_runtime, topology
+    from providers.usenet.provider import UsenetProvider
+
+    provider = UsenetProvider(staged_input=environment.staged_input)
+    root = environment.download_root
+    service_runtime.runtime.configure(service_runtime.UsenetRuntimeConfiguration(
+        download_root=root,
+        operation_timeout_seconds=options.operation_timeout_seconds,
+    ))
+    client = SabnzbdClient(SabEndpoint(
+        base_url=service_runtime.service_url,         # the live address: its port may move between starts
+        api_key=service_runtime.internal_api_key(),
+        timeout_seconds=options.operation_timeout_seconds,
+    ))
+    executor = SabnzbdExecutor(
+        client,
+        SabnzbdConfiguration(
+            local_root=root,
+            working_directory=topology.working_root(root),
+            complete_directory=topology.complete_root(root),
+            # The internal control-plane key is redacted from every diagnostic.
+            secrets=(service_runtime.internal_api_key(),),
+        ),
+        environment.repository.authorize_execution,
+        staged_input=environment.staged_input,
+        # The narrow durable convergence seam for work resolved before the
+        # staged-input correction. A bound method, exactly like the
+        # authorization callable above -- never a repository handle.
+        converge=environment.repository.converge_staged_input,
+    )
+    # The administration surface is BOTH the configuration applier and the
+    # managed lifecycle component; composition discovers each generically.
+    administration = SabnzbdAdministration(client, options, root,
+                                           service_runtime.runtime, executor,
+                                           repository=environment.repository,
+                                           notify_status=getattr(getattr(environment, "commands", None),
+                                                                 "notify_status_changed", None))
+    executor.administration = administration
+    executor.lifecycle = administration
+    return provider, executor
+
+
+definition = IntegrationDefinition(
+    "usenet", "provider_executor", "Usenet", UsenetOptions, build,
+    # No operator-owned secret: the service credential is runtime state.
+    secret_fields=frozenset(),
+    # Changing the news-server set can invalidate an owned native acquisition.
+    ownership_fields=frozenset({"servers"}),
+    # "Configured" is decided by `configured_options` below, not by presence
+    # of a field: an internal service existing is never configuration.
+    required_options=frozenset(),
+    # Usenet is verified only when every PARTICIPATING news server is covered
+    # by a successful test of its current connection configuration.
+    verification_subjects=_verification_subjects,
+    # Usenet is off until an operator turns it on: enabling it is what makes
+    # both the provider and the SAB-backed executor participate.
+    default_enabled=False,
+    # The provider and the SAB-backed executor both record durable work, so
+    # configuration ownership is fenced against both identities.
+    durable_identities=frozenset({"usenet", "sabnzbd"}),
+    presentation=IntegrationPresentation(
+        status_name="Usenet",
+        acquisition_method="Usenet",
+        premium=True,
+        # A real readiness check: an enabled-but-unconfigured Usenet integration
+        # must never render as ready, which a static status could not express.
+        status_endpoint="/integration-status/usenet",
+        # Usenet is a PREMIUM service: it is an account-bearing acquisition
+        # service the operator subscribes to, presented beside the debrid
+        # providers rather than beside the aggregate Network Sources family.
+        #
+        # It is the reserved LAST row of that tier. `display_order` is the one
+        # ordering authority -- for entries and, because a tier takes the
+        # position of its first entry, for tiers -- so the reserved bands are:
+        #
+        #     .. 100   ordinary PREMIUM entries, including every future debrid
+        #              integration that declares no order and therefore takes
+        #              the presentation model's default of 100
+        #      900     this reserved PREMIUM tail
+        #      910 ..  the reserved STANDARD band (Network Sources)
+        #
+        # Declaring this ABOVE the default is what makes "debrid providers,
+        # then Usenet" true of integrations that do not exist yet, without the
+        # renderer naming any of them.
+        status_tier="premium_service",
+        status_tier_label="Premium Services",
+        display_order=900,
+    ),
+)

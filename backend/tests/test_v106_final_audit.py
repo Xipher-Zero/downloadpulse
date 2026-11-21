@@ -1,0 +1,231 @@
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from api.serializers import public_payload, public_torrent
+from api.routes import _sql_date, _sql_strftime
+from core.logging_utils import sanitize_exception
+from db.database import DatabaseMaintenanceGate
+from executors.aria2.client import Aria2RPCError, Aria2Service
+from executors.aria2.definition import Aria2Options
+from executors.aria2.runtime import Aria2Runtime, Aria2RuntimeConfiguration
+from services.maintenance_gate import ApplicationMaintenanceGate
+from test_aria2_executor_contract import execution
+
+
+@pytest.mark.asyncio
+async def test_application_maintenance_acquisition_cancellation_reopens_gate():
+    gate = ApplicationMaintenanceGate()
+    hold = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def active():
+        async with gate.operation():
+            entered.set()
+            await hold.wait()
+
+    active_task = asyncio.create_task(active())
+    await entered.wait()
+
+    async def maintenance():
+        async with gate.maintenance():
+            raise AssertionError("must not enter while active work is held")
+
+    task = asyncio.create_task(maintenance())
+    while not gate.active:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert gate.active is False
+    assert gate._owner is None
+
+    hold.set()
+    await active_task
+    async with gate.operation():
+        pass
+
+
+@pytest.mark.asyncio
+async def test_database_maintenance_acquisition_cancellation_reopens_gate():
+    gate = DatabaseMaintenanceGate()
+    hold = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def active():
+        async with gate.session():
+            entered.set()
+            await hold.wait()
+
+    active_task = asyncio.create_task(active())
+    await entered.wait()
+
+    async def maintenance():
+        async with gate.maintenance():
+            raise AssertionError("must not enter while active DB session is held")
+
+    task = asyncio.create_task(maintenance())
+    while not gate.active:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert gate.active is False
+    assert gate._owner is None
+
+    hold.set()
+    await active_task
+    async with gate.session():
+        pass
+
+
+@pytest.mark.asyncio
+async def test_aria2_failure_never_exposes_capability_or_blindly_retries(execution, monkeypatch, caplog):
+    capability = execution.request.work.subject.candidate.endpoints[0].address
+    calls = []
+
+    async def fail(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError(f"backend rejected {capability}")
+
+    monkeypatch.setattr(execution.daemon, "_call", fail)
+    result = await execution.executor.start(execution.request, execution.handle)
+    assert result.state.value == "unknown"
+    assert capability not in str(result.error.as_dict())
+    assert capability not in caplog.text
+    assert len(calls) == 1
+
+
+class _FakeProcess:
+    def __init__(self):
+        self.returncode = None
+        self.stdout = None
+        self.stderr = None
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_failed_aria2_start_is_transactional(monkeypatch):
+    import executors.aria2.runtime as runtime_module
+
+    runtime = Aria2Runtime()
+    # Specification section 9.3: the runtime consumes its injected
+    # Aria2RuntimeConfiguration, never core.config.get_settings().
+    runtime.configure(Aria2RuntimeConfiguration(options=Aria2Options(auto_start=True)))
+    process = _FakeProcess()
+
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda name: "/usr/bin/aria2c")
+    monkeypatch.setattr(runtime, "_rotate_log_file", lambda: False)
+    monkeypatch.setattr(runtime, "_command", lambda: ["aria2c"])
+
+    async def spawn(*args, **kwargs):
+        return process
+
+    async def unhealthy():
+        raise RuntimeError("RPC never became healthy")
+
+    async def status():
+        return {
+            "running": runtime._is_process_alive(),
+            "process_running": runtime._is_process_alive(),
+            "last_error": runtime._last_error,
+        }
+
+    monkeypatch.setattr(runtime_module.asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(runtime, "_wait_until_healthy", unhealthy)
+    monkeypatch.setattr(runtime, "status", status)
+
+    result = await runtime.start()
+    assert result["running"] is False
+    assert process.terminated or process.killed
+    assert runtime._process is None
+    assert runtime._stdout_task is None
+    assert runtime._stderr_task is None
+    assert runtime._started_at == 0.0
+    assert "RPC never became healthy" in runtime._last_error
+
+
+def test_api_timestamps_are_explicit_utc_and_sql_buckets_are_local():
+    row = public_torrent({"id": 1, "created_at": "2026-08-21 02:43:00"})
+    assert row["created_at"] == "2026-08-21T02:43:00Z"
+    nested = public_payload({"event": {"created_at": "2026-08-21 02:43:00"}})
+    assert nested["event"]["created_at"] == "2026-08-21T02:43:00Z"
+    assert _sql_date("created_at") == "DATE(created_at, 'localtime')"
+    assert _sql_strftime("%H", "created_at") == "strftime('%H', created_at, 'localtime')"
+
+
+def test_frontend_uses_configured_timezone_for_legacy_and_explicit_utc():
+    static = Path(__file__).parents[2] / "frontend" / "static"
+    source = (static / "app.js").read_text()
+    # The one API date parser reads a legacy naive SQLite timestamp as UTC.
+    assert "function parseApiDate" in source
+    assert "value.trim().replace(' ', 'T') + 'Z'" in source
+    # The configured display timezone has one owner ...
+    assert "function dpDisplayTimezone()" in source
+    assert "settingsData.timezone" in source
+    # ... and the one date presentation owner (Downloads, Dashboard and
+    # Details all render through it) parses every API instant with that parser
+    # and formats it -- calendar parts and exact title alike -- in that zone.
+    dates = (static / "ui-downloads.js").read_text()
+    assert "function timeZone() { try { return dpDisplayTimezone(); }" in dates
+    assert dates.count("timeZone: timeZone()") == 2
+    assert dates.count("parseApiDate(value)") == 3            # a date, its exact title, and its day alone (dayMarkup)
+
+
+def test_backup_ids_are_unique_and_backward_compatible():
+    from services import backup, db_maintenance
+
+    generated = {
+        f"20260820_200000_{__import__('uuid').uuid4().hex}"
+        for _ in range(40)
+    }
+    assert len(generated) == 40
+    assert all(backup._BACKUP_DIR_RE.fullmatch(value) for value in generated)
+    assert backup._BACKUP_DIR_RE.fullmatch("20260820_200000")
+    assert hasattr(backup, "_BACKUP_RUN_LOCK")
+    # Backups have one owner: database maintenance keeps no second backup
+    # implementation (id scheme, run lock, or writer) of its own.
+    for retired in ("_BACKUP_DIR_RE", "_BACKUP_RUN_LOCK", "run_database_backup", "list_database_backups"):
+        assert not hasattr(db_maintenance, retired), retired
+
+
+def test_v1_metadata_does_not_claim_multiple_providers():
+    root = Path(__file__).parents[2]
+    inspected = [
+        (root / "NOTICE").read_text(),
+        (root / "backend" / "core" / "branding.py").read_text(),
+        (root / ".github" / "workflows" / "image.yml").read_text(),
+    ]
+    joined = "\n".join(inspected)
+    assert "Multi-provider Debrid Download Manager" not in joined
+    assert "Multi-provider debrid download manager" not in joined
+
+
+def test_disk_guard_comment_matches_runtime_contract():
+    root = Path(__file__).parents[2]
+    source = (root / "backend" / "core" / "config.py").read_text()
+    assert "Transfers already active in an executor are allowed to finish" in source
+    assert "Active aria2 downloads are PAUSED automatically" not in source
+
+
+def test_scheduler_stop_intent_is_marked_before_interruptible_await():
+    root = Path(__file__).parents[2]
+    source = (root / "backend" / "api" / "routes.py").read_text()
+    initial = source.index("scheduler_stopped = False")
+    intent = source.index("scheduler_stopped = True", initial)
+    stop = source.index("await scheduler_runtime.stop_scheduler()", intent)
+    assert initial < intent < stop

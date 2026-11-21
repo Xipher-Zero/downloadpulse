@@ -1,0 +1,543 @@
+/* DownloadPulse v1.0.11 canonical Lucide presentation integration.
+ *
+ * Locally vendored Lucide subset; no runtime CDN. Geometry is sourced from
+ * lucide-icons/lucide commit 23f9abc4ed0146cffededd3d7f94c1018bfdf693.
+ * License notices are bundled in licenses/Lucide-ISC-MIT.txt.
+ */
+(function () {
+  'use strict';
+
+  const LUCIDE = {
+    dashboard: '<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>',
+    download: '<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>',
+    logs: '<path d="M3 5h1"/><path d="M3 12h1"/><path d="M3 19h1"/><path d="M8 5h1"/><path d="M8 12h1"/><path d="M8 19h1"/><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/>',
+    statistics: '<path d="M5 21v-6"/><path d="M12 21V9"/><path d="M19 21V3"/>',
+    settings: '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>',
+    help: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+    menu: '<path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+    moon: '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/>',
+    pause: '<rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/>',
+    play: '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>',
+    chevronDown: '<path d="m6 9 6 6 6-6"/>',
+    chevronLeft: '<path d="m15 18-6-6 6-6"/>',
+    chevronRight: '<path d="m9 18 6-6-6-6"/>',
+    chevronFirst: '<path d="m17 18-6-6 6-6"/><path d="M7 6v12"/>',
+    chevronLast: '<path d="m7 18 6-6-6-6"/><path d="M17 6v12"/>',
+    arrowRight: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+    refresh: '<path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/>',
+    upload: '<path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    circleCheck: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    circleX: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+    clock3: '<path d="M12 6v6h4"/><circle cx="12" cy="12" r="10"/>',
+    loaderCircle: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+    packageOpen: '<path d="M12 22v-9"/><path d="M15.5 8.5 12 12 8.5 8.5"/><path d="m3.27 6.96 8.73 5.04 8.73-5.04"/><path d="M12 22 3.5 17V7L12 2l8.5 5v10Z"/>',
+    triangleAlert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    trash2: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    fileInput: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v6h6"/><path d="M8 13h2"/><path d="M8 17h2"/><path d="m15 12-3 3 3 3"/>',
+    'grip-vertical': '<circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>',
+    monitor: '<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+    server: '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+    network: '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>',
+    folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.91 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'
+  };
+
+  // Each label is a catalog key (status.<name>); the words are drawn in the
+  // page's language when a badge is made.
+  const STATUS = Object.freeze({
+    pending: {icon: 'clock3', label: 'status.pending', className: 'pending'},
+    uploading: {icon: 'upload', label: 'status.uploading', className: 'uploading'},
+    processing: {icon: 'loaderCircle', label: 'status.processing', className: 'processing'},
+    input_required: {icon: 'triangleAlert', label: 'status.input_required', className: 'input_required'},
+    extracting: {icon: 'packageOpen', label: 'status.extracting', className: 'extracting'},
+    queued: {icon: 'clock3', label: 'status.queued', className: 'queued'},
+    paused: {icon: 'pause', label: 'status.paused', className: 'paused'},
+    downloading: {icon: 'download', label: 'status.downloading', className: 'downloading'},
+    ready: {icon: 'play', label: 'status.ready', className: 'ready'},
+    completed: {icon: 'circleCheck', label: 'status.completed', className: 'completed'},
+    consolidated: {icon: 'circleCheck', label: 'status.consolidated', className: 'consolidated'},
+    downloading_with_errors: {icon: 'triangleAlert', label: 'status.downloading_with_errors', className: 'partial'},
+    completed_with_errors: {icon: 'triangleAlert', label: 'status.completed_with_errors', className: 'partial'},
+    error: {icon: 'x', label: 'status.error', className: 'error'},
+    missing: {icon: 'x', label: 'status.missing', className: 'error'},
+    failed: {icon: 'x', label: 'status.failed', className: 'error'},
+    verifying: {icon: 'clock3', label: 'status.verifying', className: 'queued'},
+    cancelled: {icon: 'x', label: 'status.cancelled', className: 'deleted'},
+    unknown: {icon: 'triangleAlert', label: 'status.unknown', className: 'partial'},
+    unresolved: {icon: 'clock3', label: 'status.unresolved', className: 'processing'},
+    refresh_pending: {icon: 'clock3', label: 'status.refresh_pending', className: 'queued'},
+    lost: {icon: 'triangleAlert', label: 'status.lost', className: 'error'},
+    deleted: {icon: 'trash2', label: 'status.deleted', className: 'deleted'},
+    imported: {icon: 'fileInput', label: 'status.imported', className: 'imported'},
+    partial: {icon: 'triangleAlert', label: 'status.partial', className: 'partial'}
+  });
+
+  const TOAST_ICON = Object.freeze({
+    success: 'circleCheck',
+    warning: 'triangleAlert',
+    warn: 'triangleAlert',
+    error: 'circleX',
+    info: 'info'
+  });
+  const TOAST_MIN_MS = 3000;
+  const TOAST_MAX_MS = 10000;
+  const TOAST_WORD_MS = 250;
+  const TOAST_FADE_MS = 250;
+  const TOAST_MAX_WIDTH = 480;
+  const TOAST_GUTTER = 10;
+  let toastPositionFrame = 0;
+  let toastTopbarResizeObserver = null;
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function lucideSvg(name, extraClass) {
+    const geometry = LUCIDE[name];
+    if (!geometry) return '';
+    const cls = ['lucide', 'dp-utility-icon', extraClass || ''].filter(Boolean).join(' ');
+    return '<svg class="' + cls + '" data-dp-lucide="' + name + '" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + geometry + '</svg>';
+  }
+
+  /* The badge names its whole status in its label; where a compact table sets
+   * that label aside (icon only), DP's tooltip says it (ui-tooltip.js shows a
+   * data-tooltip-label tooltip only while its label is not shown). */
+  // A status without a descriptor shows its own identifier (it has no words),
+  // or 'Unknown' when it has none.
+  function statusWords(key, descriptor, label) {
+    if (label) return label;
+    if (STATUS[key]) return window.DPI18n.t(descriptor.label);
+    return key || window.DPI18n.t('status.unrecognized');
+  }
+
+  function statusBadge(status, label, category) {
+    const key = String(status == null ? '' : status).trim().toLowerCase();
+    const descriptor = STATUS[key] || {icon: 'info', className: key || 'pending'};
+    const text = escapeHtml(statusWords(key, descriptor, label));
+    return '<span class="badge badge-' + escapeHtml(descriptor.className) + '" data-dp-status="' + escapeHtml(key) + '"' + (category ? ' data-dp-failure-code="' + escapeHtml(category) + '"' : '') +
+      ' data-tooltip="' + text + '" data-tooltip-label=".dp-status-label">' +
+      lucideSvg(descriptor.icon, 'dp-status-icon') +
+      '<span class="dp-status-label">' + text + '</span></span>';
+  }
+
+  /* A status's glyph alone, where a handheld Transfer Summary leads its
+   * metadata line with it: the badge's own icon and tone, its label the
+   * glyph's accessible name and DP tooltip. */
+  function statusGlyph(status, label, category) {
+    const key = String(status == null ? '' : status).trim().toLowerCase();
+    const descriptor = STATUS[key] || {icon: 'info', className: key || 'pending'};
+    const text = escapeHtml(statusWords(key, descriptor, label));
+    return '<span class="dp-status-glyph badge-' + escapeHtml(descriptor.className) + '" data-dp-status="' + escapeHtml(key) + '"' + (category ? ' data-dp-failure-code="' + escapeHtml(category) + '"' : '') +
+      ' role="img" aria-label="' + text + '" data-tooltip="' + text + '">' + lucideSvg(descriptor.icon, 'dp-status-icon') + '</span>';
+  }
+
+  /* A row action's content: its glyph and its label (the label is the
+   * button's name; the label element is the one decorateButton and
+   * setButtonPending write). A table that sets the label aside shows the
+   * glyph alone; otherwise the glyph is not shown (ui-transfer-contract.css). */
+  function iconLabel(iconName, label) {
+    return lucideSvg(iconName, 'dp-row-action-icon') + '<span data-dp-icon-label="1">' + escapeHtml(label) + '</span>';
+  }
+
+  function decorateButton(button, iconName, label, labelMarker) {
+    if (!button || button.dataset.pending === '1' || button.getAttribute('aria-busy') === 'true') return;
+    const copy = label == null ? (button.dataset.defaultLabel || button.textContent || '').trim() : String(label);
+    const marker = labelMarker || 'dpIconLabel';
+    const existingIcon = button.querySelector('[data-dp-lucide="' + iconName + '"]');
+    const existingLabel = button.querySelector('[data-' + marker.replace(/[A-Z]/g, function (letter) { return '-' + letter.toLowerCase(); }) + ']');
+    if (existingIcon && existingLabel && existingLabel.textContent === copy) return;
+    button.innerHTML = lucideSvg(iconName);
+    const span = document.createElement('span');
+    span.dataset[marker] = '1';
+    span.textContent = copy;
+    button.appendChild(span);
+    button.dataset.defaultLabel = copy;
+  }
+
+  function toastWordCount(message) {
+    const parts = [];
+    if (message && typeof message === 'object') {
+      if (message.title != null) parts.push(String(message.title));
+      if (message.body != null) parts.push(String(message.body));
+    } else {
+      parts.push(String(message == null ? '' : message));
+    }
+    const text = parts.join(' ').trim();
+    return text ? text.split(/\s+/u).filter(Boolean).length : 0;
+  }
+
+  function toastDuration(message) {
+    return Math.max(TOAST_MIN_MS, Math.min(TOAST_MAX_MS, toastWordCount(message) * TOAST_WORD_MS));
+  }
+
+  function visibleElement(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function unionRects(rects) {
+    if (!rects.length) return null;
+    return {
+      left: Math.min.apply(null, rects.map(function (rect) { return rect.left; })),
+      right: Math.max.apply(null, rects.map(function (rect) { return rect.right; })),
+      top: Math.min.apply(null, rects.map(function (rect) { return rect.top; })),
+      bottom: Math.max.apply(null, rects.map(function (rect) { return rect.bottom; }))
+    };
+  }
+
+  function textContentRect(element) {
+    if (!visibleElement(element)) return null;
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = range.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? rect : element.getBoundingClientRect();
+  }
+
+  function topbarOccupantRect(element) {
+    if (!visibleElement(element)) return null;
+    if (element.classList.contains('dp-page-heading')) {
+      const rects = [];
+      const title = element.querySelector('#page-title');
+      const subtitle = element.querySelector('#page-subtitle');
+      if (visibleElement(title)) rects.push(title.getBoundingClientRect());
+      const subtitleRect = textContentRect(subtitle);
+      if (subtitleRect) rects.push(subtitleRect);
+      const contentRect = unionRects(rects);
+      if (contentRect) return contentRect;
+    }
+    return element.getBoundingClientRect();
+  }
+
+  function toastSafeLane() {
+    const topbar = document.getElementById('topbar');
+    if (!topbar) {
+      return {narrow: false, left: 16, right: Math.max(17, window.innerWidth - 16), top: 0, bottom: 80};
+    }
+    const topbarRect = topbar.getBoundingClientRect();
+    if (window.matchMedia('(max-width: 779px)').matches) {
+      return {
+        narrow: true,
+        left: 16,
+        right: Math.max(17, window.innerWidth - 16),
+        top: topbarRect.bottom + 8,
+        bottom: window.innerHeight - 8
+      };
+    }
+
+    const topbarStyle = window.getComputedStyle(topbar);
+    const paddingLeft = parseFloat(topbarStyle.paddingLeft) || 0;
+    const paddingRight = parseFloat(topbarStyle.paddingRight) || 0;
+    const interiorLeft = topbarRect.left + paddingLeft + TOAST_GUTTER;
+    const interiorRight = topbarRect.right - paddingRight - TOAST_GUTTER;
+    const usableTop = topbarRect.top;
+    const usableBottom = topbarRect.bottom;
+    const occupied = Array.from(topbar.children)
+      .map(topbarOccupantRect)
+      .filter(Boolean)
+      .map(function (rect) {
+        return {
+          left: Math.max(interiorLeft, rect.left - TOAST_GUTTER),
+          right: Math.min(interiorRight, rect.right + TOAST_GUTTER)
+        };
+      })
+      .filter(function (rect) { return rect.right > rect.left; })
+      .sort(function (a, b) { return a.left - b.left; });
+
+    const merged = [];
+    occupied.forEach(function (rect) {
+      const last = merged[merged.length - 1];
+      if (last && rect.left <= last.right) last.right = Math.max(last.right, rect.right);
+      else merged.push({left: rect.left, right: rect.right});
+    });
+
+    const free = [];
+    let cursor = interiorLeft;
+    merged.forEach(function (rect) {
+      if (rect.left > cursor) free.push({left: cursor, right: rect.left});
+      cursor = Math.max(cursor, rect.right);
+    });
+    if (cursor < interiorRight) free.push({left: cursor, right: interiorRight});
+    if (!free.length) free.push({left: interiorLeft, right: Math.max(interiorLeft + 1, interiorRight)});
+
+    const preference = window.innerWidth / 2;
+    free.sort(function (a, b) {
+      const aDistance = preference < a.left ? a.left - preference : (preference > a.right ? preference - a.right : 0);
+      const bDistance = preference < b.left ? b.left - preference : (preference > b.right ? preference - b.right : 0);
+      if (aDistance !== bDistance) return aDistance - bDistance;
+      return (b.right - b.left) - (a.right - a.left);
+    });
+    return {
+      narrow: false,
+      left: free[0].left,
+      right: free[0].right,
+      top: usableBottom > usableTop ? usableTop : topbarRect.top,
+      bottom: usableBottom > usableTop ? usableBottom : topbarRect.bottom,
+      // Where a toast goes when the topbar's free gap is too narrow for it:
+      // the band just below the topbar, across its interior.
+      below: {
+        narrow: true,
+        left: interiorLeft,
+        right: Math.max(interiorLeft + 1, interiorRight),
+        top: topbarRect.bottom + 8,
+        bottom: window.innerHeight - 8
+      }
+    };
+  }
+
+  /* The topbar's free gap holds the toasts only while it costs none of them
+   * more than one line over its own width (at most TOAST_MAX_WIDTH, within
+   * the band below) and each still fits the topbar's height; narrower, the
+   * copy would wrap word by word, or letter by letter, down the page. */
+  function toastsFitLane(host, lane) {
+    const toasts = Array.from(host.children).filter(function (node) { return node instanceof HTMLElement; });
+    if (!toasts.length) return true;
+    const heights = function (width) {
+      toasts.forEach(function (node) { node.style.maxWidth = Math.max(1, Math.min(TOAST_MAX_WIDTH, width)) + 'px'; });
+      return toasts.map(function (node) { return node.getBoundingClientRect().height; });
+    };
+    host.style.width = 'max-content';
+    host.style.maxWidth = 'none';
+    const own = heights(lane.below.right - lane.below.left);
+    const there = heights(lane.right - lane.left);
+    return toasts.every(function (node, i) {
+      const line = parseFloat(window.getComputedStyle(node).lineHeight) || 16;
+      return there[i] <= own[i] + line + 0.5 && there[i] <= lane.bottom - lane.top;
+    });
+  }
+
+  function clamp(value, minimum, maximum) {
+    if (maximum < minimum) return minimum;
+    return Math.max(minimum, Math.min(maximum, value));
+  }
+
+  function updateToastHostPosition() {
+    toastPositionFrame = 0;
+    const host = document.getElementById('toasts');
+    if (!host) return;
+    let lane = toastSafeLane();
+    if (!lane.narrow && !toastsFitLane(host, lane)) lane = lane.below;
+    const laneWidth = Math.max(1, lane.right - lane.left);
+    const maxToastWidth = Math.max(1, Math.min(TOAST_MAX_WIDTH, laneWidth));
+    Array.from(host.children).forEach(function (node) {
+      normalizeToastNode(node);
+      if (node instanceof HTMLElement) node.style.maxWidth = maxToastWidth + 'px';
+    });
+
+    host.style.right = 'auto';
+    host.style.bottom = 'auto';
+    host.style.maxWidth = laneWidth + 'px';
+    host.style.height = 'auto';
+    host.style.maxHeight = 'none';
+    host.style.justifyContent = 'flex-start';
+    host.style.boxSizing = 'border-box';
+    host.style.padding = '0';
+    host.style.margin = '0';
+    host.style.transform = 'none';
+
+    if (lane.narrow) {
+      host.style.left = lane.left + 'px';
+      host.style.top = lane.top + 'px';
+      host.style.width = laneWidth + 'px';
+      return;
+    }
+
+    host.style.left = '0px';
+    host.style.top = '0px';
+    host.style.width = 'max-content';
+    const initialHostRect = host.getBoundingClientRect();
+    const childWidths = Array.from(host.children).filter(function (node) {
+      return node instanceof HTMLElement;
+    }).map(function (node) {
+      return node.getBoundingClientRect().width;
+    });
+    const renderedWidth = Math.min(laneWidth, Math.max(initialHostRect.width, 0, ...childWidths));
+    host.style.width = renderedWidth + 'px';
+    const renderedRect = host.getBoundingClientRect();
+    const desiredLeft = (window.innerWidth - renderedRect.width) / 2;
+    const desiredTop = lane.top + ((lane.bottom - lane.top) - renderedRect.height) / 2;
+    host.style.left = clamp(desiredLeft, lane.left, lane.right - renderedRect.width) + 'px';
+    host.style.top = clamp(desiredTop, lane.top, lane.bottom - renderedRect.height) + 'px';
+  }
+
+  function scheduleToastHostPosition() {
+    if (toastPositionFrame) return;
+    toastPositionFrame = window.requestAnimationFrame(updateToastHostPosition);
+  }
+
+  function normalizeToastNode(node) {
+    if (!(node instanceof HTMLElement) || !node.classList.contains('toast')) return;
+    node.style.pointerEvents = 'none';
+    node.style.position = 'relative';
+    node.style.animation = 'none';
+    node.style.whiteSpace = 'normal';
+    node.style.overflowWrap = 'anywhere';
+  }
+
+  function ensureToastHost() {
+    const host = document.getElementById('toasts');
+    if (!host) return null;
+    host.style.position = 'fixed';
+    host.style.zIndex = '1000';
+    host.style.display = 'flex';
+    host.style.flexDirection = 'column';
+    host.style.alignItems = 'center';
+    host.style.gap = '8px';
+    host.style.pointerEvents = 'none';
+    host.style.boxSizing = 'border-box';
+    host.style.padding = '0';
+    host.style.margin = '0';
+    Array.from(host.children).forEach(normalizeToastNode);
+
+    if (host.dataset.dpToastLaneBound !== '1') {
+      window.addEventListener('resize', scheduleToastHostPosition, {passive: true});
+      if (window.visualViewport) window.visualViewport.addEventListener('resize', scheduleToastHostPosition, {passive: true});
+      document.addEventListener('downloadpulse:navigation', scheduleToastHostPosition);
+      const topbar = document.getElementById('topbar');
+      if (topbar && 'ResizeObserver' in window) {
+        toastTopbarResizeObserver = new ResizeObserver(scheduleToastHostPosition);
+        toastTopbarResizeObserver.observe(topbar);
+      }
+      host.dataset.dpToastLaneBound = '1';
+    }
+    scheduleToastHostPosition();
+    return host;
+  }
+
+  function canonicalToast(message, type) {
+    const host = ensureToastHost();
+    if (!host) return null;
+    const requested = String(type || 'info').toLowerCase();
+    const tone = requested === 'warning' ? 'warn' : (TOAST_ICON[requested] ? requested : 'info');
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + tone;
+    toast.style.width = 'max-content';
+    toast.style.whiteSpace = 'normal';
+    toast.style.pointerEvents = 'none';
+    toast.style.position = 'relative';
+    toast.style.animation = 'none';
+    toast.style.opacity = '1';
+    toast.style.transition = 'opacity ' + TOAST_FADE_MS + 'ms ease';
+    toast.setAttribute('role', tone === 'error' || tone === 'warn' ? 'alert' : 'status');
+    toast.innerHTML = lucideSvg(TOAST_ICON[tone] || 'info', 'dp-toast-icon');
+    if (message && typeof message === 'object' && message.title != null && message.body != null) {
+      const copy = document.createElement('div');
+      copy.className = 'dp-toast-copy';
+      const title = document.createElement('div');
+      title.className = 'dp-toast-title';
+      title.textContent = String(message.title);
+      const body = document.createElement('div');
+      body.className = 'dp-toast-body';
+      body.textContent = String(message.body);
+      copy.appendChild(title);
+      copy.appendChild(body);
+      toast.appendChild(copy);
+    } else {
+      const copy = document.createElement('span');
+      copy.className = 'dp-toast-copy';
+      copy.textContent = String(message == null ? '' : message);
+      toast.appendChild(copy);
+    }
+
+    const duration = toastDuration(message);
+    const fadeAt = Math.max(0, duration - TOAST_FADE_MS);
+    toast.dataset.dpToastDurationMs = String(duration);
+    toast.dataset.dpToastFadeAtMs = String(fadeAt);
+    let fadeTimer = null;
+    let removeTimer = null;
+    const nativeRemove = toast.remove.bind(toast);
+    const remove = function () {
+      if (fadeTimer !== null) window.clearTimeout(fadeTimer);
+      if (removeTimer !== null) window.clearTimeout(removeTimer);
+      fadeTimer = null;
+      removeTimer = null;
+      if (toast.isConnected) nativeRemove();
+      scheduleToastHostPosition();
+    };
+    Object.defineProperty(toast, '__dpToastDispose', {value: remove});
+
+    host.appendChild(toast);
+    scheduleToastHostPosition();
+    fadeTimer = window.setTimeout(function () {
+      if (!toast.isConnected) {
+        remove();
+        return;
+      }
+      toast.dataset.dpToastFading = '1';
+      toast.style.opacity = '0';
+    }, fadeAt);
+    removeTimer = window.setTimeout(remove, duration);
+    return toast;
+  }
+
+  function positiveInteger(value) {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  function nonnegativeInteger(value) {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+
+  function consolidationToastCopy(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const sourceTransferId = positiveInteger(payload.source_transfer_id);
+    const matched = positiveInteger(payload.matched_count);
+    const unmatched = nonnegativeInteger(payload.unmatched_count);
+    if (sourceTransferId == null || matched == null || unmatched == null || !Array.isArray(payload.canonical_transfer_ids)) return null;
+    const targets = new Set();
+    for (const value of payload.canonical_transfer_ids) {
+      const target = positiveInteger(value);
+      if (target == null) return null;
+      targets.add(target);
+    }
+    if (!targets.size || targets.size > matched) return null;
+
+    // Whole sentences, chosen by the counts (catalog plurals): never joined
+    // from fragments.
+    const t = (key, values) => window.DPI18n.t(key, values);
+    const counts = {matched, unmatched, targets: targets.size};
+    if (unmatched > 0) {
+      return {title: t('consolidation.files.title', counts), body: t('consolidation.files.body', counts)};
+    }
+    return {title: t('consolidation.downloads.title', counts), body: t('consolidation.downloads.body', counts)};
+  }
+
+  window.DPIcons = Object.freeze({
+    svg: lucideSvg,
+    statusBadge: statusBadge,
+    statusGlyph: statusGlyph,
+    statusMap: STATUS,
+    toastMap: TOAST_ICON,
+    decorateButton: decorateButton,
+    iconLabel: iconLabel,
+    toast: canonicalToast,
+    toastDuration: toastDuration,
+    toastWordCount: toastWordCount,
+    ensureToastHost: ensureToastHost,
+    toastSafeLane: toastSafeLane,
+    repositionToasts: scheduleToastHostPosition,
+    consolidationToastCopy: consolidationToastCopy,
+    renderThemeGlyph: renderThemeGlyph
+  });
+
+  ensureToastHost();
+
+  function renderThemeGlyph(isLight) {
+    const button = document.getElementById('theme-toggle');
+    if (!button) return;
+    // Target-action semantics, not current-theme semantics: the glyph shows
+    // what clicking the button WOULD switch to. Dark now -> show sun (click
+    // switches to light); light now -> show moon (click switches to dark).
+    button.innerHTML = lucideSvg(isLight ? 'moon' : 'sun');
+  }
+})();

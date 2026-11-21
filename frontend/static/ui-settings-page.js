@@ -1,0 +1,9386 @@
+/* DownloadPulse v1.0.11 clean-room Settings page.
+ *
+ * This runtime owns the Settings shell, forms, serialization, authentication
+ * presentation/resilience, OIDC verification, and Settings interaction lifecycle.
+ * Backend APIs are the page contract; no legacy Settings renderer is involved.
+ */
+(function () {
+  'use strict';
+
+  /* Words (1.0.14 localization). ``say(key, values)`` is a catalog message
+   * that stays re-sayable: it prints as its words in the page's language, and
+   * ``keyed()`` gives the markup that lets DPI18n.render() say it again in
+   * place on a language change -- so a field's value and focus, an open
+   * disclosure and a test in flight are untouched. Strings stay plain text.
+   * A ``rich`` message (b, strong, em, i, code, kbd) is drawn by render(). */
+  const t = (key, values) => window.DPI18n.t(key, values);
+  class Said {
+    constructor(key, values, rich = false) { this.key = key; this.values = values || null; this.rich = rich; }
+    // An argument that is itself a Said is said first (a card title in "Help: {subject}").
+    plain() { return this.values && Object.fromEntries(Object.entries(this.values).map(([k, v]) => [k, v instanceof Said ? String(v) : v])); }
+    toString() { return t(this.key, this.plain() || undefined); }
+    // As a markup argument: the runtime says {"$t", "$v"} in the shown language (ui-i18n.js).
+    toJSON() { return {$t: this.key, $v: this.values || {}}; }
+  }
+  const say = (key, values) => new Said(key, values);
+  const sayRich = (key, values) => new Said(key, values, true);
+
+  const TABS = Object.freeze([
+    // Presentation only: the internal tab key stays `sources`.
+    ['sources', say('settings.tab.sources'), 'zap'],
+    ['downloads', say('settings.tab.downloads'), 'download-downloads'],
+    ['extraction', say('settings.tab.extraction'), 'package-open'],
+    ['authentication', say('settings.tab.authentication'), 'shield-user'],
+    ['users', say('settings.tab.users'), 'users'],
+    ['notifications', say('settings.tab.notifications'), 'bell-ring'],
+    ['maintenance', say('settings.tab.maintenance'), 'database'],
+  ]);
+  /* What a Standalone installation presents differently (deployment_type,
+   * from the server's settings): no Authentication section, and its `users`
+   * section -- the same key, icon and colour -- reads Access & Integrations. */
+  const SERVER_ONLY_TABS = Object.freeze(['authentication']);
+  const STANDALONE_TAB_LABELS = Object.freeze({users: say('settings.tab.users_standalone')});
+
+  const state = {
+    settings: null,
+    auth: null,
+    activeTab: 'sources',
+    // The account directory (GET /accounts) and each Integration account's
+    // tokens, read when Settings loads and after every account action. null
+    // while unread; an unreadable directory is an error, never an empty list.
+    users: {accounts: null, tokens: {}, browsers: null, error: ''},
+    // The Admin-owned delivery-profile catalog (GET /external/profiles):
+    // its profiles and the revision a write must name. null while unread.
+    profiles: {catalog: null, error: ''},
+    // The journal's retained event count: undefined while it is being read,
+    // null when it could not be, otherwise the number.
+    recordedEvents: undefined,
+    loading: null,
+    oidc: {
+      popup: null,
+      button: null,
+      channel: null,
+      poll: null,
+      messageHandler: null,
+      completed: false,
+    },
+  };
+
+  let loadGeneration = 0;
+  let authGeneration = 0;
+
+  const root = () => document.getElementById('view-settings');
+
+  /* Whose configuration this page edits, as the server composed it: the
+   * global Settings for an Admin, or -- in the same slot, from the same cards
+   * -- a standard User's OWN Notifications (``data-settings-context="self"``,
+   * composed only for ``notifications.self``). The server authorizes every
+   * read and write either way; this only chooses which endpoints to call. */
+  const selfContext = () => root()?.dataset.settingsContext === 'self';
+  const OWN_NOTIFICATIONS = '/account/notifications';
+  const byId = id => document.getElementById(id);
+  const text = value => String(value ?? '');
+  const html = value => text(value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[ch]);
+  const checked = value => value ? 'checked' : '';
+
+  // The keying of one element's words (see Said above).
+  // The keying attributes of one element: its text (a Said) and its attributes
+  // ({name: Said | string}); an attribute given as a string is written as it is.
+  function keyed(textSaid, attrs = {}) {
+    const parts = [];
+    const pairs = [];
+    let values = null;
+    const take = said => { if (said.values) values = {...(values || {}), ...said.values}; };
+    if (textSaid instanceof Said) {
+      parts.push(`data-i18n="${html(textSaid.key)}"`);
+      if (textSaid.rich) parts.push('data-i18n-rich');
+      take(textSaid);
+    }
+    for (const [name, value] of Object.entries(attrs)) {
+      if (value == null || value === '') continue;
+      parts.push(`${name}="${html(value)}"`);
+      if (value instanceof Said) { pairs.push(`${name}:${value.key}`); take(value); }
+    }
+    if (pairs.length) parts.push(`data-i18n-attr="${html(pairs.join(';'))}"`);
+    if (values) parts.push(`data-i18n-values="${html(JSON.stringify(values))}"`);
+    return parts.length ? ` ${parts.join(' ')}` : '';
+  }
+  // A field's hint: a Said, keyed; a string is the caller's own markup, as before.
+  const hintMarkup = hint => (hint instanceof Said
+    ? `<span class="form-hint"${keyed(hint)}>${html(hint)}</span>` : `<span class="form-hint">${hint}</span>`);
+  // An icon and its label (the icon owner's markup), the label keyed.
+  const keyedIconLabel = (icon, said) => (window.DPIcons?.iconLabel
+    ? window.DPIcons.iconLabel(icon, String(said)) : `<span data-dp-icon-label="1">${html(said)}</span>`)
+    .replace('<span data-dp-icon-label="1">', `<span data-dp-icon-label="1"${keyed(said)}>`);
+  // Words as markup: a Said in its own span (re-sayable), anything else escaped.
+  const words = value => (value instanceof Said ? `<span${keyed(value)}>${html(value)}</span>` : html(value));
+  // An element whose words an owner sets again later: its key moves with them,
+  // so a later render() says the words now shown, never the earlier ones.
+  function sayInto(node, value) {
+    if (!node) return;
+    if (value instanceof Said) {
+      node.dataset.i18n = value.key;
+      if (value.values) node.dataset.i18nValues = JSON.stringify(value.values);
+      else delete node.dataset.i18nValues;
+    } else {
+      delete node.dataset.i18n;
+      if (!node.dataset.i18nAttr) delete node.dataset.i18nValues;
+    }
+    node.textContent = String(value ?? '');
+  }
+  function sayAttr(node, name, value) {
+    if (!node) return;
+    const pairs = String(node.dataset.i18nAttr || '').split(';').filter(pair => pair && !pair.startsWith(`${name}:`));
+    if (value instanceof Said) {
+      pairs.push(`${name}:${value.key}`);
+      if (value.values) node.dataset.i18nValues = JSON.stringify({...JSON.parse(node.dataset.i18nValues || '{}'), ...value.values});
+    }
+    if (pairs.length) node.dataset.i18nAttr = pairs.join(';');
+    else delete node.dataset.i18nAttr;
+    node.setAttribute(name, String(value ?? ''));
+  }
+  const selected = (value, expected) => String(value) === String(expected) ? 'selected' : '';
+
+  // The Settings document is rendered from, and saved to, the canonical
+  // namespaces: integrations.<id>.options, transfer_policy. Form controls keep
+  // their local names (data-setting="aria2_split", ...) but those names never
+  // imply a flat settings field.
+  const aria2Of = s => s?.integrations?.aria2?.options || {};
+  const allDebridOf = s => s?.integrations?.alldebrid?.options || {};
+  const debridLinkOf = s => s?.integrations?.debridlink?.options || {};
+  const premiumizeOf = s => s?.integrations?.premiumize?.options || {};
+  const realDebridOf = s => s?.integrations?.realdebrid?.options || {};
+  const torBoxOf = s => s?.integrations?.torbox?.options || {};
+  const policyOf = s => s?.transfer_policy || {};
+  const usenetOf = s => s?.integrations?.usenet?.options || {};
+  const rsyncOf = s => s?.integrations?.rsync?.options || {};
+  const rsyncSourceOf = s => s?.integrations?.general_rsync?.options || {};
+  const webdavOf = s => s?.integrations?.general_webdav?.options || {};
+  const mediaOf = s => s?.integrations?.media?.options || {};
+  // A form control whose stored value is an integration-owned secret is
+  // written, and cleared, through that integration's own scoped surface.
+  // ``converge`` is the row that has to change because the ACCEPTED state
+  // changed what it shows -- whether there is a stored value to clear at all.
+  const INTEGRATION_SECRET_CONTROLS = Object.freeze({
+    alldebrid_api_key: {integration: 'alldebrid', option: 'api_key',
+                        converge: dispatched => renderAllDebridCredential(dispatched)},
+    debridlink_api_key: {integration: 'debridlink', option: 'api_key',
+                         converge: dispatched => renderApiKeyCredential('debridlink', dispatched)},
+    premiumize_api_key: {integration: 'premiumize', option: 'api_key',
+                         converge: dispatched => renderApiKeyCredential('premiumize', dispatched)},
+  });
+
+  /* EVERY editable Settings control, and the field boundary each commits at.
+   *
+   * One declaration of which canonical namespace owns each ordinary control,
+   * which option inside it the control is, and -- where it is not the ordinary
+   * changed-blur -- which commit class it belongs to.
+   * ui-settings-persistence.js owns every generic behaviour (baseline, dirty
+   * comparison, scope dispatch, serialization, stale-response protection,
+   * convergence, rollback) for BOTH classes; this table is the page DECLARING
+   * what a control commits to, never a second implementation of the machinery.
+   *
+   * ``commit: 'immediate'`` is for an ordinary, reversible boolean whose only
+   * draft state is the state it already shows: flipping it IS the edit, so
+   * waiting for a blur would only delay it. It is still an ordinary VALUE of
+   * its namespace and goes through the same scope -- it is emphatically not
+   * participation, which is a different question about a different subject and
+   * keeps its own operational owner (providerEnableChanged).
+   *
+   * Destructive confirmations and participation toggles are deliberately
+   * absent: erasing a credential is an explicit confirmed action and a
+   * participation toggle is immediate because of what they ARE, not because of
+   * the page they appear on. There is no other kind of absence left: with the
+   * last page migrated there is no deferred write on Settings at all, so a
+   * control missing from this table is simply a control nothing persists.
+   *
+   * A credential is NOT absent. Entering or replacing one is an ordinary value
+   * change: it commits on changed blur, through the same scoped mutation every
+   * other control of that namespace uses. What makes it a secret is what the
+   * SCOPE does with the accepted value -- see registerCommitScopes(). */
+  // Every integration namespace a declared control can belong to. Each one is
+  // written by the SAME generic scope; nothing about them differs here.
+  const INTEGRATION_SCOPES = Object.freeze(['alldebrid', 'debridlink', 'premiumize', 'realdebrid', 'torbox', 'aria2', 'usenet', 'media', 'rsync', 'general_rsync',
+    'general_webdav']);
+
+  const COMMIT_FIELDS = Object.freeze({
+    // Services
+    alldebrid_api_key: {scope: 'integration:alldebrid', option: 'api_key'},
+    alldebrid_rate_limit_per_minute: {scope: 'integration:alldebrid', option: 'rate_limit_per_minute'},
+    alldebrid_prepare_backup_torrents: {scope: 'integration:alldebrid', option: 'prepare_backup_torrents', commit: 'immediate'},
+    alldebrid_max_active_torrents: {scope: 'integration:alldebrid', option: 'max_active_torrents', blank: null},
+    debridlink_api_key: {scope: 'integration:debridlink', option: 'api_key'},
+    debridlink_request_timeout_seconds: {scope: 'integration:debridlink', option: 'request_timeout_seconds'},
+    debridlink_torrent_upload_timeout_seconds: {scope: 'integration:debridlink', option: 'torrent_upload_timeout_seconds'},
+    debridlink_host_refresh_interval_hours: {scope: 'integration:debridlink', option: 'host_refresh_interval_hours'},
+    debridlink_prepare_backup_torrents: {scope: 'integration:debridlink', option: 'prepare_backup_torrents', commit: 'immediate'},
+    premiumize_api_key: {scope: 'integration:premiumize', option: 'api_key'},
+    premiumize_use_before_usenet: {scope: 'integration:premiumize', option: 'use_before_usenet', commit: 'immediate'},
+    premiumize_prepare_backup_torrents: {scope: 'integration:premiumize', option: 'prepare_backup_torrents', commit: 'immediate'},
+    premiumize_request_timeout_seconds: {scope: 'integration:premiumize', option: 'request_timeout_seconds'},
+    premiumize_upload_timeout_seconds: {scope: 'integration:premiumize', option: 'upload_timeout_seconds'},
+    premiumize_host_refresh_interval_hours: {scope: 'integration:premiumize', option: 'host_refresh_interval_hours'},
+    realdebrid_rate_limit_per_minute: {scope: 'integration:realdebrid', option: 'rate_limit_per_minute'},
+    realdebrid_request_timeout_seconds: {scope: 'integration:realdebrid', option: 'request_timeout_seconds'},
+    realdebrid_torrent_upload_timeout_seconds: {scope: 'integration:realdebrid', option: 'torrent_upload_timeout_seconds'},
+    realdebrid_host_refresh_interval_hours: {scope: 'integration:realdebrid', option: 'host_refresh_interval_hours'},
+    realdebrid_prepare_backup_torrents: {scope: 'integration:realdebrid', option: 'prepare_backup_torrents', commit: 'immediate'},
+    realdebrid_max_active_torrents: {scope: 'integration:realdebrid', option: 'max_active_torrents', blank: null},
+    torbox_use_before_usenet: {scope: 'integration:torbox', option: 'use_before_usenet', commit: 'immediate'},
+    torbox_prepare_backup_torrents: {scope: 'integration:torbox', option: 'prepare_backup_torrents', commit: 'immediate'},
+    // Empty is "no ceiling of my own": it commits null and follows the plan's maximum.
+    torbox_max_active_torrents: {scope: 'integration:torbox', option: 'max_active_torrents', blank: null},
+    torbox_rate_limit_per_minute: {scope: 'integration:torbox', option: 'rate_limit_per_minute'},
+    torbox_request_timeout_seconds: {scope: 'integration:torbox', option: 'request_timeout_seconds'},
+    torbox_upload_timeout_seconds: {scope: 'integration:torbox', option: 'upload_timeout_seconds'},
+    torbox_host_refresh_interval_hours: {scope: 'integration:torbox', option: 'host_refresh_interval_hours'},
+
+    // Downloads -> Network Sources tuning
+    // ``liveTuning``: a saved change also reaches existing downloads (the
+    // backend applies it to them in place); see confirmLiveTuning.
+    aria2_max_connection_per_server: {scope: 'integration:aria2', option: 'max_connection_per_server', liveTuning: true},
+    aria2_split: {scope: 'integration:aria2', option: 'split', liveTuning: true},
+    aria2_min_split_size: {scope: 'integration:aria2', option: 'min_split_size', liveTuning: true},
+    aria2_continue_downloads: {scope: 'integration:aria2', option: 'continue_downloads', commit: 'immediate'},
+    aria2_lowest_speed_limit: {scope: 'integration:aria2', option: 'lowest_speed_limit'},
+    aria2_disk_cache: {scope: 'integration:aria2', option: 'disk_cache'},
+    aria2_file_allocation: {scope: 'integration:aria2', option: 'file_allocation'},
+
+    // Downloads -> Usenet tuning
+    usenet_article_cache_megabytes: {scope: 'integration:usenet', option: 'article_cache_megabytes'},
+    usenet_max_acquisition_retries: {scope: 'integration:usenet', option: 'max_acquisition_retries'},
+    usenet_operation_timeout_seconds: {scope: 'integration:usenet', option: 'operation_timeout_seconds'},
+    usenet_direct_write: {scope: 'integration:usenet', option: 'direct_write', commit: 'immediate'},
+
+    // Downloads -> rsync tuning
+    rsync_partial_transfers: {scope: 'integration:rsync', option: 'partial_transfers', commit: 'immediate'},
+    rsync_compression: {scope: 'integration:rsync', option: 'compression', commit: 'immediate'},
+    rsync_preserve_modification_time: {scope: 'integration:rsync', option: 'preserve_modification_time',
+                                       commit: 'immediate'},
+    rsync_connection_timeout_seconds: {scope: 'integration:rsync', option: 'connection_timeout_seconds'},
+    rsync_transfer_timeout_seconds: {scope: 'integration:rsync', option: 'transfer_timeout_seconds'},
+    // The rsync SOURCE's discovery policy: the provider's namespace, never the
+    // executor's transport tuning.
+    rsync_directory_depth: {scope: 'integration:general_rsync', option: 'directory_depth'},
+
+    // Downloads -> WebDAV tuning
+    webdav_directory_depth: {scope: 'integration:general_webdav', option: 'directory_depth'},
+    webdav_max_files: {scope: 'integration:general_webdav', option: 'max_files'},
+    // An empty Collection Scan Timeout IS the canonical 0: no limit.
+    webdav_collection_scan_timeout_seconds: {scope: 'integration:general_webdav',
+                                             option: 'collection_scan_timeout_seconds', blank: 0},
+
+    // Downloads -> Media Downloads tuning
+    media_target_resolution: {scope: 'integration:media', option: 'target_resolution'},
+    media_video_quality: {scope: 'integration:media', option: 'video_quality'},
+    media_video_codec: {scope: 'integration:media', option: 'video_codec'},
+    media_concurrent_fragment_downloads: {scope: 'integration:media', option: 'concurrent_fragment_downloads'},
+    // An ordered list: Automatic is the empty list, a chosen client a list of
+    // one; a saved list of several is kept as the field shows it, comma-separated.
+    media_youtube_player_clients: {scope: 'integration:media', option: 'youtube_player_clients', list: true},
+
+    // Downloads -> global admission and safety/recovery policy
+    aria2_max_active_downloads: {scope: 'transfer-policy', option: 'max_concurrent_executions'},
+    // Downloads -> Download Behavior & Limits -> Advanced Settings
+    material_checkpoint_interval_seconds: {scope: 'transfer-policy', option: 'material_checkpoint_interval_seconds'},
+    graceful_stop_timeout_seconds: {scope: 'transfer-policy', option: 'graceful_stop_timeout_seconds'},
+    private_lan_connections: {scope: 'transfer-policy', option: 'private_lan_connections', commit: 'immediate'},
+    skip_private_lan_confirmation: {scope: 'transfer-policy', option: 'skip_private_lan_confirmation', commit: 'immediate'},
+    aria2_error_retry_count: {scope: 'transfer-policy', option: 'execution_retry_count'},
+    aria2_error_retry_delay_seconds: {scope: 'transfer-policy', option: 'execution_retry_delay_seconds'},
+    stuck_download_timeout_hours: {scope: 'transfer-policy', option: 'stalled_timeout_hours'},
+    poll_interval_seconds: {scope: 'transfer-policy', option: 'provider_poll_interval_seconds'},
+    upload_fail_retry_count: {scope: 'transfer-policy', option: 'resolution_retry_count'},
+    upload_fail_retry_delay_minutes: {scope: 'transfer-policy', option: 'resolution_retry_delay_minutes'},
+    full_sync_interval_minutes: {scope: 'settings-document', option: 'full_sync_interval_minutes'},
+
+    // Downloads -> settings-document values
+    download_folder: {scope: 'settings-document', option: 'download_folder'},
+    min_free_disk_gb: {scope: 'settings-document', option: 'min_free_disk_gb'},
+    disk_guard_resume_hysteresis_gb: {scope: 'settings-document', option: 'disk_guard_resume_hysteresis_gb'},
+    // A global settings-document preference that Media Downloads consumes;
+    // never a Media Downloads option. Its one control is on the Media card.
+    preferred_subtitle_language: {scope: 'settings-document', option: 'preferred_subtitle_language'},
+
+    // Extraction -- ordinary settings-document values, on exactly the same two
+    // boundaries every other Settings control uses. ``redacted`` says only that
+    // the canonical ECHO of this option is blank by design (the whole-settings
+    // projection redacts it), so the echo cannot describe what was accepted; it
+    // is not a different commit class and not a different write.
+    extract_enabled: {scope: 'settings-document', option: 'extract_enabled', commit: 'immediate'},
+    extract_delete_archive: {scope: 'settings-document', option: 'extract_delete_archive', commit: 'immediate'},
+    extract_max_concurrent: {scope: 'settings-document', option: 'extract_max_concurrent'},
+    extraction_password: {scope: 'settings-document', option: 'extraction_password', redacted: true},
+
+    // Notifications -- ordinary settings-document values on exactly the same
+    // two boundaries every other Settings control uses. ``secret`` marks a
+    // stored webhook, whose accepted PRESENTATION is always blank: it is not a
+    // different commit class and not a different write, and blanking one is
+    // therefore never a clear -- erasing a stored webhook is its own explicit
+    // destructive action.
+    //
+    // Section participation is a real canonical setting owned by the backend,
+    // never derived from webhook presence, event-toggle combinations, the
+    // report interval or verification state.
+    discord_notifications_enabled: {scope: 'settings-document', option: 'discord_notifications_enabled', commit: 'immediate'},
+    discord_username: {scope: 'settings-document', option: 'discord_username'},
+    discord_avatar_url: {scope: 'settings-document', option: 'discord_avatar_url'},
+    discord_webhook_url: {scope: 'settings-document', option: 'discord_webhook_url', secret: true},
+    discord_webhook_added: {scope: 'settings-document', option: 'discord_webhook_added', secret: true},
+    discord_notify_added: {scope: 'settings-document', option: 'discord_notify_added', commit: 'immediate'},
+    discord_notify_finished: {scope: 'settings-document', option: 'discord_notify_finished', commit: 'immediate'},
+    discord_notify_error: {scope: 'settings-document', option: 'discord_notify_error', commit: 'immediate'},
+    discord_notify_extract: {scope: 'settings-document', option: 'discord_notify_extract', commit: 'immediate'},
+    discord_notify_update: {scope: 'settings-document', option: 'discord_notify_update', commit: 'immediate'},
+    update_check_interval_hours: {scope: 'settings-document', option: 'update_check_interval_hours'},
+
+    stats_reporting_enabled: {scope: 'settings-document', option: 'stats_reporting_enabled', commit: 'immediate'},
+    stats_report_webhook_url: {scope: 'settings-document', option: 'stats_report_webhook_url', secret: true},
+    stats_report_interval_hours: {scope: 'settings-document', option: 'stats_report_interval_hours'},
+    // A selector whose canonical value is a whole number commits that number.
+    stats_report_window_hours: {scope: 'settings-document', option: 'stats_report_window_hours', integer: true},
+
+    // Authentication -- the /auth/config namespace. An ordinary authentication
+    // value is an ordinary value: it crosses one of the same two boundaries
+    // every other Settings control uses, through one scope that writes exactly
+    // the field that changed. Derived and environment-managed values -- the
+    // effective public base URL, the derived Callback URL, KPI state, the
+    // session count -- are absent because nothing writes them. ``redacted``
+    // marks a secret, whose accepted presentation is always blank; it is not a
+    // different commit class and not a different write.
+    auth_password_enabled: {scope: 'auth-config', option: 'auth_password_enabled', commit: 'immediate'},
+    auth_session_lifetime_hours: {scope: 'auth-config', option: 'auth_session_lifetime_hours'},
+    auth_oidc_enabled: {scope: 'auth-config', option: 'auth_oidc_enabled', commit: 'immediate'},
+    oidc_provider_name: {scope: 'auth-config', option: 'oidc_provider_name'},
+    public_base_url: {scope: 'auth-config', option: 'public_base_url'},
+    oidc_issuer_url: {scope: 'auth-config', option: 'oidc_issuer_url'},
+    oidc_client_id: {scope: 'auth-config', option: 'oidc_client_id'},
+    oidc_client_secret: {scope: 'auth-config', option: 'oidc_client_secret', redacted: true},
+    oidc_scopes: {scope: 'auth-config', option: 'oidc_scopes'},
+    oidc_group_claim: {scope: 'auth-config', option: 'oidc_group_claim'},
+    oidc_allow_all: {scope: 'auth-config', option: 'oidc_allow_all', commit: 'immediate'},
+    auth_oidc_default_role: {scope: 'auth-config', option: 'auth_oidc_default_role'},
+    oidc_allowed_subjects: {scope: 'auth-config', option: 'oidc_allowed_subjects'},
+    oidc_allowed_emails: {scope: 'auth-config', option: 'oidc_allowed_emails'},
+    oidc_allowed_groups: {scope: 'auth-config', option: 'oidc_allowed_groups'},
+
+    // Data & Maintenance -- ordinary settings-document values on exactly the
+    // same two boundaries every other Settings control uses. Backup
+    // participation, the pre-reset backup safeguard and the reset unlock are
+    // ordinary reversible booleans whose only draft state is the state they
+    // already show, so flipping one IS the edit.
+    //
+    // ``db_wipe_enabled`` being committed the moment it is flipped does NOT
+    // authorize anything: the destructive reset remains gated by its own typed
+    // confirmation, by the processing-paused requirement, by the pre-reset
+    // backup and by the backend's own re-check of every one of those after
+    // admission is closed. Committing it immediately only removes the state in
+    // which the visible toggle and the canonical value disagreed.
+    backup_enabled: {scope: 'settings-document', option: 'backup_enabled', commit: 'immediate'},
+    backup_folder: {scope: 'settings-document', option: 'backup_folder'},
+    backup_interval_hours: {scope: 'settings-document', option: 'backup_interval_hours'},
+    backup_keep_days: {scope: 'settings-document', option: 'backup_keep_days'},
+    backup_max_retained: {scope: 'settings-document', option: 'backup_max_retained'},
+    stats_snapshot_interval_minutes: {scope: 'settings-document', option: 'stats_snapshot_interval_minutes'},
+    stats_snapshot_keep_days: {scope: 'settings-document', option: 'stats_snapshot_keep_days'},
+    activity_log_page_size: {scope: 'settings-document', option: 'activity_log_page_size', integer: true},
+    db_wipe_enabled: {scope: 'settings-document', option: 'db_wipe_enabled', commit: 'immediate'},
+  });
+
+  /* The commit attributes a declared control carries, or nothing at all for a
+   * control this page does not persist (a reading, an environment-managed
+   * value, a participation toggle with its own operational owner). One place
+   * decides it, so every kind of control -- input, select, toggle, directory
+   * field -- declares its class the same way and none of them re-derives it. */
+  function commitAttributes(key) {
+    const declared = COMMIT_FIELDS[key];
+    if (!declared) return '';
+    // An empty control that stands for one canonical value (``blank``) says
+    // so, so the persistence owner accepts it as a draft rather than refusing
+    // an empty number as missing.
+    const attributes = `data-commit="${html(declared.commit || 'changed-blur')}" `
+      + `data-commit-key="${html(key)}" data-commit-scope="${html(declared.scope)}"`
+      + (declared.blank !== undefined ? ' data-commit-blank' : '');
+    // On the wizard's surface a changed-blur field waits for its Save
+    // (``explicit``: no boundary of its own); everything else is unchanged.
+    return renderSurface === 'wizard' ? attributes.replace('data-commit="changed-blur"', 'data-commit="explicit"') : attributes;
+  }
+
+  /* OIDC in the same three-state vocabulary every mechanism KPI uses, plus the
+   * two conditions only OIDC has: a provider that cannot be reached, and a
+   * configuration nobody has proven with a real sign-in yet.
+   *
+   * Neither of those changes the STATE word. Enabled means enabled; whether it
+   * has been tested rides alongside as a qualifier, and a provider that is
+   * unreachable is a real error rather than a different degree of enabled. */
+  function oidcStatePresentation(auth, available = auth?.oidc_available) {
+    if (!auth?.oidc_configured) {
+      // Enabled but incomplete is broken; simply unused is not.
+      return auth?.oidc_enabled
+        ? {primary: 'config_error', secondary: '', tone: 'red'}
+        : {primary: 'unconfigured', secondary: '', tone: 'neutral'};
+    }
+    if (!auth?.oidc_enabled) {
+      return {primary: 'configured', secondary: '', tone: 'yellow'};
+    }
+    if (available === false) {
+      return {
+        primary: 'runtime_unavailable',
+        secondary: auth?.oidc_verified ? 'verified' : '',
+        tone: 'red',
+      };
+    }
+    if (auth?.oidc_verified) {
+      return {primary: 'enabled', secondary: '', tone: 'green'};
+    }
+    if (auth?.oidc_ready) {
+      return {primary: 'enabled', secondary: 'untested', tone: 'green'};
+    }
+    return {primary: 'config_error', secondary: '', tone: 'red'};
+  }
+
+  window.DPSettingsOidcStatePresentation = Object.freeze({resolve: oidcStatePresentation});
+
+  function notify(message, kind = 'info') {
+    if (typeof toast === 'function') {
+      toast(String(message), kind);
+    } else {
+      console[kind === 'error' ? 'error' : 'log']('[DownloadPulse Settings]', message);
+    }
+  }
+
+  // An accepted confirmation whose operation re-renders Settings can remove or
+  // disable the control that started it. Each such flow names its own surviving
+  // successor (first enabled match wins) instead of leaving focus on <body>.
+  function focusSurvivor(...selectors) {
+    for (const selector of selectors) {
+      const target = root()?.querySelector(selector);
+      if (target && !target.disabled && target.getClientRects().length) {
+        target.focus();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function request(method, path, body, timeout) {
+    if (typeof api !== 'function') throw new Error('Application API client is unavailable');
+    return api(method, path, body, timeout);
+  }
+
+  /* A busy label given as a Said is said again on a language change while it
+   * shows (the Settings locale listener); the idle markup it restores is its
+   * keyed markup, said in the language shown now. */
+  function setBusy(button, busy, label) {
+    if (!button) return;
+    if (busy) {
+      if (!button.dataset.dpSettingsMarkup) button.dataset.dpSettingsMarkup = button.innerHTML;
+      button.disabled = true;
+      if (label instanceof Said) button.dataset.dpBusyKey = label.key;
+      if (label) button.textContent = String(label);
+      return;
+    }
+    button.disabled = false;
+    delete button.dataset.dpBusyKey;
+    if (button.dataset.dpSettingsMarkup) {
+      button.innerHTML = button.dataset.dpSettingsMarkup;
+      delete button.dataset.dpSettingsMarkup;
+      window.DPI18n.render(button);
+    }
+    settleHeaderTestMenu(button);
+  }
+
+
+  // Services' two independent list viewports (sourcesPanel): Premium Services
+  // and Network Sources each scroll their own body, never the deck.
+  const SERVICES_LISTS = Object.freeze({
+    premiumTop: '[data-panel="sources"] > .dp-settings-debrid-services > .dp-settings-group-body',
+    networkTop: '[data-panel="sources"] > .dp-settings-general-sources > .dp-settings-group-body',
+  });
+
+  function captureSettingsViewport() {
+    const settingsScroller = root()?.querySelector('.dp-settings-scroll');
+    const shellScroller = document.getElementById('content');
+    const lists = Object.fromEntries(Object.entries(SERVICES_LISTS).map(([name, selector]) =>
+      [name, Number(root()?.querySelector(selector)?.scrollTop || 0)]));
+    return {
+      ...lists,
+      settingsTop: Number(settingsScroller?.scrollTop || 0),
+      shellTop: Number(shellScroller?.scrollTop || 0),
+      windowTop: Number(window.scrollY || 0),
+    };
+  }
+
+  function restoreSettingsViewport(snapshot) {
+    if (!snapshot) return;
+    const settingsScroller = root()?.querySelector('.dp-settings-scroll');
+    const shellScroller = document.getElementById('content');
+    if (settingsScroller) settingsScroller.scrollTop = snapshot.settingsTop;
+    if (shellScroller) shellScroller.scrollTop = snapshot.shellTop;
+    for (const [name, selector] of Object.entries(SERVICES_LISTS)) {
+      const list = root()?.querySelector(selector);
+      if (list) list.scrollTop = snapshot[name] || 0;
+    }
+    if (typeof window.scrollTo === 'function') {
+      try {
+        window.scrollTo({top: snapshot.windowTop, left: window.scrollX || 0, behavior: 'auto'});
+      } catch (_) {
+        window.scrollTo(0, snapshot.windowTop);
+      }
+    }
+  }
+
+  /* Services' two lists, each with one full row it always shows: Network
+   * Sources exactly one row of its protocol boxes (the rest scroll inside it),
+   * Premium Services at least its first provider card at rest -- its header,
+   * never the configuration it may be showing (its minimum; below the room
+   * both need, the deck scrolls by the shortfall). An expanded card scrolls
+   * inside the list like any other content: counting its body would raise the
+   * minimum past the room the list has, and the list's own end would then lie
+   * beneath Network Sources, out of reach. Both are MEASURED from
+   * the rendered layout -- track count, box and card heights, padding -- and
+   * kept current as it is resized, shown or re-wrapped; no size is assumed.
+   * Network's row is measured as its body opens (servicesRowFit, from the one
+   * disclosure owner), before the motion starts, so Network Sources -- closed
+   * on first arrival -- opens to its row rather than to its whole content and
+   * then jumping back; while that motion runs, its padding is mid-animation,
+   * so the row is left as measured.
+   * The geometry itself is CSS's (ui-settings-page.css). */
+  let servicesRowObserver = null;
+  let servicesRowFit = null;
+
+  function fitServicesRows() {
+    servicesRowObserver?.disconnect();
+    servicesRowObserver = null;
+    const network = root()?.querySelector(SERVICES_LISTS.networkTop);
+    const premium = root()?.querySelector(SERVICES_LISTS.premiumTop);
+    const grid = network?.querySelector('.dp-settings-source-box-grid');
+    const padded = (node, height) => {
+      const style = getComputedStyle(node);
+      return Math.ceil(height + (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0));
+    };
+    // The row above the grid that holds the header's lent Help, while it does.
+    const slot = network?.querySelector(':scope > .dp-settings-help-slot');
+    const fit = () => {
+      const tile = grid?.firstElementChild;
+      const row = tile ? tile.getBoundingClientRect().height : 0;
+      const lent = slot?.childElementCount
+        ? slot.getBoundingClientRect().height + (parseFloat(getComputedStyle(slot).marginBottom) || 0) : 0;
+      if (row && !network.getAnimations().length) {
+        network.style.setProperty('--dp-settings-source-row-viewport', `${padded(network, row + lent)}px`);
+      }
+      const card = premium?.firstElementChild;
+      const body = card?.querySelector(':scope > .card-body');
+      const open = body && !body.hidden ? body.getBoundingClientRect().height : 0;
+      const first = card ? card.getBoundingClientRect().height - open : 0;
+      if (first) premium.style.setProperty('--dp-settings-premium-row-min', `${padded(premium, first)}px`);
+    };
+    servicesRowFit = fit;
+    fit();
+    if (typeof ResizeObserver === 'function') {
+      servicesRowObserver = new ResizeObserver(fit);
+      for (const node of [grid, slot, premium?.firstElementChild]) if (node) servicesRowObserver.observe(node);
+    }
+  }
+
+  /* The hinted card headers -- Services' governing and premium-provider
+   * headers, every Downloads card and Transfer Method card header, and
+   * Automatic Extraction's: each
+   * one-line purpose hint is shown only where it fits on the header's own midpoint,
+   * on one line, clear of the identity on the left and the rail on the right
+   * by the header's own column gap -- MEASURED from the rendered header,
+   * identity, rail and hint in the fonts drawn, never a width breakpoint.
+   * Where it does not (or the header is the handheld two-column one), it is
+   * taken out of the layout entirely (data-hint="hidden") and the card's help
+   * chip says it instead; where it fits again the chip says "Help: <card>"
+   * again. The identity and the rail keep their own tracks either way
+   * (ui-settings-page.css), so neither moves when the hint comes or goes.
+   * Kept current as headers, identities or rails change size, and when fonts
+   * finish loading.
+   *
+   * The same fit keeps a group's one-row headers one row with the LEAST
+   * compression that does it (fitHeaderSteps). A group that declares
+   * data-header-fit (Premium Services) holds handheld headers that never wrap
+   * and never shorten their titles (Network Sources, declaring
+   * data-header-fit-self, its own header: 1 the gaps, 2 the header padding,
+   * 3 the identity mark, 4 Help lent to the row above its protocol boxes,
+   * which Network's one-row viewport then includes); its marker names how
+   * much of the room it takes back (ui-settings-page.css): 0 none, 1 the gaps and the Services
+   * panel's padding, 2 the header and group-body padding, 3 the identity
+   * marks, 4 also lends a header's help chip to its card's body slot
+   * (.dp-settings-help-slot: the API Key or Account Connection box, Usenet's
+   * row above its servers) wherever that header still does not fit with it,
+   * 5 the last of the group body's padding. Each step is laid out and READ
+   * in turn, and the first at which every header fits is kept, so the
+   * choice is a function of the room alone: it cannot oscillate, and it
+   * gives back each step as soon as the room holds it. A header fits when
+   * its identity, the gap and its rail (with the chip at the chip's own
+   * declared width) fit its row -- the same widths wherever the chip is.
+   * The slot is looked up on every fit, so a body region rebuilt since
+   * (renderDeviceConnection) is the one used. The chip is the same element
+   * either way -- one control, one name, one delegated handler -- and it
+   * moves when the fit says so, focused or not: a focused chip keeps its
+   * focus, and one lent to a closed body hands it to the card's disclosure. */
+  let headerHintObserver = null;
+  let headerHintFit = null;
+
+  function fitHeaderHints() {
+    headerHintObserver?.disconnect();
+    headerHintObserver = null;
+    const headers = Array.from(root()?.querySelectorAll('.dp-settings-card-header--hinted') || []);
+    const parts = headers.map(header => ({header,
+      title: header.querySelector(':scope > .dp-settings-card-title-group'),
+      rail: header.querySelector(':scope > .dp-settings-card-header-controls'),
+      hint: header.querySelector(':scope > .dp-settings-card-header-center > :only-child'),
+      chip: header.querySelector(':scope > .dp-settings-card-header-controls > .dp-settings-help-chip')
+        || helpSlot(header)?.querySelector(':scope > .dp-settings-help-chip') || null}))
+      .filter(part => part.title && part.rail && part.hint);
+    headerHintFit = () => {
+      // The identity and the rail at their own widths, the hint out of the row.
+      parts.forEach(({header}) => { header.dataset.hint = 'hidden'; });
+      fitHeaderSteps(parts);
+      const room = parts.map(({header, title, rail}) => {
+        const style = getComputedStyle(header);
+        const box = header.getBoundingClientRect();
+        const left = box.left + header.clientLeft + parseFloat(style.paddingLeft);
+        const right = box.left + header.clientLeft + header.clientWidth - parseFloat(style.paddingRight);
+        return {width: right - left, gap: parseFloat(style.columnGap) || 0,
+          tracks: style.gridTemplateColumns.split(' ').filter(Boolean).length,
+          side: Math.max(title.getBoundingClientRect().right - left, right - rail.getBoundingClientRect().left)};
+      });
+      // The hint at its own one-line width.
+      parts.forEach(({header}) => { header.dataset.hint = 'shown'; });
+      parts.forEach(({hint, chip}, index) => {
+        const {width, gap, tracks, side} = room[index];
+        const fits = tracks === 3 && (width - hint.getBoundingClientRect().width) / 2 >= side + gap;
+        parts[index].header.dataset.hint = fits ? 'shown' : 'hidden';
+        if (chip) chip.dataset.tooltip = fits ? chip.getAttribute('aria-label') : hint.textContent.trim();
+      });
+    };
+    headerHintFit();
+    if (typeof ResizeObserver === 'function' && parts.length) {
+      headerHintObserver = new ResizeObserver(() => headerHintFit());
+      parts.forEach(({header, title, rail}) => [header, title, rail].forEach(node => headerHintObserver.observe(node)));
+    }
+  }
+
+  // The card body's current help slot, if the card has one.
+  const helpSlot = header => header.parentElement?.querySelector(':scope > .card-body .dp-settings-help-slot');
+
+  const HEADER_FIT_STEPS = 5;
+  const HEADER_FIT_LENDS_HELP = 4;
+
+  // What a one-row header holds against its room, the chip at its own width.
+  function headerFit({header, title, rail, chip}) {
+    const style = getComputedStyle(header);
+    const room = header.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+      - title.getBoundingClientRect().width - (parseFloat(style.columnGap) || 0);
+    const help = chip ? parseFloat(getComputedStyle(chip).width) + (parseFloat(getComputedStyle(rail).columnGap) || 0) : 0;
+    const without = rail.getBoundingClientRect().width - (chip?.parentElement === rail ? help : 0);
+    return {withHelp: without + help <= room, withoutHelp: without <= room};
+  }
+
+  /* A header whose title may wrap (data-header-fit-wrap) fits while its title
+   * takes at most two lines -- one on a card that declares it
+   * (data-header-title-lines, Deployment & Language: its short title is drawn
+   * rather than its full title wrapped) -- no word of it runs past its
+   * region, and nothing runs past the header. */
+  function wrappedHeaderFits({header, title}) {
+    const text = header.querySelector('.dp-settings-card-title-text');
+    if (!text) return true;
+    const most = Number(header.closest('[data-header-title-lines]')?.dataset.headerTitleLines) || 2;
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const lines = new Set([...range.getClientRects()].filter(box => box.width > 1 && box.height > 8)
+      .map(box => Math.round(box.bottom))).size;
+    // Overflow shows on whichever box narrowed: the identity, its title or
+    // the header.
+    return lines <= most && [title, title.querySelector('.card-title'), text, header]
+      .every(box => !box || box.scrollWidth <= box.clientWidth + 1);
+  }
+
+  /* The wrapping header's steps are its stylesheet's (--dp-header-fit-steps,
+   * handheld only; from 780px it declares none and the header is as it was).
+   * Each is laid out and READ in turn and the first that fits is kept: the
+   * title wrapping within its own region first, then what the stylesheet
+   * takes back at each step, Help lent to the body's row from
+   * HEADER_FIT_LENDS_HELP -- or from the step the stylesheet names
+   * (--dp-header-fit-lends-help: a card whose short title comes first). */
+  function fitWrappingHeader(group, members) {
+    const style = getComputedStyle(group);
+    const steps = parseInt(style.getPropertyValue('--dp-header-fit-steps'), 10) || 0;
+    const lends = parseInt(style.getPropertyValue('--dp-header-fit-lends-help'), 10) || HEADER_FIT_LENDS_HELP;
+    for (let step = 0; step < Math.max(1, steps); step += 1) {
+      group.dataset.headerFit = String(step);
+      members.forEach(part => placeHeaderHelp(part, steps > 0 && step >= lends));
+      if (members.every(wrappedHeaderFits)) break;
+    }
+    members.forEach(promoteShortTitle);
+  }
+
+  /* While a header draws its card's short title (OIDC), the title -- the
+   * element holding the full title, the card's name -- carries that full
+   * title as its tooltip, through the one tooltip owner (ui-tooltip.js): on
+   * hover, on a tap (data-tooltip-touch: the tap shows it and does nothing
+   * else) and on keyboard focus, the title being a tab stop only then. The
+   * drawn short words themselves stay out of the accessibility tree. Where
+   * the full title is drawn, it is a plain title again. */
+  function promoteShortTitle({header}) {
+    const text = header.querySelector('.dp-settings-card-title-text');
+    const short = text?.querySelector(':scope > .dp-settings-card-title-short');
+    if (!short) return;
+    const full = text.querySelector(':scope > .dp-settings-card-title-full')?.textContent.trim() || '';
+    if (full && short.getClientRects().length) {
+      text.dataset.tooltip = full;
+      text.setAttribute('data-tooltip-touch', '');
+      text.tabIndex = 0;
+    } else if ('tooltip' in text.dataset) {
+      delete text.dataset.tooltip;
+      text.removeAttribute('data-tooltip-touch');
+      text.removeAttribute('tabindex');
+    }
+  }
+
+  function fitHeaderSteps(parts) {
+    for (const group of root()?.querySelectorAll('[data-header-fit]') || []) {
+      // Its cards' headers, not its own -- or, declared data-header-fit-self
+      // (Network Sources), its own header alone.
+      const self = group.hasAttribute('data-header-fit-self');
+      const members = parts.filter(part => (part.header.parentElement === group) === self && group.contains(part.header));
+      // Not drawn (another tab, a closed group): kept as it is until it is.
+      if (!members.some(({header}) => header.getClientRects().length)) continue;
+      if (group.hasAttribute('data-header-fit-wrap')) {
+        fitWrappingHeader(group, members);
+        continue;
+      }
+      let step = 0;
+      group.dataset.headerFit = '0';
+      // Only the handheld one-row header takes room back.
+      if (members.every(({header}) => {
+        const style = getComputedStyle(header);
+        return style.display === 'flex' && style.flexWrap === 'nowrap';
+      })) {
+        for (; step < HEADER_FIT_STEPS; step += 1) {
+          group.dataset.headerFit = String(step);
+          const lends = step >= HEADER_FIT_LENDS_HELP;
+          if (members.every(part => {
+            const fit = headerFit(part);
+            return fit.withHelp || (lends && helpSlot(part.header) && fit.withoutHelp);
+          })) break;
+        }
+        group.dataset.headerFit = String(step);
+      }
+      members.forEach(part => placeHeaderHelp(part,
+        step >= HEADER_FIT_LENDS_HELP && !headerFit(part).withHelp));
+    }
+  }
+
+  function placeHeaderHelp({rail, chip, header}, lend) {
+    const slot = helpSlot(header);
+    if (!chip || !slot) return;
+    const home = lend ? slot : rail;
+    if (chip.parentElement === home) return;
+    const focused = document.activeElement === chip;
+    if (lend) slot.append(chip);
+    else rail.insertBefore(chip, rail.querySelector(':scope > .dp-settings-header-action, :scope > .dp-settings-header-test-group, :scope > .toggle-row'));
+    if (!focused) return;
+    // Focus goes with the chip; into a closed body it cannot, so it goes to
+    // the card's own disclosure, the control that opens where the chip went.
+    if (lend && slot.closest('[hidden]')) header.querySelector('.dp-settings-disclosure')?.focus({preventScroll: true});
+    else chip.focus({preventScroll: true});
+  }
+
+  /* The bounded settings islands -- Download Behavior & Limits' folder and
+   * limit, Automatic Extraction's two behaviour settings, the session row,
+   * Statistics Reporting's cadence and window, Event Logging's page size and
+   * count -- sit on one row
+   * while their room holds them there. Where it does not, the row has wrapped,
+   * and a wrapped row cannot shrink its own box to what it holds: its outline
+   * would stay as wide as the room, far from the settings it frames. So a
+   * wrapped island is marked stacked (data-island="stacked") and its settings
+   * take one row each, which the outline does hug (ui-settings-page.css).
+   * Whether the row wrapped is READ from the island laid out as a row --
+   * a setting that starts left of where the previous one ends began a new
+   * line -- in the fonts drawn, never a width breakpoint. Kept current as the
+   * room changes (the island's container is observed, never the island,
+   * whose own box the mark changes) and when fonts finish loading.
+   *
+   * The handheld island (its stylesheet declares --dp-island-fit-steps) also
+   * takes back room in steps (data-island-fit, ui-settings-page.css): each is
+   * laid out and READ in turn, and the first at which every setting fits
+   * whole -- the row, if the step is one, unwrapped, and no setting wider than
+   * the island holds or overflowing its own box -- is kept. The choice is a
+   * function of the room alone, so it cannot oscillate, and each step is
+   * given back as soon as the room holds the one before it. Spacing yields
+   * before any setting narrows: the stack keeps its normal spacing only while
+   * the island holds every setting at its own width (it is drawn as wide as
+   * its own content, not narrowed to the room), so tighter spacing never hands room back to a setting that
+   * had already been narrowed -- which re-widened a setting nothing had
+   * constrained, re-wrapping its title, only for it to narrow again a few
+   * pixels later. A setting that
+   * does not fit even at the last step, alone, takes its title above its
+   * control (data-island-field="column").
+   *
+   * A hint the chosen step takes out of view (READ: it is no longer drawn) is
+   * not lost: its setting's own title says it, through the one tooltip owner
+   * (ui-tooltip.js) -- on hover, on a tap (data-tooltip-touch: the first tap
+   * shows it and activates nothing) and on keyboard focus (the title is a tab
+   * stop only then). Its text is the hint's own, read at every fit; where the
+   * hint is drawn again the title is a plain title again. */
+  let islandObserver = null;
+  let islandFit = null;
+
+  const ISLAND_STACKED_STEP = 2;
+
+  // The settings an island holds, as drawn: its inline fields, or the blocks
+  // an island of other controls names its members (Database Reset's toggle
+  // and action).
+  const islandFields = island => Array.from(island.querySelectorAll('.dp-settings-inline-field, .dp-settings-island-member'))
+    .filter(field => field.getClientRects().length);
+
+  // Whether its settings, laid out as a row, began a second line.
+  const islandWrapped = island => islandFields(island).map(field => field.getBoundingClientRect())
+    .some((box, index, boxes) => index && box.left < boxes[index - 1].right);
+
+  // Whether the room has narrowed the island below its own width -- so a
+  // setting in it is narrower than its own. Read against the island laid out
+  // unbounded for that one reading (its container may itself be sized by it).
+  function islandNarrowed(island) {
+    const drawn = island.getBoundingClientRect().width;
+    island.style.maxWidth = 'none';
+    const own = island.getBoundingClientRect().width;
+    island.style.maxWidth = '';
+    return drawn < own - 0.5;
+  }
+
+  // The settings that do not fit whole inside the island's content box.
+  function islandMisfits(island) {
+    const style = getComputedStyle(island);
+    const box = island.getBoundingClientRect();
+    const left = box.left + island.clientLeft + parseFloat(style.paddingLeft);
+    const right = box.left + island.clientLeft + island.clientWidth - parseFloat(style.paddingRight);
+    return islandFields(island).filter(field => {
+      const b = field.getBoundingClientRect();
+      return b.left < left - 0.5 || b.right > right + 0.5 || field.scrollWidth > field.clientWidth + 1;
+    });
+  }
+
+  // Each setting's title carries its hint while, and only while, the hint
+  // is not drawn -- an island's settings (fitIsland) and the handheld bodies'
+  // (fitHandheldBodies) alike; a toggle's title (.tl) and detail (.td) as an
+  // inline field's.
+  function promoteHints(fields) {
+    fields.forEach(field => {
+      const title = field.querySelector(':scope > .dp-settings-inline-field-info > .form-label, :scope > .toggle-info > .tl');
+      const hint = field.querySelector(':scope > .dp-settings-inline-field-info > .form-hint, :scope > .toggle-info > .td');
+      if (!title || !hint) return;
+      const text = hint.textContent.trim();
+      if (text && hint.getBoundingClientRect().width <= 1) {
+        title.dataset.tooltip = text;
+        title.setAttribute('data-tooltip-touch', '');
+        title.tabIndex = 0;
+      } else if ('tooltip' in title.dataset) {
+        delete title.dataset.tooltip;
+        title.removeAttribute('data-tooltip-touch');
+        title.removeAttribute('tabindex');
+      }
+    });
+  }
+
+  function fitIsland(island) {
+    chooseIslandFit(island);
+    promoteHints(islandFields(island));
+  }
+
+  function chooseIslandFit(island) {
+    delete island.dataset.island;
+    island.dataset.islandFit = '0';
+    islandFields(island).forEach(field => { delete field.dataset.islandField; });
+    const steps = parseInt(getComputedStyle(island).getPropertyValue('--dp-island-fit-steps'), 10) || 0;
+    if (!steps) {
+      // From 780px: one row, or stacked where the row wrapped.
+      delete island.dataset.islandFit;
+      if (islandWrapped(island)) island.dataset.island = 'stacked';
+      return;
+    }
+    for (let step = 0; step < steps; step += 1) {
+      island.dataset.islandFit = String(step);
+      if (step >= ISLAND_STACKED_STEP) island.dataset.island = 'stacked';
+      if (step === 0 && islandWrapped(island)) continue;
+      if (step === ISLAND_STACKED_STEP && islandNarrowed(island)) continue;
+      if (!islandMisfits(island).length) return;
+    }
+    islandMisfits(island).forEach(field => { field.dataset.islandField = 'column'; });
+  }
+
+  function fitIslands() {
+    islandObserver?.disconnect();
+    islandObserver = null;
+    const islands = Array.from(root()?.querySelectorAll('.dp-settings-island') || []);
+    islandFit = () => {
+      // Not drawn (another tab): kept as it is until it is.
+      islands.filter(island => island.getClientRects().length).forEach(fitIsland);
+    };
+    islandFit();
+    if (typeof ResizeObserver === 'function' && islands.length) {
+      islandObserver = new ResizeObserver(() => islandFit());
+      islands.forEach(island => islandObserver.observe(island.parentElement));
+    }
+  }
+
+  function renderPreservingViewport() {
+    const snapshot = captureSettingsViewport();
+    render();
+    restoreSettingsViewport(snapshot);
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => restoreSettingsViewport(snapshot));
+    }
+  }
+
+  /* The ONE Settings synchronisation owner.
+   *
+   * There are two references to the Settings document -- this page's
+   * ``state.settings`` and the application-wide ``settingsData`` that the
+   * provider-status renderer reads -- and exactly one function that moves
+   * either of them. An accepted scoped mutation that updated only the first
+   * left the status panel serving pre-mutation state until some unrelated act
+   * happened to perform a fresh GET, which is why every acceptance helper
+   * publishes through here rather than assigning its own copy. */
+  function syncGlobalSettings(data) {
+    state.settings = data;
+    try { settingsData = data; } catch (_) {}
+    paintArchivePasswordsStored(data);
+  }
+
+  /* Whether the server holds a stored archive-password list is the server's
+   * fact (`extraction_password_configured`), not what the editor's rows show:
+   * a blank list commits as "keep what is stored". The field this page
+   * rendered carries that fact, refreshed from every accepted settings
+   * document, so the editor's owner can offer Clear for a list it cannot see. */
+  function paintArchivePasswordsStored(data) {
+    if (!data || !('extraction_password_configured' in data)) return;
+    const editorNode = document.querySelector(
+      '#view-settings [data-panel="extraction"] .dp-settings-extraction-password-editor');
+    if (!editorNode) return;
+    editorNode.dataset.archiveStored = data.extraction_password_configured ? '1' : '0';
+    window.DPArchivePasswords?.syncStored?.();
+  }
+
+  function syncAuthIntoSettings(authData) {
+    if (!state.settings || !authData) return;
+    Object.assign(state.settings, {
+      auth_password_enabled: !!authData.password_enabled,
+      auth_username: text(authData.username),
+      auth_session_lifetime_hours: Number(authData.session_lifetime_hours || 12),
+      auth_oidc_enabled: !!authData.oidc_enabled,
+      oidc_provider_name: text(authData.oidc_provider_name || 'OpenID Connect'),
+      oidc_issuer_url: text(authData.oidc_issuer_url),
+      oidc_client_id: text(authData.oidc_client_id),
+      oidc_scopes: Array.isArray(authData.oidc_scopes) ? authData.oidc_scopes.slice() : [],
+      oidc_allow_all: !!authData.oidc_allow_all,
+      oidc_allowed_subjects: Array.isArray(authData.oidc_allowed_subjects) ? authData.oidc_allowed_subjects.slice() : [],
+      oidc_allowed_emails: Array.isArray(authData.oidc_allowed_emails) ? authData.oidc_allowed_emails.slice() : [],
+      oidc_allowed_groups: Array.isArray(authData.oidc_allowed_groups) ? authData.oidc_allowed_groups.slice() : [],
+      oidc_group_claim: text(authData.oidc_group_claim || 'groups'),
+      public_base_url: text(authData.public_base_url),
+    });
+    syncGlobalSettings(state.settings);
+  }
+
+  // The surface a provider card is being rendered for: Settings (null), or
+  // the setup wizard ('wizard', mountProvider) -- always Easy, its fields
+  // committed by the wizard's own Save, its IDs its own.
+  let renderSurface = null;
+  // While the wizard draws one provider: which (sourcesPanel returns its card alone).
+  let renderOnly = null;
+  const surfacePrefix = () => (renderSurface === 'wizard' ? 'dp-setup' : 'dp-settings');
+
+  function fieldId(key) {
+    return `${surfacePrefix()}-field-${key.replaceAll('_', '-')}`;
+  }
+
+  /* What an API rate field says when the server refuses a value above its
+   * ceiling. The ceiling is never written here: the persistence owner fills
+   * {max} from the control's own max, the same bound the server enforces. */
+  // The refusal a draft above the provider's cap gets, with that cap (the
+  // persistence owner's {max} substitution then finds nothing left to fill).
+  const apiLimitMessage = (provider, max) => say('settings.provider.rate_limit_refusal', {provider, max});
+
+  function input(key, label, value, options = {}) {
+    const id = fieldId(key);
+    const type = options.type || 'text';
+    // The control declares its commit class; the canonical persistence owner
+    // supplies the behaviour (COMMIT_FIELDS).
+    // ``commit: false`` is how a caller renders a value this page does not own
+    // the writing of -- one the environment manages, or one derived from
+    // another field. Such a control is never enrolled in persistence at all,
+    // rather than enrolled and then never written.
+    const attrs = [
+      options.commit === false ? '' : commitAttributes(key),
+      options.min != null ? `min="${html(options.min)}"` : '',
+      options.max != null ? `max="${html(options.max)}"` : '',
+      options.step != null ? `step="${html(options.step)}"` : '',
+      options.readonly ? 'readonly' : '',
+      options.autocomplete ? `autocomplete="${html(options.autocomplete)}"` : '',
+      options.maxlength != null ? `maxlength="${html(options.maxlength)}"` : '',
+      // A format the field declares (``pattern``) and its own wording for a
+      // draft that does not match it; the server still decides everything else.
+      options.pattern ? `pattern="${html(options.pattern)}"` : '',
+      // Its words (placeholder, name, refusal wordings), re-sayable when given as a Said.
+      keyed(null, {placeholder: options.placeholder, 'aria-label': options.ariaLabel,
+        'data-limit-message': options.limitMessage, 'data-invalid-message': options.invalidMessage}).trim(),
+      // A text control holding a short list of names is as wide as a selector
+      // in a tuning cell, not a number field (ui-settings-page.css).
+      options.selectorWidth ? 'data-control-width="selector"' : '',
+    ].filter(Boolean).join(' ');
+    const bare =
+      `<input class="input" id="${id}" data-setting="${html(key)}" type="${html(type)}" value="${html(value)}" ${attrs}>`;
+    // A field-local action lives inside the field, through the one primitive.
+    const control = options.embedAction
+      ? embeddedActionField(bare, options.embedAction, options.controlClass)
+      : bare;
+    // The SAME control, in whichever of the two Settings field grammars the
+    // caller asked for. Nothing about the control -- its bounds, its commit
+    // class, its identity -- differs between them.
+    //
+    // ``after`` is content INSIDE the control's own box -- the in-field status
+    // the AllDebrid credential carries. ``secondLine`` is the field's own
+    // second line, beneath the control row: a different place, so it is a
+    // different slot rather than the same string in a different mood.
+    if (options.inline) {
+      return inlineField(id, label, options.hint, control + (options.after || ''),
+        {className: options.className, action: options.action, secondLine: options.secondLine});
+    }
+    return `
+      <div class="dp-settings-field">
+        <label class="form-label" for="${id}"${keyed(label)}>${html(label)}</label>
+        ${control}
+        ${options.hint ? hintMarkup(options.hint) : ''}${options.after || ''}${options.secondLine || ''}
+      </div>`;
+  }
+
+  function textarea(key, label, value, options = {}) {
+    const id = fieldId(key);
+    return `
+      <div class="dp-settings-field">
+        <label class="form-label" for="${id}"${keyed(label)}>${html(label)}</label>
+        <textarea class="input" id="${id}" data-setting="${html(key)}" rows="${options.rows || 3}"${keyed(null, {placeholder: options.placeholder})} ${commitAttributes(key)}>${html(value)}</textarea>
+        ${options.hint ? hintMarkup(options.hint) : ''}
+      </div>`;
+  }
+
+  /* The archive-password field is rendered complete: the form-field textarea that
+   * carries the persisted value (hidden from assistive tech and the tab order), the
+   * editor container the ui-settings-archive-passwords owner fills, its reveal button
+   * and the hint. The owner adds behavior and layout only.
+   *
+   * The editor is TWO structural regions, and that is what keeps the controls
+   * usable at any password count: a bounded, scrollable list region, and a
+   * footer row that is its SIBLING rather than something floated over it. The
+   * footer therefore occupies real space the list can never take, is never
+   * overlapped, and stays put while the region scrolls -- no absolute band and
+   * no reserved bottom padding standing in for its height. The canvas inside
+   * the region is the positioning context for the column separators, which are
+   * decorative and belong to the gaps rather than to any column. */
+  function archivePasswordField(configured) {
+    const id = fieldId('extraction_password');
+    const placeholder = say(configured ? 'settings.extraction.passwords_stored' : 'settings.extraction.passwords_optional');
+    return `
+      <div class="dp-settings-field dp-settings-extraction-password-field">
+        <label class="form-label" for="${id}"${keyed(say('settings.extraction.passwords'))}>${html(t('settings.extraction.passwords'))}</label>
+        <textarea class="input dp-settings-extraction-password-source" id="${id}" data-setting="extraction_password" rows="4"${keyed(null, {placeholder})} aria-hidden="true" tabindex="-1" ${commitAttributes('extraction_password')}></textarea>
+        <div class="input dp-settings-extraction-password-editor" role="group"${keyed(null, {'aria-label': say('settings.extraction.passwords_label')})} data-archive-stored="${configured ? '1' : '0'}"><div class="dp-settings-password-region"><div class="dp-settings-password-canvas"><div class="dp-settings-password-rows"></div></div></div><div class="dp-settings-password-footer"><p class="form-hint dp-settings-password-guidance" aria-hidden="true"><span class="dp-settings-password-wording--full"${keyed(say('settings.extraction.guidance'))}>${html(t('settings.extraction.guidance'))}</span><span class="dp-settings-password-wording--short"${keyed(say('settings.extraction.guidance_short'))}>${html(t('settings.extraction.guidance_short'))}</span></p><div class="dp-settings-password-actions"><button type="button" class="btn btn-danger btn-sm dp-settings-password-clear" data-action="clear-archive-passwords"${keyed(null, {'aria-label': say('settings.extraction.clear_label')})}><span class="dp-settings-password-wording--full"${keyed(say('settings.extraction.clear'))}>${html(t('settings.extraction.clear'))}</span><span class="dp-settings-password-wording--short"${keyed(say('settings.extraction.clear_short'))}>${html(t('settings.extraction.clear_short'))}</span></button><button type="button" class="dp-settings-password-eye"></button></div></div></div>
+      </div>`;
+  }
+
+  function toggle(key, label, detail, value, extraClass = '') {
+    const id = fieldId(key);
+    return `
+      <label class="toggle-row dp-settings-toggle${extraClass ? ` ${extraClass}` : ''}" for="${id}">
+        <span class="toggle-info">
+          <span class="tl"${keyed(label)}>${html(label)}</span>
+          ${detail ? `<span class="td"${keyed(detail)}>${html(detail)}</span>` : ''}
+        </span>
+        <span class="toggle">
+          <input id="${id}" data-setting="${html(key)}" type="checkbox" ${commitAttributes(key)} ${checked(value)}>
+          <span class="ttrack"></span>
+        </span>
+      </label>`;
+  }
+
+  function selectField(key, label, value, choices, hint = '', options = {}) {
+    const id = fieldId(key);
+    // ``search``: a list too long to scan opens with a search field of this
+    // name. A choice's optional third entry is its quieter second label
+    // (``detail``) and further words it answers to (``terms``); the shared
+    // dropdown shows and searches both.
+    // Its words keyed like any other attribute (a Said), so the shared dropdown
+    // reads them in the page's language; a string stays as it is.
+    const search = options.search ? keyed(null, {'data-dp-dropdown-search': options.search}) : '';
+    // A choice's words given as a Said are keyed: the shared dropdown follows its <select>.
+    const extra = ({detail, terms} = {}) => keyed(null, {'data-dp-detail': detail || null, 'data-dp-search': terms || null});
+    const control = `
+        <select class="input" id="${id}" data-setting="${html(key)}"${search} ${commitAttributes(key)}>
+          ${choices.map(([v, labelText, more]) => `<option value="${html(v)}"${keyed(labelText)}${extra(more)} ${selected(value, v)}>${html(labelText)}</option>`).join('')}
+        </select>`;
+    // The SAME control, in whichever of the two Settings field grammars the
+    // caller asked for -- exactly as input(), directoryField() and
+    // tuningToggle() already offer it.
+    if (options.inline) {
+      return inlineField(id, label, hint, control, {className: options.className, secondLine: options.secondLine});
+    }
+    return `
+      <div class="dp-settings-field">
+        <label class="form-label" for="${id}"${keyed(label)}>${html(label)}</label>
+        ${control}
+        ${hint ? hintMarkup(hint) : ''}${options.secondLine || ''}
+      </div>`;
+  }
+
+  /* The ONE compact inline Settings field.
+   *
+   *   [ stacked title + hint ]   [ control ]   [ optional action ]
+   *
+   * The title and its hint are ONE informational block, and the control is
+   * centred against that block rather than stacked beneath it -- which is what
+   * removes the extra help/status band each of these rows used to carry. Every
+   * surface that reads this way renders THIS, so the grammar is declared once
+   * and no caller states a geometry of its own.
+   *
+   * What a caller does own is how much room its control deserves: a path, a
+   * credential and a job count are not the same control, and nothing here
+   * forces them to a common width. */
+  /* A field that holds a trailing action INSIDE its own border.
+   *
+   * OIDC Callback Copy, the one-time token Copy and Download Folder Browse are
+   * the same arrangement, so they are composed once here. The material and the
+   * arrangement both belong to the universal field language (.dp-action-field
+   * in ui-universal-language.css); this page states neither. */
+  function embeddedActionField(control, action, className = '') {
+    return `<div class="dp-action-field${className ? ` ${className}` : ''}">${control}${action}</div>`;
+  }
+
+  /* ``secondLine`` is content the field renders on a line of its OWN, beneath
+   * the title/control/action row: a preview of what a value resolves to is a
+   * second line of the field, not another item on the field's one line. It is a
+   * declared slot with a declared place, so the field is two rows whenever it
+   * carries one -- it never becomes two rows because a viewport ran out of room,
+   * and spare width can never pull it back up beside the control. */
+  function inlineField(id, label, hint, control, {className = '', action = '', secondLine = ''} = {}) {
+    // A READING -- a derived count, a status value -- has no control to label,
+    // so it takes the same grammar with a plain caption instead of a <label>.
+    const title = id
+      ? `<label class="form-label" for="${id}"${keyed(label)}>${html(label)}</label>`
+      : `<span class="form-label"${keyed(label)}>${html(label)}</span>`;
+    return `
+      <div class="dp-settings-inline-field${secondLine ? ' dp-settings-inline-field--two-line' : ''}${className ? ` ${className}` : ''}">
+        <div class="dp-settings-inline-field-info">
+          ${title}
+          ${hint ? hintMarkup(hint) : ''}
+        </div>
+        <div class="dp-settings-inline-field-control">${control}</div>${
+          action ? `<div class="dp-settings-inline-field-action">${action}</div>` : ''}${
+          secondLine ? `<div class="dp-settings-inline-field-second-line">${secondLine}</div>` : ''}
+      </div>`;
+  }
+
+  /* The UNIT a numeric field carries, inside its own trailing edge.
+   *
+   * It is a sibling of the control within the ONE compound field primitive
+   * (`.dp-action-field`), not something floated over it -- so the number ends
+   * where the unit begins, and no reserved constant has to be guessed for a
+   * font-sized thing. */
+  function fieldUnit(text) {
+    return `<span class="dp-settings-field-unit" aria-hidden="true"${keyed(text)}>${html(text)}</span>`;
+  }
+
+  const CONFIGURED_SECRET_MASK = '•'.repeat(48);
+
+  /* The card's contextual help: one icon-only chip in the header rail,
+   * naming the card it explains. Every rail reads status, then help, then the
+   * card's own actions and controls in their established order -- so help sits
+   * at the right edge only when it is the rail's one member. It opens that card's read-only explanation
+   * through the help owner (ui-settings-help.js), which presents it in the
+   * canonical dialog shell; the chip itself changes nothing. */
+  function helpChip(topic, subject) {
+    if (!topic) return '';
+    const label = say('settings.help_chip', {subject});
+    const glyph = window.DPIcons?.svg ? window.DPIcons.svg('help', 'dp-settings-help-glyph') : '';
+    // Its name is keyed; its tooltip is the name, or the header's hint while the
+    // header carries it there (fitHeaderHints), so it is set by the fitters.
+    return `<button type="button" class="dp-settings-help-chip" data-settings-help="${html(topic)}"
+           ${keyed(null, {'aria-label': label})} data-tooltip="${html(label)}">${glyph}</button>`;
+  }
+
+  /* A header action's words at each step of a wrapping header
+   * (fitHeaderSteps): its full words, then the shorter ones its stylesheet
+   * draws from step 2 and from step 3 below 780px (ui-settings-page.css) --
+   * from attributes, so the button's text and its name stay the full words,
+   * and the action is one button whatever it reads. */
+  const fitLabel = (full, short, shortest = short) => `<span class="dp-settings-fit-label-full"${keyed(full)}>${html(full)}</span>`
+    + `<span class="dp-settings-fit-label-short" aria-hidden="true"${keyed(null, {'data-fit-2': short, 'data-fit-3': shortest})}></span>`;
+
+  function card(title, body, options = {}) {
+    let titleClass = 'card-title';
+    let titleMarkup = words(title);
+    if (options.titlePrefix) {
+      titleClass = 'card-title dp-settings-card-title--with-icon';
+      // ``shortTitle``: the handheld header's last resort (fitHeaderSteps,
+      // data-header-fit-wrap), drawn only at that step and only by the
+      // stylesheet, from its attribute -- so the title's text, and the card's
+      // name to assistive technology, stay the full title alone. While it is
+      // drawn the title says the full title as its tooltip (promoteShortTitle).
+      const titleWords = options.shortTitle
+        ? `<span class="dp-settings-card-title-full"${keyed(title)}>${html(title)}</span><span class="dp-settings-card-title-short" aria-hidden="true"${keyed(null, {'data-short-title': options.shortTitle})}></span>`
+        : words(title);
+      titleMarkup = `${options.titlePrefix}<span class="dp-settings-card-title-text">${titleWords}</span>`;
+    }
+    const centerClass = ['dp-settings-card-header-center', options.headerCenterClass].filter(Boolean).join(' ');
+    /* The SAME operational header rail a provider card renders: what the
+     * configuration currently IS, the action that can prove it, then whether it
+     * participates at all. A card that declares none of it renders no rail, so
+     * nothing changes for the cards that never had one. */
+    const status = options.headerStatus;
+    const help = helpChip(options.help, title);
+    // ``testStatus``: the card's Test proves its configuration, so it takes
+    // the one header Test treatment (headerTestControls) with that report.
+    const controls = options.headerAction && options.testStatus
+      ? headerTestControls(title, options.headerAction, options.action || '', options.testStatus)
+      : `${options.headerAction ? `<div class="dp-settings-header-action">${options.headerAction}</div>` : ''}${
+          options.action || ''}`;
+    const rail = (status || options.headerAction || help)
+      ? `<div class="dp-settings-card-header-controls">${
+          status ? `<div class="dp-settings-provider-config-status" role="status" aria-live="polite" data-tone="${html(status.tone)}"${status.text ? '' : ' hidden'}${keyed(status.text)}>${html(status.text)}</div>` : ''}${help}${
+          controls}</div>`
+      : (options.action || '');
+    /* ``hinted``: the card's header takes the Services header grammar (see
+     * fitHeaderHints) -- identity, its one-line purpose hint (``headerCenter``)
+     * on the header's own midpoint while it fits, and the rail. A card that
+     * does not ask renders exactly as before. */
+    const identity = `<span class="${titleClass}">${titleMarkup}</span>`;
+    // The hinted grammar measures ONE hint element (fitHeaderHints); a hint
+    // given as plain text is that element's text.
+    const center = options.headerCenter instanceof Said ? words(options.headerCenter)
+      : options.hinted && options.headerCenter && !/^\s*</.test(options.headerCenter)
+        ? `<span>${options.headerCenter}</span>` : options.headerCenter;
+    /* ``collapsible`` ({key, expanded}): the canonical disclosure chip beside
+     * the title, its choice kept for the page by the one disclosure owner. A
+     * card whose stylesheet keeps its body open at some widths (Disk Space &
+     * Recovery from 780px) declares that there, not here. */
+    const collapse = options.collapsible;
+    const bodyId = collapse ? `dp-settings-card-body-${String(collapse.key).replace(/[^a-z0-9_-]/gi, '-')}` : '';
+    const open = collapse ? disclosureOpen(`card:${collapse.key}`, collapse.expanded) : true;
+    const disclosure = collapse ? settingsDisclosure(bodyId, open, title, `card:${collapse.key}`) : '';
+    /* ``headerFit: 'wrap'``: the handheld header is one row whose title may
+     * take two lines, and which takes back room in the steps its stylesheet
+     * declares (fitHeaderSteps) -- lending Help to the row drawn at the top of
+     * the body only while it holds it. */
+    const fit = options.headerFit === 'wrap';
+    // A card whose body already has a box Help may be lent to (the OpenID
+    // Connect identity group) declares ``helpRow: false``: no row is drawn.
+    const helpRow = fit && options.helpRow !== false;
+    // ``shortTitleFirst``: its short title is drawn before Help is lent (the
+    // stylesheet's step order), not as the last resort. ``titleLines: 1``: its
+    // full title never wraps; where it would, the steps go on (wrappedHeaderFits).
+    return `
+      <section class="card dp-settings-card dp-large-panel-surface ${options.className || ''}"${
+        fit ? ' data-header-fit="0" data-header-fit-self data-header-fit-wrap' : ''}${
+        fit && options.shortTitleFirst ? ' data-header-short-first' : ''}${
+        fit && options.titleLines ? ` data-header-title-lines="${Number(options.titleLines)}"` : ''}>
+        <div class="card-header${options.hinted ? ' dp-settings-card-header dp-settings-card-header--hinted' : ''}">
+          ${options.hinted ? `<span class="dp-settings-card-title-group">${identity}${disclosure}</span>` : identity}
+          ${center ? `<div class="${centerClass}">${center}</div>` : ''}
+          ${rail}
+        </div>
+        <div class="card-body"${bodyId ? ` id="${bodyId}"` : ''}${open ? '' : ' hidden'}>${
+          helpRow ? '<div class="dp-settings-help-slot dp-settings-help-slot--row"></div>' : ''}${body}</div>
+      </section>`;
+  }
+  /* A group card. ``collapsible`` is the smallest generic opt-in there can be:
+   * it renders the SAME canonical disclosure chip in the same place a provider
+   * card does, closed, addressing the body through ``aria-controls`` -- so the
+   * one disclosure behaviour already bound in bindEvents() serves it without
+   * knowing it is a group. No second component, no duplicated markup, and no
+   * group becomes collapsible without asking. */
+  function groupCard(title, body, options = {}) {
+    const titleMarkup = options.titlePrefix
+      ? `<span class="card-title dp-settings-card-title--with-icon">${options.titlePrefix}<span class="dp-settings-card-title-text"${keyed(title)}>${html(title)}</span></span>`
+      : `<span class="card-title"${keyed(title)}>${html(title)}</span>`;
+    // A title said from the catalog is identified by its key, never by the words shown.
+    const safe = String(options.groupId || (title instanceof Said ? title.key : title)).replace(/[^a-z0-9_-]/gi, '-');
+    const bodyId = `dp-settings-group-body-${safe}`;
+    // A group may declare what it should look like on FIRST render; after that
+    // the operator's own choice is what it looks like.
+    const persistKey = options.collapsible ? `group:${safe}` : '';
+    const expanded = options.collapsible && disclosureOpen(persistKey, options.expanded);
+    const disclosure = options.collapsible
+      ? settingsDisclosure(bodyId, expanded, say('settings.group_sources', {group: title}), persistKey) : '';
+    const help = helpChip(options.help, title);
+    const header = options.action || disclosure || help;
+    // ``hint``: the group's one-line purpose, centred on the header while it
+    // fits there (fitHeaderHints), else carried by its help chip.
+    const hinted = header && options.hint;
+    return `
+      <section class="card dp-settings-group-card dp-large-panel-surface ${options.className || ''}"${
+        options.groupId ? ` data-integration-group="${html(options.groupId)}"` : ''}${
+        options.headerFit ? ' data-header-fit="0"' : ''}${options.headerFit === 'self' ? ' data-header-fit-self' : ''}>
+        <div class="card-header${header ? ' dp-settings-card-header' : ''}${hinted ? ' dp-settings-card-header--hinted' : ''}">
+          ${header ? `<span class="dp-settings-card-title-group">${titleMarkup}${disclosure}</span>` : titleMarkup}
+          ${header ? `<div class="dp-settings-card-header-center">${hinted ? `<p class="dp-settings-provider-header-copy"${keyed(options.hint)}>${html(options.hint)}</p>` : ''}</div>
+          <div class="dp-settings-card-header-controls">${help}${options.action || ''}</div>` : ''}
+        </div>
+        <div class="card-body dp-settings-group-body"${options.collapsible ? ` id="${bodyId}"${expanded ? '' : ' hidden'}` : ''}>${body}</div>
+      </section>`;
+  }
+
+  // Directory-valued field with its Browse control (the picker itself is owned
+  // by ui-settings-directory-picker.js, opened from the Browse button).
+  /* ``embedAction`` puts Browse INSIDE the field's own border, through the
+   * shared embedded-action primitive: the action becomes a sibling of the
+   * control within one compound field, so path text ends where the button
+   * begins and nothing is positioned over anything. It is opt-in because only
+   * the caller knows whether its surface asked for that treatment; Browse
+   * itself is identical either way -- same action, same directory-picker
+   * owner, same persistence. */
+  function directoryField(key, label, value, {hint, browseAction, browseLabel, inline, className, embedAction}) {
+    const id = fieldId(key);
+    const path = `<input class="input" id="${id}" data-setting="${html(key)}" type="text" value="${html(value)}" ${commitAttributes(key)}>`;
+    const browse = `<button type="button" class="btn btn-ghost btn-sm dp-settings-directory-field-browse" data-action="${browseAction}"${keyed(say('settings.browse'), {'aria-label': browseLabel})}>${html(t('settings.browse'))}</button>`;
+    const control = embedAction
+      ? embeddedActionField(path, browse, 'dp-settings-directory-field-control')
+      : `<div class="dp-settings-directory-field-control">${path}${browse}</div>`;
+    if (inline) {
+      return inlineField(id, label, hint, control,
+        {className: ['dp-settings-directory-field', className].filter(Boolean).join(' ')});
+    }
+    return `
+      <div class="dp-settings-field dp-settings-directory-field">
+        <label class="form-label" for="${id}"${keyed(label)}>${html(label)}</label>
+        ${control}
+        ${hintMarkup(hint)}
+      </div>`;
+  }
+
+  /* The AllDebrid credential row.
+   *
+   * Entering or replacing the key is an ordinary value change and commits on
+   * changed blur through the existing `integration:alldebrid` scope; the
+   * browser holds no secret afterwards, because the accepted presentation of
+   * one is blank. ERASING the stored key is destructive, so it is an explicit
+   * action behind its own confirmation -- never a commit boundary, and never
+   * something that also saves a replacement.
+   *
+   * The clear group occupies the INPUT's own grid row (ui-settings-page.css),
+   * so it is centred against the control itself rather than against the
+   * label + hint stack, and it takes horizontal room from the field instead of
+   * adding a taller action band. */
+  /* The three parts of the row that DEPEND on whether a key is stored. They
+   * are declared once and used both to render the row and to converge it, so
+   * the row has exactly one markup owner in either direction. */
+  const ALLDEBRID_KEY_PLACEHOLDER = configured =>
+    configured ? CONFIGURED_SECRET_MASK : say('settings.key.placeholder', {provider: 'AllDebrid'});
+
+  const ALLDEBRID_KEY_HINT = configured => say(configured ? 'settings.key.hint_configured' : 'settings.key.hint_missing',
+    {provider: 'AllDebrid'});
+
+  /* The destructive action is part of the field, always: Remove sits INSIDE
+   * the key field's own border (embeddedActionField). Whether there is
+   * anything to destroy is a STATE of that control, not a reason to remove it:
+   * a credential row that grows and loses an action as secrets come and go
+   * reflows under the operator's hands. With a key stored it is the red DP
+   * button; with none it is the neutral ghost, disabled, so no destructive act
+   * is offered. The state is the persisted credential's, never the draft's. */
+  const KEY_REMOVE_TONE = configured => configured ? 'btn-danger' : 'btn-ghost';
+
+  const keyRemoveAction = (action, name, configured) => `<button type="button" class="btn ${KEY_REMOVE_TONE(configured)} btn-sm" data-action="${action}"
+                   ${keyed(say('settings.key.remove'), {'aria-label': say('settings.key.remove_label', {provider: name})})}${
+                    configured ? '' : ' disabled'}>${html(t('settings.key.remove'))}</button>`;
+
+  // Converges the action on accepted state; the button is never replaced.
+  function renderKeyRemove(button, configured) {
+    if (!button) return;
+    button.disabled = !configured;
+    button.classList.toggle('btn-danger', configured);
+    button.classList.toggle('btn-ghost', !configured);
+  }
+
+  const ALLDEBRID_KEY_CLEAR = configured => keyRemoveAction('clear-alldebrid-key', 'AllDebrid', configured);
+
+  function allDebridApiKeyField(configured) {
+    const key = 'alldebrid_api_key';
+    const id = fieldId(key);
+    return input(key, say('settings.key.label'), '', {
+      type: 'password',
+      autocomplete: 'off',
+      placeholder: ALLDEBRID_KEY_PLACEHOLDER(configured),
+      hint: ALLDEBRID_KEY_HINT(configured),
+      inline: true,
+      // The title/hint, the field and the removal are ONE compact, centred
+      // Settings control island (ui-settings-page.css).
+      className: `dp-settings-alldebrid-key-row dp-settings-help-slot ${configured ? 'is-configured' : ''}`,
+      embedAction: ALLDEBRID_KEY_CLEAR(configured),
+    });
+  }
+
+  /* An API-key account credential row, for a premium provider whose account
+   * connects by a key the operator pastes (Debrid-Link, Premiumize). It is the AllDebrid
+   * row's grammar exactly -- the same inline field, the always-present
+   * destructive Remove inside it, changed-blur commit
+   * through the integration's own scope and one canonical confirmation for
+   * removal -- declared per provider here rather than once per provider. The
+   * account line above the field is the neutral premium-account wording
+   * (window.DPPremiumAccount), fed by the provider-status owner. */
+  const API_KEY_ACCOUNTS = Object.freeze({
+    debridlink: {name: 'Debrid-Link', configured: s => !!debridLinkOf(s).api_key_configured},
+    premiumize: {name: 'Premiumize', configured: s => !!premiumizeOf(s).api_key_configured},
+  });
+
+  const apiKeyPlaceholder = (id, configured) =>
+    configured ? CONFIGURED_SECRET_MASK : say('settings.key.placeholder', {provider: API_KEY_ACCOUNTS[id].name});
+
+  const apiKeyHint = (id, configured) => say(configured ? 'settings.key.hint_configured' : 'settings.key.hint_missing',
+    {provider: API_KEY_ACCOUNTS[id].name});
+
+  const apiKeyClear = (id, configured) => keyRemoveAction(`clear-${id}-key`, API_KEY_ACCOUNTS[id].name, configured);
+
+  function apiKeyField(id, configured) {
+    return input(`${id}_api_key`, say('settings.key.label'), '', {
+      type: 'password',
+      autocomplete: 'off',
+      placeholder: apiKeyPlaceholder(id, configured),
+      hint: apiKeyHint(id, configured),
+      inline: true,
+      className: `dp-settings-${id}-key-row dp-settings-help-slot ${configured ? 'is-configured' : ''}`,
+      embedAction: apiKeyClear(id, configured),
+    });
+  }
+
+  /* Every API-key account card that states its connected account above the
+   * key island, and whether a key is stored for it. Account PRESENTATION only:
+   * each provider keeps its own credential owner (AllDebrid's predates the
+   * generic row above), and nothing here interprets an account. */
+  const API_KEY_ACCOUNT_LINES = Object.freeze({
+    alldebrid: s => !!allDebridOf(s).api_key_configured,
+    debridlink: API_KEY_ACCOUNTS.debridlink.configured,
+    premiumize: API_KEY_ACCOUNTS.premiumize.configured,
+  });
+
+  // The connected account as the provider-status owner established it: the
+  // neutral premium wording, or "Free account" for a standard one.
+  const apiKeyAccounts = Object.fromEntries(Object.keys(API_KEY_ACCOUNT_LINES).map(id => [id, null]));
+
+  function apiKeyAccountLine(id) {
+    const account = apiKeyAccounts[id];
+    if (!account || !API_KEY_ACCOUNT_LINES[id](state.settings)) return '';
+    const line = accountExpiry(id, account) || (standardAccount(account) ? t('settings.account.free') : '');
+    // Nothing to state renders nothing: no blank row above the key island.
+    return line ? providerStatusLine(html(line), 'dp-settings-account-expiry') : '';
+  }
+
+  /* Every rendered card of a provider -- Services' and, while open, the
+   * setup wizard's -- converges on the same accepted state. */
+  const providerCards = id => Array.from(document.querySelectorAll(`.dp-settings-provider-card--${id}`));
+
+  function renderApiKeyAccount(id) {
+    for (const card of providerCards(id)) {
+      const region = card.querySelector(`[data-${id}-account]`);
+      if (region) region.innerHTML = apiKeyAccountLine(id);
+    }
+  }
+
+  /* A stored key changed (replaced or removed): the account it described is no
+   * longer known, so its line is withdrawn until provider status states the
+   * account the CURRENT key belongs to. */
+  function forgetApiKeyAccount(id) {
+    if (!(id in apiKeyAccounts)) return;
+    apiKeyAccounts[id] = null;
+    renderApiKeyAccount(id);
+  }
+
+  document.addEventListener('downloadpulse:provider-status', event => {
+    for (const id of Object.keys(API_KEY_ACCOUNT_LINES)) {
+      const status = (event.detail?.entries || []).find(candidate => candidate.id === id)?.status;
+      if (status?.state === 'healthy') apiKeyAccounts[id] = status;
+      else if (['auth_required', 'unconfigured', 'disabled'].includes(status?.state)) apiKeyAccounts[id] = null;
+      else continue;
+      renderApiKeyAccount(id);
+    }
+  });
+
+  /* Converge an API-key row on ACCEPTED canonical state; the input element is
+   * never replaced (see renderAllDebridCredential). */
+  function renderApiKeyCredential(id, dispatched) {
+    const configured = API_KEY_ACCOUNTS[id].configured(state.settings);
+    for (const card of providerCards(id)) {
+      const row = card.querySelector(`.dp-settings-${id}-key-row`);
+      if (!row) continue;
+      const field = card.querySelector(`[data-setting="${id}_api_key"]`);
+      if (field) {
+        if (String(field.value ?? '') === String(dispatched ?? '')) field.value = '';
+        sayAttr(field, 'placeholder', apiKeyPlaceholder(id, configured));
+      }
+      row.classList.toggle('is-configured', configured);
+      sayInto(row.querySelector('.dp-settings-inline-field-info > .form-hint'), apiKeyHint(id, configured));
+      renderKeyRemove(row.querySelector(`[data-action="clear-${id}-key"]`), configured);
+      renderIntegrationState(card, id);
+    }
+    renderApiKeyAccount(id);
+  }
+
+  // The one confirmation for erasing a stored provider key, re-worded while open.
+  function confirmClearKey(provider) {
+    const values = {provider};
+    return window.DPSettingsModal.confirm({
+      tone: 'danger',
+      title: t('settings.key.clear_title', values),
+      message: t('settings.key.clear_message', values),
+      confirmLabel: t('settings.key.clear_accept', values),
+      keys: {title: 'settings.key.clear_title', titleValues: values, message: 'settings.key.clear_message', messageValues: values,
+        accept: 'settings.key.clear_accept', acceptValues: values},
+    });
+  }
+
+  /* Erasing a stored API key: the same destructive act, confirmation and
+   * canonical mutation as erasing the AllDebrid key (clearAllDebridKey). */
+  async function clearApiKey(id, button) {
+    const {name} = API_KEY_ACCOUNTS[id];
+    if (!button.closest(`.dp-settings-provider-card--${id}`)) return;
+    const confirmed = await confirmClearKey(name);
+    if (!confirmed) return;
+    await window.DPSettingsPersistence.settle(settleScope(button));
+    setBusy(button, true, say('settings.key.clearing'));
+    try {
+      const result = await request('PATCH', `/integrations/${id}/configuration`,
+        {options: {}, clear_secrets: ['api_key']}, 15000);
+      adoptIntegration(id, result);
+      setBusy(button, false);
+      forgetApiKeyAccount(id);
+      renderApiKeyCredential(id, '');
+      notify(t('settings.key.cleared', {provider: name}), 'success');
+      try { window.DPProviderStatus?.forget(id); window.DPProviderStatus?.refresh(); } catch (_) {}
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+  }
+
+  /* The ONE fixed tuning-set collection.
+   *
+   * Every tuning region renders the same thing: equal-width invisible layout
+   * lanes spanning the usable width, one lane per cell of the fixed set up to
+   * five per row, with a bounded card centred in each lane
+   * (ui-settings-page.css). The only thing a region contributes is its own
+   * CARDINALITY -- declared here, derived from the cells it passed -- so no
+   * region states a column count, a breakpoint matrix or a geometry of its
+   * own, and none is measured in JavaScript. A set larger than five, or one
+   * that can no longer hold its lanes at their accepted minimum, continues on
+   * the next row, and every row is centred.
+   *
+   * A boolean and a selector are cells of the same shape as a number; none of
+   * them is a special layout.
+   *
+   * ``tuningGroup`` states a RELATIONSHIP between adjacent cells and nothing
+   * else -- it is never a cell, so it contributes its MEMBERS to the lane
+   * count rather than one lane. The cell remains the layout unit: the group
+   * occupies exactly the lanes its members do and moves to the next row whole
+   * when it does not fit what is left of one, drawn as a light outline while
+   * it holds a row of its own width (ui-settings-page.css). No geometry is
+   * measured and no node is ever re-parented. */
+  function tuningCells(...cells) {
+    const members = cells.flat();
+    const lanes = members.reduce((total, markup) => {
+      const span = /data-tuning-span="(\d+)"/.exec(markup);
+      return total + (span ? Number(span[1]) : 1);
+    }, 0);
+    return `<div class="dp-settings-tuning-grid" data-tuning-lanes="${lanes}">${members.join('')}</div>`;
+  }
+
+  function tuningGroup(...cells) {
+    const members = cells.flat();
+    // A group declares its composition -- how many cells, and how many of them
+    // are selectors -- exactly as a set declares its cardinality: from the
+    // cells it was given, never measured.
+    const selectors = members.filter(markup => /<select\b/.test(markup)).length;
+    return `<div class="dp-settings-tuning-group" data-tuning-span="${members.length}"`
+      + ` data-tuning-selectors="${selectors}">${members.join('')}</div>`;
+  }
+
+  function tuningToggle(key, label, detail, value, options = {}) {
+    const id = fieldId(key);
+    // ``disabled``: a dependent control whose parent permission is off. Its
+    // stored value is untouched; only its availability is projected.
+    const disabled = options.disabled ? ' disabled' : '';
+    const boolean = `
+          <span class="toggle">
+            <input id="${id}" data-setting="${html(key)}" type="checkbox" ${commitAttributes(key)} ${checked(value)}${disabled}>
+            <span class="ttrack"></span>
+          </span>`;
+    if (options.inline) {
+      // A toggle's visible hit target is its TRACK, and the checkbox behind it
+      // is visually hidden -- so the track has to be label-associated or the
+      // control is operable only through its title. The other inline controls
+      // are their own hit target and need no such wrapper.
+      return inlineField(id, label, detail instanceof Said ? detail : html(detail),
+        `<label class="dp-settings-inline-toggle" for="${id}">${boolean}</label>`,
+        {className: options.className});
+    }
+    // A dependent cell (one that states ``disabled`` at all) fades between
+    // its available and unavailable appearance (ui-settings-page.css).
+    const dependent = 'disabled' in options ? ' dp-settings-dependent-field' : '';
+    return `
+      <div class="dp-settings-field dp-settings-engine-tuning-toggle-field${dependent}${options.disabled ? ' is-disabled' : ''}">
+        <label class="form-label" for="${id}"${keyed(label)}>${html(label)}</label>
+        <label class="dp-settings-engine-tuning-toggle-control" for="${id}">
+          <span class="toggle">
+            <input id="${id}" data-setting="${html(key)}" type="checkbox" ${commitAttributes(key)} ${checked(value)}${disabled}>
+            <span class="ttrack"></span>
+          </span>
+        </label>
+        <span class="form-hint"${keyed(detail)}>${html(detail)}</span>
+      </div>`;
+  }
+
+  // A card HEADER's toggle shows no "Enable" word (its accessible name says
+  // what it enables); a Network Source box, whose toggle is its body's one
+  // control, keeps the word (``visibleLabel``).
+  function integrationHeaderToggle(identity, value, displayName, extraClass = '', {visibleLabel = false} = {}) {
+    const safeIdentity = String(identity || '').replace(/[^a-z0-9_-]/gi, '-');
+    const id = `${surfacePrefix()}-integration-${safeIdentity}-enabled`;
+    return `
+      <label class="toggle-row dp-settings-toggle dp-settings-auth-header-enable dp-settings-integration-header-enable ${html(extraClass)}" for="${id}">
+        ${visibleLabel ? `<span class="toggle-info"><span class="tl"${keyed(say('settings.enable'))}>${html(t('settings.enable'))}</span></span>` : ''}
+        <span class="toggle">
+          <input id="${id}" data-integration-enabled="${html(identity)}" type="checkbox" ${checked(value)}
+                ${keyed(null, {'aria-label': say('settings.enable_route', {provider: displayName})})}>
+          <span class="ttrack"></span>
+        </span>
+      </label>`;
+  }
+
+  /* The aggregate participation gate for one integration GROUP.
+   *
+   * Deliberately the same control, the same classes and the same immediate
+   * discipline as a member's Enable: to the operator these are the same kind
+   * of thing, and the only difference is what the mutation is scoped to. */
+  /* The ONE Settings protocol identity chip.
+   *
+   * Twelve appearances (Network Sources, HTTP(S), (S)FTP, SCP, rsync, WebDAV,
+   * Multimeta and Usenet on Services; Network Sources, rsync, WebDAV and
+   * Usenet on Downloads) render this
+   * and nothing else, so the chip's whole treatment is declared once in CSS
+   * and a protocol contributes nothing but its canonical colour. Its glyph
+   * comes from the one protocol glyph table, which transfer badges share
+   * (ui-transfer-source-presentation.js). */
+  const PROTOCOL_GLYPHS = window.DPTransferSourcePresentation.PROTOCOL_GLYPHS;
+
+  /* The ONE emitter of the Settings identity chip: a protocol (data-protocol),
+   * or a Settings family identity (data-section). The chip's colour is that
+   * datum's (ui-settings-card-icons.css). ``header`` marks a Settings
+   * subsection header's chip, which alone carries the outer glow: every family
+   * header, and the Network Sources group master. */
+  function identityChip(datum, value, glyph, header = false) {
+    return `<span class="dp-settings-protocol-chip${header ? ' dp-settings-header-chip' : ''}" aria-hidden="true" data-${datum}="${html(value)}">`
+      + `<img src="/icons/lucide/${html(glyph)}.svg" alt="" decoding="async"></span>`;
+  }
+
+  function familyIcon(section, glyph) {
+    return identityChip('section', section, glyph, true);
+  }
+
+  function protocolIcon(protocol, header = false) {
+    const glyph = PROTOCOL_GLYPHS[protocol];
+    return glyph ? identityChip('protocol', protocol, glyph, header) : '';
+  }
+
+  /* What enabling one Network Source allows, as the two lines its protocol box
+   * presents. COPY ONLY: the box's identity, label, order and enable state all
+   * come from the integration's own published metadata, so this adds no second
+   * display-name system and declares no protocol that does not exist. A member
+   * with nothing to say here simply says nothing. */
+  const SOURCE_BOX_COPY = Object.freeze(Object.fromEntries(
+    ['general_http', 'general_ftp', 'general_scp', 'general_rsync', 'general_webdav', 'multimeta', 'media']
+      .map(id => [id, [say(`settings.source_box.${id}.lead`), say(`settings.source_box.${id}.rest`)]])));
+
+  /* A box title that differs from the integration's presentation name. On
+   * Services, Multimeta is named by the format it reads first, its own name
+   * beneath ("Metalink" / "(Multimeta)", set one word per line like every
+   * multi-word title). Provider Status and transfer badges keep the
+   * presentation name; the identity `multimeta` is untouched. */
+  const SOURCE_BOX_TITLES = Object.freeze({
+    multimeta: 'Metalink (Multimeta)',
+  });
+
+  function groupHeaderToggle(groupId, label, value) {
+    const safeGroup = String(groupId || '').replace(/[^a-z0-9_-]/gi, '-');
+    const id = `dp-settings-integration-group-${safeGroup}-enabled`;
+    return `
+      <label class="toggle-row dp-settings-toggle dp-settings-auth-header-enable dp-settings-integration-header-enable dp-settings-provider-header-enable" for="${id}">
+        <span class="toggle">
+          <input id="${id}" data-integration-group-enabled="${html(groupId)}" type="checkbox" ${checked(value)}
+                ${keyed(null, {'aria-label': say('settings.enable_named', {name: label})})}>
+          <span class="ttrack"></span>
+        </span>
+      </label>`;
+  }
+
+  /* The ONE canonical Settings disclosure control.
+   *
+   * Services cards and Downloads -> Executor Tuning cards had two
+   * independently styled disclosures in two different places (a ghost chip at
+   * the far right beside Enable, and a naked chevron beside the title). This
+   * is the single component both now render: a compact ghost chip sitting
+   * immediately after the card title, so the control reads as belonging to the
+   * title while the operational controls stay independent on the right. The
+   * card header itself is never clickable. */
+  // "Collapse …" / "Expand …": the subject (a card or group title) is kept as
+  // JSON -- words, or a message {$t, $v} -- so the name is said again on a toggle
+  // and on a language change.
+  const disclosureLabel = (expanded, subject) =>
+    say(expanded ? 'settings.disclosure.collapse' : 'settings.disclosure.expand', {subject});
+  const reviveSaid = value => (value && typeof value === 'object' && typeof value.$t === 'string'
+    ? say(value.$t, Object.fromEntries(Object.entries(value.$v || {}).map(([k, v]) => [k, reviveSaid(v)]))) : value);
+  function disclosureSubject(button) {
+    try { return reviveSaid(JSON.parse(button.dataset.disclosureSubject)) || say('settings.disclosure.section'); }
+    catch (_) { return button.dataset.disclosureSubject || say('settings.disclosure.section'); }
+  }
+  function settingsDisclosure(bodyId, expanded, subject, persistKey = '') {
+    const label = disclosureLabel(expanded, subject);
+    return `<button type="button" class="dp-settings-disclosure" data-disclosure-subject="${html(JSON.stringify(subject))}"${
+            persistKey ? ` data-disclosure-persist="${html(persistKey)}"` : ''}
+            aria-controls="${html(bodyId)}" aria-expanded="${expanded}"${keyed(null, {'data-tooltip': label, 'aria-label': label})}
+            ><span aria-hidden="true">&rsaquo;</span></button>`;
+  }
+
+  /* Disclosure state the operator has CHOSEN, for the sections that keep it.
+   *
+   * Most Settings disclosures deliberately render closed every time: arriving
+   * at a page is not an opinion about what should be open. A section may
+   * instead declare a starting state AND a persistence key -- and then the one
+   * disclosure owner below remembers what the operator last did with it, so a
+   * canonical refresh/re-render does not silently reopen something they closed
+   * (or close something they opened). Enable/disable is a different question
+   * about a different subject and is untouched by this.
+   *
+   * Page-lifetime only, and only for sections that ask. */
+  const disclosureChoices = new Map();
+
+  const disclosureOpen = (persistKey, fallback) =>
+    (persistKey && disclosureChoices.has(persistKey))
+      ? disclosureChoices.get(persistKey) : !!fallback;
+
+  /* A named, collapsible SUBSECTION inside a card body.
+   *
+   * It renders the same canonical disclosure chip beside its own title that a
+   * card renders beside its title, addressed through `aria-controls`, so the
+   * one disclosure behaviour already bound in bindEvents() serves it without
+   * knowing it is a subsection: same chip, same keyboard operation, same
+   * expanded/collapsed exposure, same remembered choice, same default-closed
+   * policy. It is a block in the flow with its own body, so opening it cannot
+   * resize or rebalance the rows above it -- they are not in it.
+   *
+   * Expansion is presentation, never configuration: the choice is remembered
+   * for the page's lifetime by the disclosure owner and is written nowhere.
+   *
+   * ``shortTitle``: the words a handheld subsection header draws instead
+   * (below 780px, ui-settings-page.css), from its attribute -- as a card's
+   * short title is drawn -- so the title's text and the disclosure's name stay
+   * the full title. */
+  function disclosureSection(title, key, body, expanded = false, shortTitle = '') {
+    const safe = String(key).replace(/[^a-z0-9_-]/gi, '-');
+    const bodyId = `dp-settings-section-body-${safe}`;
+    const persistKey = `section:${safe}`;
+    const open = disclosureOpen(persistKey, expanded);
+    const titleWords = shortTitle
+      ? `<span class="dp-settings-subsection-title-full"${keyed(title)}>${html(title)}</span><span class="dp-settings-subsection-title-short" aria-hidden="true"${keyed(null, {'data-short-title': shortTitle})}></span>`
+      : words(title);
+    return `
+      <section class="dp-settings-subsection">
+        <div class="dp-settings-subsection-header">
+          <span class="dp-settings-subsection-title">${titleWords}</span>
+          ${settingsDisclosure(bodyId, open, title, persistKey)}
+        </div>
+        <div class="dp-settings-subsection-body" id="${bodyId}"${open ? '' : ' hidden'}>${body}</div>
+      </section>`;
+  }
+
+  // Provider card: the title (with its premium mark), the configuration status,
+  // the collapse control and the Enable toggle are all part of the card's own
+  // markup. Behavior (collapse / status refresh) is bound by bindEvents().
+  /* The provider header's CONFIGURATION report, and only that.
+   *
+   * The Enable toggle immediately to its right already says whether the
+   * provider participates, so this never repeats it. What it adds is the pair
+   * of things the toggle cannot say: whether there is a usable SAVED
+   * configuration at all, and whether that exact saved configuration has been
+   * proven to work.
+   *
+   *   Unconfigured  nothing usable is saved, and the operator has admitted the
+   *                 provider -- so it cannot do the job it was just admitted
+   *                 for. A provider that is switched off and unconfigured is
+   *                 not a problem and says nothing.
+   *   Unverified    saved and usable, but the current saved configuration has
+   *                 no successful test behind it. Saved is not proven, and the
+   *                 report says which of the two it is.
+   *   Verified      the current saved configuration IS covered by successful
+   *                 test evidence. Durable canonical truth from the backend;
+   *                 this function only reports it. */
+  function providerStatus(enabled, configured, verified) {
+    if (configured) {
+      return verified ? {text: say('settings.status.verified'), tone: 'success'} : {text: say('settings.status.unverified'), tone: 'warning'};
+    }
+    return enabled ? {text: say('settings.status.unconfigured'), tone: 'error'} : {text: '', tone: 'none'};
+  }
+
+  /* The provider-level Test control.
+   *
+   * Test is a PROVIDER-level action, so it belongs to the card's operational
+   * header rail beside the state it proves and the participation control it is
+   * about -- never in a credential row (it saves nothing) and never in an
+   * optional-tuning disclosure (it is not tuning, and its position must not
+   * depend on whether that is open).
+   *
+   * The grammar is the CARD's, not any one provider's: one declaration, one
+   * appearance, one place, for every provider that has something to prove. */
+  // `attribute` names the owner that handles the action: the page's own
+  // data-action by default, or a collection owner's (a Usenet server's Test).
+  // `mark: false` is the text-only Test a Usenet server card carries: no flask
+  // chip, so the room it took goes back to the server's name.
+  function providerTestAction(action, attribute = 'data-action', {mark = true} = {}) {
+    const chip = mark ? `
+            <span class="dp-settings-action-chip" aria-hidden="true">
+              <img class="dp-settings-action-glyph" src="/icons/lucide/flask-conical.svg" alt="">
+            </span>` : '';
+    return `
+          <button class="btn btn-ghost btn-sm dp-settings-provider-test" type="button" ${attribute}="${html(action)}">${chip}
+            <span${keyed(say('settings.test'))}>${html(t('settings.test'))}</span>
+          </button>`;
+  }
+
+  /* A card's header Test, as each width presents it.
+   *
+   * From 780px the rail is unchanged: the direct Test (``action``, the card's
+   * own Test markup) beside the participation toggle, and the header status.
+   * Below 780px the rail's status gives way, and the same Test and the toggle
+   * sit in one compact outlined group: the Test textual, coloured by the
+   * configuration. It is one Test at every width -- one press runs the card's
+   * existing handler at once; nothing opens.
+   *
+   * ``status`` is the card's configuration report whatever its participation
+   * (a rail may hide it while switched off; this never does). The group
+   * carries which of the three it is -- verified, unverified, unconfigured --
+   * as the handheld Test's colour (ui-settings-page.css), and the painters
+   * below keep it current. Participation is separate: an off toggle mutes Test
+   * at both widths and never disables it. */
+  const TEST_VERIFICATION = Object.freeze({success: 'verified', warning: 'unverified', error: 'unconfigured'});
+  let headerTestMenus = 0;
+  function headerTestControls(title, action, toggle, status) {
+    const verification = TEST_VERIFICATION[status.tone] || 'unconfigured';
+    return `<div class="dp-settings-header-test-group" data-verification="${verification}"><div class="dp-settings-header-action">${action}</div>${toggle}</div>`;
+  }
+
+  /* A card's header actions, as each width presents them: the same group.
+   * From 780px the actions sit in the rail exactly as before; below 780px
+   * they give way to one ``label`` trigger whose menu holds each of them,
+   * cloned as it opens (drawHeaderTestMenu) and each named by its
+   * data-menu-label where it has one -- so the page's one action dispatch runs
+   * each existing handler. An action marked data-menu-closes closes the menu
+   * first (the one it opens takes over: Backup Management's dialog). */
+  // ``from``: the wrapping header's step (fitHeaderSteps) at which the menu
+  // takes over below 780px; the actions are drawn whole until then.
+  function headerActionsMenu(title, label, actions, toggle = '', {from = 0} = {}) {
+    return `<div class="dp-settings-header-action">${actions}</div>${actionsMenuGroup(title, label, toggle, {from})}`;
+  }
+
+  // The menu's trigger and its (empty until opened) menu, after the actions
+  // it holds: a card header's (above) or an Integration account's own
+  // (integrationBlocks). ``short``: the trigger's shorter words, drawn only
+  // where its owner's stylesheet says (fitLabel); its full words stay its
+  // name.
+  function actionsMenuGroup(title, label, toggle = '', {from = 0, short = ''} = {}) {
+    const menu = `dp-settings-test-menu-${++headerTestMenus}`;
+    return `<div class="dp-settings-header-test-group"${from ? ` data-menu-from="${from}"` : ''}>
+        <span class="dp-settings-header-test-shell">
+          <button class="btn btn-ghost btn-sm dp-settings-header-test-trigger" type="button" popovertarget="${menu}"
+                  aria-controls="${menu}" aria-expanded="false">${short ? fitLabel(label, short) : words(label)}</button>
+          <div class="dp-dropdown-menu dp-settings-header-test-menu" id="${menu}" popover="auto" role="group"${keyed(null, {'aria-label': say('settings.actions_label', {title})})}></div>
+        </span>${toggle}</div>`;
+  }
+
+  /* The card's operational header rail.
+   *
+   * The right-hand region of the ONE canonical Settings card header reads, in
+   * this order: what the provider's configuration currently IS, the
+   * provider-level action that can prove it, then whether the provider
+   * participates at all. `headerAction` is the neutral slot in the middle --
+   * neutral because the grammar is the card's, not any one provider's, so an
+   * auth/integration card that acquires a provider-level action later renders
+   * it in the same place without a second layout. A card that has no such
+   * action renders no slot.
+   *
+   * Everything about the CONFIGURATION -- credentials, optional tuning behind
+   * its disclosure -- stays in the body. The rail therefore never moves when
+   * the body grows, shrinks, opens or closes, because it is not in it. */
+  // ``help``: the card's own help topic, in the same rail order; ``headerCopy``
+  // its one-line purpose, centred on the header while it fits there
+  // (fitHeaderHints), else carried by that help chip.
+  function providerCard(identity, title, body, entry, {className, titlePrefix = '', displayName, headerCopy = '', headerAction = '', help = ''}) {
+    const enabled = entry.enabled !== false;
+    const configured = !!entry.configured;
+    const verified = !!entry.verified;
+    const premium = !!entry.presentation?.premium;
+    const safe = String(identity).replace(/[^a-z0-9_-]/gi, '-');
+    const enable = integrationHeaderToggle(identity, enabled, displayName, 'dp-settings-provider-header-enable');
+    const crownWords = say('settings.premium_provider');
+    const crown = premium ? `<span class="dp-provider-premium" role="img"${keyed(null, {'data-tooltip': crownWords, 'aria-label': crownWords})}></span>` : '';
+    const titleMarkup = titlePrefix
+      ? `<span class="card-title dp-settings-card-title--with-icon">${titlePrefix}<span class="dp-settings-card-title-text">${words(title)}</span>${crown}</span>`
+      : `<span class="card-title">${words(title)}${crown}</span>`;
+    const bodyId = `${surfacePrefix()}-provider-body-${safe}`;
+    // On the wizard's surface the card IS what was opened: its body is shown,
+    // with no disclosure, no Help chip of its own and no one-line purpose
+    // (Services fits that line to its header by measuring the page).
+    const wizard = renderSurface === 'wizard';
+    if (wizard) headerCopy = '';
+    // Every expandable card renders CLOSED. Arriving at Services is
+    // not an opinion about what should be open, and enabled/configured/verified
+    // state is canonical truth about the provider, never about the card.
+    const disclosure = wizard ? '' : settingsDisclosure(bodyId, false, say('settings.provider_configuration'));
+    const status = providerStatus(enabled, configured, verified);
+    const report = providerStatus(true, configured, verified);
+    const controls = headerAction ? headerTestControls(title, headerAction, enable, report) : enable;
+    return `
+      <section class="card dp-settings-card dp-large-panel-surface ${className}${wizard ? '' : ' dp-settings-provider-card--collapsed'}" data-provider-configured="${configured}">
+        <div class="card-header dp-settings-card-header${headerCopy ? ' dp-settings-card-header--hinted' : ''}">
+          <span class="dp-settings-card-title-group">${titleMarkup}${disclosure}</span>
+          <div class="dp-settings-card-header-center">${headerCopy ? `<p class="dp-settings-provider-header-copy"${keyed(headerCopy)}>${html(headerCopy)}</p>` : ''}</div>
+          <div class="dp-settings-card-header-controls"><div class="dp-settings-provider-config-status" role="status" aria-live="polite" data-tone="${status.tone}"${status.text ? '' : ' hidden'}${keyed(status.text)}>${html(status.text)}</div>${
+            wizard ? '' : helpChip(help, title)}${controls}</div>
+        </div>
+        <div class="card-body" id="${bodyId}"${wizard ? '' : ' hidden'}>${body}</div>
+      </section>`;
+  }
+
+  /* The ONE Network Source child box.
+   *
+   * A compact bounded protocol entry: the canonical protocol chip top-left, the
+   * canonical presentation label at the top, the canonical immediate Enable in
+   * the middle, and the two lines that say what enabling it allows. The toggle
+   * is the only action -- a network source holds no credential, so there is
+   * nothing to configure, test or save, and therefore no disclosure, no status
+   * region and no footer.
+   *
+   * Neither this nor the grid that arranges it knows which protocols exist:
+   * identity, label, order and enable state all come from the integration's own
+   * published metadata, so a newly registered member appears by existing.
+   *
+   * The title is set one word per line, so a multi-word name ("Media
+   * Downloads") is a centred two-line block beside its mark instead of a
+   * wrap the lane width decides; a one-word name is one line, as before. The
+   * words stay separated by a space, so the title's text is the name. */
+  function sourceProtocolBox(identity, label, lines, entry) {
+    const enabled = entry.enabled !== false;
+    // The provider-card class family is hyphenated, so the durable identity's
+    // separators are normalized for the CLASS only; the identity itself, which
+    // every control and mutation addresses, is untouched.
+    const slug = String(identity).replace(/[^a-z0-9]+/gi, '-');
+    return `
+      <section class="card dp-settings-card dp-settings-provider-card dp-settings-source-box dp-settings-provider-card--${slug}" data-provider-configured="${!!entry.configured}">
+        <div class="dp-settings-source-box-head">
+          ${protocolIcon(identity)}
+          <span class="card-title"><span class="dp-settings-card-title-text">${String(label).split(/\s+/).filter(Boolean)
+            .map(word => `<span class="dp-settings-source-box-title-line">${html(word)}</span>`).join(' ')}</span></span>
+        </div>
+        ${integrationHeaderToggle(identity, enabled, label, 'dp-settings-source-box-enable', {visibleLabel: true})}
+        <p class="dp-settings-source-box-copy">${lines.map(line => words(line)).join('')}</p>
+      </section>`;
+  }
+
+
+  // --- Usenet ---------------------------------------------------------------
+  // Markup owner only. The dynamic server collection's BEHAVIOR (add / remove /
+  // save / test / derived display name) belongs to ui-settings-usenet-servers.js;
+  // this renders the collection's initial state and its containers exactly once.
+
+  /* One server card.
+   *
+   * Erasing a stored credential is destructive, so it is an explicit action
+   * behind the ONE canonical Settings confirmation. The button is rendered on
+   * every card and the group is hidden while the server has nothing stored to
+   * clear, so the behaviour owner toggles STATE rather than markup.
+   *
+   * The card reads, at every width: its header -- the name with its Edit,
+   * from the leading edge, then the Test/Enable island at the trailing edge
+   * (the header Test group's material) -- then Host, then Port with SSL,
+   * Username, Password with its Clear inside the field (the shared compound
+   * field, .dp-action-field), and the footer: Advanced, then Remove at the
+   * trailing edge. Test, Enable and Remove are rendered exactly once; nothing
+   * clones, moves or re-parents them. Only two things answer to width: a name
+   * too long for its room ends in an ellipsis (the whole name stays the
+   * text, the tooltip and the controls' names), and Port with SSL takes its
+   * own row beneath Host when the three no longer fit one
+   * (ui-settings-usenet-servers.css). */
+  /* One server's participation control.
+   *
+   * It is an ORDINARY reversible boolean of this record, so it commits
+   * immediately through the same `usenet-server` scope, lane and rollback
+   * every other field of the card uses -- never through the top-level
+   * integration participation owner, which is a different question about a
+   * different subject.
+   *
+   * It sits in the header's Test/Enable island, after Test. It shows no
+   * word; its accessible name names the server. */
+  function usenetEnableControl(value, name) {
+    return `
+          <label class="dp-usenet-enable toggle-row">
+            <span class="toggle">
+              <input type="checkbox" data-usenet-field="enabled"${keyed(null, {'aria-label': say('settings.enable_named', {name})})}
+                     data-commit="immediate" data-commit-scope="usenet-server" data-commit-key="enabled" ${checked(value)}>
+              <span class="ttrack"></span>
+            </span>
+          </label>`;
+  }
+
+  function usenetServerCard(server, index) {
+    const safe = String(server.id || `new-${index}`).replace(/[^a-z0-9_-]/gi, '-');
+    // The setup wizard draws the same card beside Services': its own ids.
+    const prefix = renderSurface === 'wizard' ? 'dp-setup-usenet' : 'dp-usenet';
+    const advancedId = `${prefix}-advanced-${safe}`;
+    const passwordId = `${prefix}-password-${safe}`;
+    const derived = String(server.host || '').trim();
+    const override = String(server.display_name || '').trim();
+    const name = override || derived || say('settings.usenet.new_server');
+    const configured = !!server.password_configured;
+    return `
+      <div class="dp-usenet-server" data-usenet-server-id="${html(server.id || '')}"
+           data-commit-instance="${html(server.id || '')}"
+           data-usenet-password-configured="${server.password_configured ? '1' : '0'}"
+           data-usenet-name-override="${override ? '1' : '0'}">
+        <div class="dp-usenet-server-head">
+          <span class="dp-usenet-server-title">
+            <span class="dp-usenet-server-name" data-usenet-display-name${keyed(name instanceof Said ? name : null, {'data-tooltip': name})}>${html(name)}</span>
+            <button type="button" class="btn btn-ghost btn-sm dp-usenet-name-edit" data-usenet-action="rename"
+                   ${keyed(null, {'data-tooltip': say('settings.usenet.edit_name'), 'aria-label': say('settings.usenet.edit_name_for', {name})})}>
+              <img src="/icons/lucide/pencil.svg" alt="" aria-hidden="true">
+            </button>
+          </span>
+          <div class="dp-usenet-server-controls">${providerTestAction('test', 'data-usenet-action', {mark: false})}
+            ${usenetEnableControl(server.enabled !== false, name)}
+          </div>
+        </div>
+        <div class="dp-usenet-row dp-usenet-row--host">
+          <label class="dp-usenet-field dp-usenet-field--host">
+            <span class="form-label"${keyed(say('settings.usenet.host'))}>${html(t('settings.usenet.host'))}</span>
+            <input class="input" type="text" data-usenet-field="host" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="host" value="${html(server.host || '')}"
+                   autocomplete="off" placeholder="news.example.com">
+          </label>
+          <div class="dp-usenet-port-ssl">
+            <label class="dp-usenet-field dp-usenet-field--port">
+              <span class="form-label"${keyed(say('settings.usenet.port'))}>${html(t('settings.usenet.port'))}</span>
+              <input class="input" type="number" min="1" max="65535" data-usenet-field="port" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="port"
+                     value="${html(String(server.port ?? 563))}">
+            </label>
+            <label class="dp-usenet-field dp-usenet-field--ssl">
+              <span class="form-label"${keyed(say('settings.usenet.ssl'))}>${html(t('settings.usenet.ssl'))}</span>
+              <span class="toggle dp-usenet-ssl">
+                <input type="checkbox" data-usenet-field="ssl" data-commit="immediate" ${checked(server.ssl !== false)}>
+                <span class="ttrack"></span>
+              </span>
+            </label>
+          </div>
+        </div>
+        <div class="dp-usenet-row">
+          <label class="dp-usenet-field dp-usenet-field--wide">
+            <span class="form-label"${keyed(say('settings.usenet.username'))}>${html(t('settings.usenet.username'))}</span>
+            <input class="input" type="text" data-usenet-field="username" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="username" value="${html(server.username || '')}" autocomplete="off">
+          </label>
+        </div>
+        <div class="dp-usenet-row">
+          <div class="dp-usenet-field dp-usenet-field--wide dp-usenet-field--password">
+            <label class="form-label" for="${passwordId}"${keyed(say('settings.usenet.password'))}>${html(t('settings.usenet.password'))}</label>
+            ${embeddedActionField(`<input class="input" id="${passwordId}" type="password" data-usenet-field="password" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="password" value=""
+                     autocomplete="off"${keyed(null, {placeholder: say(configured ? 'settings.usenet.password_configured' : 'settings.usenet.password')})}>`,
+              `<button type="button" class="btn btn-danger btn-sm" data-usenet-action="clear-password"
+                     ${keyed(say('settings.usenet.clear'), {'aria-label': say('settings.usenet.clear_password'), 'data-tooltip': say('settings.usenet.clear_password')})}${
+                      configured ? '' : ' disabled'}>${html(t('settings.usenet.clear'))}</button>`)}
+          </div>
+        </div>
+        <div class="dp-usenet-advanced" data-usenet-advanced>
+          <button type="button" class="dp-usenet-advanced-toggle" data-usenet-advanced-toggle
+                  aria-controls="${advancedId}" aria-expanded="false"
+                 ${keyed(null, {'data-tooltip': say('settings.usenet.advanced_show'), 'aria-label': say('settings.usenet.advanced_show')})}>
+            <span class="dp-usenet-advanced-label"${keyed(say('settings.usenet.advanced'))}>${html(t('settings.usenet.advanced'))}</span>
+            <span class="dp-usenet-advanced-chevron" aria-hidden="true">&rsaquo;</span>
+          </button>
+          <div class="dp-usenet-advanced-body" id="${advancedId}" hidden>
+            <div class="dp-usenet-row dp-usenet-row--tuning">
+              <label class="dp-usenet-field">
+                <span class="form-label"${keyed(say('settings.usenet.connections'))}>${html(t('settings.usenet.connections'))}</span>
+                <input class="input" type="number" min="1" max="500" data-usenet-field="connections" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="connections"
+                       value="${html(String(server.connections ?? 8))}">
+              </label>
+              <div class="dp-usenet-field dp-usenet-field--priority">
+                <label class="dp-usenet-field-control">
+                  <span class="form-label"${keyed(say('settings.usenet.priority'))}>${html(t('settings.usenet.priority'))}</span>
+                  <input class="input" type="number" min="0" max="99" data-usenet-field="priority" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="priority"
+                         value="${html(String(server.priority ?? 0))}">
+                </label>
+                <span class="form-hint dp-usenet-priority-hint"${keyed(say('settings.usenet.priority_hint'))}>${html(t('settings.usenet.priority_hint'))}</span>
+              </div>
+            </div>
+            <div class="dp-usenet-row dp-usenet-row--tuning">
+              <label class="dp-usenet-field">
+                <span class="form-label"${keyed(say('settings.usenet.articles_per_request'))}>${html(t('settings.usenet.articles_per_request'))}</span>
+                <input class="input" type="number" min="1" max="20" data-usenet-field="articles_per_request" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="articles_per_request"
+                       value="${html(String(server.articles_per_request ?? 2))}">
+              </label>
+              <label class="dp-usenet-field">
+                <span class="form-label"${keyed(say('settings.usenet.timeout_seconds'))}>${html(t('settings.usenet.timeout_seconds'))}</span>
+                <input class="input" type="number" min="20" max="240" data-usenet-field="timeout_seconds" data-commit="changed-blur" data-commit-scope="usenet-server" data-commit-key="timeout_seconds"
+                       value="${html(String(server.timeout_seconds ?? 60))}">
+              </label>
+            </div>
+            <p class="dp-usenet-advanced-hint"${keyed(say('settings.usenet.advanced_hint'))}>${html(t('settings.usenet.advanced_hint'))}</p>
+          </div>
+          <div class="dp-usenet-actions">
+            <button type="button" class="btn btn-danger btn-sm dp-usenet-remove" data-usenet-action="remove"${keyed(say('settings.usenet.remove'))}>${html(t('settings.usenet.remove'))}</button>
+          </div>
+        </div>
+        <p class="dp-usenet-field-validation" role="alert" data-usenet-validation hidden></p>
+      </div>`;
+  }
+
+  function usenetAddTile() {
+    return `
+      <button type="button" class="dp-usenet-add" data-usenet-action="add"${keyed(null, {'aria-label': say('settings.usenet.add')})}>
+        <span class="dp-usenet-add-inner">
+          <img class="dp-usenet-add-glyph" src="/icons/lucide/plus.svg" alt="" aria-hidden="true">
+          <span class="dp-usenet-add-label"${keyed(say('settings.usenet.add'))}>${html(t('settings.usenet.add'))}</span>
+        </span>
+      </button>`;
+  }
+
+  function usenetBody(s, entry) {
+    const options = usenetOf(s);
+    const servers = Array.isArray(options.servers) ? options.servers : [];
+    // Usenet acquisition runs inside DownloadPulse, so there is no service
+    // address or key to configure -- only the news servers to acquire from.
+    return `<div class="dp-settings-help-slot dp-settings-help-slot--row"></div>
+      <div class="dp-usenet-servers" data-usenet-collection>
+        ${servers.map(usenetServerCard).join('')}
+        ${usenetAddTile()}
+      </div>`;
+  }
+
+  /* A provider card's reserved status row: one fixed-height line that is
+   * always present whether or not it says anything, so the card never grows or
+   * shrinks because its status did. Only a card with a status to report (Real-
+   * Debrid) carries one. The status is an inline run inside the row, so it can
+   * be set larger than the row's own line without changing the row. */
+  function providerStatusLine(content = '', className = '') {
+    const status = content ? `<span class="${className}">${content}</span>` : '';
+    return `<p class="dp-settings-provider-status-line" role="status">${status}</p>`;
+  }
+
+  /* The premium-provider account connection: the card's main body, for every
+   * provider that connects through its own device authorization.
+   *
+   * The operator approves DownloadPulse on the provider's own site, opened in
+   * their own browser, and types nothing here. The browser holds only what it
+   * shows: the code to enter and where to enter it. The device code and every
+   * credential stay on the server, which polls no faster than the provider
+   * asks and saves the credential through the canonical integration mutation.
+   *
+   * One markup owner renders the region in every state, for every such
+   * provider, so the cards and every later convergence render the same thing:
+   * the card's reserved top row carrying the one line the state has to say
+   * (blank while disconnected, the wait while the operator authorizes, the
+   * account's own premium expiry once connected), then one compact, centred,
+   * bordered Account Connection island (the Extraction island's geometry)
+   * holding what the connection is and the controls that act on it side by
+   * side. A provider's entry says only what differs: its name, whether a
+   * credential is saved, and how its account names itself. */
+  const DEVICE_ACCOUNTS = Object.freeze({
+    realdebrid: {
+      name: 'Real-Debrid',
+      configured: s => !!realDebridOf(s).client_id_configured,
+      identity: account => account.username,
+    },
+    torbox: {
+      name: 'TorBox',
+      configured: s => !!torBoxOf(s).api_token_configured,
+      identity: account => account.email,
+    },
+  });
+  // Whether a connected account is a standard (free, or lapsed) one: the
+  // neutral account truth the provider publishes, never its plan names.
+  const standardAccount = account => account?.account?.service_class === 'standard';
+  const deviceConnections = Object.fromEntries(Object.keys(DEVICE_ACCOUNTS)
+    .map(id => [id, {authorization: null, timer: null, account: null}]));
+
+  // The account's premium expiry, interpreted and worded by the one premium
+  // account owner from the provider's own account facts -- never a token
+  // lifetime -- so this line and Provider Status always read the same.
+  function accountExpiry(id, account) {
+    const owner = window.DPPremiumAccount;
+    const premium = owner?.account(id, account);
+    if (!premium) return '';
+    const text = owner.describe(premium.until, premium.tier);
+    return `${text.until} ${text.days}`;
+  }
+
+  function accountIsland(helper, body, actions) {
+    return `
+      <div class="dp-settings-account-island dp-settings-help-slot">
+        <div class="dp-settings-account-island-copy">
+          <p class="dp-settings-account-heading"${keyed(say('settings.account.heading'))}>${html(t('settings.account.heading'))}</p>
+          <p class="dp-settings-copy"${keyed(helper)}>${html(helper)}</p>${body}
+        </div>
+        <div class="dp-settings-account-island-actions">${actions}</div>
+      </div>`;
+  }
+
+  function deviceConnectionMarkup(id) {
+    const {name, configured, identity} = DEVICE_ACCOUNTS[id];
+    const connection = deviceConnections[id];
+    const pending = connection.authorization;
+    if (pending) {
+      // The code is a reading, not a setting: read-only and never enrolled in
+      // persistence, but selectable and reachable by keyboard.
+      const code = embeddedActionField(
+        `<input class="input dp-settings-account-code" type="text" readonly value="${html(pending.user_code)}" `
+          + `${keyed(null, {'aria-label': say('settings.account.code_label', {provider: name})}).trim()} data-${id}-code autocomplete="off" spellcheck="false">`,
+        `<button class="btn btn-ghost btn-sm" type="button" data-action="copy-${id}-code"`
+          + `${keyed(say('settings.account.copy'), {'aria-label': say('settings.account.copy_label', {provider: name})})}>${html(t('settings.account.copy'))}</button>`);
+      return providerStatusLine(words(say('settings.account.waiting')), 'dp-settings-account-waiting')
+        + accountIsland(say('settings.account.authorize', {provider: name}), '', `${code}
+          <button type="button" class="btn btn-primary btn-sm" data-action="open-${id}"${keyed(say('settings.account.open', {provider: name}))}>${html(t('settings.account.open', {provider: name}))}</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-action="cancel-${id}"${keyed(say('common.cancel'))}>${html(t('common.cancel'))}</button>`);
+    }
+    if (configured(state.settings)) {
+      const account = connection.account || {};
+      const who = identity(account);
+      const line = accountExpiry(id, account) || (standardAccount(account) ? t('settings.account.free') : '');
+      return providerStatusLine(html(line), 'dp-settings-account-expiry')
+        + accountIsland(who ? say('settings.account.connected_as', {who}) : say('settings.account.connected_to', {provider: name}), '',
+          `<button type="button" class="btn btn-danger btn-sm" data-action="disconnect-${id}"${keyed(say('settings.account.disconnect'))}>${html(t('settings.account.disconnect'))}</button>`);
+    }
+    return providerStatusLine()
+      + accountIsland(say('settings.account.connect_helper', {provider: name}), '',
+      `<button type="button" class="btn btn-primary btn-sm" data-action="connect-${id}"${keyed(say('settings.account.connect', {provider: name}))}>${html(t('settings.account.connect', {provider: name}))}</button>`);
+  }
+
+  /* Rebuilt only when what it shows changed: Provider Status publishes the
+   * same account once per settled observation, and replacing identical
+   * controls would take the operator's focus with them. */
+  function renderDeviceConnection(id) {
+    // Every drawing of the card -- Services' and the setup wizard's -- shows
+    // the one connection state.
+    for (const card of providerCards(id)) {
+      const region = card.querySelector(`[data-${id}-connection]`);
+      if (!region) continue;
+      const next = document.createElement('template');
+      next.innerHTML = deviceConnectionMarkup(id);
+      // The card's help chip, when its header lent it to the island, is the
+      // header's control: it is not part of what this region shows, and it
+      // moves into the rebuilt island rather than being rebuilt.
+      const help = region.querySelector('.dp-settings-help-slot > .dp-settings-help-chip');
+      const shown = help ? region.innerHTML.replace(help.outerHTML, '') : region.innerHTML;
+      if (shown !== next.innerHTML) {
+        const focused = help && document.activeElement === help;
+        if (help) next.content.querySelector('.dp-settings-help-slot')?.append(help);
+        region.replaceChildren(next.content);
+        if (focused) help.focus({preventScroll: true});
+      }
+    }
+  }
+
+  function stopDevicePolling(id) {
+    const connection = deviceConnections[id];
+    if (connection.timer) clearTimeout(connection.timer);
+    connection.timer = null;
+  }
+
+  function scheduleDevicePoll(id) {
+    stopDevicePolling(id);
+    const pending = deviceConnections[id].authorization;
+    if (!pending) return;
+    const seconds = Math.max(5, Number(pending.interval) || 5);
+    deviceConnections[id].timer = setTimeout(() => pollDeviceAuthorization(id), seconds * 1000);
+  }
+
+  async function connectDeviceAccount(id, button) {
+    setBusy(button, true, say('settings.account.connecting'));
+    try {
+      deviceConnections[id].authorization = await request('POST', `/integrations/${id}/authorization`, undefined, 20000);
+      setBusy(button, false);
+      renderDeviceConnection(id);
+      scheduleDevicePoll(id);
+      return;
+    } catch (error) {
+      notify(t('settings.provider_error', {provider: DEVICE_ACCOUNTS[id].name, message: error.message}), 'error');
+    }
+    setBusy(button, false);
+  }
+
+  async function pollDeviceAuthorization(id) {
+    const connection = deviceConnections[id];
+    const {name, identity} = DEVICE_ACCOUNTS[id];
+    connection.timer = null;
+    if (!connection.authorization) return;
+    let result;
+    try {
+      result = await request('POST', `/integrations/${id}/authorization/poll`, undefined, 30000);
+    } catch (error) {
+      // A failed poll is not a failed authorization: the code stays valid
+      // until it expires, so the next poll simply tries again.
+      scheduleDevicePoll(id);
+      return;
+    }
+    if (!connection.authorization) return;
+    if (result?.state === 'pending') {
+      connection.authorization = result;
+      scheduleDevicePoll(id);
+      return;
+    }
+    connection.authorization = null;
+    if (result?.state === 'connected') {
+      connection.account = result;
+      publishAccepted(result);
+      const who = identity(result);
+      notify(t(who ? 'settings.account.connected_toast_as' : 'settings.account.connected_toast', {provider: name, who}), 'success');
+    } else if (result?.state === 'expired') {
+      notify(t('settings.account.code_expired', {provider: name}), 'warn');
+    }
+    renderDeviceConnection(id);
+  }
+
+  async function cancelDeviceAuthorization(id, button) {
+    stopDevicePolling(id);
+    deviceConnections[id].authorization = null;
+    setBusy(button, true, say('settings.account.cancelling'));
+    try {
+      await request('DELETE', `/integrations/${id}/authorization`, undefined, 15000);
+    } catch (_) {
+      // The server-side attempt expires on its own; nothing here depends on it.
+    }
+    renderDeviceConnection(id);
+  }
+
+  async function copyDeviceCode(id, button) {
+    // The code shown beside the Copy that was pressed, wherever its card is drawn.
+    const field = button?.closest('.dp-settings-account-connection')?.querySelector(`[data-${id}-code]`);
+    const code = deviceConnections[id].authorization?.user_code;
+    if (!field || !code) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(code);
+      notify(t('settings.account.code_copied'), 'success');
+      return;
+    } catch (_) {
+      // Fall through: the code stays selected for a manual copy.
+    }
+    field.focus();
+    field.select();
+    notify(t('settings.account.code_copy_manually'), 'info');
+  }
+
+  async function disconnectDeviceAccount(id, button) {
+    const {name} = DEVICE_ACCOUNTS[id];
+    const values = {provider: name};
+    const confirmed = await window.DPSettingsModal.confirm({
+      tone: 'danger',
+      title: t('settings.account.disconnect_title', values),
+      message: t('settings.account.disconnect_message', values),
+      confirmLabel: t('settings.account.disconnect_accept', values),
+      keys: {title: 'settings.account.disconnect_title', titleValues: values, message: 'settings.account.disconnect_message',
+        messageValues: values, accept: 'settings.account.disconnect_accept', acceptValues: values},
+    });
+    if (!confirmed) return;
+    await window.DPSettingsPersistence.settle(settleScope(button));
+    setBusy(button, true, say('settings.account.disconnecting'));
+    try {
+      const result = await request('POST', `/integrations/${id}/disconnect`, undefined, 20000);
+      deviceConnections[id].account = null;
+      publishAccepted(result);
+      renderDeviceConnection(id);
+      notify(t('settings.account.disconnected', {provider: name}), 'success');
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+  }
+
+  async function testDeviceAccount(id, button) {
+    const {name, identity} = DEVICE_ACCOUNTS[id];
+    await window.DPSettingsPersistence.settle(settleScope(button));
+    setBusy(button, true, say('settings.testing'));
+    try {
+      const result = await request('POST', `/settings/validate-${id}`, undefined, 20000);
+      deviceConnections[id].account = result;
+      publishAccepted(result);
+      if (!deviceConnections[id].authorization) renderDeviceConnection(id);
+      const who = identity(result);
+      notify(t(who ? 'settings.account.connected_toast_as' : 'settings.account.connected_toast', {provider: name, who}), 'success');
+    } catch (error) {
+      notify(t('settings.provider_error', {provider: name, message: error.message}), 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  /* The API-key providers' card actions (Test, Remove key), wherever their
+   * card is drawn: Services' one dispatch and the setup wizard's surface. */
+  function apiKeyProviderAction(action, button) {
+    if (action === 'test-alldebrid') testConnection('alldebrid', button);
+    else if (action === 'test-debridlink') testConnection('debridlink', button);
+    else if (action === 'clear-debridlink-key') clearApiKey('debridlink', button);
+    else if (action === 'test-premiumize') testConnection('premiumize', button);
+    else if (action === 'clear-premiumize-key') clearApiKey('premiumize', button);
+    else if (action === 'clear-alldebrid-key') clearAllDebridKey(button);
+    else return false;
+    return true;
+  }
+
+  // A device-account control's action names its provider:
+  // ``<verb>-<provider>`` (``copy-<provider>-code`` for the code).
+  function deviceAccountAction(action, button) {
+    for (const id of Object.keys(DEVICE_ACCOUNTS)) {
+      if (action === `test-${id}`) testDeviceAccount(id, button);
+      else if (action === `connect-${id}`) connectDeviceAccount(id, button);
+      else if (action === `open-${id}`) openExternalUrl(deviceConnections[id].authorization?.verification_url);
+      else if (action === `copy-${id}-code`) copyDeviceCode(id, button);
+      else if (action === `cancel-${id}`) cancelDeviceAuthorization(id, button);
+      else if (action === `disconnect-${id}`) disconnectDeviceAccount(id, button);
+      else continue;
+      return true;
+    }
+    return false;
+  }
+
+  // The account line shows what the provider-status owner established; a
+  // card never probes its provider on its own. A disabled provider is not
+  // probed at all, so it neither confirms nor retracts the last known account.
+  document.addEventListener('downloadpulse:provider-status', event => {
+    for (const id of Object.keys(DEVICE_ACCOUNTS)) {
+      const status = (event.detail?.entries || []).find(candidate => candidate.id === id)?.status;
+      if (status?.state === 'healthy') deviceConnections[id].account = status;
+      else if (['auth_required', 'unconfigured'].includes(status?.state)) deviceConnections[id].account = null;
+      else continue;
+      if (!deviceConnections[id].authorization) renderDeviceConnection(id);
+    }
+  });
+
+  /* A mild grouping rule between the reserved Usenet card and the debrid
+   * providers beneath it. Inset, partial-width and inside the content bounds:
+   * it groups, and it is emphatically not a second section, header or
+   * category. Its whole treatment is one rule in ui-settings-page.css. */
+  const PREMIUM_SEPARATOR = '<div class="dp-settings-group-separator" role="presentation"></div>';
+
+  /* The Premium Services cards, in this surface's own order: the generic
+   * service family first, then every named provider alphabetically by its
+   * display name. Which is which is neutral presentation metadata the
+   * integrations already publish: a named account provider declares the
+   * standard tier its account falls to (`standard_status_tier`), while a
+   * service family's tier is inherently static and declares none. Nothing
+   * here names an integration, so a future named provider sorts into place by
+   * its name alone. This order is deliberately INDEPENDENT of the Provider
+   * Status panel's, which keeps its own `display_order`; neither is routing
+   * priority, and one is never derived from the other. */
+  function premiumServiceOrder(cards) {
+    const named = card => !!card.presentation.standard_status_tier;
+    const label = card => String(card.presentation.status_name || card.id);
+    return {
+      families: cards.filter(card => !named(card)),
+      providers: cards.filter(named).sort((left, right) =>
+        label(left).localeCompare(label(right), 'en', {sensitivity: 'base'}) || left.id.localeCompare(right.id)),
+    };
+  }
+
+  /* A premium service's Additional Settings: the native disclosure of its
+   * tuning, omitted from the card in Easy. */
+  function providerAdditional(body) {
+    // The wizard shows a provider as Easy does, whatever the reader's own
+    // presentation: no Additional Settings there.
+    return renderSurface === 'wizard' || omitted('provider-additional-settings') ? '' : `
+      <details class="dp-settings-additional">
+        <summary><span${keyed(say('settings.provider.additional'))}>${html(t('settings.provider.additional'))}</span></summary>
+        <div class="dp-settings-additional-body">
+          ${body}
+        </div>
+      </details>`;
+  }
+
+  /* A premium service's own artwork, the one emitter: a debrid provider's
+   * supplied logo on its identity chip, Usenet's protocol chip. Its card
+   * header wears it, and so does the setup wizard's button for that service
+   * (providerArtwork, exported), so each service has one mark wherever it is
+   * chosen. */
+  const PROVIDER_ARTWORK = Object.freeze({
+    alldebrid: '<span class="dp-settings-provider-chip dp-settings-provider-chip--alldebrid" aria-hidden="true"><img class="dp-settings-provider-logo dp-settings-provider-logo--alldebrid" src="/icons/providers/alldebrid.svg" alt=""></span>',
+    debridlink: '<span class="dp-settings-provider-chip dp-settings-provider-chip--debridlink" aria-hidden="true"><img class="dp-settings-provider-logo dp-settings-provider-logo--debridlink" src="/icons/providers/debrid-link.svg" alt=""></span>',
+    premiumize: '<span class="dp-settings-provider-chip dp-settings-provider-chip--premiumize" aria-hidden="true"><img class="dp-settings-provider-logo dp-settings-provider-logo--premiumize" src="/icons/providers/premiumize.svg" alt=""></span>',
+    realdebrid: '<span class="dp-settings-provider-chip dp-settings-provider-chip--realdebrid" aria-hidden="true"><img class="dp-settings-provider-logo dp-settings-provider-logo--realdebrid" src="/icons/providers/real-debrid.svg" alt=""></span>',
+    torbox: '<span class="dp-settings-provider-chip dp-settings-provider-chip--torbox" aria-hidden="true"><img class="dp-settings-provider-logo dp-settings-provider-logo--torbox" src="/icons/providers/torbox.svg" alt=""></span>',
+  });
+  function providerArtwork(identity) {
+    return identity === 'usenet' ? protocolIcon('usenet') : PROVIDER_ARTWORK[identity] || '';
+  }
+
+  function sourcesPanel(s) {
+    const integrations = s.integrations || {};
+    const allDebrid = integrations.alldebrid || {};
+    const generalHttp = integrations.general_http || {};
+    const providerTest = providerTestAction('test-alldebrid');
+    const provider = providerCard('alldebrid', 'AllDebrid', `
+      <div data-alldebrid-account>${apiKeyAccountLine('alldebrid')}</div>
+      ${allDebridApiKeyField(!!allDebridOf(s).api_key_configured)}
+      ${providerAdditional(tuningCells(
+            tuningGroup(
+              tuningToggle('alldebrid_prepare_backup_torrents', say('settings.provider.prepare_backup'),
+                say('settings.provider.alldebrid.prepare_backup_hint'),
+                allDebridOf(s).prepare_backup_torrents === true),
+              input('alldebrid_max_active_torrents', say('settings.provider.max_active'), allDebridOf(s).max_active_torrents ?? '', {
+                type: 'number', min: 1, max: 30, placeholder: say('settings.provider.max_placeholder'),
+                hint: say('settings.provider.alldebrid.max_active_hint')
+              }),
+            ),
+            input('alldebrid_rate_limit_per_minute', say('settings.provider.rate_limit'), allDebridOf(s).rate_limit_per_minute ?? 60, {
+              type: 'number', min: 0, max: 600,
+              hint: say('settings.provider.alldebrid.rate_limit_hint')
+            }),
+          ))}
+`, allDebrid, {
+      className: 'dp-settings-provider-card dp-settings-provider-card--alldebrid',
+      titlePrefix: providerArtwork('alldebrid'),
+      displayName: 'AllDebrid',
+      headerCopy: say('settings.provider.header_copy', {provider: 'AllDebrid'}),
+      headerAction: providerTest,
+      help: 'alldebrid',
+    });
+
+    // Absent means OFF: Real-Debrid participates only once an operator turns
+    // it on, exactly as its definition declares.
+    const realDebrid = integrations.realdebrid || {enabled: false};
+    const realDebridCard = providerCard('realdebrid', 'Real-Debrid', `
+      <div class="dp-settings-account-connection" data-realdebrid-connection>${deviceConnectionMarkup('realdebrid')}</div>
+      ${providerAdditional(tuningCells(
+            tuningGroup(
+              tuningToggle('realdebrid_prepare_backup_torrents', say('settings.provider.prepare_backup'),
+                say('settings.provider.realdebrid.prepare_backup_hint'),
+                realDebridOf(s).prepare_backup_torrents === true),
+              input('realdebrid_max_active_torrents', say('settings.provider.max_active'), realDebridOf(s).max_active_torrents ?? '', {
+                type: 'number', min: 1, placeholder: say('settings.provider.max_placeholder'),
+                hint: say('settings.provider.realdebrid.max_active_hint')
+              }),
+            ),
+            input('realdebrid_rate_limit_per_minute', say('settings.provider.rate_limit'), realDebridOf(s).rate_limit_per_minute ?? 240, {
+              type: 'number', min: 1, max: 250, limitMessage: apiLimitMessage('Real-Debrid', 250),
+              hint: say('settings.provider.rate_limit_hint_capped', {provider: 'Real-Debrid', max: 250})
+            }),
+            input('realdebrid_request_timeout_seconds', say('settings.provider.request_timeout'), realDebridOf(s).request_timeout_seconds ?? 30, {
+              type: 'number', min: 5, max: 300,
+              hint: say('settings.provider.request_timeout_hint')
+            }),
+            input('realdebrid_torrent_upload_timeout_seconds', say('settings.provider.torrent_upload_timeout'), realDebridOf(s).torrent_upload_timeout_seconds ?? 120, {
+              type: 'number', min: 30, max: 900,
+              hint: say('settings.provider.torrent_upload_timeout_hint', {provider: 'Real-Debrid'})
+            }),
+            input('realdebrid_host_refresh_interval_hours', say('settings.provider.host_refresh'), realDebridOf(s).host_refresh_interval_hours ?? 24, {
+              type: 'number', min: 1, max: 168,
+              hint: say('settings.provider.host_refresh_hint', {provider: 'Real-Debrid'})
+            }),
+          ))}
+`, realDebrid, {
+      className: 'dp-settings-provider-card dp-settings-provider-card--realdebrid',
+      titlePrefix: providerArtwork('realdebrid'),
+      displayName: 'Real-Debrid',
+      headerCopy: say('settings.provider.header_copy', {provider: 'Real-Debrid'}),
+      headerAction: providerTestAction('test-realdebrid'),
+      help: 'realdebrid',
+    });
+
+    // Absent means OFF: TorBox participates only once an operator turns it on,
+    // exactly as its definition declares.
+    const torBox = integrations.torbox || {enabled: false};
+    const torBoxCard = providerCard('torbox', 'TorBox', `
+      <div class="dp-settings-account-connection" data-torbox-connection>${deviceConnectionMarkup('torbox')}</div>
+      ${providerAdditional(tuningCells(
+            tuningGroup(
+              tuningToggle('torbox_prepare_backup_torrents', say('settings.provider.prepare_backup'),
+                say('settings.provider.torbox.prepare_backup_hint'),
+                torBoxOf(s).prepare_backup_torrents === true),
+              input('torbox_max_active_torrents', say('settings.provider.max_active'), torBoxOf(s).max_active_torrents ?? '', {
+                type: 'number', min: 1, max: 10, placeholder: say('settings.provider.max_placeholder'),
+                hint: say('settings.provider.torbox.max_active_hint')
+              }),
+            ),
+            tuningToggle('torbox_use_before_usenet', say('settings.provider.before_usenet', {provider: 'TorBox'}),
+              say('settings.provider.before_usenet_hint', {provider: 'TorBox'}),
+              torBoxOf(s).use_before_usenet === true),
+            input('torbox_rate_limit_per_minute', say('settings.provider.rate_limit'), torBoxOf(s).rate_limit_per_minute ?? 240, {
+              type: 'number', min: 1, max: 300, limitMessage: apiLimitMessage('TorBox', 300),
+              hint: say('settings.provider.rate_limit_hint_capped', {provider: 'TorBox', max: 300})
+            }),
+            input('torbox_request_timeout_seconds', say('settings.provider.request_timeout'), torBoxOf(s).request_timeout_seconds ?? 30, {
+              type: 'number', min: 5, max: 300,
+              hint: say('settings.provider.request_timeout_hint')
+            }),
+            input('torbox_upload_timeout_seconds', say('settings.provider.upload_timeout'), torBoxOf(s).upload_timeout_seconds ?? 120, {
+              type: 'number', min: 30, max: 900,
+              hint: say('settings.provider.upload_timeout_hint', {provider: 'TorBox'})
+            }),
+            input('torbox_host_refresh_interval_hours', say('settings.provider.host_refresh'), torBoxOf(s).host_refresh_interval_hours ?? 24, {
+              type: 'number', min: 1, max: 168,
+              hint: say('settings.provider.host_refresh_hint', {provider: 'TorBox'})
+            }),
+          ))}
+`, torBox, {
+      className: 'dp-settings-provider-card dp-settings-provider-card--torbox',
+      titlePrefix: providerArtwork('torbox'),
+      displayName: 'TorBox',
+      headerCopy: say('settings.provider.header_copy_nzb', {provider: 'TorBox'}),
+      headerAction: providerTestAction('test-torbox'),
+      help: 'torbox',
+    });
+
+    // Absent means OFF for Usenet: it participates only once an operator turns
+    // it on. Without this, providerCard's "absent == enabled" default would
+    // render the toggle checked and a Save would persist enabled: true.
+    const usenet = integrations.usenet || {enabled: false};
+    const usenetCard = providerCard('usenet', 'Usenet', usenetBody(s, usenet), usenet, {
+      className: 'dp-settings-provider-card dp-settings-provider-card--usenet',
+      titlePrefix: providerArtwork('usenet'),
+      displayName: 'Usenet',
+      headerCopy: say('settings.provider.usenet.header_copy'),
+      headerAction: providerTestAction('test-usenet'),
+      help: 'usenet',
+    });
+
+    // Absent means OFF: Debrid-Link participates only once an operator turns
+    // it on, exactly as its definition declares.
+    const debridLink = integrations.debridlink || {enabled: false};
+    const debridLinkCard = providerCard('debridlink', 'Debrid-Link', `
+      <div data-debridlink-account>${apiKeyAccountLine('debridlink')}</div>
+      ${apiKeyField('debridlink', API_KEY_ACCOUNTS.debridlink.configured(s))}
+      ${providerAdditional(tuningCells(
+            tuningToggle('debridlink_prepare_backup_torrents', say('settings.provider.prepare_backup'),
+              say('settings.provider.debridlink.prepare_backup_hint'),
+              debridLinkOf(s).prepare_backup_torrents === true),
+            input('debridlink_request_timeout_seconds', say('settings.provider.request_timeout'), debridLinkOf(s).request_timeout_seconds ?? 30, {
+              type: 'number', min: 5, max: 300,
+              hint: say('settings.provider.request_timeout_hint')
+            }),
+            input('debridlink_torrent_upload_timeout_seconds', say('settings.provider.torrent_upload_timeout'), debridLinkOf(s).torrent_upload_timeout_seconds ?? 120, {
+              type: 'number', min: 30, max: 900,
+              hint: say('settings.provider.torrent_upload_timeout_hint', {provider: 'Debrid-Link'})
+            }),
+            input('debridlink_host_refresh_interval_hours', say('settings.provider.host_refresh'), debridLinkOf(s).host_refresh_interval_hours ?? 24, {
+              type: 'number', min: 1, max: 168,
+              hint: say('settings.provider.host_refresh_hint', {provider: 'Debrid-Link'})
+            }),
+          ))}
+`, debridLink, {
+      className: 'dp-settings-provider-card dp-settings-provider-card--debridlink',
+      titlePrefix: providerArtwork('debridlink'),
+      displayName: 'Debrid-Link',
+      headerCopy: say('settings.provider.header_copy', {provider: 'Debrid-Link'}),
+      headerAction: providerTestAction('test-debridlink'),
+      help: 'debridlink',
+    });
+
+    // Absent means OFF: Premiumize participates only once an operator turns
+    // it on, exactly as its definition declares.
+    const premiumize = integrations.premiumize || {enabled: false};
+    const premiumizeCard = providerCard('premiumize', 'Premiumize', `
+      <div data-premiumize-account>${apiKeyAccountLine('premiumize')}</div>
+      ${apiKeyField('premiumize', API_KEY_ACCOUNTS.premiumize.configured(s))}
+      ${providerAdditional(tuningCells(
+            tuningToggle('premiumize_prepare_backup_torrents', say('settings.provider.prepare_backup'),
+              say('settings.provider.premiumize.prepare_backup_hint'),
+              premiumizeOf(s).prepare_backup_torrents === true),
+            tuningToggle('premiumize_use_before_usenet', say('settings.provider.before_usenet', {provider: 'Premiumize'}),
+              say('settings.provider.before_usenet_hint', {provider: 'Premiumize'}),
+              premiumizeOf(s).use_before_usenet === true),
+            input('premiumize_request_timeout_seconds', say('settings.provider.request_timeout'), premiumizeOf(s).request_timeout_seconds ?? 30, {
+              type: 'number', min: 5, max: 300,
+              hint: say('settings.provider.request_timeout_hint')
+            }),
+            input('premiumize_upload_timeout_seconds', say('settings.provider.upload_timeout'), premiumizeOf(s).upload_timeout_seconds ?? 120, {
+              type: 'number', min: 30, max: 900,
+              hint: say('settings.provider.upload_timeout_hint', {provider: 'Premiumize'})
+            }),
+            input('premiumize_host_refresh_interval_hours', say('settings.provider.host_refresh'), premiumizeOf(s).host_refresh_interval_hours ?? 24, {
+              type: 'number', min: 1, max: 168,
+              hint: say('settings.provider.host_refresh_hint', {provider: 'Premiumize'})
+            }),
+          ))}
+`, premiumize, {
+      className: 'dp-settings-provider-card dp-settings-provider-card--premiumize',
+      titlePrefix: providerArtwork('premiumize'),
+      displayName: 'Premiumize',
+      headerCopy: say('settings.provider.header_copy_nzb', {provider: 'Premiumize'}),
+      headerAction: providerTestAction('test-premiumize'),
+      help: 'premiumize',
+    });
+
+    // One premium provider's card alone (the setup wizard's, mountProvider),
+    // from the same markup this page composes.
+    if (renderOnly) {
+      return {usenet: usenetCard, alldebrid: provider, debridlink: debridLinkCard, premiumize: premiumizeCard,
+        realdebrid: realDebridCard, torbox: torBoxCard}[renderOnly] || '';
+    }
+    const {families, providers} = premiumServiceOrder([
+      ['usenet', usenetCard], ['alldebrid', provider], ['debridlink', debridLinkCard],
+      ['premiumize', premiumizeCard], ['realdebrid', realDebridCard], ['torbox', torBoxCard],
+    ].map(([id, markup]) => ({id, markup, presentation: integrations[id]?.presentation || {}})));
+    const premiumServices = groupCard(say('settings.services.premium'),
+      families.map(card => card.markup).join('') + (families.length && providers.length ? PREMIUM_SEPARATOR : '')
+        + providers.map(card => card.markup).join(''), {
+      className: 'dp-settings-source-group dp-settings-debrid-services',
+      headerFit: true,
+      help: 'premium-services',
+      hint: say('settings.services.premium_hint'),
+      titlePrefix: familyIcon('sources', 'crown'),
+    });
+    // Group identity, label and gate all come from metadata the members
+    // already publish -- there is no second list of who is in this family.
+    const groupId = generalHttp.presentation?.status_group || '';
+    // Said by the group's identifier (integration.group.<id>, as Provider
+    // Status says it); the server's own label where the catalog has none.
+    const groupLabel = groupId && window.DPI18n.has(`integration.group.${groupId}`) ? say(`integration.group.${groupId}`)
+      : (s.integration_groups?.[groupId]?.label) || generalHttp.presentation?.status_group_label || say('integration.group.direct_sources');
+    const groupEnabled = s.integration_groups?.[groupId]?.enabled !== false;
+    // The members ARE whoever currently declares this group, in the one
+    // ordering authority's order. Nothing here enumerates protocols, so a
+    // protocol that does not exist yet cannot be rendered as though it did.
+    const members = groupId ? Object.entries(integrations)
+      .filter(([, entry]) => entry?.presentation?.status_group === groupId)
+      .sort(([leftId, left], [rightId, right]) =>
+        ((left.presentation?.display_order ?? 0) - (right.presentation?.display_order ?? 0))
+        || leftId.localeCompare(rightId)) : [];
+    const generalSources = groupCard(groupLabel,
+      `<div class="dp-settings-help-slot dp-settings-help-slot--row"></div><div class="dp-settings-source-box-grid">${members.map(([id, entry]) =>
+        sourceProtocolBox(id, SOURCE_BOX_TITLES[id] || entry.presentation?.status_name || id, SOURCE_BOX_COPY[id] || [], entry)).join('')}</div>`, {
+      className: 'dp-settings-source-group dp-settings-general-sources',
+      headerFit: 'self',
+      help: 'network-sources',
+      hint: say('settings.services.network_hint'),
+      titlePrefix: protocolIcon(groupId, true),
+      action: groupId ? groupHeaderToggle(groupId, groupLabel, groupEnabled) : '',
+      groupId,
+      collapsible: true,
+      // Arriving at Services, the protocol boxes start closed so Premium
+      // Services takes the room; a later manual expand (or collapse) is the
+      // operator's and survives every canonical refresh.
+      expanded: false,
+    });
+    return premiumServices + generalSources;
+  }
+
+  // Neutral state filters, mapped by the backend from ExecutionState alone.
+  const EXECUTOR_WORK_FILTERS = Object.freeze(['all', 'active', 'waiting', 'paused', 'stopped']
+    .map(id => [id, say(`settings.engine_activity.filter.${id}`)]));
+
+  /* Executor Work: markup owner only.
+   *
+   * The rows, their live re-reads and the actions belong to
+   * ui-settings-executor-work.js, which reads ONE neutral projection covering
+   * every registered executor. Nothing about this card names an executor. */
+  function executorWorkCard() {
+    return `
+      <section class="card dp-settings-card dp-executor-work-card" data-dp-executor-work-card="1"${keyed(null, {'aria-label': say('settings.engine_activity.title')})}>
+        <div class="card-header dp-settings-card-header dp-settings-card-header--hinted">
+          <span class="dp-settings-card-title-group"><span class="card-title dp-settings-card-title--with-icon">${familyIcon('downloads', 'activity')}<span class="dp-settings-card-title-text"${keyed(say('settings.engine_activity.title'))}>${html(t('settings.engine_activity.title'))}</span></span></span>
+          <div class="dp-settings-card-header-center">${copySpan('dp-executor-work-copy', say('settings.engine_activity.copy'))}</div>
+          <div class="dp-settings-card-header-controls">${helpChip('engine-activity', say('settings.engine_activity.title'))}</div>
+        </div>
+        <div class="card-body" data-dp-executor-work-body>
+          <div class="dp-settings-caution dp-executor-work-context">
+            <b${keyed(say('settings.engine_activity.caution_title'))}>${html(t('settings.engine_activity.caution_title'))}</b>
+            <span${keyed(say('settings.engine_activity.caution'))}>${html(t('settings.engine_activity.caution'))}</span>
+          </div>
+          <div class="dp-executor-work-control-row">
+            <div class="dp-executor-work-metrics"${keyed(null, {'aria-label': say('settings.engine_activity.totals')})}>
+              <span data-dp-executor-work-speed>${html(t('format.rate.zero'))}</span>
+              <span data-dp-executor-work-remaining>${html(t('settings.engine_activity.remaining', {value: '—'}))}</span>
+            </div>
+            <div class="filter-tabs dp-executor-work-filters" role="tablist"${keyed(null, {'aria-label': say('settings.engine_activity.filter_label')})}>
+              ${EXECUTOR_WORK_FILTERS.map(([id, label]) => `
+              <button type="button" class="ftab${id === 'all' ? ' active' : ''}" role="tab" aria-selected="${id === 'all'}" data-executor-filter="${id}"${keyed(label)}>${html(label)}</button>`).join('')}
+            </div>
+          </div>
+          <div data-dp-executor-work-list="1" class="dp-executor-work-list" aria-live="polite">
+            <div class="empty"${keyed(say('settings.engine_activity.loading'))}>${html(t('settings.engine_activity.loading'))}</div>
+          </div>
+        </div>
+      </section>`;
+  }
+
+  // --- Downloads ------------------------------------------------------------
+  // Three top-level master cards: Global Download Settings, Executor Tuning
+  // (one collapsed child card per executor/capability domain) and the existing
+  // Download Safety and Recovery. Operator-facing labels name capabilities,
+  // never daemon implementations.
+
+  /* How far below a submitted folder its files are collected -- ONE operator
+   * vocabulary for every source that offers it. The choices are the backend's
+   * own values (integrations.definition.DIRECTORY_DEPTHS); nothing here names
+   * how a server is asked. Each source's provider owns its own setting and
+   * default. */
+  const DIRECTORY_DEPTHS = Object.freeze([
+    ['current', say('settings.depth.current')],
+    ['1', say('settings.depth.levels', {count: 1})],
+    ['2', say('settings.depth.levels', {count: 2})],
+    ['3', say('settings.depth.levels', {count: 3})],
+    ['all', say('settings.depth.all')],
+  ]);
+
+  function rsyncTuning(s) {
+    // rsync's own transport behaviour -- the global limits and retry policy
+    // stay where they already live. Two relationships: how one file is
+    // transferred, and how long reaching and running a transfer may take.
+    // Beneath them, standing alone, the rsync source's one discovery choice:
+    // a set of its own, so it is centred under the groups rather than joining
+    // their row.
+    const options = rsyncOf(s);
+    const source = rsyncSourceOf(s);
+    return tuningCells(
+      tuningGroup(
+        tuningToggle(
+          'rsync_partial_transfers',
+          say('settings.rsync.partial'),
+          say('settings.rsync.partial_hint'),
+          options.partial_transfers !== false
+        ),
+        tuningToggle(
+          'rsync_compression',
+          say('settings.rsync.compression'),
+          say('settings.rsync.compression_hint'),
+          options.compression === true
+        ),
+        tuningToggle(
+          'rsync_preserve_modification_time',
+          say('settings.rsync.mtime'),
+          say('settings.rsync.mtime_hint'),
+          options.preserve_modification_time !== false
+        ),
+      ),
+      tuningGroup(
+        input('rsync_connection_timeout_seconds', say('settings.rsync.connection_timeout'),
+          options.connection_timeout_seconds ?? 30, {
+          type: 'number', min: 5, max: 300,
+          hint: say('settings.rsync.connection_timeout_hint')
+        }),
+        input('rsync_transfer_timeout_seconds', say('settings.rsync.transfer_timeout'),
+          options.transfer_timeout_seconds ?? 300, {
+          type: 'number', min: 30, max: 3600,
+          hint: say('settings.rsync.transfer_timeout_hint')
+        }),
+      ),
+    ) + tuningCells(
+      selectField('rsync_directory_depth', say('settings.depth.label'), source.directory_depth || 'all', DIRECTORY_DEPTHS,
+        say('settings.rsync.depth_hint')),
+    );
+  }
+
+  function webdavTuning(s) {
+    // One relationship: the three answers to "what does DownloadPulse collect
+    // from one WebDAV folder" -- how deep it looks, how many files it accepts
+    // and how long the listing may take.
+    const options = webdavOf(s);
+    return tuningCells(
+      tuningGroup(
+        selectField('webdav_directory_depth', say('settings.depth.label'), options.directory_depth || 'current',
+          DIRECTORY_DEPTHS,
+          say('settings.webdav.depth_hint')),
+        input('webdav_max_files', say('settings.webdav.max_files'), options.max_files ?? 10000, {
+          type: 'number', min: 1, max: 10000,
+          hint: say('settings.webdav.max_files_hint')
+        }),
+        // 0 is "no limit": shown as the empty field's own "No limit", never as
+        // a number of seconds (COMMIT_FIELDS ``blank``).
+        input('webdav_collection_scan_timeout_seconds', say('settings.webdav.scan_timeout'),
+          options.collection_scan_timeout_seconds ? options.collection_scan_timeout_seconds : '', {
+          type: 'number', min: 0, max: 3600, placeholder: say('settings.webdav.no_limit'),
+          hint: say('settings.webdav.scan_timeout_hint')
+        }),
+      ),
+    ) + `
+      <p class="dp-settings-tuning-footer"${keyed(say('settings.webdav.footer'))}>${html(t('settings.webdav.footer'))}</p>`;
+  }
+
+  // Target Resolution: "Best Available" is no target at all.
+  const TARGET_RESOLUTIONS = Object.freeze([
+    ['best', say('settings.media.best_available')],
+    ['2160', '2160p'],
+    ['1440', '1440p'],
+    ['1080', '1080p'],
+    ['720', '720p'],
+    ['480', '480p'],
+    ['360', '360p'],
+  ]);
+
+  const VIDEO_QUALITIES = Object.freeze([
+    ['high', say('settings.media.quality.high')],
+    ['normal', say('settings.media.quality.normal')],
+    ['low', say('settings.media.quality.low')],
+  ]);
+
+  const VIDEO_CODECS = Object.freeze([
+    ['auto', say('settings.media.codec_auto')],
+    ['av1', 'AV1'],
+    ['hevc', 'HEVC (H.265)'],
+    ['h264', 'H.264'],
+  ]);
+
+  /* Preferred Subtitle Language: what is stored is one lowercase language
+   * code -- a primary language subtag with at most one region or script
+   * subtag (core/config.py) -- matched against the subtitle tracks a site
+   * lists. The picker offers every ISO 639-1 language, the widely used
+   * languages that have only a three-letter code, and the regional and script
+   * variants sites commonly label their tracks with, by English name; the code
+   * is its quieter second label. The names are written here because browsers
+   * name only some languages themselves (Chromium leaves 52 of these unnamed)
+   * and word the rest differently. The browser's own Intl.DisplayNames serves
+   * only what this list cannot: a saved code outside it, and a language's
+   * name for itself, which can be searched. Nothing is fetched. */
+  const SUBTITLE_LANGUAGES = Object.freeze([
+    ['aa', 'Afar'], ['ab', 'Abkhazian'], ['ae', 'Avestan'], ['af', 'Afrikaans'], ['ak', 'Akan'], ['am', 'Amharic'],
+    ['an', 'Aragonese'], ['ar', 'Arabic'], ['as', 'Assamese'], ['av', 'Avaric'], ['ay', 'Aymara'],
+    ['az', 'Azerbaijani'], ['ba', 'Bashkir'], ['be', 'Belarusian'], ['bg', 'Bulgarian'], ['bi', 'Bislama'],
+    ['bm', 'Bambara'], ['bn', 'Bengali'], ['bo', 'Tibetan'], ['br', 'Breton'], ['bs', 'Bosnian'],
+    ['ca', 'Catalan'], ['ce', 'Chechen'], ['ch', 'Chamorro'], ['co', 'Corsican'], ['cr', 'Cree'], ['cs', 'Czech'],
+    ['cu', 'Church Slavic'], ['cv', 'Chuvash'], ['cy', 'Welsh'], ['da', 'Danish'], ['de', 'German'],
+    ['dv', 'Divehi'], ['dz', 'Dzongkha'], ['ee', 'Ewe'], ['el', 'Greek'], ['en', 'English'], ['eo', 'Esperanto'],
+    ['es', 'Spanish'], ['et', 'Estonian'], ['eu', 'Basque'], ['fa', 'Persian'], ['ff', 'Fula'], ['fi', 'Finnish'],
+    ['fj', 'Fijian'], ['fo', 'Faroese'], ['fr', 'French'], ['fy', 'Western Frisian'], ['ga', 'Irish'],
+    ['gd', 'Scottish Gaelic'], ['gl', 'Galician'], ['gn', 'Guarani'], ['gu', 'Gujarati'], ['gv', 'Manx'],
+    ['ha', 'Hausa'], ['he', 'Hebrew'], ['hi', 'Hindi'], ['ho', 'Hiri Motu'], ['hr', 'Croatian'],
+    ['ht', 'Haitian Creole'], ['hu', 'Hungarian'], ['hy', 'Armenian'], ['hz', 'Herero'], ['ia', 'Interlingua'],
+    ['id', 'Indonesian'], ['ie', 'Interlingue'], ['ig', 'Igbo'], ['ii', 'Sichuan Yi'], ['ik', 'Inupiaq'],
+    ['io', 'Ido'], ['is', 'Icelandic'], ['it', 'Italian'], ['iu', 'Inuktitut'], ['ja', 'Japanese'],
+    ['jv', 'Javanese'], ['ka', 'Georgian'], ['kg', 'Kongo'], ['ki', 'Kikuyu'], ['kj', 'Kuanyama'],
+    ['kk', 'Kazakh'], ['kl', 'Kalaallisut'], ['km', 'Khmer'], ['kn', 'Kannada'], ['ko', 'Korean'],
+    ['kr', 'Kanuri'], ['ks', 'Kashmiri'], ['ku', 'Kurdish'], ['kv', 'Komi'], ['kw', 'Cornish'], ['ky', 'Kyrgyz'],
+    ['la', 'Latin'], ['lb', 'Luxembourgish'], ['lg', 'Ganda'], ['li', 'Limburgish'], ['ln', 'Lingala'],
+    ['lo', 'Lao'], ['lt', 'Lithuanian'], ['lu', 'Luba-Katanga'], ['lv', 'Latvian'], ['mg', 'Malagasy'],
+    ['mh', 'Marshallese'], ['mi', 'Māori'], ['mk', 'Macedonian'], ['ml', 'Malayalam'], ['mn', 'Mongolian'],
+    ['mr', 'Marathi'], ['ms', 'Malay'], ['mt', 'Maltese'], ['my', 'Burmese'], ['na', 'Nauru'],
+    ['nb', 'Norwegian Bokmål'], ['nd', 'North Ndebele'], ['ne', 'Nepali'], ['ng', 'Ndonga'], ['nl', 'Dutch'],
+    ['nn', 'Norwegian Nynorsk'], ['no', 'Norwegian'], ['nr', 'South Ndebele'], ['nv', 'Navajo'],
+    ['ny', 'Chichewa'], ['oc', 'Occitan'], ['oj', 'Ojibwa'], ['om', 'Oromo'], ['or', 'Odia'], ['os', 'Ossetic'],
+    ['pa', 'Punjabi'], ['pi', 'Pali'], ['pl', 'Polish'], ['ps', 'Pashto'], ['pt', 'Portuguese'], ['qu', 'Quechua'],
+    ['rm', 'Romansh'], ['rn', 'Rundi'], ['ro', 'Romanian'], ['ru', 'Russian'], ['rw', 'Kinyarwanda'],
+    ['sa', 'Sanskrit'], ['sc', 'Sardinian'], ['sd', 'Sindhi'], ['se', 'Northern Sami'], ['sg', 'Sango'],
+    ['si', 'Sinhala'], ['sk', 'Slovak'], ['sl', 'Slovenian'], ['sm', 'Samoan'], ['sn', 'Shona'], ['so', 'Somali'],
+    ['sq', 'Albanian'], ['sr', 'Serbian'], ['ss', 'Swati'], ['st', 'Southern Sotho'], ['su', 'Sundanese'],
+    ['sv', 'Swedish'], ['sw', 'Swahili'], ['ta', 'Tamil'], ['te', 'Telugu'], ['tg', 'Tajik'], ['th', 'Thai'],
+    ['ti', 'Tigrinya'], ['tk', 'Turkmen'], ['tl', 'Tagalog'], ['tn', 'Tswana'], ['to', 'Tongan'],
+    ['tr', 'Turkish'], ['ts', 'Tsonga'], ['tt', 'Tatar'], ['tw', 'Twi'], ['ty', 'Tahitian'], ['ug', 'Uyghur'],
+    ['uk', 'Ukrainian'], ['ur', 'Urdu'], ['uz', 'Uzbek'], ['ve', 'Venda'], ['vi', 'Vietnamese'], ['vo', 'Volapük'],
+    ['wa', 'Walloon'], ['wo', 'Wolof'], ['xh', 'Xhosa'], ['yi', 'Yiddish'], ['yo', 'Yoruba'], ['za', 'Zhuang'],
+    ['zh', 'Chinese'], ['zu', 'Zulu'],
+    ['ast', 'Asturian'], ['ceb', 'Cebuano'], ['chr', 'Cherokee'], ['ckb', 'Central Kurdish'], ['fil', 'Filipino'],
+    ['haw', 'Hawaiian'], ['hmn', 'Hmong'], ['kok', 'Konkani'], ['mai', 'Maithili'], ['mni', 'Manipuri'],
+    ['sat', 'Santali'], ['yue', 'Cantonese'],
+    ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['en-AU', 'English (Australia)'],
+    ['en-CA', 'English (Canada)'], ['en-IE', 'English (Ireland)'], ['en-IN', 'English (India)'],
+    ['en-NZ', 'English (New Zealand)'], ['en-ZA', 'English (South Africa)'], ['es-ES', 'Spanish (Spain)'],
+    ['es-419', 'Spanish (Latin America)'], ['es-MX', 'Spanish (Mexico)'], ['es-US', 'Spanish (United States)'],
+    ['fr-FR', 'French (France)'], ['fr-CA', 'French (Canada)'], ['fr-BE', 'French (Belgium)'],
+    ['fr-CH', 'French (Switzerland)'], ['pt-BR', 'Portuguese (Brazil)'], ['pt-PT', 'Portuguese (Portugal)'],
+    ['de-DE', 'German (Germany)'], ['de-AT', 'German (Austria)'], ['de-CH', 'German (Switzerland)'],
+    ['nl-NL', 'Dutch (Netherlands)'], ['nl-BE', 'Dutch (Belgium)'], ['zh-Hans', 'Chinese (Simplified)'],
+    ['zh-Hant', 'Chinese (Traditional)'], ['zh-CN', 'Chinese (China)'], ['zh-TW', 'Chinese (Taiwan)'],
+    ['zh-HK', 'Chinese (Hong Kong)'], ['zh-SG', 'Chinese (Singapore)'], ['sr-Latn', 'Serbian (Latin)'],
+    ['sr-Cyrl', 'Serbian (Cyrillic)'],
+  ]);
+
+  function displayedLanguage(code, locale) {
+    try {
+      return new Intl.DisplayNames([locale], {type: 'language', fallback: 'none'}).of(code) || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /* The languages named in the page's language: English keeps this list's
+   * names; any other language names each code through Intl.DisplayNames,
+   * falling back to the English name, and sorts by that language. */
+  const subtitleLanguageCatalogs = new Map();
+  function subtitleLanguageCatalog() {
+    const locale = window.DPI18n.intlLocale();
+    if (!subtitleLanguageCatalogs.has(locale)) {
+      const english = locale === 'en' || locale.startsWith('en-');
+      subtitleLanguageCatalogs.set(locale, SUBTITLE_LANGUAGES
+        .map(([code, name]) => [code.toLowerCase(), english ? name : (displayedLanguage(code, locale) || name),
+          {detail: code, terms: [displayedLanguage(code, code), english ? '' : name].filter(Boolean).join(' ')}])
+        .sort((a, b) => a[1].localeCompare(b[1], english ? 'en' : locale)));
+    }
+    return subtitleLanguageCatalogs.get(locale);
+  }
+  function subtitleLanguageChoices(current) {
+    const catalog = subtitleLanguageCatalog();
+    // A saved code outside the list is offered as it is, never replaced.
+    const value = String(current || '').toLowerCase();
+    if (!value || catalog.some(([code]) => code === value)) return catalog;
+    const name = displayedLanguage(value, window.DPI18n.intlLocale()) || t('settings.media.language_code', {code: value});
+    return [[value, name, {detail: value}], ...catalog];
+  }
+  // A language change names the subtitle choices again in place: the same
+  // options and selection, their words (and search terms) in the new language.
+  function relabelSubtitleLanguages() {
+    const control = document.getElementById(fieldId('preferred_subtitle_language'));
+    if (!control) return;
+    const choices = new Map(subtitleLanguageChoices(control.value).map(([code, name, more]) => [code, [name, more]]));
+    for (const option of control.options) {
+      const choice = choices.get(option.value);
+      if (!choice) continue;
+      if (option.textContent !== choice[0]) option.textContent = choice[0];
+      if (choice[1]?.terms) option.dataset.dpSearch = choice[1].terms;
+    }
+  }
+
+  function mediaTuning(s) {
+    // Acquisition preferences only. Everything else about a media download --
+    // one final file with its subtitle and metadata, no transcoding -- is
+    // DownloadPulse policy, not a setting. The two video preferences are one
+    // related group; the subtitle language is the global settings-document
+    // preference, whose one control is here. YouTube Player Client leads the
+    // one set, so where two cells fit a row the six form 2 x 3.
+    const options = mediaOf(s);
+    return tuningCells(
+      youtubePlayerClientsField(options),
+      selectField('media_target_resolution', say('settings.media.resolution'), options.target_resolution || 'best',
+        TARGET_RESOLUTIONS,
+        say('settings.media.resolution_hint')),
+      tuningGroup(
+        selectField('media_video_quality', say('settings.media.quality'), options.video_quality || 'high', VIDEO_QUALITIES,
+          say('settings.media.quality_hint')),
+        selectField('media_video_codec', say('settings.media.codec'), options.video_codec || 'auto', VIDEO_CODECS,
+          say('settings.media.codec_hint')),
+      ),
+      selectField('preferred_subtitle_language', say('settings.media.subtitle'), s.preferred_subtitle_language || 'en',
+        subtitleLanguageChoices(s.preferred_subtitle_language || 'en'),
+        say('settings.media.subtitle_hint'),
+        {search: say('settings.media.search_languages')}),
+      input('media_concurrent_fragment_downloads', say('settings.media.fragments'),
+        options.concurrent_fragment_downloads ?? 1, {
+          type: 'number', min: 1, max: 8,
+          hint: say('settings.media.fragments_hint'),
+        }),
+    );
+  }
+
+  function youtubePlayerClientsField(options) {
+    // YouTube Player Client: Automatic (no client named: yt-dlp's own default)
+    // or exactly one client. Which names exist is the PACKAGED yt-dlp's answer
+    // (``youtube_player_client_support``), never a list kept here; the server
+    // validates every new selection against it. The option keeps its ordered
+    // list shape: a choice is the empty list or a list of one. A selection
+    // saved before this was a single choice (several clients, or a client the
+    // installed yt-dlp no longer offers) is shown exactly as saved and never
+    // rewritten until the operator chooses Automatic or one client.
+    const saved = Array.isArray(options.youtube_player_clients) ? options.youtube_player_clients.map(String) : [];
+    const supported = Array.isArray(options.youtube_player_client_support?.supported)
+      ? options.youtube_player_client_support.supported.map(String) : [];
+    // The control's value is the saved list as the field shows it (acceptedValue).
+    const current = saved.join(', ');
+    const choices = [['', say('settings.media.player_automatic')], ...supported.map(name => [name, name])];
+    if (saved.length > 1) choices.push([current, say('settings.media.player_custom'), {detail: current}]);
+    else if (saved.length === 1 && !supported.includes(saved[0])) {
+      choices.push([current, saved[0], {detail: say('settings.media.player_retired')}]);
+    }
+    return selectField('media_youtube_player_clients', say('settings.media.player'), current, choices,
+      say('settings.media.player_hint'),
+      {secondLine: `<div data-player-client-notice>${playerClientNotice(options)}</div>`});
+  }
+
+  /* A saved selection this yt-dlp no longer offers is kept exactly as saved
+   * and shown, with Automatic in use until the operator chooses again. */
+  function playerClientNotice(options) {
+    const unsupported = options.youtube_player_client_support?.unsupported || [];
+    if (!unsupported.length) return '';
+    const clients = unsupported.join(', ');
+    return `<div class="dp-settings-caution" role="status"><b${keyed(say('settings.media.notice_title'))}>${html(t('settings.media.notice_title'))}</b>`
+      + `<span${keyed(say('settings.media.notice', {clients}))}>${html(t('settings.media.notice', {clients}))}</span>`
+      + `<button type="button" class="btn btn-ghost btn-sm" data-action="media-player-clients-automatic"${keyed(say('settings.media.use_automatic'))}>${html(t('settings.media.use_automatic'))}</button></div>`;
+  }
+
+  function projectPlayerClientNotice() {
+    const options = mediaOf(state.settings);
+    const notice = root()?.querySelector('[data-player-client-notice]');
+    if (notice) notice.innerHTML = playerClientNotice(options);
+    // A saved selection the operator has replaced is no longer offered: only
+    // Automatic, the packaged clients and the current value remain.
+    const control = document.getElementById(fieldId('media_youtube_player_clients'));
+    const supported = options.youtube_player_client_support?.supported || [];
+    for (const option of [...(control?.options || [])]) {
+      if (option.value && !supported.includes(option.value) && option.value !== control.value) option.remove();
+    }
+  }
+
+  function usePlayerClientsAutomatic() {
+    const control = document.getElementById(fieldId('media_youtube_player_clients'));
+    if (!control) return;
+    control.value = '';
+    window.DPSettingsPersistence.commit(control);
+  }
+
+  /* One Transfer Method card: its identity and disclosure, its one-line
+   * purpose hint (fitHeaderHints) and, in its rail, its own Help -- the only
+   * header operation a transfer method has. */
+  // A header's one-line copy in its own styled span, re-sayable.
+  const copySpan = (className, said) => `<span class="${className}"${keyed(said)}>${html(said)}</span>`;
+
+  function executorTuningCard(id, label, copy, body, protocol = '', help = '') {
+    const bodyId = `dp-executor-tuning-${id}`;
+    const identity = protocolIcon(protocol);
+    return `
+      <section class="card dp-settings-card dp-executor-tuning-card" data-executor-tuning="${html(id)}">
+        <div class="card-header dp-settings-card-header dp-settings-card-header--hinted">
+          <span class="dp-settings-card-title-group">
+            <span class="card-title${identity ? ' dp-settings-card-title--with-icon' : ''}">${identity}${
+              identity ? `<span class="dp-settings-card-title-text">${words(label)}</span>` : words(label)}</span>
+            ${settingsDisclosure(bodyId, false, say('settings.tuning.subject', {method: label}))}
+          </span>
+          <div class="dp-settings-card-header-center">${copySpan('dp-settings-download-engine-header-copy', copy)}</div>
+          <div class="dp-settings-card-header-controls">${helpChip(help, say('settings.tuning.title', {method: label}))}</div>
+        </div>
+        <div class="card-body" id="${bodyId}" hidden>${body}</div>
+      </section>`;
+  }
+
+  function directTransfersTuning(s) {
+    const aria2 = aria2Of(s);
+    // Three relationships: how a transfer is divided across connections, what
+    // happens to a transfer already in progress, and how the destination file
+    // is prepared on disk.
+    return tuningCells(
+      tuningGroup(
+        input('aria2_max_connection_per_server', say('settings.direct.connections'), aria2.max_connection_per_server ?? 16, {
+          // aria2's own range: above 16 the download engine refuses to start.
+          type: 'number', min: 1, max: 16, limitMessage: say('settings.direct.connections_limit', {max: 16}),
+          hint: say('settings.direct.connections_hint')
+        }),
+        input('aria2_split', say('settings.direct.segments'), aria2.split ?? 16, {
+          type: 'number', min: 1, max: 64,
+          hint: say('settings.direct.segments_hint')
+        }),
+        input('aria2_min_split_size', say('settings.direct.min_split'), aria2.min_split_size || '10M', {
+          pattern: '[0-9]+[KkMm]?',
+          invalidMessage: say('settings.direct.min_split_invalid'),
+          hint: say('settings.direct.min_split_hint')
+        }),
+      ),
+      tuningGroup(
+        tuningToggle(
+          'aria2_continue_downloads',
+          say('settings.direct.continue'),
+          say('settings.direct.continue_hint'),
+          aria2.continue_downloads !== false
+        ),
+        input('aria2_lowest_speed_limit', say('settings.direct.lowest_speed'), aria2.lowest_speed_limit || '0', {
+          pattern: '[0-9]+[KkMm]?',
+          invalidMessage: say('settings.direct.lowest_speed_invalid'),
+          hint: say('settings.direct.lowest_speed_hint')
+        }),
+      ),
+      tuningGroup(
+        input('aria2_disk_cache', say('settings.direct.disk_cache'), aria2.disk_cache || '64M', {
+          pattern: '[0-9]+[KkMm]?',
+          invalidMessage: say('settings.direct.disk_cache_invalid'),
+          hint: say('settings.direct.disk_cache_hint')
+        }),
+        selectField('aria2_file_allocation', say('settings.direct.allocation'), aria2.file_allocation || 'falloc', [
+          ['trunc', say('settings.direct.allocation.trunc')],
+          ['falloc', say('settings.direct.allocation.falloc')],
+          ['prealloc', say('settings.direct.allocation.prealloc')],
+          ['none', say('settings.direct.allocation.none')],
+        ], say('settings.direct.allocation_hint')),
+      ),
+    );
+  }
+
+  function usenetTuning(s) {
+    // Executor-wide acquisition behaviour only. Global admission (Maximum
+    // Concurrent Downloads) and the global download speed cap stay where they
+    // already live -- neither is duplicated here -- and nothing about unpacking
+    // or folder layout belongs here at all: DownloadPulse owns both.
+    const options = usenetOf(s);
+    // Retries and timeout are the two halves of one question -- what happens to
+    // a single article request -- so they stay adjacent; Direct Write and the
+    // cache limit are each about writing, but neither depends on the other.
+    // Direct Write leads, so where two cells fit a row the four form 2 x 2.
+    return tuningCells(
+      tuningToggle(
+        'usenet_direct_write',
+        say('settings.usenet_tuning.direct_write'),
+        say('settings.usenet_tuning.direct_write_hint'),
+        options.direct_write !== false
+      ),
+      input('usenet_article_cache_megabytes', say('settings.usenet_tuning.cache'),
+        options.article_cache_megabytes ?? 1024, {
+        type: 'number', min: 0, max: 4096,
+        hint: say('settings.usenet_tuning.cache_hint')
+      }),
+      tuningGroup(
+        input('usenet_max_acquisition_retries', say('settings.usenet_tuning.retries'),
+          options.max_acquisition_retries ?? 3, {
+          type: 'number', min: 2, max: 25,
+          hint: say('settings.usenet_tuning.retries_hint')
+        }),
+        input('usenet_operation_timeout_seconds', say('settings.provider.request_timeout'),
+          options.operation_timeout_seconds ?? 30, {
+          type: 'number', min: 5, max: 300,
+          hint: say('settings.usenet_tuning.timeout_hint')
+        }),
+      ),
+    ) + `
+      <p class="dp-settings-tuning-footer"${keyed(say('settings.usenet_tuning.footer'))}>${html(t('settings.usenet_tuning.footer'))}</p>`;
+  }
+
+  function downloadsPanel(s) {
+    const policy = policyOf(s);
+    const globalCopy = say('settings.downloads.behavior_copy');
+    const delivery = card(say('settings.downloads.behavior'), `
+      <div class="dp-settings-download-engine-row dp-settings-island" role="group"${keyed(null, {'aria-label': say('settings.downloads.location_label')})}>
+        <div class="dp-settings-download-path-stack">
+          ${directoryField('download_folder', say('settings.downloads.folder'), s.download_folder || '/download', {
+            hint: say('settings.downloads.folder_hint'),
+            browseAction: 'browse-download-folder',
+            browseLabel: say('settings.downloads.folder_browse'),
+            inline: true, embedAction: true, className: 'dp-settings-download-folder-field',
+          })}
+        </div>
+        <div class="dp-settings-download-limit">
+          ${input('aria2_max_active_downloads', say('settings.downloads.max_concurrent'), policy.max_concurrent_executions ?? 3, {
+            type: 'number', min: 1, max: 20,
+            hint: say('settings.downloads.max_concurrent_hint'),
+            inline: true, className: 'dp-settings-download-limit-field',
+          })}
+        </div>
+      </div>
+      ${omitted('download-behavior-advanced') ? '' : downloadBehaviorAdvanced(policy, s)}
+    `, {
+      className: 'dp-settings-download-engine-card',
+      help: 'download-behavior',
+      hinted: true,
+      titlePrefix: familyIcon('downloads', 'gauge'),
+      headerCenter: copySpan('dp-settings-download-engine-header-copy', globalCopy),
+    });
+
+    const tuning = groupCard(say('settings.downloads.methods'),
+      // The operator-facing family name matches Services exactly; the executor
+      // id stays 'direct', because nothing about the executor changed and
+      // renaming it would only churn durable identities.
+      executorTuningCard('direct', say('integration.group.direct_sources'),
+        say('settings.tuning.direct_copy'),
+        directTransfersTuning(s), 'direct_sources', 'tuning-direct') +
+      executorTuningCard('rsync', 'rsync',
+        say('settings.tuning.rsync_copy'), rsyncTuning(s), 'general_rsync', 'tuning-rsync') +
+      executorTuningCard('webdav', 'WebDAV',
+        say('settings.tuning.webdav_copy'), webdavTuning(s), 'general_webdav', 'tuning-webdav') +
+      executorTuningCard('usenet', 'Usenet',
+        say('settings.tuning.usenet_copy'), usenetTuning(s), 'usenet', 'tuning-usenet') +
+      executorTuningCard('media', say('settings.tuning.media'),
+        say('settings.tuning.media_copy'), mediaTuning(s),
+        'media', 'tuning-media'), {
+      className: 'dp-settings-source-group dp-executor-tuning-group',
+      help: 'transfer-methods',
+      hint: say('settings.downloads.methods_hint'),
+      titlePrefix: familyIcon('downloads', 'arrow-left-right'),
+    });
+
+    // One standalone control, leading, then two relationships -- the
+    // disk-space guard's threshold and its buffer, and the error-retry count
+    // and its delay.
+    const recovery = card(say('settings.downloads.recovery'), tuningCells(
+      input('stuck_download_timeout_hours', say('settings.downloads.stalled'), policy.stalled_timeout_hours ?? 6, {
+        type: 'number', min: 0, max: 168,
+        hint: say('settings.downloads.stalled_hint')
+      }),
+      tuningGroup(
+        input('min_free_disk_gb', say('settings.downloads.min_free'), s.min_free_disk_gb ?? 0, {
+          type: 'number', min: 0, step: 0.5,
+          hint: say('settings.downloads.min_free_hint')
+        }),
+        input('disk_guard_resume_hysteresis_gb', say('settings.downloads.resume_buffer'), s.disk_guard_resume_hysteresis_gb ?? 0.5, {
+          type: 'number', min: 0, step: 0.1,
+          hint: say('settings.downloads.resume_buffer_hint')
+        }),
+      ),
+      tuningGroup(
+        input('aria2_error_retry_count', say('settings.downloads.error_retries'), policy.execution_retry_count ?? 3, {
+          type: 'number', min: 0, max: 20,
+          hint: say('settings.downloads.error_retries_hint')
+        }),
+        input('aria2_error_retry_delay_seconds', say('settings.downloads.retry_delay_seconds'), policy.execution_retry_delay_seconds ?? 60, {
+          type: 'number', min: 0, max: 3600,
+          hint: say('settings.downloads.retry_delay_seconds_hint')
+        }),
+      ),
+    ), {className: 'dp-settings-download-recovery-card', titlePrefix: familyIcon('downloads', 'shield-alert'),
+      help: 'disk-recovery', hinted: true,
+      // Closed when first drawn below 780px; the stylesheet keeps it open,
+      // without the chip, from 780px.
+      collapsible: {key: 'disk-recovery', expanded: false},
+      headerCenter: copySpan('dp-settings-download-engine-header-copy', say('settings.downloads.recovery_copy'))});
+
+    // Easy keeps Download Behavior & Limits' two ordinary fields alone.
+    return delivery + (omitted('transfer-method-settings') ? '' : tuning)
+      + (omitted('disk-space-recovery') ? '' : recovery)
+      + (omitted('download-engine-activity') ? '' : executorWorkCard());
+  }
+
+  /* Download Behavior & Limits -> Advanced Settings: DownloadPulse-owned
+   * continuation, local-network and provider-resolution policy, in the one
+   * tuning grammar. Collapsed by default; expansion is presentation only. The
+   * provider intervals and the resolution retries apply to every service, so
+   * they live here rather than on any one provider's card. */
+  function downloadBehaviorAdvanced(policy, s) {
+    return disclosureSection(say('settings.downloads.advanced'), 'download-behavior-advanced', tuningCells(
+      input('material_checkpoint_interval_seconds', say('settings.downloads.checkpoint'),
+        policy.material_checkpoint_interval_seconds ?? 5, {
+          type: 'number', min: 1, max: 60,
+          hint: say('settings.downloads.checkpoint_hint'),
+        }),
+      input('graceful_stop_timeout_seconds', say('settings.downloads.graceful_stop'),
+        policy.graceful_stop_timeout_seconds ?? 10, {
+          type: 'number', min: 1, max: 60,
+          hint: say('settings.downloads.graceful_stop_hint'),
+        }),
+      // The two local-network cells are one relationship (the second depends
+      // on the first): the shared tuning relation, drawn while the group is
+      // whole on a row.
+      tuningGroup(
+        tuningToggle('private_lan_connections', say('settings.downloads.lan'),
+          say('settings.downloads.lan_hint'),
+          !!policy.private_lan_connections),
+        tuningToggle('skip_private_lan_confirmation', say('settings.downloads.lan_skip'),
+          say('settings.downloads.lan_skip_hint'),
+          !!policy.skip_private_lan_confirmation, {disabled: !policy.private_lan_connections}),
+      ),
+      // How often services are checked: the progress of the work a service is
+      // preparing, and the scheduled reconciliation with every connected account.
+      tuningGroup(
+        input('poll_interval_seconds', say('settings.downloads.poll'), policy.provider_poll_interval_seconds ?? 30, {
+          type: 'number', min: 5, max: 3600,
+          hint: say('settings.downloads.poll_hint')
+        }),
+        input('full_sync_interval_minutes', say('settings.downloads.full_sync'), s.full_sync_interval_minutes ?? 5, {
+          type: 'number', min: 0, max: 1440,
+          hint: say('settings.downloads.full_sync_hint')
+        }),
+      ),
+      // Resolution failures: the retry count and its delay, one relationship.
+      tuningGroup(
+        input('upload_fail_retry_count', say('settings.downloads.resolution_retries'), policy.resolution_retry_count ?? 3, {
+          type: 'number', min: 0, max: 20,
+          hint: say('settings.downloads.resolution_retries_hint')
+        }),
+        input('upload_fail_retry_delay_minutes', say('settings.downloads.retry_delay_minutes'), policy.resolution_retry_delay_minutes ?? 5, {
+          type: 'number', min: 0, max: 1440,
+          hint: say('settings.downloads.retry_delay_minutes_hint')
+        }),
+      ),
+    ));
+  }
+
+  /* The Skip Local Connection Confirmation cell is available only while Local
+   * Network Connections is on. Two facts, deliberately separate:
+   *
+   *   what it LOOKS like follows what the Local Network switch SHOWS -- the
+   *   operator's latest intent from the moment they flip it, or the accepted
+   *   value it is rolled back to -- so its existing fade begins on the click
+   *   rather than when the server answers;
+   *
+   *   whether it can be USED is a projection of ACCEPTED canonical policy (and
+   *   of the switch still showing it on): it never becomes operable before the
+   *   permission it depends on has been accepted.
+   *
+   * Projected on the switch's change, wherever policy is adopted, and when a
+   * commit of the switch settles (a refused write rolls it back without a
+   * change event). Its stored preference is never changed by this, so
+   * re-enabling LAN access restores it as it was. */
+  function projectPrivateLanDependency() {
+    const accepted = !!policyOf(state.settings).private_lan_connections;
+    const control = document.getElementById(fieldId('skip_private_lan_confirmation'));
+    if (!control) return;
+    const lan = document.getElementById(fieldId('private_lan_connections'));
+    const shown = lan ? lan.checked : accepted;
+    control.disabled = !(accepted && shown);
+    control.closest('.dp-settings-field')?.classList.toggle('is-disabled', !shown);
+  }
+
+  /* The two extraction behaviour controls are ONE group.
+   *
+   * Two lanes of the ordinary label / control / help rhythm under a single
+   * subtle outline -- not two cards, and not two floating controls. The
+   * boolean is rendered by the SAME composer the tuning cells use, because a
+   * boolean presented as label-over-control-over-help is one shape, not two:
+   * only where its control sits inside that stack is stated by this group
+   * (ui-settings-downloads-completion.css). */
+  function extractionPanel(s) {
+    const enableId = fieldId('extract_enabled');
+    return card(say('settings.extraction.title'), `
+      <div class="dp-settings-extraction-behavior dp-settings-island" role="group"${keyed(null, {'aria-label': say('settings.extraction.behavior_label')})}>
+        ${tuningToggle('extract_delete_archive', say('settings.extraction.delete'),
+          say('settings.extraction.delete_hint'),
+          s.extract_delete_archive !== false,
+          {inline: true, className: 'dp-settings-extraction-delete-field'})}
+        ${input('extract_max_concurrent', say('settings.extraction.concurrent'), s.extract_max_concurrent ?? 1, {
+          type: 'number', min: 1, max: 8,
+          hint: say('settings.extraction.concurrent_hint'),
+          inline: true, className: 'dp-settings-extraction-concurrency-field',
+        })}
+      </div>
+      ${archivePasswordField(s.extraction_password_configured)}
+    `, {
+      className: 'dp-settings-extraction-card',
+      help: 'automatic-extraction',
+      hinted: true,
+      titlePrefix: familyIcon('extraction', 'archive-restore'),
+      headerCenter: copySpan('dp-settings-extraction-header-copy', say('settings.extraction.copy')),
+      action: `<label class="dp-settings-extraction-enable" for="${enableId}"><span class="toggle">
+          <input id="${enableId}" data-setting="extract_enabled" type="checkbox" ${commitAttributes('extract_enabled')} ${checked(s.extract_enabled)}
+                ${keyed(null, {'aria-label': say('settings.extraction.enable')})}>
+          <span class="ttrack"></span>
+        </span></label>`,
+    });
+  }
+
+  /* ── Notifications ────────────────────────────────────────────────────────
+   *
+   * Two cards, each reading as the same operational object every other
+   * configured surface on Settings reads as: what it IS on the left, what its
+   * configuration currently amounts to / the action that can prove it /
+   * whether it participates at all on the right, and the configuration itself
+   * in the body. Nothing here is a Notifications invention -- the rail, the
+   * status treatment, the Test action, the Enable control, the field grammar,
+   * the destructive two-state clear, the disclosure and the compact cell
+   * collection are all the canonical primitives declared above. */
+
+  /* The two cards' configuration report, in the shared plain-text status
+   * treatment and the shared three-state vocabulary.
+   *
+   * It says the two things the Enable toggle beside it cannot: whether there
+   * is a usable saved destination at all, and whether that exact saved
+   * configuration has been proven by a Test. Both facts are canonical and
+   * backend-derived -- the effective-destination rule (including Statistics
+   * Reporting's fallback to the primary webhook) and the durable
+   * verification evidence both belong to services/notification_service.py.
+   * This function only reports them.
+   *
+   * It is deliberately never blank: participation is a separate fact, so a
+   * switched-off section still tells the operator what it is holding. */
+  function notificationStatus(configured, verified) {
+    if (!configured) return {text: say('settings.status.unconfigured'), tone: 'error'};
+    return verified ? {text: say('settings.status.verified'), tone: 'success'} : {text: say('settings.status.configured'), tone: 'warning'};
+  }
+
+  /* The three stored webhooks, declared ONCE.
+   *
+   * Every part of a webhook row that depends on which webhook it is -- its
+   * title, its hint, its placeholder, what erasing it means and what the
+   * operator is asked before it happens -- is stated here, and the row is both
+   * RENDERED and CONVERGED from this table. One markup owner in either
+   * direction, and no third copy of the same sentence.
+   *
+   * ``fallback`` is what the operator loses by erasing this one, in the
+   * application's own terms; it is copy, not a second definition of the
+   * delivery fallback, which the backend owns. */
+  const WEBHOOK_CONTROLS = Object.freeze(Object.fromEntries(
+    ['discord_webhook_url', 'discord_webhook_added', 'stats_report_webhook_url'].map(key => [key, {
+      label: say(`settings.webhook.${key}.label`),
+      placeholder: say(`settings.webhook.${key}.placeholder`),
+      hint: say(`settings.webhook.${key}.hint`),
+      aria: say(`settings.webhook.${key}.clear_label`),
+      confirm: {title: say(`settings.webhook.${key}.clear_title`), message: say(`settings.webhook.${key}.clear_message`)},
+    }])));
+
+  const webhookPlaceholder = (key, configured) => configured
+    ? say('settings.webhook.configured_placeholder', {name: WEBHOOK_CONTROLS[key].placeholder})
+    : WEBHOOK_CONTROLS[key].placeholder;
+
+  /* Erasing a stored webhook is destructive, so it is an explicit action behind
+   * the ONE canonical Settings confirmation -- never a commit boundary, never a
+   * checkbox the page has to arm and reset, and never something a blanked field
+   * can trigger by accident. It is inside its own field (the embedded action, as
+   * the stored password and client secret carry theirs), reads "Clear" and is
+   * named for what it clears. The action keeps its place whether or not there
+   * is anything to erase; only its state converges. */
+  const WEBHOOK_CLEAR = (key, configured) => `
+            <button type="button" class="btn btn-danger btn-sm dp-settings-webhook-clear"
+                    data-action="clear-webhook" data-webhook="${html(key)}"
+                   ${keyed(say('settings.webhook.clear'), {'aria-label': WEBHOOK_CONTROLS[key].aria, 'data-tooltip': WEBHOOK_CONTROLS[key].aria})}${
+                      configured ? '' : ' disabled'}>${html(t('settings.webhook.clear'))}</button>`;
+
+  function webhookField(key, configured) {
+    const spec = WEBHOOK_CONTROLS[key];
+    return input(key, spec.label, '', {
+      type: 'password',
+      autocomplete: 'off',
+      placeholder: webhookPlaceholder(key, !!configured),
+      hint: spec.hint,
+      inline: true,
+      className: 'dp-settings-webhook-row',
+      embedAction: WEBHOOK_CLEAR(key, !!configured),
+    });
+  }
+
+  /* The Avatar URL field's ONE action, in the field (the embedded-action
+   * primitive Browse and Copy use) and in one fixed-size slot: Upload while
+   * the field is empty, Clear while it holds a URL -- what the FIELD holds,
+   * typed or stored, never its placeholder (projectAvatarAction). Each state
+   * runs its existing act (uploadAvatar, clearAvatar). It is a real button --
+   * the file input Upload opens is the hidden one beside it -- so it keeps its
+   * own tab stop. */
+  const AVATAR_ACTIONS = Object.freeze({
+    upload: {action: 'upload-avatar', label: say('settings.avatar.upload'), name: say('settings.avatar.upload_label'), tone: 'btn-ghost'},
+    clear: {action: 'clear-avatar', label: say('settings.avatar.clear'), name: say('settings.avatar.clear_label'), tone: 'btn-danger'},
+  });
+
+  const avatarAction = url => {
+    const mode = AVATAR_ACTIONS[String(url || '').trim() ? 'clear' : 'upload'];
+    return `
+            <button type="button" class="btn ${mode.tone} btn-sm dp-settings-avatar-action" data-avatar-action
+                    data-action="${mode.action}"${keyed(mode.label, {'aria-label': mode.name, 'data-tooltip': mode.name})}>${html(mode.label)}</button>
+            <input id="dp-settings-avatar-file" type="file"
+                   accept="image/png,image/jpeg,image/gif,image/webp" hidden>`;
+  };
+
+  // The one action follows what the field holds now.
+  function projectAvatarAction() {
+    const button = root()?.querySelector('[data-avatar-action]');
+    if (!button || button.disabled) return;
+    const mode = AVATAR_ACTIONS[String(fieldFor('discord_avatar_url')?.value || '').trim() ? 'clear' : 'upload'];
+    button.dataset.action = mode.action;
+    button.classList.toggle('btn-danger', mode.tone === 'btn-danger');
+    button.classList.toggle('btn-ghost', mode.tone === 'btn-ghost');
+    sayAttr(button, 'aria-label', mode.name);
+    sayAttr(button, 'data-tooltip', mode.name);
+    sayInto(button, mode.label);
+  }
+
+  /* What the stored URL currently resolves to -- a reading, never a control. It
+   * belongs BENEATH the Avatar URL control row, so it is handed to the field's
+   * own second-line slot rather than dropped in beside the input. */
+  const avatarPreview = url => `
+            <div id="dp-settings-avatar-preview" class="dp-settings-avatar-preview dp-settings-avatar-preview--compact"${
+              url ? '' : ' hidden'}>${url ? `<img src="${html(url)}"${keyed(null, {alt: say('settings.avatar.preview')})}><span>${html(url)}</span>` : ''}</div>`;
+
+  /* ``own``: a standard User's own configuration. The same two cards and
+   * controls, less what is not theirs to set: instance update notices and
+   * their check interval, and the instance-hosted avatar upload (a User's
+   * avatar is a URL Discord fetches itself). Display Name and Avatar URL are
+   * how the sender appears on a Discord webhook -- any other webhook receives
+   * the event itself (services/notifications.py) -- so their hints name
+   * Discord. */
+  function notificationsPanel(s, own = false) {
+    const discord = card(say('settings.notifications.webhook_title'), `
+      <div class="dp-settings-notifications-identity-row dp-settings-help-slot">
+        ${input('discord_username', say('settings.notifications.display_name'), own ? s.discord_username || '' : s.discord_username || 'DownloadPulse', {
+          placeholder: own ? 'DownloadPulse' : '',
+          hint: say('settings.notifications.display_name_hint'),
+          inline: true,
+        })}
+        ${input('discord_avatar_url', say('settings.notifications.avatar_url'), s.discord_avatar_url || '', {
+          placeholder: 'https://example.com/avatar.png',
+          hint: own ? say('settings.notifications.avatar_hint_own')
+            : say('settings.notifications.avatar_hint'),
+          embedAction: own ? '' : avatarAction(s.discord_avatar_url),
+          controlClass: own ? '' : 'dp-settings-avatar-field-control',
+          secondLine: avatarPreview(s.discord_avatar_url || ''),
+          inline: true,
+          className: 'dp-settings-avatar-row',
+        })}
+      </div>
+      <div class="dp-settings-notifications-delivery-row">
+        ${webhookField('discord_webhook_url', s.discord_webhook_url_configured)}
+        ${webhookField('discord_webhook_added', s.discord_webhook_added_configured)}
+      </div>
+      ${disclosureSection(say('settings.notifications.events'), 'notifications-events', tuningCells(
+        tuningToggle('discord_notify_added', say('settings.notifications.event_added'),
+          say('settings.notifications.event_added_hint'), s.discord_notify_added),
+        tuningToggle('discord_notify_finished', say('settings.notifications.event_finished'),
+          say('settings.notifications.event_finished_hint'), s.discord_notify_finished),
+        tuningToggle('discord_notify_error', say('settings.notifications.event_error'),
+          say('settings.notifications.event_error_hint'), s.discord_notify_error),
+        tuningToggle('discord_notify_extract', say('settings.notifications.event_extract'),
+          say('settings.notifications.event_extract_hint'), s.discord_notify_extract),
+        own ? [] : [
+          tuningToggle('discord_notify_update', say('settings.notifications.event_update'),
+            say('settings.notifications.event_update_hint'), s.discord_notify_update),
+          input('update_check_interval_hours', say('settings.notifications.update_interval'), s.update_check_interval_hours ?? 12, {
+            type: 'number', min: 0, max: 168, step: 1,
+            hint: say('settings.notifications.update_interval_hint'),
+            embedAction: fieldUnit(say('settings.unit.hours')),
+            controlClass: 'dp-settings-unit-field',
+          }),
+        ],
+      ), false, say('settings.notifications.events_short'))}
+    `, {
+      className: 'dp-settings-discord-card',
+      help: own ? 'discord-own' : 'discord',
+      headerFit: 'wrap',
+      helpRow: false,
+      titlePrefix: familyIcon('notifications', 'message-square'),
+      headerCenter: own ? say('settings.notifications.webhook_copy_own')
+        : say('settings.notifications.webhook_copy'),
+      headerCenterClass: 'dp-settings-notifications-header-copy',
+      hinted: true,
+      headerStatus: notificationStatus(s.discord_notifications_configured, s.discord_notifications_verified),
+      headerAction: providerTestAction('test-discord'),
+      action: headerEnableToggle('discord_notifications_enabled', s.discord_notifications_enabled !== false, '',
+        say('settings.notifications.webhook_enable')),
+      testStatus: notificationStatus(s.discord_notifications_configured, s.discord_notifications_verified),
+    });
+
+    const reports = card(say('settings.reports.title'), `
+      <div class="dp-settings-statistics-reporting-row dp-settings-help-slot">
+        ${webhookField('stats_report_webhook_url', s.stats_report_webhook_url_configured)}
+        <div class="dp-settings-statistics-cadence-group dp-settings-island" data-island-columns>
+          ${input('stats_report_interval_hours', say('settings.reports.interval'), s.stats_report_interval_hours ?? 0, {
+            type: 'number', min: 0, max: 168, step: 1,
+            hint: say('settings.reports.interval_hint'),
+            embedAction: fieldUnit(say('settings.unit.hours')),
+            controlClass: 'dp-settings-unit-field',
+            inline: true, className: 'dp-settings-report-interval-row',
+          })}
+          ${selectField('stats_report_window_hours', say('settings.reports.window'), s.stats_report_window_hours ?? 24, [
+            [24, say('settings.reports.window_day')],
+            [168, say('settings.reports.window_week')],
+            [720, say('settings.reports.window_month')],
+            [8760, say('settings.reports.window_year')],
+          ], say('settings.reports.window_hint'),
+            {inline: true, className: 'dp-settings-report-window-row'})}
+        </div>
+      </div>
+    `, {
+      className: 'dp-settings-statistics-reporting-card',
+      help: own ? 'statistics-reporting-own' : 'statistics-reporting',
+      headerFit: 'wrap',
+      helpRow: false,
+      titlePrefix: familyIcon('notifications', 'chart-line'),
+      headerCenter: own ? say('settings.reports.copy_own')
+        : say('settings.reports.copy'),
+      headerCenterClass: 'dp-settings-statistics-reporting-header-copy',
+      hinted: true,
+      headerStatus: notificationStatus(s.stats_reporting_configured, s.stats_reporting_verified),
+      headerAction: providerTestAction('send-report'),
+      action: headerEnableToggle('stats_reporting_enabled', s.stats_reporting_enabled !== false, '',
+        say('settings.reports.enable')),
+      testStatus: notificationStatus(s.stats_reporting_configured, s.stats_reporting_verified),
+    });
+
+    return discord + (omitted('statistics-reporting') ? '' : reports);
+  }
+
+  /* Converge the Notifications surface on ACCEPTED canonical state.
+   *
+   * What each card REPORTS, and whether each destructive action has anything
+   * to act on, both change with canonical truth -- so both are projected here
+   * rather than by a re-render. NO INPUT ELEMENT IS EVER REPLACED: destroying a
+   * control the operator may still be editing would remove focus from it, which
+   * IS its commit boundary, and a draft they had not finished would be written
+   * by this owner's re-render rather than by them leaving the field.
+   *
+   * Safe to call whenever canonical state moves; it does nothing at all when
+   * the Notifications panel is not on the page. */
+  function paintNotifications() {
+    const view = root();
+    const panel = view?.querySelector('[data-panel="notifications"]');
+    const s = state.settings;
+    if (!panel || !s) return;
+    paintCardStatus(panel, '.dp-settings-discord-card',
+      notificationStatus(s.discord_notifications_configured, s.discord_notifications_verified));
+    paintCardStatus(panel, '.dp-settings-statistics-reporting-card',
+      notificationStatus(s.stats_reporting_configured, s.stats_reporting_verified));
+    for (const key of Object.keys(WEBHOOK_CONTROLS)) renderWebhookRow(key);
+    renderAvatarPresence();
+  }
+
+  /* The two parts of a webhook row that depend on whether one is STORED: what
+   * the empty field says about itself, and whether the destructive action has
+   * anything to destroy. The action never appears or disappears. */
+  function renderWebhookRow(key) {
+    const configured = !!state.settings?.[`${key}_configured`];
+    const field = fieldFor(key);
+    if (field) sayAttr(field, 'placeholder', webhookPlaceholder(key, configured));
+    const clear = root()?.querySelector(`[data-action="clear-webhook"][data-webhook="${key}"]`);
+    if (clear) clear.disabled = !configured;
+  }
+
+  function renderAvatarPresence() {
+    const url = String(state.settings?.discord_avatar_url || '').trim();
+    projectAvatarAction();
+    const preview = byId('dp-settings-avatar-preview');
+    if (!preview) return;
+    preview.hidden = !url;
+    preview.innerHTML = url
+      ? `<img src="${html(url)}"${keyed(null, {alt: say('settings.avatar.preview')})}><span>${html(url)}</span>` : '';
+  }
+
+  /* The accepted notification state a Test just established, adopted through
+   * the same cached-document seam every other accepted canonical change uses. */
+  function adoptNotifications(projection) {
+    if (!projection || !state.settings) return;
+    syncNotificationDocument({...state.settings, ...projection});
+    paintNotifications();
+  }
+
+  /* The notification document this page holds: the global Settings document
+   * (shared through the one synchronisation owner), or a User's own, which is
+   * nobody else's and is never published as the application's settings. */
+  function syncNotificationDocument(data) {
+    if (selfContext()) state.settings = data;
+    else syncGlobalSettings(data);
+  }
+
+  /* A Test that FAILED may have retired durable evidence, so the card must stop
+   * claiming Verified about a configuration this very action just disproved.
+   * Canonical truth is re-read rather than guessed at. */
+  async function refreshNotificationState() {
+    try {
+      syncNotificationDocument(await request('GET', selfContext() ? OWN_NOTIFICATIONS : '/settings', null, 15000));
+      paintNotifications();
+    } catch (_) { /* the failure the operator is being told about is the story */ }
+  }
+
+  function fieldClass(markup, ...classes) {
+    const className = classes.filter(Boolean).join(' ');
+    if (!className) return markup;
+    return markup.replace('class="dp-settings-field"', `class="dp-settings-field ${className}"`);
+  }
+
+  /* The CARD's participation control, for the far-right slot of its header
+   * rail. Whether a section takes part is the same question everywhere on
+   * Settings, so it is the same control everywhere: one declaration, one
+   * appearance, one commit class, and the same treatment an integration's own
+   * header Enable already renders. */
+  function headerEnableToggle(key, value, extraClass = '', name = say('settings.enable')) {
+    const id = fieldId(key);
+    return `
+      <label class="toggle-row dp-settings-toggle dp-settings-auth-header-enable ${html(extraClass)}" for="${id}">
+        <span class="toggle">
+          <input id="${id}" data-setting="${html(key)}" type="checkbox" ${checked(value)} ${commitAttributes(key)}
+                ${keyed(null, {'aria-label': name})}>
+          <span class="ttrack"></span>
+        </span>
+      </label>`;
+  }
+
+  function oidcPolicyToggle(value) {
+    const id = fieldId('oidc_allow_all');
+    return `
+      <label class="toggle-row dp-settings-toggle dp-settings-oidc-allow-all" for="${id}">
+        <span class="toggle-info"><span class="tl"><span class="dp-settings-oidc-allow-all-full"${keyed(say('settings.oidc.allow_all'))}>${html(t('settings.oidc.allow_all'))}</span><span class="dp-settings-oidc-allow-all-short" aria-hidden="true"${keyed(null, {'data-short-label': say('settings.oidc.allow_all_short')})}></span></span></span>
+        <span class="toggle">
+          <input id="${id}" data-setting="oidc_allow_all" type="checkbox" ${checked(value)} ${commitAttributes('oidc_allow_all')}>
+          <span class="ttrack"></span>
+        </span>
+      </label>`;
+  }
+
+  function settingsActive() {
+    return root()?.classList.contains('active') === true;
+  }
+
+  function oidcIdentity(auth) {
+    return [
+      auth?.oidc_enabled ? '1' : '0',
+      text(auth?.oidc_issuer_url),
+      text(auth?.oidc_client_id),
+      text(auth?.public_base_url_effective || auth?.public_base_url),
+    ].join('|');
+  }
+
+  function fallbackAuthFromSettings(settings) {
+    const passwordEnabled = !!settings?.auth_password_enabled;
+    const username = text(settings?.auth_username).trim();
+    const oidcEnabled = !!settings?.auth_oidc_enabled;
+    const issuer = text(settings?.oidc_issuer_url).trim();
+    const clientId = text(settings?.oidc_client_id).trim();
+    const publicBase = text(settings?.public_base_url).trim();
+    const oidcConfigured = oidcEnabled || !!(issuer && clientId && publicBase);
+    let mode = 'No authentication';
+    if (passwordEnabled && oidcEnabled) mode = 'Username & Password + OIDC';
+    else if (passwordEnabled) mode = 'Username & Password';
+    else if (oidcEnabled) mode = 'OIDC';
+
+    return {
+      mode,
+      authentication_required: passwordEnabled || oidcEnabled,
+      password_enabled: passwordEnabled,
+      password_ready: passwordEnabled && !!username,
+      password_configured: passwordEnabled,
+      username,
+      session_lifetime_hours: Number(settings?.auth_session_lifetime_hours || 12),
+      oidc_enabled: oidcEnabled,
+      oidc_configured: oidcConfigured,
+      oidc_ready: oidcEnabled && oidcConfigured,
+      oidc_available: null,
+      oidc_verified: false,
+      oidc_verified_at: null,
+      oidc_provider_name: text(settings?.oidc_provider_name || 'OpenID Connect'),
+      oidc_issuer_url: issuer,
+      oidc_client_id: clientId,
+      oidc_client_secret_configured: false,
+      oidc_scopes: Array.isArray(settings?.oidc_scopes) ? settings.oidc_scopes.slice() : [],
+      oidc_allow_all: !!settings?.oidc_allow_all,
+      oidc_allowed_subjects: Array.isArray(settings?.oidc_allowed_subjects) ? settings.oidc_allowed_subjects.slice() : [],
+      oidc_allowed_emails: Array.isArray(settings?.oidc_allowed_emails) ? settings.oidc_allowed_emails.slice() : [],
+      oidc_allowed_groups: Array.isArray(settings?.oidc_allowed_groups) ? settings.oidc_allowed_groups.slice() : [],
+      oidc_group_claim: text(settings?.oidc_group_claim || 'groups'),
+      oidc_default_role: settings?.auth_oidc_default_role === 'readonly' ? 'readonly' : 'user',
+      public_base_url: publicBase,
+      public_base_url_effective: publicBase,
+      public_base_url_env_override: false,
+      oidc_callback_url: '',
+      current_session_mechanism: null,
+      session_count: 0,
+    };
+  }
+
+  function removeAuthUnavailableNotice() {
+    root()?.querySelector('[data-panel="authentication"] .dp-settings-auth-unavailable')?.remove();
+  }
+
+  function markAuthUnavailable(error) {
+    if (!settingsActive()) return;
+    const panel = root()?.querySelector('[data-panel="authentication"]');
+    if (!panel) return;
+    let notice = panel.querySelector('.dp-settings-auth-unavailable');
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.className = 'dp-settings-caution dp-settings-auth-unavailable';
+      panel.prepend(notice);
+    }
+    notice.replaceChildren();
+    const title = document.createElement('b');
+    sayInto(title, say('settings.auth.unavailable_title'));
+    const detail = document.createElement('span');
+    sayInto(detail, text(error?.message || error || '') || say('settings.auth.unavailable'));
+    notice.append(title, detail);
+  }
+
+  function callbackFromPublicBase(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    let parsed;
+    try { parsed = new URL(raw); } catch (_) { return ''; }
+    if (parsed.protocol !== 'https:' || !parsed.hostname) return '';
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) return '';
+    if (parsed.pathname !== '/' && parsed.pathname !== '') return '';
+    const origin = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+    return origin + '/auth/oidc/callback';
+  }
+
+  function updateOidcCallbackPreview() {
+    const source = fieldFor('public_base_url');
+    const input = fieldFor('oidc_callback_url');
+    const button = root()?.querySelector('button[data-action="copy-oidc-callback"]');
+    const field = input?.closest('.dp-settings-auth-callback-field');
+    if (!source || !input || !button || !field) return;
+
+    const callback = callbackFromPublicBase(source.value);
+    input.value = callback;
+    sayAttr(input, 'placeholder', callback ? '' : say('settings.oidc.callback_placeholder'));
+    button.disabled = !callback;
+    field.classList.toggle('is-callback-unavailable', !callback);
+  }
+
+  async function copyOidcCallback() {
+    const source = fieldFor('public_base_url');
+    const input = fieldFor('oidc_callback_url');
+    const callback = callbackFromPublicBase(source?.value);
+    if (!input || !callback) return;
+
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(callback);
+      notify(t('settings.oidc.callback_copied'), 'success');
+      return;
+    } catch (_) {
+      try {
+        input.focus();
+        input.select();
+        if (document.execCommand('copy')) {
+          notify(t('settings.oidc.callback_copied'), 'success');
+          return;
+        }
+      } catch (_) {}
+    }
+
+    input.focus();
+    input.select();
+    notify(t('settings.oidc.callback_copy_manually'), 'info');
+  }
+
+  /* The live-probe result is nothing but one more piece of canonical auth
+     state, so it is painted by the same painter as every other reading. */
+  function applyOidcRuntimeStatus(auth, available) {
+    if (!settingsActive()) return;
+    paintAuthKpis({...auth, oidc_available: available});
+  }
+
+  async function probeOidcRuntime(auth, generation) {
+    if (!auth?.oidc_enabled || !auth?.oidc_configured) return;
+    const identity = oidcIdentity(auth);
+    try {
+      const status = await request('GET', '/auth/oidc/runtime-status', undefined, 5000);
+      if (generation !== authGeneration || identity !== oidcIdentity(state.auth)) return;
+      state.auth = {...state.auth, oidc_available: status?.oidc_available};
+      applyOidcRuntimeStatus(state.auth, status?.oidc_available);
+    } catch (_) {
+      if (generation !== authGeneration || identity !== oidcIdentity(state.auth)) return;
+      state.auth = {...state.auth, oidc_available: false};
+      applyOidcRuntimeStatus(state.auth, false);
+    }
+  }
+
+  function acceptAuth(auth, {probe = true} = {}) {
+    state.auth = auth;
+    syncAuthIntoSettings(auth);
+    authGeneration += 1;
+    removeAuthUnavailableNotice();
+    if (probe) void probeOidcRuntime(auth, authGeneration);
+    return authGeneration;
+  }
+
+  const authLinesValue = values => (Array.isArray(values) ? values.join('\n') : '');
+
+  /* The ONE projection of canonical authentication state onto a control.
+   *
+   * The /auth/config payload names STATUS ("password_enabled", "username");
+   * the update it accepts names CONFIGURATION ("auth_password_enabled",
+   * "auth_username"). This is the single place the two meet, and it is used
+   * both to RENDER a control and to report what a commit accepted -- so the
+   * markup and the persistence owner's baseline can never disagree about what
+   * "unchanged" means. A secret projects to blank: the browser is never told
+   * what is stored. */
+  const AUTH_CONTROL_VALUES = Object.freeze({
+    auth_password_enabled: a => (a?.password_enabled ? '1' : '0'),
+    auth_session_lifetime_hours: a => String(a?.session_lifetime_hours || 12),
+    auth_oidc_enabled: a => (a?.oidc_enabled ? '1' : '0'),
+    oidc_provider_name: a => text(a?.oidc_provider_name || 'OpenID Connect'),
+    public_base_url: a => text(a?.public_base_url),
+    oidc_issuer_url: a => text(a?.oidc_issuer_url),
+    oidc_client_id: a => text(a?.oidc_client_id),
+    oidc_client_secret: () => '',
+    oidc_scopes: a => (Array.isArray(a?.oidc_scopes) ? a.oidc_scopes.join(' ') : ''),
+    oidc_group_claim: a => text(a?.oidc_group_claim || 'groups'),
+    oidc_allow_all: a => (a?.oidc_allow_all ? '1' : '0'),
+    auth_oidc_default_role: a => (a?.oidc_default_role === 'readonly' ? 'readonly' : 'user'),
+    oidc_allowed_subjects: a => authLinesValue(a?.oidc_allowed_subjects),
+    oidc_allowed_emails: a => authLinesValue(a?.oidc_allowed_emails),
+    oidc_allowed_groups: a => authLinesValue(a?.oidc_allowed_groups),
+  });
+
+  function authControlValue(key, auth) {
+    const read = AUTH_CONTROL_VALUES[key];
+    return read ? read(auth) : '';
+  }
+
+  const AUTH_BOOLEANS = Object.freeze(['auth_password_enabled', 'auth_oidc_enabled', 'oidc_allow_all']);
+  const AUTH_LINE_LISTS = Object.freeze(['oidc_allowed_subjects', 'oidc_allowed_emails', 'oidc_allowed_groups']);
+
+  /* A committed draft in the shape the /auth/config update holds: a boolean, a
+   * whole number of hours, a scope list, a line list, or a string. Bounds are
+   * NOT applied here: the persistence owner refuses a number outside the
+   * control's declared range (the server's own) before any request, and the
+   * server still decides everything, exactly as every other Settings number
+   * behaves. */
+  function authCommittedValue(key, draft) {
+    if (AUTH_BOOLEANS.includes(key)) return draft === true || draft === '1';
+    // Read exactly, never truncated ("1e3" is refused, not read as 1): the
+    // persistence owner refused anything else before this write.
+    if (key === 'auth_session_lifetime_hours') {
+      return window.DPSettingsPersistence.numberDraft(fieldFor(key), draft).value;
+    }
+    if (key === 'oidc_scopes') {
+      return String(draft ?? '').split(/[\s,]+/).map(value => value.trim()).filter(Boolean);
+    }
+    if (AUTH_LINE_LISTS.includes(key)) {
+      return String(draft ?? '').split('\n').map(value => value.trim()).filter(Boolean);
+    }
+    return String(draft ?? '');
+  }
+
+  /* The ONE open-mode gate.
+   *
+   * Turning off the last interactive mechanism intentionally opens DownloadPulse
+   * and its API to anyone who can reach it. That is a property of the ACT, not
+   * of the page or of any one control, so every act that can perform it -- the
+   * two Enable toggles and the confirmed password clear alike -- asks here.
+   *
+   * It answers with the PROOF the act must carry, never with a bare permission:
+   * the backend accepts an open-mode transition only when the request itself
+   * says the operator confirmed it, so an authorization that did not travel
+   * with the mutation is not an authorization at all. The proof belongs to that
+   * one act -- it is returned to the caller and never stored, so nothing can
+   * hold a granted confirmation and spend it on a later write. */
+  const AUTH_DENIED = Object.freeze({allowed: false, proof: null});
+  const AUTH_ALLOWED = Object.freeze({allowed: true, proof: null});
+
+  async function confirmOpenMode({password, oidc}) {
+    // Not an open-mode transition: nothing to confirm and nothing to prove.
+    if (!state.auth?.authentication_required || password || oidc) return AUTH_ALLOWED;
+    const confirmed = await window.DPSettingsModal.confirm({
+      title: say('settings.auth.open_mode_title'),
+      message: say('settings.auth.open_mode_message'),
+      confirmLabel: say('settings.auth.open_mode_accept'),
+      tone: 'warning',
+    });
+    return confirmed ? Object.freeze({allowed: true, proof: {confirm_open_mode: true}}) : AUTH_DENIED;
+  }
+
+  /* What this ONE commit is authorized to send. Only the two participation
+   * toggles can open the installation; every other field is ordinary. */
+  function authorizeAuthCommit(key, value) {
+    if (key !== 'auth_password_enabled' && key !== 'auth_oidc_enabled') {
+      return Promise.resolve(AUTH_ALLOWED);
+    }
+    return confirmOpenMode({
+      password: key === 'auth_password_enabled' ? !!value : !!state.auth?.password_enabled,
+      oidc: key === 'auth_oidc_enabled' ? !!value : !!state.auth?.oidc_enabled,
+    });
+  }
+
+  /* Canonical authentication state accepted WITHOUT re-rendering the page.
+   *
+   * A field commit lands while the operator is still working, so re-rendering
+   * would discard every draft they have not yet left. The accepted payload
+   * becomes canonical state and the readings derived from it are repainted in
+   * place by the one painter below. */
+  function adoptAuthentication(auth) {
+    const generation = acceptAuth(auth, {probe: false});
+    paintAuthDerived();
+    void probeOidcRuntime(state.auth, generation);
+    return generation;
+  }
+
+  /* Repaint one card's canonical header status in place. */
+  function paintCardStatus(view, card, status, report = status) {
+    const node = view.querySelector(card);
+    if (node) paintStatusNodes(node, status, report);
+  }
+
+  /* One card's configuration report wherever it is shown: the header rail's
+   * status (``status``) and, where the card has the header Test treatment,
+   * that menu's report and its trigger's colour (``report``). */
+  function paintStatusNodes(card, status, report) {
+    const node = card.querySelector('.dp-settings-card-header-controls > .dp-settings-provider-config-status');
+    if (node) {
+      sayInto(node, status.text);
+      node.dataset.tone = status.tone;
+      node.hidden = !status.text;
+    }
+    const group = card.querySelector('.dp-settings-header-test-group[data-verification]');
+    if (group) group.dataset.verification = TEST_VERIFICATION[report.tone] || 'unconfigured';
+  }
+
+  function paintAuthKpis(a) {
+    const view = root();
+    if (!view) return;
+    for (const item of authKpiItems(a)) {
+      const kpi = view.querySelector(`.dp-settings-auth-kpi[data-auth-kpi="${item.id}"]`);
+      const value = kpi?.querySelector('.dhs-val');
+      if (!kpi || !value) continue;
+      value.replaceChildren(...kpiWordNodes(item.value, item.valueShort));
+      if (item.secondary) {
+        value.appendChild(document.createElement('br'));
+        const secondary = document.createElement('span');
+        secondary.className = 'dp-settings-auth-kpi-secondary';
+        secondary.textContent = String(item.secondary);
+        value.appendChild(secondary);
+      }
+      kpi.dataset.c = item.tone;
+    }
+    // New words may need another composition.
+    authKpiFit?.();
+  }
+
+  /* The Authentication Status KPIs below 780px (their stylesheet declares
+   * --dp-kpi-fit-steps there): the three side by side while their words fit
+   * them, else the mode across the whole row above its two mechanisms, else
+   * that with closer card padding, else that with the short words. Each is
+   * laid out and READ in turn -- every title in one line while the three are
+   * side by side and in at most two in the others, every value in at most two
+   * (and its qualifier line), no word running past its card -- and the first
+   * that fits is kept,
+   * so the choice is a function of the room alone and the same width gives
+   * the same composition however it was reached. Re-read when the room
+   * changes and when the painter writes new words. */
+  // [composition, words, title lines]: three across only while every title
+  // keeps one line; the mode-over-mechanisms compositions let one wrap.
+  const KPI_FITS = Object.freeze([['row', 'full', 1], ['split', 'full', 2], ['close', 'full', 2], ['close', 'short', 2]]);
+  let authKpiObserver = null;
+  let authKpiFit = null;
+
+  function kpiFits(grid, titleLines) {
+    const lines = node => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return new Set([...range.getClientRects()].filter(box => box.width > 1 && box.height > 4)
+        .map(box => Math.round(box.bottom))).size;
+    };
+    return Array.from(grid.querySelectorAll('.dp-settings-auth-kpi')).every(kpi => {
+      const body = kpi.querySelector('.dhs-body');
+      const label = kpi.querySelector('.dhs-label');
+      const value = kpi.querySelector('.dhs-val');
+      const qualifier = value?.querySelector('.dp-settings-auth-kpi-secondary') ? 1 : 0;
+      return body.scrollWidth <= body.clientWidth + 1 && lines(label) <= titleLines && lines(value) <= 2 + qualifier;
+    });
+  }
+
+  /* The handheld bodies below 780px: the settings named here leave their
+   * hints out of the layout there (each card's stylesheet) -- Username &
+   * Password and OpenID Connect, Webhook Notifications' identity and
+   * destinations, the Reporting Webhook and Backup Folder -- each said
+   * instead by its own title (promoteHints; Allow Database Reset is an
+   * island's, fitIsland); and the
+   * access policy toggle says "Allow Any Identity" where its full words would
+   * not stay on one line beside the toggle -- read from the label as drawn,
+   * its full words staying the toggle's name. Re-read when any of their
+   * bodies' room changes. */
+  const HANDHELD_HINT_CARDS = ['.dp-settings-username-password-card', '.dp-settings-oidc-card', '.dp-settings-discord-card',
+    '.dp-settings-statistics-reporting-card', '.dp-settings-backups-retention-card'];
+  const HANDHELD_HINT_FIELDS = [
+    '.dp-settings-username-password-card .dp-settings-inline-field',
+    '.dp-settings-oidc-card .dp-settings-inline-field',
+    '.dp-settings-discord-card :is(.dp-settings-notifications-identity-row, .dp-settings-notifications-delivery-row) > .dp-settings-inline-field',
+    '.dp-settings-statistics-reporting-row > .dp-settings-webhook-row',
+    '.dp-settings-backup-folder-field',
+  ].join(', ');
+  let handheldBodyObserver = null;
+  let handheldBodyFit = null;
+
+  function fitHandheldBodies() {
+    handheldBodyObserver?.disconnect();
+    handheldBodyObserver = null;
+    const view = root();
+    const bodies = Array.from(view?.querySelectorAll(HANDHELD_HINT_CARDS.map(card => `${card} > .card-body`).join(', ')) || []);
+    handheldBodyFit = bodies.length ? () => {
+      promoteHints(Array.from(view.querySelectorAll(HANDHELD_HINT_FIELDS)).filter(field => field.getClientRects().length));
+      const policy = view.querySelector('.dp-settings-oidc-allow-all');
+      const words = policy?.querySelector('.tl');
+      if (!words || !words.getClientRects().length) return;
+      delete policy.dataset.words;
+      // Read against the room between the row's start and the toggle: words
+      // that overrun it, at either end, or take a second line do not fit.
+      const range = document.createRange();
+      range.selectNodeContents(words.querySelector('.dp-settings-oidc-allow-all-full'));
+      const boxes = [...range.getClientRects()].filter(box => box.width > 1);
+      const row = policy.getBoundingClientRect();
+      const toggle = policy.querySelector('.toggle')?.getBoundingClientRect();
+      const lines = new Set(boxes.map(box => Math.round(box.bottom))).size;
+      const overrun = boxes.some(box => box.left < row.left - 0.5 || (toggle && box.right > toggle.left + 0.5));
+      if (lines > 1 || overrun) policy.dataset.words = 'short';
+    } : null;
+    handheldBodyFit?.();
+    if (handheldBodyFit && typeof ResizeObserver === 'function') {
+      handheldBodyObserver = new ResizeObserver(() => handheldBodyFit?.());
+      bodies.forEach(body => handheldBodyObserver.observe(body));
+    }
+  }
+
+  function fitAuthKpis() {
+    authKpiObserver?.disconnect();
+    authKpiObserver = null;
+    const grid = root()?.querySelector('.dp-settings-auth-kpi-grid');
+    authKpiFit = grid ? () => {
+      if (!grid.isConnected || !grid.getClientRects().length) return;
+      const steps = parseInt(getComputedStyle(grid).getPropertyValue('--dp-kpi-fit-steps'), 10) || 0;
+      delete grid.dataset.kpiFit;
+      delete grid.dataset.kpiWords;
+      for (const [fit, words, titleLines] of KPI_FITS.slice(0, steps)) {
+        grid.dataset.kpiFit = fit;
+        grid.dataset.kpiWords = words;
+        if (kpiFits(grid, titleLines)) return;
+      }
+    } : null;
+    authKpiFit?.();
+    if (grid && typeof ResizeObserver === 'function') {
+      authKpiObserver = new ResizeObserver(() => authKpiFit?.());
+      authKpiObserver.observe(grid.parentElement);
+    }
+  }
+
+  /* The ONE in-place projection of canonical authentication state.
+   *
+   * Every node it touches was rendered by authStatusCard/authenticationPanel
+   * from this same state through these same helpers; this repaints exactly
+   * those DERIVED readings after a commit. It creates no markup, owns no
+   * layout, and introduces no value the markup owner does not already state. */
+  function paintAuthDerived() {
+    const view = root();
+    if (!view) return;
+    const a = state.auth || {};
+    paintAuthKpis(a);
+
+    const sessions = view.querySelector('[data-auth-session-count]');
+    if (sessions) sessions.textContent = String(a.session_count ?? 0);
+
+    const clearPasswordButton = view.querySelector('[data-action="clear-password"]');
+    if (clearPasswordButton) clearPasswordButton.disabled = !a.password_configured;
+    const clearSecretButton = view.querySelector('[data-action="clear-oidc-secret"]');
+    if (clearSecretButton) clearSecretButton.disabled = !a.oidc_client_secret_configured;
+
+    // The header status is a projection of canonical state, repainted in the
+    // one canonical status node the card's rail already owns; the OIDC word is
+    // never derived from a toast or from the DOM.
+    paintCardStatus(view, '.dp-settings-oidc-card', oidcHeaderStatus(a), oidcConfigurationStatus(a));
+    paintCardStatus(view, '.dp-settings-username-password-card', credentialStatus(a));
+    projectCredentialDraft();
+
+    const passwordField = fieldFor('auth_password');
+    if (passwordField) sayAttr(passwordField, 'placeholder', passwordPlaceholder(a));
+    const secretField = fieldFor('oidc_client_secret');
+    if (secretField) sayAttr(secretField, 'placeholder', clientSecretPlaceholder(a));
+  }
+
+  const passwordPlaceholder = a => say(a?.password_configured ? 'settings.auth.password_set' : 'settings.auth.password_unset');
+
+  const clientSecretPlaceholder = a => say(a?.oidc_client_secret_configured ? 'settings.oidc.secret_stored' : 'settings.oidc.secret_optional');
+
+  /* The four status readings, as data. ONE derivation, used both by the markup
+   * that first renders them and by the painter that repaints them in place. */
+  function authKpiItems(a) {
+    // The mode from the same two flags the server builds its mode from
+    // (password_auth_enabled, oidc_auth_enabled), never from its English words.
+    const mode = a.password_enabled && a.oidc_enabled ? 'both' : a.password_enabled ? 'password'
+      : a.oidc_enabled ? 'oidc' : 'none';
+
+    const passwordOperational = !!a.password_enabled && !!a.password_ready;
+    const oidcOperational = !!a.oidc_enabled && !!a.oidc_ready && a.oidc_available !== false;
+    let modeTone = 'neutral';
+    if (a.authentication_required) modeTone = passwordOperational || oidcOperational ? 'green' : 'red';
+
+    /* One state vocabulary for every mechanism: Unconfigured, Configured,
+     * Enabled. "Configured" says the configuration exists but the mechanism is
+     * not participating; "Enabled" says it is. The conjunction they used to
+     * form said both and meant only the second.
+     *
+     * Colour means severity, and red means something is WRONG. A mechanism the
+     * operator simply does not use is not wrong, so an unconfigured, disabled
+     * mechanism is grey -- an installation using only OIDC should not show a
+     * red Username & Password card, nor the reverse. Red is reserved for the
+     * one case that really is broken: enabled, but not actually usable. */
+    const mechanismState = (configured, enabled, ready) => {
+      if (enabled && !ready) return {value: 'config_error', tone: 'red'};
+      if (!configured) return {value: 'unconfigured', tone: 'neutral'};
+      return enabled ? {value: 'enabled', tone: 'green'} : {value: 'configured', tone: 'yellow'};
+    };
+
+    const password = mechanismState(
+      !!a.password_configured, !!a.password_enabled, !!a.password_ready);
+
+    const oidcState = oidcStatePresentation(a);
+
+    // Each reading also has its SHORT words (labelShort, valueShort): what a
+    // narrow card says when the full words no longer fit it (fitAuthKpis).
+    // The same state, never a different one; the full words stay its
+    // accessible text.
+    return [
+      {id: 'mode', label: say('settings.auth.kpi.mode'), labelShort: say('settings.auth.kpi.mode_short'),
+        ...kpiValue(`mode.${mode}`), tone: modeTone, secondary: ''},
+      {id: 'password', label: say('settings.auth.kpi.password'), labelShort: say('settings.auth.kpi.password_short'),
+        ...kpiValue(password.value), tone: password.tone, secondary: ''},
+      {id: 'oidc', label: say('settings.auth.kpi.oidc'), labelShort: say('settings.auth.kpi.oidc_short'),
+        ...kpiValue(oidcState.primary), tone: oidcState.tone,
+        secondary: oidcState.secondary ? say(`settings.auth.kpi.${oidcState.secondary}`) : ''},
+    ];
+  }
+
+  // The status words a narrow KPI may shorten, and to what; every other word
+  // is already short.
+  // A KPI value by its state's key, with its shorter words where it has them.
+  const KPI_SHORT_VALUES = Object.freeze(new Set(['config_error', 'runtime_unavailable', 'mode.oidc', 'mode.password']));
+  const kpiValue = state => ({value: say(`settings.auth.kpi.${state}`),
+    valueShort: KPI_SHORT_VALUES.has(state) ? say(`settings.auth.kpi.${state}_short`) : ''});
+
+  // A KPI's words as markup: the full words, and -- where they differ -- the
+  // short ones, drawn instead only while the grid says so (data-kpi-words).
+  const kpiWords = (full, short) => (short && String(short) !== String(full)
+    ? `<span class="dp-settings-kpi-words--full"${keyed(full)}>${html(full)}</span><span class="dp-settings-kpi-words--short" aria-hidden="true"${keyed(short)}>${html(short)}</span>`
+    : words(full));
+
+  // The same, as nodes, for the painter.
+  function kpiWordNodes(full, short) {
+    if (!short || String(short) === String(full)) return [document.createTextNode(String(full))];
+    const node = (form, text) => {
+      const span = document.createElement('span');
+      span.className = `dp-settings-kpi-words--${form}`;
+      if (form === 'short') span.setAttribute('aria-hidden', 'true');
+      span.textContent = String(text);
+      return span;
+    };
+    return [node('full', full), node('short', short)];
+  }
+
+  function authStatusCard(a) {
+    const lifetimeId = fieldId('auth_session_lifetime_hours');
+
+    return card(say('settings.auth.status_title'), `
+      <div class="dp-settings-status-grid dp-settings-auth-kpi-grid">
+        ${authKpiItems(a).map(item => `
+          <div class="dash-hero-stat dp-settings-auth-kpi" data-auth-kpi="${html(item.id)}" data-c="${html(item.tone)}">
+            <div class="dhs-body">
+              <div class="dhs-label">${kpiWords(item.label, item.labelShort)}</div>
+              <div class="dhs-val">${kpiWords(item.value, item.valueShort)}${item.secondary ? `<br><span class="dp-settings-auth-kpi-secondary">${html(item.secondary)}</span>` : ''}</div>
+            </div>
+          </div>`).join('')}
+      </div>
+      <div class="dp-settings-auth-session-row dp-settings-island" role="group"${keyed(null, {'aria-label': say('settings.auth.session_group')})}>
+        ${inlineField(lifetimeId, say('settings.auth.session_lifetime'),
+          say('settings.auth.session_lifetime_hint'),
+          `<span class="dp-settings-auth-duration-control">
+            <input class="input" id="${lifetimeId}" data-setting="auth_session_lifetime_hours" type="number"
+                   min="1" max="168" value="${html(a.session_lifetime_hours || 12)}"
+                  ${keyed(null, {'aria-label': say('settings.auth.session_lifetime_label')})} ${commitAttributes('auth_session_lifetime_hours')}>
+            <span class="dp-settings-auth-duration-unit" aria-hidden="true"${keyed(say('settings.unit.hours'))}>${html(t('settings.unit.hours'))}</span>
+          </span>`,
+          {className: 'dp-settings-auth-session-lifetime'})}
+        ${inlineField('', say('settings.auth.sessions'), say('settings.auth.sessions_hint'),
+          `<span class="dp-settings-auth-session-count-value" data-auth-session-count>${html(a.session_count ?? 0)}</span>`,
+          {
+            className: 'dp-settings-auth-session-count',
+            action: `<button class="btn btn-ghost btn-sm dp-settings-auth-session-logout" type="button" data-action="logout-session"${keyed(say('settings.auth.logout'))}>${html(t('settings.auth.logout'))}</button>`,
+          })}
+      </div>
+    `, {className: 'dp-settings-auth-status-card', titlePrefix: familyIcon('authentication', 'shield-check'),
+      help: 'auth-status', hinted: true, headerFit: 'wrap',
+      headerCenter: say('settings.auth.status_copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy'});
+  }
+
+  function authenticationPanel(a) {
+    const externalBase = a.public_base_url_env_override ? (a.public_base_url_effective || '') : (a.public_base_url || '');
+    const publicBaseManaged = !!a.public_base_url_env_override;
+    const scopes = Array.isArray(a.oidc_scopes) ? a.oidc_scopes.join(' ') : '';
+    const lines = values => Array.isArray(values) ? values.join('\n') : '';
+    const callback = callbackFromPublicBase(externalBase) || '';
+
+    /* Username and Password are ONE credential, applied together and only by
+     * Apply (applyCredentials): neither is enrolled in field-boundary
+     * persistence, so typing, blurring or reflowing them writes nothing. */
+    const usernameField = input('auth_username', say('settings.auth.username'), a.username || '', {
+      inline: true,
+      commit: false,
+      autocomplete: 'username',
+      placeholder: 'operator',
+      hint: say('settings.auth.username_hint'),
+      className: 'dp-settings-auth-username-field',
+    });
+
+    /* The stored password is never projected into the browser: this field is
+     * always rendered blank, and blank means "keep the stored password".
+     * Erasing it is Clear Stored Password, the confirmed action inside the
+     * field, never an inference from an empty field; Apply, in the field's
+     * action slot, is the one act that changes the credential. */
+    const passwordField = input('auth_password', say('settings.auth.password'), '', {
+      inline: true,
+      commit: false,
+      type: 'password',
+      autocomplete: 'new-password',
+      maxlength: 4096,
+      placeholder: passwordPlaceholder(a),
+      hint: say('settings.auth.password_hint'),
+      className: 'dp-settings-auth-password-field',
+      embedAction: `<button class="btn btn-danger btn-sm" type="button" data-action="clear-password"${keyed(say('settings.auth.clear'), {'aria-label': say('settings.auth.clear_password'), 'data-tooltip': say('settings.auth.clear_password')})} ${a.password_configured ? '' : 'disabled'}>${html(t('settings.auth.clear'))}</button>`,
+      action: `<button class="btn btn-blue btn-sm" type="button" data-action="apply-credentials"${keyed(say('settings.auth.apply'))} disabled>${html(t('settings.auth.apply'))}</button>`,
+    });
+
+    const credentials = card(say('settings.auth.credentials_title'), `
+      <div class="dp-settings-auth-credentials-row">${usernameField}${passwordField}</div>
+    `, {
+      className: 'dp-settings-username-password-card',
+      help: 'username-password',
+      hinted: true,
+      headerFit: 'wrap',
+      titlePrefix: familyIcon('authentication', 'user-lock'),
+      headerCenter: say('settings.auth.credentials_copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy dp-settings-auth-header-copy--credentials',
+      headerStatus: credentialStatus(a),
+      action: headerEnableToggle('auth_password_enabled', a.password_enabled, '', say('settings.auth.credentials_enable')),
+    });
+
+    const providerField = input('oidc_provider_name', say('settings.oidc.provider_name'), a.oidc_provider_name || 'OpenID Connect', {
+      inline: true,
+      hint: say('settings.oidc.provider_name_hint'),
+      className: 'dp-settings-oidc-provider-field',
+    });
+
+    /* PUBLIC_BASE_URL, when the environment sets it, is the deployment's
+     * value and not this page's to write -- so the control is not enrolled in
+     * persistence at all, rather than enrolled and then never written. */
+    const publicBaseField = input('public_base_url', say('settings.oidc.public_base'), externalBase, {
+      inline: true,
+      commit: !publicBaseManaged,
+      readonly: publicBaseManaged,
+      placeholder: 'https://download.example.com',
+      hint: say(publicBaseManaged ? 'settings.oidc.public_base_hint_managed' : 'settings.oidc.public_base_hint'),
+      className: 'dp-settings-auth-public-base-field',
+    });
+
+    /* Derived from Public Base URL, so it is a reading rather than a setting:
+     * read-only, and never enrolled in persistence. */
+    const callbackField = input('oidc_callback_url', say('settings.oidc.callback'), callback, {
+      inline: true,
+      commit: false,
+      readonly: true,
+      autocomplete: 'off',
+      placeholder: callback ? '' : say('settings.oidc.callback_placeholder'),
+      hint: say('settings.oidc.callback_hint'),
+      className: `dp-settings-auth-callback-field${callback ? '' : ' is-callback-unavailable'}`,
+      embedAction: `<button class="btn btn-ghost btn-sm" type="button" data-action="copy-oidc-callback"${keyed(say('settings.oidc.copy_callback'), {'aria-label': say('settings.oidc.copy_callback_label')})} ${callback ? '' : 'disabled'}>${html(t('settings.oidc.copy_callback'))}</button>`,
+    });
+
+    const issuerField = input('oidc_issuer_url', say('settings.oidc.issuer'), a.oidc_issuer_url || '', {
+      inline: true,
+      placeholder: 'https://id.example/application/o/downloadpulse',
+      hint: say('settings.oidc.issuer_hint'),
+      className: 'dp-settings-oidc-issuer-field',
+    });
+
+    const clientIdField = input('oidc_client_id', say('settings.oidc.client_id'), a.oidc_client_id || '', {
+      inline: true,
+      hint: say('settings.oidc.client_id_hint'),
+      className: 'dp-settings-oidc-client-id-field',
+    });
+
+    /* Same secret semantics as the password: rendered blank, so blank is the
+     * baseline and an untouched field writes nothing; erasing the stored
+     * secret is the confirmed action inside the field, in the password's own
+     * embedded treatment. */
+    const secretField = input('oidc_client_secret', say('settings.oidc.client_secret'), '', {
+      inline: true,
+      type: 'password',
+      autocomplete: 'off',
+      maxlength: 8192,
+      placeholder: clientSecretPlaceholder(a),
+      hint: say('settings.oidc.client_secret_hint'),
+      className: 'dp-settings-oidc-client-secret-field',
+      embedAction: `<button class="btn btn-danger btn-sm" type="button" data-action="clear-oidc-secret"${keyed(say('settings.auth.clear'), {'aria-label': say('settings.oidc.clear_secret'), 'data-tooltip': say('settings.oidc.clear_secret')})} ${a.oidc_client_secret_configured ? '' : 'disabled'}>${html(t('settings.auth.clear'))}</button>`,
+    });
+
+    const scopesField = input('oidc_scopes', say('settings.oidc.scopes'), scopes, {
+      inline: true,
+      placeholder: 'openid profile email',
+      hint: say('settings.oidc.scopes_hint'),
+      className: 'dp-settings-oidc-scopes-field',
+    });
+
+    const groupClaimField = input('oidc_group_claim', say('settings.oidc.group_claim'), a.oidc_group_claim || 'groups', {
+      inline: true,
+      hint: say('settings.oidc.group_claim_hint'),
+      className: 'dp-settings-oidc-group-claim-field',
+    });
+
+    /* The role an OIDC identity receives the first time it signs in. An
+     * identity is provisioned as its own account; it is never linked to an
+     * existing one by a matching email (Users & Access links explicitly). */
+    const defaultRoleField = selectField('auth_oidc_default_role', say('settings.oidc.default_role'),
+      a.oidc_default_role === 'readonly' ? 'readonly' : 'user',
+      [['user', say('settings.role.user')], ['readonly', say('settings.role.readonly')]],
+      say('settings.oidc.default_role_hint'),
+      {inline: true, className: 'dp-settings-oidc-default-role-field'});
+
+    const subjects = fieldClass(textarea('oidc_allowed_subjects', say('settings.oidc.subjects'), lines(a.oidc_allowed_subjects), {
+      rows: 3,
+      hint: say('settings.oidc.subjects_hint'),
+    }), 'dp-settings-oidc-sandwich');
+    const emails = fieldClass(textarea('oidc_allowed_emails', say('settings.oidc.emails'), lines(a.oidc_allowed_emails), {
+      rows: 3,
+      hint: say('settings.oidc.emails_hint'),
+    }), 'dp-settings-oidc-sandwich');
+    const groups = fieldClass(textarea('oidc_allowed_groups', say('settings.oidc.groups'), lines(a.oidc_allowed_groups), {
+      rows: 3,
+      hint: say('settings.oidc.groups_hint'),
+    }), 'dp-settings-oidc-sandwich');
+
+    const oidc = card(say('settings.oidc.title'), `
+      <div class="dp-settings-oidc-group dp-settings-oidc-group--identity dp-settings-help-slot" role="group"${keyed(null, {'aria-label': say('settings.oidc.group_identity')})}>
+        ${providerField}${publicBaseField}${callbackField}
+      </div>
+      <div class="dp-settings-oidc-issuer-band">${issuerField}</div>
+      <div class="dp-settings-oidc-group dp-settings-oidc-group--credentials" role="group"${keyed(null, {'aria-label': say('settings.oidc.group_credentials')})}>
+        ${clientIdField}${secretField}
+      </div>
+      <div class="dp-settings-oidc-group dp-settings-oidc-group--protocol" role="group"${keyed(null, {'aria-label': say('settings.oidc.group_protocol')})}>
+        ${scopesField}${groupClaimField}
+      </div>
+      <section class="dp-settings-oidc-access">
+        <div class="dp-settings-oidc-section-heading">
+          <span class="dp-settings-oidc-section-title"${keyed(say('settings.oidc.access'))}>${html(t('settings.oidc.access'))}</span>
+          ${oidcPolicyToggle(a.oidc_allow_all)}
+        </div>
+        <div class="dp-settings-oidc-policy-band">
+          <div class="dp-settings-oidc-default-role">${defaultRoleField}</div>
+          <small class="dp-settings-oidc-section-copy"${keyed(say('settings.oidc.access_copy'))}>${html(t('settings.oidc.access_copy'))}</small>
+        </div>
+        <div class="dp-settings-oidc-allowlists">${subjects}${emails}${groups}</div>
+      </section>
+    `, {
+      className: 'dp-settings-oidc-card dp-settings-oidc-grouped-card',
+      help: 'oidc',
+      headerFit: 'wrap',
+      helpRow: false,
+      shortTitle: say('settings.oidc.title_short'),
+      titlePrefix: familyIcon('authentication', 'id-card'),
+      headerCenter: say('settings.oidc.copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy dp-settings-oidc-header-copy',
+      hinted: true,
+      // Test is a provider-level action proving provider-level state, so it
+      // takes the card's own rail in the one canonical treatment -- there is no
+      // OIDC-specific Test.
+      headerStatus: oidcHeaderStatus(a),
+      headerAction: providerTestAction('verify-oidc'),
+      action: headerEnableToggle('auth_oidc_enabled', a.oidc_enabled, 'dp-settings-oidc-header-enable',
+        say('settings.oidc.enable')),
+      testStatus: oidcConfigurationStatus(a),
+    });
+
+    // Easy keeps Authentication Status alone: changing sign-in is Advanced.
+    return authStatusCard(a) + (omitted('username-password') ? '' : credentials)
+      + (omitted('openid-connect') ? '' : oidc);
+  }
+
+  /* ── Users & Access ───────────────────────────────────────────────────────
+   *
+   * The account directory and the Integration accounts' API tokens, in the
+   * same card grammar as every other Settings page. Nothing here is a setting:
+   * no control carries data-setting, so the persistence owner never sees one.
+   * Every act is one request to the account API (Stage 2), whose answer is the
+   * only truth this page shows; the page then re-reads the directory. The
+   * server enforces every invariant (self, last Admin, default accounts), so
+   * a refusal is reported as the server words it. */
+  // Roles by their identifier (words from the catalog; the identifier is what is stored).
+  const ROLE_LABELS = Object.freeze(Object.fromEntries(['admin', 'user', 'readonly', 'integration']
+    .map(role => [role, say(`settings.role.${role}`)])));
+  const HUMAN_ROLES = Object.freeze(['admin', 'user', 'readonly'].map(role => [role, ROLE_LABELS[role]]));
+  /* One sentence per selectable role, shown beneath a Role selector. The full
+   * comparison is the User Accounts help (ui-settings-help.js), opened from
+   * beside the selector; neither changes what a role may do. */
+  const ROLE_DESCRIPTIONS = Object.freeze(Object.fromEntries(['admin', 'user', 'readonly']
+    .map(role => [role, say(`settings.role.${role}_description`)])));
+
+  const liveAccount = account => !account.deleted_at && !account.merged_into;
+  const isIntegration = account => account.role === 'integration';
+  const selfId = () => text(window.downloadPulseAuth?.authority?.account_id);
+  const accountName = account => text(account?.display_name || account?.username || '') || say('settings.users.unnamed');
+
+  function signInMethodList(account) {
+    const methods = [];
+    if (account.has_password) {
+      methods.push(account.username ? say('settings.users.signin.password_named', {username: account.username})
+        : say('settings.users.signin.password'));
+    }
+    if (account.oidc_identities) {
+      methods.push(account.oidc_identities > 1 ? say('settings.users.signin.oidc_count', {count: account.oidc_identities})
+        : say('settings.users.signin.oidc'));
+    }
+    return methods.length ? methods : [say('settings.users.signin.none')];
+  }
+
+  // Each method keyed in its own span, so a language change says it again in place.
+  const signInMethods = account => signInMethodList(account).map(words).join(' · ');
+
+  function accountStatus(account) {
+    return account.enabled
+      ? `<span class="dp-settings-users-status" data-tone="success"${keyed(say('settings.users.enabled'))}>${html(t('settings.users.enabled'))}</span>`
+      : `<span class="dp-settings-users-status" data-tone="neutral"${keyed(say('settings.users.disabled'))}>${html(t('settings.users.disabled'))}</span>`;
+  }
+
+  /* A verified email shared by two live human accounts is only a HINT that
+   * they are one person: it is surfaced, never acted on. Linking is the
+   * Admin's explicit merge. */
+  function suggestedDuplicates(humans) {
+    const byEmail = new Map();
+    humans.filter(account => account.email && account.email_verified).forEach(account => {
+      const key = account.email.trim().toLowerCase();
+      byEmail.set(key, [...(byEmail.get(key) || []), account]);
+    });
+    return [...byEmail.entries()].filter(([, group]) => group.length > 1);
+  }
+
+  /* A person's row has one entry point: Edit, which opens the one Edit User
+   * dialog (editUser). The signed-in account is "You" and the protected
+   * Administrator's local credential is Authentication's; neither is editable
+   * here, and the server refuses both regardless. */
+  function userActions(account) {
+    if (account.id === selfId()) return `<span class="dp-settings-users-self"${keyed(say('settings.users.you'))}>${html(t('settings.users.you'))}</span>`;
+    // Below 780px the table may draw the notice in fewer words
+    // (fitUsersTable); its full words stay what it says.
+    if (account.protected === 'default_admin') {
+      return `<span class="dp-settings-users-hint">${words(say('settings.users.default_admin_lead'))} ${words(say('settings.users.default_admin_rest'))}`
+        + `<span class="dp-settings-users-hint-short" aria-hidden="true"${keyed(null, {'data-label-1': say('settings.users.default_admin_short'), 'data-label-2': say('settings.users.default_admin_shortest')})}></span></span>`;
+    }
+    if (account.protected) return '';
+    return `<button class="btn btn-ghost btn-sm" type="button" data-user-action="edit" data-account-id="${html(account.id)}"${keyed(say('settings.users.edit'))}>${html(t('settings.users.edit'))}</button>`;
+  }
+
+  function humanRows(humans) {
+    if (!humans.length) return `<div class="dp-settings-users-empty"${keyed(say('settings.users.none'))}>${html(t('settings.users.none'))}</div>`;
+    return `
+      <div class="dp-settings-users-table-wrap">
+        <table class="t-table dp-settings-users-table">
+          <thead><tr>${['account', 'role', 'signin', 'status'].map(column => `<th>${words(say(`settings.users.column.${column}`))}</th>`).join('')}<th class="dp-settings-users-actions-head">${words(say('settings.users.column.actions'))}</th></tr></thead>
+          <tbody>${humans.map(account => `
+            <tr data-account-row="${html(account.id)}">
+              <td><button class="dp-settings-users-name dp-settings-users-name-link" type="button" data-user-action="details" data-account-id="${html(account.id)}"${keyed(accountName(account) instanceof Said ? accountName(account) : null, {'data-tooltip': say('settings.users.details')})} data-enabled="${account.enabled ? 'true' : 'false'}">${html(accountName(account))}</button>${
+                words(say(account.enabled ? 'settings.users.enabled' : 'settings.users.disabled')).replace('<span', '<span class="dp-settings-users-state"')}${
+                account.email ? `<div class="dp-settings-users-detail">${html(account.email)}</div>` : ''}</td>
+              <td>${words(ROLE_LABELS[account.role] || account.role)}</td>
+              <td class="dp-settings-users-detail">${signInMethods(account)}</td>
+              <td>${accountStatus(account)}</td>
+              <td><div class="dp-settings-users-actions">${userActions(account)}</div></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function duplicateNotice(humans) {
+    const groups = suggestedDuplicates(humans);
+    if (!groups.length) return '';
+    return `
+      <div class="dp-settings-users-duplicates" role="note">
+        <b${keyed(say('settings.users.duplicates'))}>${html(t('settings.users.duplicates'))}</b>
+        ${groups.map(([email, group]) => {
+          return `
+          <div class="dp-settings-users-duplicate">
+            ${words(say('settings.users.duplicate_shared', {names: group.map(accountName).map(String).join(', '), email}))}
+            <button class="btn btn-ghost btn-sm" type="button" data-user-action="merge" data-merge-ids="${html(group.map(item => item.id).join(','))}"${keyed(say('settings.users.review_merge'))}>${html(t('settings.users.review_merge'))}</button>
+          </div>`;
+        }).join('')}
+        <span class="dp-settings-users-detail"${keyed(say('settings.users.duplicates_note'))}>${html(t('settings.users.duplicates_note'))}</span>
+      </div>`;
+  }
+
+  /* An Integration account's ACTIVE tokens, as the server lists them: a
+   * revoked token is final, so once the server confirms a Revoke the re-read
+   * directory no longer holds it (its row is kept server-side, for
+   * attribution). A refused or unanswered Revoke re-reads the same way, so the
+   * row stays exactly while the token is still active. */
+  // Below 780px a token's issue day may be drawn beneath its name, and its
+  // Revoke be its glyph alone, named for the token it revokes and saying so
+  // as a tooltip (fitIntegrationAccounts); from 780px neither is drawn.
+  function tokenRows(account) {
+    return tokenTable(state.users.tokens[account.id], () => account.id, 'settings.tokens.unreadable', 'settings.tokens.none');
+  }
+
+  /* One token table, the API tokens view's one form: an Integration
+   * account's tokens, and every person's connected browsers (browserBlock).
+   * ``ownerOf`` names the account each token is revoked from. */
+  function tokenTable(tokens, ownerOf, unreadableKey, noneKey) {
+    if (!Array.isArray(tokens)) return `<div class="dp-settings-users-detail"${keyed(say(unreadableKey))}>${html(t(unreadableKey))}</div>`;
+    if (!tokens.length) return `<div class="dp-settings-users-detail"${keyed(say(noneKey))}>${html(t(noneKey))}</div>`;
+    const issued = value => window.downloadsDateMarkup ? window.downloadsDateMarkup(value) : html(value);
+    const day = value => window.downloadsDayMarkup ? window.downloadsDayMarkup(value) : html(value);
+    const revoke = keyedIconLabel('trash2', say('settings.tokens.revoke'));
+    return `
+      <table class="t-table dp-settings-users-tokens">
+        <thead><tr>${['token', 'issued', 'status'].map(column => `<th>${words(say(`settings.tokens.column.${column}`))}</th>`).join('')}<th class="dp-settings-users-actions-head">${words(say('settings.users.column.actions'))}</th></tr></thead>
+        <tbody>${tokens.map(token => `
+          <tr>
+            <td><span class="dp-settings-users-token-name">${html(token.label)}</span><span class="dp-settings-users-token-issued dp-settings-users-detail">${day(token.created_at)}</span></td>
+            <td class="dp-settings-users-detail">${issued(token.created_at)}</td>
+            <td><span class="dp-settings-users-status" data-tone="success"${keyed(say('settings.tokens.active'))}>${html(t('settings.tokens.active'))}</span></td>
+            <td><div class="dp-settings-users-actions"><button class="btn btn-danger btn-sm" type="button" data-user-action="revoke-token" data-account-id="${html(ownerOf(token))}" data-token-id="${html(token.id)}"${keyed(null, {'data-tooltip': say('settings.tokens.revoke_named', {name: token.label})})} data-tooltip-label="[data-dp-icon-label]" data-tooltip-touch>${revoke}<span class="dp-settings-users-token-target"> ${html(token.label)}</span></button></div></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  }
+
+  function integrationBlocks(integrations) {
+    if (!integrations.length) return `<div class="dp-settings-users-empty"${keyed(say('settings.integrations.none'))}>${html(t('settings.integrations.none'))}</div>`;
+    return integrations.map(account => {
+      const id = html(account.id);
+      const lifecycle = account.enabled
+        ? `<button class="btn btn-ghost btn-sm" type="button" data-user-action="disable" data-account-id="${id}" data-menu-closes${keyed(say('settings.users.disable'))}>${html(t('settings.users.disable'))}</button>`
+        : `<button class="btn btn-ghost btn-sm" type="button" data-user-action="enable" data-account-id="${id}" data-menu-closes${keyed(say('settings.users.enable'))}>${html(t('settings.users.enable'))}</button>`;
+      // Below 780px its actions may become one Manage Tokens (then Manage)
+      // menu holding each of them, and its status its name's colour, the
+      // state then said beside the name to assistive technology
+      // (fitIntegrationAccounts); from 780px the menu is not drawn.
+      return `
+        <section class="dp-settings-users-integration" data-account-row="${id}">
+          <div class="dp-settings-users-integration-head">
+            <button class="dp-settings-users-name dp-settings-users-name-link" type="button" data-user-action="details" data-account-id="${id}"${keyed(accountName(account) instanceof Said ? accountName(account) : null, {'data-tooltip': say('settings.users.details')})} data-enabled="${account.enabled ? 'true' : 'false'}">${html(accountName(account))}</button>${
+              words(say(account.enabled ? 'settings.users.enabled' : 'settings.users.disabled')).replace('<span', '<span class="dp-settings-users-state"')}
+            ${accountStatus(account)}
+            <div class="dp-settings-users-actions">
+              ${account.enabled ? `<button class="btn btn-blue btn-sm" type="button" data-user-action="issue-token" data-account-id="${id}" data-menu-closes${keyed(say('settings.tokens.issue'))}>${html(t('settings.tokens.issue'))}</button>` : ''}
+              ${lifecycle}
+              ${account.protected ? '' : `<button class="btn btn-danger btn-sm" type="button" data-user-action="delete" data-account-id="${id}" data-menu-closes${keyed(say('settings.users.delete'))}>${html(t('settings.users.delete'))}</button>`}
+            </div>
+            ${actionsMenuGroup(accountName(account), say('settings.tokens.manage'), '', {from: 1, short: say('settings.users.manage')})}
+          </div>
+          ${tokenRows(account)}
+        </section>`;
+    }).join('');
+  }
+
+  /* Every person's connected browsers (WS-S1), in the API tokens view: one
+   * group listing them all, each named with its person, revoked from that
+   * person's account like any token. Its heading is a group's, not an
+   * account's (no actions, no status: fitIntegrationAccounts fits account
+   * headers only); its table is the shared token table, fitted with the rest. A listing, not an Integration account:
+   * each browser stays its person's, and requests stay attributed to them. */
+  function browserBlock() {
+    const browsers = state.users.browsers;
+    const listed = Array.isArray(browsers)
+      ? browsers.map(browser => ({...browser, label: `${browser.label} \u2014 ${browser.account_name}`})) : browsers;
+    return `
+        <section class="dp-settings-users-integration dp-settings-users-browsers" data-browser-tokens>
+          <div class="dp-settings-users-browsers-head">
+            <span class="dp-settings-users-name"${keyed(say('settings.account.browsers'))}>${html(t('settings.account.browsers'))}</span>
+          </div>
+          ${tokenTable(listed, token => token.account_id, 'settings.account.browsers_unreadable', 'settings.account.browsers_none')}
+        </section>`;
+  }
+
+  function usersBody() {
+    const users = state.users;
+    if (users.error) return `<div class="dp-settings-load-error"><b${keyed(say('settings.users.load_failed'))}>${html(t('settings.users.load_failed'))}</b><span>${html(users.error)}</span></div>`;
+    if (!Array.isArray(users.accounts)) return `<div class="dp-settings-loading"${keyed(say('settings.users.loading'))}>${html(t('settings.users.loading'))}</div>`;
+    const live = users.accounts.filter(liveAccount);
+    const humans = live.filter(account => !isIntegration(account));
+    const integrations = live.filter(isIntegration);
+    // Standalone has no User Accounts card: the built-in Administrator is its
+    // one person, and no other person's account is offered to manage.
+    const people = standaloneDeployment() ? '' : card(say('settings.users.title'), duplicateNotice(humans) + humanRows(humans), {
+      className: 'dp-settings-users-card',
+      help: 'user-accounts',
+      titlePrefix: familyIcon('users', 'users'),
+      headerCenter: say('settings.users.copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy',
+      hinted: true,
+      headerFit: 'wrap',
+      // Below 780px its two actions become one Manage menu from header step
+      // 3 (headerActionsMenu), Add Local Account reading "Add Account" at 2.
+      action: headerActionsMenu(say('settings.users.title'), say('settings.users.manage'),
+        `<button class="btn btn-ghost btn-sm" type="button" data-user-action="merge" data-menu-closes${keyed(say('settings.users.merge'))}>${html(t('settings.users.merge'))}</button>`
+        + `<button class="btn btn-blue btn-sm" type="button" data-user-action="create-local"${keyed(null, {'data-menu-label': say('settings.users.add_local')})} data-menu-closes>${
+          fitLabel(say('settings.users.add_local'), say('settings.users.add_short'))}</button>`, '', {from: 3}),
+    });
+    const automation = card(say('settings.integrations.title'), integrationBlocks(integrations) + browserBlock(), {
+      className: 'dp-settings-users-card dp-settings-users-integrations-card',
+      help: 'integration-accounts',
+      titlePrefix: familyIcon('users', 'key-round'),
+      headerCenter: say('settings.integrations.copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy',
+      hinted: true,
+      headerFit: 'wrap',
+      headerAction: `<button class="btn btn-blue btn-sm" type="button" data-user-action="create-integration">${
+        fitLabel(say('settings.integrations.add'), say('settings.users.add_short'), say('settings.users.add'))}</button>`,
+    });
+    const delivery = card(say('settings.profiles.title'), profileRows(), {
+      className: 'dp-settings-delivery-profiles-card',
+      help: 'delivery-profiles',
+      titlePrefix: familyIcon('users', 'workflow-users'),
+      headerCenter: say('settings.profiles.copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy',
+      hinted: true,
+      headerFit: 'wrap',
+      shortTitle: say('settings.profiles.title_short'),
+      shortTitleFirst: true,
+      headerAction: `<button class="btn btn-blue btn-sm" type="button" data-user-action="create-profile">${
+        fitLabel(say('settings.profiles.create'), say('settings.profiles.create_short'), say('settings.profiles.create_shortest'))}</button>`,
+    });
+    return people + automation + delivery;
+  }
+
+  /* Deployment Type first (Advanced), then the account cards: paintUsers()
+   * replaces only the account cards, so the Deployment Type card and its fit
+   * are kept. */
+  function usersPanel() {
+    return `<div class="dp-settings-users">${omitted('deployment-type') ? '' : deploymentCard()}`
+      + `<div class="dp-settings-users" data-users-mount>${usersBody()}</div></div>`;
+  }
+
+  /* Deployment Type, first in the users section: the installation's type
+   * (``deployment_type``, from the server's settings) and the one action that
+   * selects the other, through the destructive confirmation. Server: every
+   * account signs in under its role. Standalone: the built-in Administrator
+   * alone, by its password once one is set. Either way the change disables
+   * Password and OIDC sign-in and ends every browser session; the server
+   * makes it whole or not at all, and the page then starts again. */
+  /* Each type's hint, longest first: fitDeploymentType shows the longest
+   * that keeps the reading on one row, and none in the stacked last form. */
+  // Each type's words by its identifier: its name, its hint at each header step, and its switch confirmation.
+  const DEPLOYMENT_TYPES = Object.freeze({
+    server: {label: say('settings.deployment.server'), other: 'standalone',
+      hints: ['hint', 'hint_short', 'hint_shortest'].map(step => say(`settings.deployment.server_${step}`))},
+    standalone: {label: say('settings.deployment.standalone'), other: 'server',
+      hints: ['hint', 'hint_short', 'hint_shortest'].map(step => say(`settings.deployment.standalone_${step}`))},
+  });
+  const DEPLOYMENT_CONFIRMATIONS = Object.freeze(Object.fromEntries(['standalone', 'server'].map(type => [type, {
+    title: say(`settings.deployment.${type}_confirm_title`),
+    confirmLabel: say(`settings.deployment.${type}_confirm_accept`),
+    message: say(`settings.deployment.${type}_confirm_message`),
+  }])));
+
+  /* One centred assembly: the reading -- the title over the hint, beside the
+   * type itself, a state reading like Active Browser Sessions' count -- and,
+   * on its own row beneath the whole reading, the action. */
+  function deploymentCard() {
+    const current = standaloneDeployment() ? 'standalone' : 'server';
+    const type = DEPLOYMENT_TYPES[current];
+    const other = DEPLOYMENT_TYPES[type.other];
+    // The desktop application's Local Port, first (application.desktop_listener):
+    // its title over its hint, the port field beside them, centred against them.
+    // Its value arrives from its own read (loadLocalPort), as the default language's does.
+    const localPortHint = localPortHints(LOCAL_PORT_DEFAULT)[0];
+    const localPort = window.downloadPulseDesktop !== true ? '' : `
+      <div class="dp-settings-local-port" data-local-port data-local-port-fit="0">
+        <span class="dp-settings-local-port-copy">
+          <span class="form-label"${keyed(say('settings.local_port.title'))}>${html(t('settings.local_port.title'))}</span>
+          <span class="form-hint" data-local-port-hint${keyed(localPortHint)}>${html(localPortHint)}</span>
+        </span>
+        <input class="input dp-settings-local-port-field" type="number" inputmode="numeric" min="${LOCAL_PORT_LOWEST}" max="${
+          LOCAL_PORT_HIGHEST}" step="1" value="${LOCAL_PORT_DEFAULT}" data-local-port-field disabled${
+          keyed(null, {'aria-label': say('settings.local_port.field_label')})}>
+      </div>`;
+    // The installed desktop application is always Standalone (core.config
+    // _desktop_is_standalone): it has no Deployment Type to show or switch.
+    const deployment = window.downloadPulseDesktop === true ? '' : `
+      <div class="dp-settings-deployment" data-deployment-type="${current}" data-deployment-fit="0">
+        <div class="dp-settings-deployment-reading">
+          <span class="dp-settings-deployment-copy">
+            <span class="form-label"${keyed(say('settings.deployment.current'))}>${html(t('settings.deployment.current'))}</span>
+            <span class="form-hint" data-deployment-hint${keyed(type.hints[0])}>${html(type.hints[0])}</span>
+          </span>
+          <span class="dp-settings-deployment-value"${keyed(type.label)}>${html(type.label)}</span>
+        </div>
+        <button class="btn btn-danger btn-sm" type="button" data-user-action="deployment" data-deployment-target="${
+          type.other}"${keyed(say('settings.deployment.switch_to', {type: other.label}))}>${html(t('settings.deployment.switch_to', {type: other.label}))}</button>
+      </div>`;
+    return card(say('settings.deployment.title'), `
+      <div class="dp-settings-deployment-language" data-language-layout="beside">${localPort}${deployment}
+      <div class="dp-settings-default-language" data-default-language data-default-language-fit="0">
+        <span class="form-label"${keyed(say('settings.default_language.title'))}>${html(t('settings.default_language.title'))}</span>
+        <span class="form-hint" data-default-language-hint${keyed(DEFAULT_LANGUAGE_HINTS[0])}>${html(DEFAULT_LANGUAGE_HINTS[0])}</span>
+        <button class="btn dp-language-button" type="button" data-user-action="default-language" disabled${
+          keyed(null, {'aria-label': say('settings.default_language.title')})}></button>
+      </div>
+      </div>
+    `, {
+      className: 'dp-settings-deployment-card',
+      help: 'deployment-type',
+      shortTitle: say('settings.deployment.title_short'),
+      shortTitleFirst: true,
+      titleLines: 1,
+      titlePrefix: familyIcon('users', 'settings-users'),
+      // Its line is about the Deployment Type, which the desktop application has none of.
+      headerCenter: window.downloadPulseDesktop === true ? null : say('settings.deployment.copy'),
+      headerCenterClass: 'dp-settings-auth-header-copy',
+      hinted: true,
+      headerFit: 'wrap',
+    });
+  }
+
+  /* The reading keeps its one row with the longest hint that fits the
+   * assembly with a clear gutter on each side (data-deployment-fit 0, 1, 2:
+   * full, shorter, shortest); when even the shortest does not, the last form
+   * (3) stacks the title over the type, with no hint. A hint is replaced,
+   * never wrapped: the reading is measured at its own one-row width, with the
+   * wording being tried shown. Only a change of the assembly's width -- its
+   * card's, which no wording changes -- fits it again. */
+  const DEPLOYMENT_FIT_STACKED = 3;
+  // The room a one-row reading keeps clear on each side of it.
+  const DEPLOYMENT_GUTTER = 16;
+  let deploymentObserver = null;
+
+  /* Deployment & Language: its items -- on the desktop application Local Port
+   * first, then the Deployment Type assembly and the Default Language block --
+   * in one row, each as wide as its own content and centred as one group, while
+   * some set of their approved wordings fits the card with a clear gutter on
+   * each side. Narrower, the last item leaves the row for its own centred row
+   * beneath it (with three items, the inverted triangle: two over one), the row
+   * again taking the longest wordings that fit; narrower still, every item on
+   * its own row (stacked). An item alone on its row keeps its own longest
+   * wording that fits the full width: the Deployment Type reading as it always
+   * did (data-deployment-fit 0-2, or the stacked form 3 without a hint), the
+   * language block's hint (data-default-language-fit 0-2, or none), Local
+   * Port's reading on one row (data-local-port-fit 0-2) or, when even its
+   * shortest does not fit, its title, hint and field stacked and centred
+   * (data-local-port-fit stacked, the longest hint that fits, or none).
+   * A row's candidates are one chain from all its full wordings, each link one
+   * step down one ladder -- the step that keeps the widest set while still
+   * saving room -- and the first link that fits is kept: the longest wordings
+   * that fit, and as the card narrows no wording ever grows back. Every
+   * candidate is measured on hidden clones in a zero-size box beside the card's
+   * content, never on the card itself: the result is committed once, and only
+   * what changes is written, so the card never shows a candidate it does not
+   * keep. Only a change of the card's width fits it again (wrapping changes its
+   * height alone), and so does a language change, the default language arriving
+   * on its button, or Local Port's value (its hint names it). */
+  // A row's chain over its items' measured natural widths (see above).
+  function besideChain(widths, between) {
+    const span = steps => steps.reduce((sum, step, item) => sum + widths[item][step], between * (steps.length - 1));
+    const last = widths.map(ladder => ladder.length - 1);
+    const chain = [widths.map(() => 0)];
+    for (let at = chain[0]; at.some((step, item) => step < last[item]);) {
+      const next = at.map((_, item) => at.map((step, other) => step + (other === item ? 1 : 0)))
+        .filter(steps => steps.every((step, item) => step <= last[item]));
+      const saving = next.filter(steps => span(steps) < span(at)).sort((a, b) => span(b) - span(a));
+      at = saving[0] || next[0];
+      chain.push(at);
+    }
+    return chain.filter((steps, index) => index === 0 || span(steps) < span(chain[index - 1]))
+      .map(steps => ({steps, span: span(steps)}));
+  }
+
+  // The card's items, in order, each with its hint and wording ladder.
+  function deploymentItems(pair) {
+    const items = [];
+    const port = pair.querySelector(':scope > [data-local-port]');
+    if (port) items.push({kind: 'port', node: port, hint: port.querySelector('[data-local-port-hint]'),
+      ladder: localPortHints(localPort.port)});
+    const assembly = pair.querySelector(':scope > .dp-settings-deployment');
+    if (assembly) items.push({kind: 'deployment', node: assembly, hint: assembly.querySelector('[data-deployment-hint]'),
+      ladder: DEPLOYMENT_TYPES[assembly.dataset.deploymentType].hints});
+    const language = pair.querySelector(':scope > [data-default-language]');
+    items.push({kind: 'language', node: language, hint: language.querySelector('[data-default-language-hint]'),
+      ladder: DEFAULT_LANGUAGE_HINTS});
+    return items;
+  }
+
+  /* Each item's natural widths at each wording, on hidden clones: ``row`` as
+   * it stands in a row (a divider before it unless it is first), ``alone`` the
+   * one-row reading an item alone must fit (Deployment Type's reading, Local
+   * Port's title and hint beside its field, the language block's hint) and
+   * ``hint`` the hint by itself. */
+  function measureDeploymentLanguage(pair, items) {
+    const box = document.createElement('div');
+    box.setAttribute('data-language-measure', '');
+    box.setAttribute('aria-hidden', 'true');
+    const clones = items.map(item => item.node.cloneNode(true));
+    box.append(...clones);
+    pair.append(box);
+    const width = node => node.getBoundingClientRect().width;
+    const sizes = items.map((item, index) => {
+      const clone = clones[index];
+      const hint = clone.querySelector('[data-deployment-hint], [data-default-language-hint], [data-local-port-hint]');
+      hint.hidden = false;
+      if (item.kind === 'deployment' && clone.dataset.deploymentFit !== '0') clone.dataset.deploymentFit = '0';
+      if (item.kind === 'port' && clone.dataset.localPortFit !== '0') clone.dataset.localPortFit = '0';
+      const reading = item.kind === 'deployment' ? clone.querySelector('.dp-settings-deployment-reading') : null;
+      const size = {row: [], alone: [], hint: []};
+      item.ladder.forEach(words => {
+        hint.textContent = String(words);
+        size.row.push(width(clone));
+        size.hint.push(width(hint));
+        size.alone.push(item.kind === 'deployment' ? width(reading) : item.kind === 'language' ? width(hint) : width(clone));
+      });
+      return size;
+    });
+    box.remove();
+    return sizes;
+  }
+
+  function fitDeploymentType() {
+    deploymentObserver?.disconnect();
+    deploymentObserver = null;
+    const pair = root()?.querySelector('.dp-settings-deployment-language');
+    if (!pair?.querySelector('[data-default-language]')) return;
+    const items = deploymentItems(pair);
+    let width = null;
+    const set = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
+    const sayHint = (node, step, ladder) => {
+      const hidden = step >= ladder.length;
+      if (node.hidden !== hidden) node.hidden = hidden;
+      if (!hidden && (node.dataset.i18n !== ladder[step].key || node.textContent !== String(ladder[step]))) sayInto(node, ladder[step]);
+    };
+    // An item alone on its row: its own longest wording that fits the full width.
+    const alone = (item, size, full) => {
+      const step = size.alone.findIndex(reading => reading + 2 * DEPLOYMENT_GUTTER <= full);
+      if (step >= 0) return {fit: String(step), hint: step};
+      if (item.kind === 'deployment') return {fit: String(DEPLOYMENT_FIT_STACKED), hint: item.ladder.length};
+      const hint = size.hint.findIndex(hintWidth => hintWidth + 2 * DEPLOYMENT_GUTTER <= full);
+      const shown = hint < 0 ? item.ladder.length : hint;
+      return {fit: item.kind === 'port' ? 'stacked' : String(shown), hint: shown};
+    };
+    const fit = () => {
+      if (!items[0].node.getClientRects().length) return;
+      width = pair.clientWidth;
+      const room = pair.clientWidth - 2 * DEPLOYMENT_GUTTER;
+      const sizes = measureDeploymentLanguage(pair, items);
+      // Between two items in a row: the pair's gap; the divider and the room after it are in the item's measured width.
+      const between = parseFloat(getComputedStyle(pair).columnGap) || 0;
+      // The widest row that fits: all items, then all but the last (the rest beneath it), ... ; none is stacked.
+      let row = 0;
+      let steps = [];
+      for (let count = items.length; count >= 2 && !row; count--) {
+        const found = besideChain(sizes.slice(0, count).map(size => size.row), between).find(link => link.span <= room);
+        if (found) [row, steps] = [count, found.steps];
+      }
+      set(pair, 'data-language-layout', row === items.length ? 'beside' : row ? 'triangle' : 'below');
+      items.forEach((item, index) => {
+        const placed = index < row ? {fit: String(steps[index]), hint: steps[index]} : alone(item, sizes[index], pair.clientWidth);
+        const attribute = {port: 'data-local-port-fit', deployment: 'data-deployment-fit', language: 'data-default-language-fit'}[item.kind];
+        set(item.node, attribute, placed.fit);
+        sayHint(item.hint, placed.hint, item.ladder);
+      });
+    };
+    fit();
+    if (typeof ResizeObserver === 'function') {
+      deploymentObserver = new ResizeObserver(() => {
+        if (pair.clientWidth !== width) fit();
+      });
+      deploymentObserver.observe(pair);
+    }
+  }
+
+  /* Local Port (the desktop application's; application.desktop_listener):
+   * where external clients -- the download-client dialects, the native
+   * external API -- reach DownloadPulse on this computer. Read from the server
+   * each time the card is drawn (GET /settings/local-port), with the clients
+   * that connected in the past week; changed at once (PUT): a change that
+   * would cut such clients off asks first (the settings confirmation, Yes /
+   * No), and a port another program holds changes nothing. Its hints name the
+   * address, so its value is part of the card's fit. */
+  const LOCAL_PORT_DEFAULT = 8095;
+  const LOCAL_PORT_LOWEST = 1024;
+  const LOCAL_PORT_HIGHEST = 65535;
+  const LOCAL_PORT_CLIENTS_SHOWN = 5;
+  const localPort = {port: LOCAL_PORT_DEFAULT, listening: false, recent: []};
+  const localPortAddress = port => `http://127.0.0.1:${port}`;
+  const localPortHints = port => Object.freeze([
+    say('settings.local_port.hint', {address: localPortAddress(port)}),
+    say('settings.local_port.hint_short', {address: localPortAddress(port)}),
+    say('settings.local_port.hint_shortest'),
+  ]);
+
+  function adoptLocalPort(reading) {
+    if (!reading || !Number.isInteger(reading.port)) return false;
+    Object.assign(localPort, {port: reading.port, listening: reading.listening === true,
+      recent: Array.isArray(reading.recent_clients) ? reading.recent_clients : []});
+    const field = root()?.querySelector('[data-local-port-field]');
+    if (field) {
+      field.value = String(localPort.port);
+      field.defaultValue = String(localPort.port);
+      field.disabled = false;
+    }
+    fitDeploymentType();
+    return true;
+  }
+
+  async function loadLocalPort() {
+    if (!root()?.querySelector('[data-local-port-field]')) return;
+    try {
+      adoptLocalPort(await request('GET', '/settings/local-port'));
+    } catch (_) {
+      // Unread: the field stays unavailable rather than showing a port that was not read.
+    }
+  }
+
+  // The clients a change would cut off, as the confirmation names them: each
+  // token's label and its account, the first few, then how many more.
+  function localPortClients(clients) {
+    const names = clients.slice(0, LOCAL_PORT_CLIENTS_SHOWN)
+      .map(client => client.account ? t('settings.local_port.client', {label: client.label, account: client.account})
+        : String(client.label));
+    if (clients.length > LOCAL_PORT_CLIENTS_SHOWN) {
+      names.push(t('settings.local_port.confirm_more', {count: clients.length - LOCAL_PORT_CLIENTS_SHOWN}));
+    }
+    try {
+      return new Intl.ListFormat(window.DPI18n.intlLocale(), {style: 'long', type: 'conjunction'}).format(names);
+    } catch (_) {
+      return names.join(', ');
+    }
+  }
+
+  async function changeLocalPort(field) {
+    const saved = localPort.port;
+    const wanted = Number(field.value);
+    const restore = () => { field.value = String(saved); };
+    if (!Number.isInteger(wanted) || wanted < LOCAL_PORT_LOWEST || wanted > LOCAL_PORT_HIGHEST) {
+      restore();
+      notify(t('error.local_port.invalid', {lowest: String(LOCAL_PORT_LOWEST), highest: String(LOCAL_PORT_HIGHEST)}), 'error');
+      return;
+    }
+    // The same port, already listening: nothing to change. (Not listening --
+    // taken at launch -- saving it again tries it again.)
+    if (wanted === saved && localPort.listening) return;
+    if (wanted !== saved) {
+      let clients = localPort.recent;
+      try {
+        const reading = await request('GET', '/settings/local-port');
+        if (Array.isArray(reading?.recent_clients)) clients = reading.recent_clients;
+      } catch (_) { /* the last reading's clients */ }
+      if (clients.length) {
+        const confirmed = await window.DPSettingsModal.confirm({
+          title: say('settings.local_port.confirm_title', {port: String(wanted)}),
+          message: say('settings.local_port.confirm_message', {count: clients.length, clients: localPortClients(clients),
+            current: String(saved), port: String(wanted)}),
+          confirmLabel: say('settings.local_port.confirm_yes'),
+          cancelLabel: say('settings.local_port.confirm_no'),
+          tone: 'danger',
+        });
+        if (!confirmed) {
+          restore();
+          if (field.isConnected) field.focus();
+          return;
+        }
+      }
+    }
+    field.disabled = true;
+    try {
+      const reading = await request('PUT', '/settings/local-port', {port: wanted}, 15000);
+      adoptLocalPort(reading);
+      notify(t('settings.local_port.saved', {address: localPortAddress(localPort.port)}), 'success');
+    } catch (error) {
+      restore();
+      field.disabled = false;
+      notify(error.message, 'error');
+    }
+  }
+
+  /* The installation's default language (Default Language, an Admin's): read
+   * from the server each time the card is drawn, shown on its button as the
+   * language it gives (flag and name), chosen in the shared language list
+   * with a pending choice that only Apply saves. The read and the save are
+   * the server's (GET/PUT /settings/default-locale); a failed read leaves the
+   * button unavailable rather than showing a language that was not read. */
+  const DEFAULT_LANGUAGE_HINTS = Object.freeze(['hint', 'hint_short', 'hint_shortest']
+    .map(step => say(`settings.default_language.${step}`)));
+  const defaultLanguage = {state: null};
+
+  async function paintDefaultLanguage() {
+    const button = root()?.querySelector('[data-user-action="default-language"]');
+    const picker = window.DPLanguagePicker;
+    if (!button || !picker) return;
+    if (!defaultLanguage.state) {
+      button.disabled = true;
+      button.replaceChildren(document.createTextNode(t('settings.default_language.unavailable')));
+      button.setAttribute('aria-label', t('settings.default_language.unavailable'));
+      return;
+    }
+    const shown = await picker.language(defaultLanguage.state.locale);
+    picker.paintButton(button, shown, t('settings.default_language.button', {language: shown.native}));
+    button.disabled = false;
+    // Its flag and name are part of the block's width.
+    fitDeploymentType();
+  }
+
+  async function loadDefaultLanguage() {
+    if (!root()?.querySelector('[data-user-action="default-language"]')) return;
+    try {
+      const read = await request('GET', '/settings/default-locale');
+      defaultLanguage.state = read && typeof read.locale === 'string' ? read : null;
+    } catch (_) {
+      defaultLanguage.state = null;
+    }
+    await paintDefaultLanguage();
+  }
+
+  /* Choose the default: a row only moves the pending choice; Cancel discards
+   * it; Apply saves it once and, only on the server's success, shows it on
+   * the button -- and in this page too when this Admin has no language of its
+   * own (its own read says so). A refused or failed Apply keeps the dialog,
+   * the pending choice, and says so. No other Settings draft is touched. */
+  async function chooseDefaultLanguage(button) {
+    const picker = window.DPLanguagePicker;
+    if (!picker || !defaultLanguage.state) return;
+    let choices = null;
+    try { choices = await picker.choices(); } catch (_) { choices = null; }
+    if (!choices) { notify(t('language.picker.unavailable'), 'error'); return; }
+    let pending = defaultLanguage.state.locale;
+    let rows = null;
+    let error = null;
+    const dialog = window.DPSettingsModal.open({
+      title: say('settings.default_language.title'),
+      acceptLabel: say('common.apply'),
+      cancelLabel: say('common.cancel'),
+      className: 'dp-language-dialog',
+      mount(body) {
+        body.innerHTML = '<p class="dp-language-error" role="alert" hidden></p><div class="dp-language-slot"></div>';
+        error = body.querySelector('.dp-language-error');
+        rows = picker.list(body.querySelector('.dp-language-slot'), {
+          languages: choices, selected: pending, label: t('settings.default_language.title'),
+          onChoose(value) { pending = value; rows.setSelected(value); },
+        });
+        return null;
+      },
+      async onAccept() {
+        error.hidden = true;
+        let saved = null;
+        try {
+          saved = await request('PUT', '/settings/default-locale', {locale: pending});
+        } catch (_) {
+          saved = null;
+        }
+        if (!saved || typeof saved.locale !== 'string') {
+          sayInto(error, say('language.picker.default_not_saved'));
+          error.hidden = false;
+          return false;
+        }
+        defaultLanguage.state = saved;
+        await paintDefaultLanguage();
+        await followDefaultLanguage();
+        return true;
+      },
+    });
+    rows.focus();
+    await dialog.closed;
+    if (button.isConnected) button.focus();
+  }
+
+  // This Admin's own page follows the new default only while it has no
+  // language of its own: the server's answer for this account decides.
+  async function followDefaultLanguage() {
+    let own = null;
+    try { own = await request('GET', '/account/locale'); } catch (_) { own = null; }
+    if (!own || own.preference !== null || own.locale === window.DPI18n.locale()) return;
+    await window.DPLanguagePicker.apply(await window.DPLanguagePicker.language(own.locale));
+  }
+
+  async function changeDeploymentType(target, button) {
+    const copy = DEPLOYMENT_CONFIRMATIONS[target];
+    if (!copy) return;
+    const confirmed = await window.DPSettingsModal.confirm({tone: 'danger', ...copy});
+    if (!confirmed) return;
+    setBusy(button, true, say('settings.deployment.switching'));
+    try {
+      await request('PUT', '/auth/deployment-type', {deployment_type: target, confirm: true}, 15000);
+    } catch (error) {
+      setBusy(button, false);
+      notify(error.message, 'error');
+      return;
+    }
+    // Every browser session ended with the change: the page starts again,
+    // as the server now admits it.
+    window.location.reload();
+  }
+
+  function paintUsers() {
+    const mount = root()?.querySelector('[data-users-mount]');
+    if (!mount) return;
+    mount.innerHTML = usersBody();
+    // Its cards' headers are new: the one hinted-header fitter takes them on.
+    fitHeaderHints();
+    fitUsersTable();
+    fitIntegrationAccounts();
+    fitProfilesTable();
+  }
+
+  /* The User Accounts table below 780px: as the room narrows it gives back
+   * its secondary information one stage at a time (data-users-fit, its
+   * stylesheet's steps, --dp-users-fit-steps): 1 the accounts' emails, 2 the
+   * Sign-In column, 3 the Status column (each name then coloured by the
+   * account's own enabled state, and that state said to assistive technology
+   * beside it), 4 closer cell padding. Below 780px no cell's information
+   * wraps (its stylesheet): a name or email too long for its cell is cut
+   * short. A stage fits in both dimensions: the table needs no horizontal
+   * scrolling, no name or email is cut short, and no row is taller than an
+   * editable account's -- its Edit button, its name, and its email where the
+   * stage shows emails -- so information goes before any row grows. The last
+   * stage is kept whatever it holds. Within the stage chosen, the built-in
+   * Administrator's notice takes the longest of its wordings that fits the
+   * same way (data-users-label), so a long phrase never costs a column nor
+   * grows its row. Every row is then given that one height
+   * (--dp-users-row), so an account without a button (You, the notice) is
+   * as tall as one with it. Read from the table as drawn; the same room and
+   * accounts always choose the same stage. From 780px the table is as it
+   * was. */
+  let usersTableObserver = null;
+  let usersTableFit = null;
+
+  function fitUsersTable() {
+    usersTableObserver?.disconnect();
+    usersTableObserver = null;
+    const table = root()?.querySelector('.dp-settings-users-table');
+    const wrap = table?.parentElement;
+    const rows = table ? Array.from(table.tBodies[0]?.rows || []) : [];
+    const height = row => row.getBoundingClientRect().height;
+    // An editable account's row: the height every row of the stage may take.
+    const editable = rows.filter(row => row.querySelector('[data-user-action="edit"]'));
+    const target = () => Math.max(0, ...(editable.length ? editable : rows).map(height));
+    const cut = node => node.scrollWidth > node.clientWidth + 1;
+    const fits = () => {
+      const most = target();
+      return wrap.scrollWidth <= wrap.clientWidth + 1
+        && !Array.from(table.querySelectorAll('.dp-settings-users-name, td:first-child > .dp-settings-users-detail')).some(cut)
+        && rows.every(row => height(row) <= most + 0.5);
+    };
+    // The stage, then the notice's wording: the first stage that fits with
+    // its shortest wording, then the longest wording that fits it.
+    const choose = steps => {
+      for (let step = 0; step < steps; step += 1) {
+        table.dataset.usersFit = String(step);
+        table.dataset.usersLabel = '2';
+        if (step < steps - 1 && !fits()) continue;
+        for (const label of ['0', '1']) {
+          table.dataset.usersLabel = label;
+          if (fits()) return;
+        }
+        table.dataset.usersLabel = '2';
+        return;
+      }
+    };
+    let width = null;
+    usersTableFit = table ? () => {
+      if (!table.getClientRects().length) return;
+      width = wrap.clientWidth;
+      const steps = parseInt(getComputedStyle(table).getPropertyValue('--dp-users-fit-steps'), 10) || 0;
+      delete table.dataset.usersFit;
+      delete table.dataset.usersLabel;
+      table.style.removeProperty('--dp-users-row');
+      if (!steps) return;
+      choose(steps);
+      table.style.setProperty('--dp-users-row', `${target()}px`);
+    } : null;
+    usersTableFit?.();
+    if (usersTableFit && typeof ResizeObserver === 'function') {
+      // The row height it gives changes the wrapper's height, not its room.
+      usersTableObserver = new ResizeObserver(() => {
+        if (wrap.clientWidth !== width) usersTableFit?.();
+      });
+      usersTableObserver.observe(wrap);
+    }
+  }
+
+  /* The Integration Accounts card below 780px: each account's header and,
+   * together, every token table.
+   *
+   * Each header (data-account-fit, its stylesheet's steps,
+   * --dp-account-fit-steps) takes the first of its compositions that keeps
+   * it on one row with its name whole: 0 its actions as they are, 1 one
+   * Manage Tokens menu holding them, 2 that menu reading "Manage", 3 its
+   * status said by its name's colour (enabled success, disabled caution) and
+   * to assistive technology beside the name. The last is kept whatever it
+   * holds, its name then cut short.
+   *
+   * The token tables share one stage (data-tokens-fit, --dp-tokens-fit-steps)
+   * and one set of column widths, so their columns line up whatever each
+   * holds: 0 Token, Issued, Status and Actions; 1 the issue day beneath each
+   * token's name instead of its own column; 2 each Revoke its glyph alone;
+   * 3 closer cell padding. Issued, Status and Actions are each as wide as the
+   * widest of their cells in every table (--dp-tokens-issued, -status,
+   * -action), Token takes the rest. A stage fits when no table needs
+   * horizontal scrolling, no token's name or day is cut short and no row is
+   * taller than the tables' rows are with four columns -- so the day beneath
+   * a name never grows its row; the last stage is kept whatever it holds.
+   * Every row is then given that one height (--dp-tokens-row), and a name
+   * cut short says itself as a tooltip. Read as drawn; the same room and
+   * tokens always choose the same stages. From 780px the card is as it
+   * was. */
+  let integrationAccountsObserver = null;
+  let integrationAccountsFit = null;
+  const TOKEN_COLUMNS = Object.freeze([[2, '--dp-tokens-issued'], [3, '--dp-tokens-status'], [4, '--dp-tokens-action']]);
+
+  function fitIntegrationAccounts() {
+    integrationAccountsObserver?.disconnect();
+    integrationAccountsObserver = null;
+    const card = root()?.querySelector('.dp-settings-users-integrations-card');
+    const heads = card ? Array.from(card.querySelectorAll('.dp-settings-users-integration-head')) : [];
+    const tables = card ? Array.from(card.querySelectorAll('.dp-settings-users-tokens')) : [];
+    if (!heads.length && !tables.length) {
+      integrationAccountsFit = null;
+      return;
+    }
+    const steps = (node, name) => parseInt(getComputedStyle(node).getPropertyValue(name), 10) || 0;
+    const cut = node => node.scrollWidth > node.clientWidth + 1;
+    const drawn = node => node.getClientRects().length > 0;
+
+    const fitHead = head => {
+      delete head.dataset.accountFit;
+      const count = steps(head, '--dp-account-fit-steps');
+      if (!count) return;
+      const name = head.querySelector('.dp-settings-users-name');
+      for (let step = 0; step < count; step += 1) {
+        head.dataset.accountFit = String(step);
+        if (head.scrollWidth <= head.clientWidth + 1 && !cut(name)) return;
+      }
+    };
+
+    const rows = tables.flatMap(table => Array.from(table.tBodies[0]?.rows || []));
+    const height = row => row.getBoundingClientRect().height;
+    const names = () => tables.flatMap(table => Array.from(table.querySelectorAll('.dp-settings-users-token-name, .dp-settings-users-token-issued'))).filter(drawn);
+    // A cell's own content, unwrapped, with its padding: what its column needs.
+    const need = cell => {
+      const style = getComputedStyle(cell);
+      const content = cell.querySelector('.btn') || cell;
+      const range = document.createRange();
+      range.selectNodeContents(content);
+      const width = content === cell ? range.getBoundingClientRect().width : content.getBoundingClientRect().width;
+      return Math.ceil(width + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight));
+    };
+    const widen = () => TOKEN_COLUMNS.forEach(([column, property]) => {
+      const cells = tables.flatMap(table => Array.from(table.querySelectorAll(`:is(th, td):nth-child(${column})`))).filter(drawn);
+      card.style.setProperty(property, `${Math.max(0, ...cells.map(need))}px`);
+    });
+    const clearWidths = () => TOKEN_COLUMNS.forEach(([, property]) => card.style.removeProperty(property));
+    const setStage = step => tables.forEach(table => { table.dataset.tokensFit = String(step); });
+    const fitsTables = most => tables.every(table => table.parentElement.scrollWidth <= table.parentElement.clientWidth + 1)
+      && !names().some(cut) && rows.every(row => height(row) <= most + 0.5);
+    const fitTables = () => {
+      tables.forEach(table => {
+        delete table.dataset.tokensFit;
+        table.style.removeProperty('--dp-tokens-row');
+      });
+      clearWidths();
+      tables.forEach(table => table.querySelectorAll('.dp-settings-users-token-name[data-tooltip]').forEach(name => name.removeAttribute('data-tooltip')));
+      const count = tables.length ? steps(tables[0], '--dp-tokens-fit-steps') : 0;
+      if (!count) {
+        // From 780px a token's name shows at most two lines (CSS clamps it);
+        // a name cut there carries its whole self as the tooltip.
+        tables.forEach(table => table.querySelectorAll('.dp-settings-users-token-name').forEach(name => {
+          if (name.scrollHeight > name.clientHeight + 1) name.setAttribute('data-tooltip', name.textContent);
+        }));
+        return;
+      }
+      let most = 0;
+      for (let step = 0; step < count; step += 1) {
+        setStage(step);
+        clearWidths();
+        widen();
+        // The rows' height with four columns: every stage's budget.
+        if (step === 0) most = Math.max(0, ...rows.map(height));
+        if (fitsTables(most)) break;
+      }
+      tables.forEach(table => table.style.setProperty('--dp-tokens-row', `${most}px`));
+      tables.forEach(table => table.querySelectorAll('.dp-settings-users-token-name').forEach(name => {
+        if (cut(name)) name.setAttribute('data-tooltip', name.textContent);
+      }));
+    };
+
+    let width = null;
+    integrationAccountsFit = () => {
+      if (!card.getClientRects().length) return;
+      width = card.clientWidth;
+      heads.forEach(fitHead);
+      fitTables();
+    };
+    integrationAccountsFit();
+    if (typeof ResizeObserver === 'function') {
+      // The row height it gives changes the card's height, not its room.
+      integrationAccountsObserver = new ResizeObserver(() => {
+        if (card.clientWidth !== width) integrationAccountsFit?.();
+      });
+      integrationAccountsObserver.observe(card);
+    }
+  }
+
+  /* The Integration Delivery Profiles table below 780px: as the room
+   * narrows it gives back its secondary information one stage at a time
+   * (data-profiles-fit, its stylesheet's steps, --dp-profiles-fit-steps):
+   * 1 the Categories column, 2 the API Tokens column -- each profile's
+   * tokens then named, by their own labels, beneath its name -- 3 closer
+   * cell padding. Paths keeps what Profile and Edit leave it, each path one
+   * line cut short where it is longer than that (its own minimum, as at
+   * every width), its whole mapping its tooltip, on a tap too. A stage fits
+   * in both dimensions: the table needs no horizontal scrolling, no
+   * profile's name or tokens are cut short, and no row is taller than its
+   * Edit and that cell's padding -- so tokens beneath a name never grow a
+   * row; the last stage is kept whatever it holds, its names then giving up
+   * exactly the width the table still lacks (--dp-profiles-name), cut short.
+   * Every row is then given that one height (--dp-profiles-row). Read from the table as drawn; the
+   * same room and profiles always choose the same stage. From 780px the
+   * table is as it was. */
+  let profilesTableObserver = null;
+  let profilesTableFit = null;
+
+  function fitProfilesTable() {
+    profilesTableObserver?.disconnect();
+    profilesTableObserver = null;
+    const table = root()?.querySelector('.dp-settings-profiles-table');
+    const wrap = table?.parentElement;
+    const rows = table ? Array.from(table.tBodies[0]?.rows || []) : [];
+    const paths = table ? Array.from(table.querySelectorAll('.dp-settings-profile-path-lines')) : [];
+    const height = row => row.getBoundingClientRect().height;
+    // A row's Edit with its cell's padding and the row's and cell's borders:
+    // every row's height.
+    const sides = (node, keys) => keys.reduce((sum, key) => sum + (parseFloat(getComputedStyle(node)[key]) || 0), 0);
+    const budget = () => Math.max(0, ...rows.map(row => {
+      const cell = row.cells[row.cells.length - 1];
+      return (cell.querySelector('.btn')?.getBoundingClientRect().height || 0)
+        + sides(cell, ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'])
+        + sides(row, ['borderTopWidth', 'borderBottomWidth']);
+    }));
+    const cut = node => node.getClientRects().length > 0 && node.scrollWidth > node.clientWidth + 1;
+    const fits = most => wrap.scrollWidth <= wrap.clientWidth + 1
+      && !Array.from(table.querySelectorAll('.dp-settings-profile-name, .dp-settings-profile-token')).some(cut)
+      && rows.every(row => height(row) <= most + 0.5);
+    let width = null;
+    profilesTableFit = table ? () => {
+      if (!table.getClientRects().length) return;
+      width = wrap.clientWidth;
+      const steps = parseInt(getComputedStyle(table).getPropertyValue('--dp-profiles-fit-steps'), 10) || 0;
+      delete table.dataset.profilesFit;
+      table.style.removeProperty('--dp-profiles-row');
+      table.style.removeProperty('--dp-profiles-name');
+      paths.forEach(node => node.removeAttribute('data-tooltip-touch'));
+      if (!steps) return;
+      const most = budget();
+      for (let step = 0; step < steps; step += 1) {
+        table.dataset.profilesFit = String(step);
+        if (fits(most)) break;
+      }
+      table.style.setProperty('--dp-profiles-row', `${most}px`);
+      // Still too wide at the last stage: the names give up exactly what the
+      // table lacks, each then cut short (Paths keeps its own minimum).
+      const over = wrap.scrollWidth - wrap.clientWidth;
+      if (over > 1) {
+        const widest = Math.max(0, ...Array.from(table.querySelectorAll('.dp-settings-profile-name, .dp-settings-profile-token'))
+          .filter(node => node.getClientRects().length).map(node => node.getBoundingClientRect().width));
+        table.style.setProperty('--dp-profiles-name', `${Math.max(0, Math.floor(widest - over))}px`);
+      }
+      // A tap shows a path's whole mapping (ui-tooltip.js).
+      paths.forEach(node => node.setAttribute('data-tooltip-touch', ''));
+    } : null;
+    profilesTableFit?.();
+    if (profilesTableFit && typeof ResizeObserver === 'function') {
+      // The row height it gives changes the wrapper's height, not its room.
+      profilesTableObserver = new ResizeObserver(() => {
+        if (wrap.clientWidth !== width) profilesTableFit?.();
+      });
+      profilesTableObserver.observe(wrap);
+    }
+  }
+
+  async function loadUsers() {
+    try {
+      const result = await request('GET', '/accounts', undefined, 10000);
+      const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
+      const tokens = {};
+      await Promise.all(accounts.filter(account => liveAccount(account) && isIntegration(account)).map(async account => {
+        try {
+          const listed = await request('GET', `/accounts/${encodeURIComponent(account.id)}/tokens`, undefined, 10000);
+          tokens[account.id] = Array.isArray(listed?.tokens) ? listed.tokens : [];
+        } catch (_) {
+          tokens[account.id] = null;
+        }
+      }));
+      let browsers = null;
+      try {
+        const listed = await request('GET', '/browser-tokens', undefined, 10000);
+        browsers = Array.isArray(listed?.browsers) ? listed.browsers : [];
+      } catch (_) {
+        browsers = null;
+      }
+      state.users = {accounts, tokens, browsers, error: ''};
+    } catch (error) {
+      state.users = {accounts: null, tokens: {}, browsers: null, error: text(error.message)};
+    }
+    await loadProfiles();
+    paintUsers();
+  }
+
+  async function loadProfiles() {
+    try {
+      const catalog = await request('GET', '/external/profiles', undefined, 10000);
+      state.profiles = {catalog: {profiles: Array.isArray(catalog?.profiles) ? catalog.profiles : [],
+        revision: Number(catalog?.revision || 0)}, error: ''};
+    } catch (error) {
+      state.profiles = {catalog: null, error: text(error.message)};
+    }
+  }
+
+  const accountById = id => (state.users.accounts || []).find(account => account.id === id) || null;
+
+  const ROLE_FIELD_HELP = Object.freeze({describe: ROLE_DESCRIPTIONS, help: 'user-accounts', helpSubject: say('settings.users.roles_help')});
+
+  // One modal body of labelled fields; returns the inputs by name.
+  function mountFields(body, intro, fields) {
+    body.innerHTML = `${intro ? '<p class="dp-modal-message"></p>' : ''}${fields.map(field => `
+      <label class="dp-modal-field"><span class="form-label"${keyed(field.label instanceof Said ? field.label : null)}>${html(field.label)}</span>${
+        field.choices
+          ? `<select class="input" data-field="${html(field.name)}"${
+              field.describe ? ` aria-describedby="dp-users-${html(field.name)}-description"` : ''}>${field.choices.map(([value, label]) =>
+              `<option value="${html(value)}" ${selected(field.value, value)}${keyed(label instanceof Said ? label : null)}>${html(label)}</option>`).join('')}</select>`
+          : `<input class="input" data-field="${html(field.name)}" type="${html(field.type || 'text')}" maxlength="${html(field.maxlength || 256)}" autocomplete="${html(field.autocomplete || 'off')}" value="${html(field.value || '')}">`}
+      </label>${field.describe ? `
+      <div class="dp-users-choice-description">
+        <span id="dp-users-${html(field.name)}-description" data-field-description="${html(field.name)}" aria-live="polite"></span>
+        ${helpChip(field.help, field.helpSubject)}
+      </div>` : ''}`).join('')}`;
+    if (intro) sayInto(body.querySelector('.dp-modal-message'), intro);
+    const inputs = {};
+    body.querySelectorAll('[data-field]').forEach(control => { inputs[control.dataset.field] = control; });
+    for (const field of fields.filter(entry => entry.describe)) {
+      const control = inputs[field.name];
+      const description = body.querySelector(`[data-field-description="${field.name}"]`);
+      const describe = () => { sayInto(description, field.describe[control.value] || ''); };
+      control.addEventListener('change', describe);
+      describe();
+    }
+    // The help opens above this dialog through the same shell, and closing it
+    // returns focus to the chip.
+    body.addEventListener('click', event => {
+      const help = event.target.closest('[data-settings-help]');
+      if (help) window.DPSettingsHelp?.open(help.dataset.settingsHelp);
+    });
+    return inputs;
+  }
+
+  async function fieldsDialog({title, intro = '', acceptLabel, tone = '', fields}) {
+    let inputs = {};
+    const dialog = window.DPSettingsModal.open({
+      title, acceptLabel, tone, className: 'dp-users-dialog',
+      mount(body) {
+        inputs = mountFields(body, intro, fields);
+        return body.querySelector('[data-field]');
+      },
+    });
+    const result = await dialog.closed;
+    if (!result.accepted) return null;
+    return Object.fromEntries(Object.entries(inputs).map(([name, control]) => [name, control.value]));
+  }
+
+  // Said words (one, or a list said as sentences) as a toast's text.
+  const spoken = value => (Array.isArray(value) ? value.filter(Boolean).map(String).join(' ') : String(value ?? ''));
+
+  async function accountAct(work, success) {
+    try {
+      const result = await work();
+      if (success) notify(spoken(typeof success === 'function' ? success(result) : success), 'success');
+      return result;
+    } catch (error) {
+      notify(error.message, 'error');
+      return null;
+    } finally {
+      await loadUsers();
+    }
+  }
+
+  async function createLocalAccount() {
+    const values = await fieldsDialog({
+      title: say('settings.users.add_local'), acceptLabel: say('settings.users.create'),
+      fields: [
+        {name: 'display_name', label: say('settings.users.field.display_name')},
+        {name: 'username', label: say('settings.users.field.username'), autocomplete: 'off'},
+        {name: 'password', label: say('settings.users.field.password'), type: 'password', maxlength: 4096, autocomplete: 'new-password'},
+        {name: 'role', label: say('settings.users.field.role'), choices: HUMAN_ROLES, value: 'user', ...ROLE_FIELD_HELP},
+      ],
+    });
+    if (!values) return;
+    await accountAct(() => request('POST', '/accounts', {kind: 'local', ...values}, 10000), say('settings.users.created'));
+  }
+
+  async function createIntegrationAccount() {
+    const values = await fieldsDialog({
+      title: say('settings.integrations.add'), acceptLabel: say('settings.users.create'),
+      intro: say('settings.integrations.add_intro'),
+      fields: [{name: 'display_name', label: say('settings.integrations.field.name'), value: ''}],
+    });
+    if (!values) return;
+    await accountAct(() => request('POST', '/accounts', {kind: 'integration', display_name: values.display_name}, 10000),
+      say('settings.integrations.created'));
+  }
+
+  /* Merge Accounts: ONE dialog, two steps. Choose two or more accounts, then
+   * -- in the same dialog -- choose the one that survives and confirm. Only the
+   * final Confirm Merge sends anything: one request, which the server applies
+   * to all of them in one transaction or refuses whole, saying why. What may
+   * be merged is the server's to decide; nothing is filtered or predicted here. */
+  async function mergeAccounts(preselected = []) {
+    const candidates = (state.users.accounts || []).filter(item => liveAccount(item) && !isIntegration(item));
+    const chosen = new Set(preselected.filter(id => candidates.some(item => item.id === id)));
+    let step = 'select';
+    let survivor = '';
+    let refusal = '';
+    let body = null;
+    const reference = item => `#${item.id.slice(-8)}`;
+    // Its role and sign-in methods keyed (re-said in place); email and reference as they are.
+    const describe = item => [words(ROLE_LABELS[item.role] || item.role), signInMethods(item), html(item.email || ''), html(reference(item))]
+      .filter(Boolean).join(' · ');
+    const selected = () => candidates.filter(item => chosen.has(item.id));
+
+    const paint = handle => {
+      if (!body) return;
+      if (step === 'select') {
+        body.innerHTML = `
+          <p class="dp-modal-message"${keyed(say('settings.merge.select_intro'))}>${html(t('settings.merge.select_intro'))}</p>
+          <div class="dp-merge-list" role="group"${keyed(null, {'aria-label': say('settings.merge.accounts')})}>${candidates.map(item => `
+            <label class="dp-merge-option">
+              <input type="checkbox" data-merge-account="${html(item.id)}" ${chosen.has(item.id) ? 'checked' : ''}>
+              <span class="dp-merge-identity"><b>${html(accountName(item))}</b><span>${describe(item)}</span></span>
+            </label>`).join('')}
+          </div>`;
+        handle.setAcceptLabel(say('settings.users.merge'));
+        handle.setCancelLabel(say('common.cancel'));
+        handle.setAcceptEnabled(chosen.size >= 2);
+        return;
+      }
+      const absorbed = selected().filter(item => item.id !== survivor);
+      body.innerHTML = `
+        <p class="dp-modal-message"${keyed(say('settings.merge.survivor_intro'))}>${html(t('settings.merge.survivor_intro'))}</p>
+        <div class="dp-merge-list" role="radiogroup"${keyed(null, {'aria-label': say('settings.merge.survivor')})}>${selected().map(item => `
+          <label class="dp-merge-option">
+            <input type="radio" name="dp-merge-survivor" data-merge-survivor="${html(item.id)}" ${item.id === survivor ? 'checked' : ''}>
+            <span class="dp-merge-identity"><b>${html(accountName(item))}</b><span>${describe(item)}</span></span>
+          </label>`).join('')}
+        </div>
+        ${survivor ? `<p class="dp-merge-absorbed">${words(say('settings.merge.absorbed')).replace('<span', '<b').replace(/<\/span>$/, '</b>')} ${absorbed.map(item => html(`${accountName(item)} ${reference(item)}`)).join(', ')}</p>` : ''}
+        <ul class="dp-merge-consequences">
+          ${[1, 2, 3, 4, 5].map(n => `<li${keyed(say(`settings.merge.consequence_${n}`))}>${html(t(`settings.merge.consequence_${n}`))}</li>`).join('')}
+        </ul>
+        ${refusal ? `<p class="dp-merge-refusal" role="alert"></p>` : ''}`;
+      if (refusal) sayInto(body.querySelector('.dp-merge-refusal'), say('settings.merge.refused', {reason: refusal}));
+      handle.setAcceptLabel(say('settings.merge.confirm'));
+      handle.setCancelLabel(say('settings.common.back'));
+      handle.setAcceptEnabled(Boolean(survivor));
+    };
+
+    const dialog = window.DPSettingsModal.open({
+      title: say('settings.merge.title'),
+      tone: 'danger',
+      acceptLabel: say('settings.users.merge'),
+      cancelLabel: say('common.cancel'),
+      className: 'dp-users-dialog dp-merge-dialog',
+      mount(mounted, handle) {
+        body = mounted;
+        paint(handle);
+        body.addEventListener('change', event => {
+          const box = event.target.closest('[data-merge-account]');
+          if (box) {
+            if (box.checked) chosen.add(box.dataset.mergeAccount); else chosen.delete(box.dataset.mergeAccount);
+            handle.setAcceptEnabled(chosen.size >= 2);
+            return;
+          }
+          const radio = event.target.closest('[data-merge-survivor]');
+          if (radio) {
+            survivor = radio.dataset.mergeSurvivor;
+            refusal = '';
+            paint(handle);
+            body.querySelector(`[data-merge-survivor="${CSS.escape(survivor)}"]`)?.focus();
+          }
+        });
+        return body.querySelector('.dp-modal-message');
+      },
+      onCancel(handle) {
+        if (step !== 'confirm') return true;
+        step = 'select';
+        survivor = '';
+        refusal = '';
+        paint(handle);
+        return false;
+      },
+      async onAccept(handle) {
+        if (step === 'select') {
+          step = 'confirm';
+          paint(handle);
+          return false;
+        }
+        try {
+          await request('POST', '/accounts/merge', {
+            target_id: survivor, source_ids: selected().filter(item => item.id !== survivor).map(item => item.id),
+          }, 15000);
+        } catch (error) {
+          refusal = error?.status ? text(error.message)
+            : say('settings.merge.unanswered');
+          paint(handle);
+          return false;
+        }
+        notify(t('settings.merge.done'), 'success');
+        return true;
+      },
+    });
+    await dialog.closed;
+    await loadUsers();
+  }
+
+  /* The account-impact confirmation: its own dialog for an Integration
+   * account's Disable and Delete, and a view of Edit User for a person's
+   * Disable and Remove. Its figures are
+   * read from the server when it is asked for (GET /accounts/{id}/impact) and
+   * are never assumed; the mutation re-reads everything itself, and its own
+   * answer is what the page reports afterwards. */
+  // A count in the shown language's digits and grouping (English as before: 1,234).
+  const count = value => Number(value || 0).toLocaleString(window.DPI18n.intlLocale());
+
+  function impactFigures(impact) {
+    // [figure, value, whether a bounded read may hold more than it says]
+    const rows = [
+      ['outstanding', impact.outstanding_requests, true],
+      ['shared', impact.shared_transfers_protected, false],
+      ['completed', impact.completed_unaffected, false],
+    ];
+    return `<dl class="dp-account-impact-figures">${rows.map(([figure, value, bounded]) =>
+      `<div><dt>${words(say(`settings.impact.${figure}`))}</dt><dd data-dp-count="${html(String(Number(value || 0)))}">${html(count(value))}${impact.bounded && bounded ? '+' : ''}</dd></div>`).join('')}</dl>`;
+  }
+
+  // Each act's words: its question (naming the account), its accept, and its lead sentence.
+  const IMPACT = Object.freeze(Object.fromEntries(['disable', 'remove', 'delete'].map(act => [act, {
+    title: name => say(`settings.impact.${act}_title`, {name}),
+    accept: say(`settings.impact.${act}_accept`),
+    lead: say(`settings.impact.${act}_lead`),
+  }])));
+
+  // The confirmation's content: the consequence, the server's figures and the
+  // qualifier. Its lead sentence is set by the caller (impactLead).
+  function impactMarkup(impact, act) {
+    return `
+      <p class="dp-modal-message dp-account-impact-lead"></p>
+      ${impactFigures(impact)}
+      ${act !== 'disable' ? `<p class="dp-account-impact-note"${keyed(say('settings.impact.note'))}>${html(t('settings.impact.note'))}</p>` : ''}
+      <p class="dp-account-impact-qualifier"${keyed(say('settings.impact.qualifier'))}>${html(t('settings.impact.qualifier'))}</p>`;
+  }
+
+  const impactLead = act => IMPACT[act].lead;
+
+  async function confirmImpact(account, act) {
+    const copy = IMPACT[act];
+    const destructive = act !== 'disable';
+    let impact;
+    try {
+      impact = await request('GET', `/accounts/${encodeURIComponent(account.id)}/impact`, undefined, 10000);
+    } catch (error) {
+      notify(error.message, 'error');
+      return false;
+    }
+    const dialog = window.DPSettingsModal.open({
+      role: 'alertdialog',
+      title: copy.title(accountName(account)),
+      acceptLabel: copy.accept,
+      cancelLabel: say('common.cancel'),
+      tone: destructive ? 'danger' : '',
+      acceptTone: destructive ? '' : 'warning',
+      className: 'dp-account-impact',
+      mount(body) {
+        body.innerHTML = impactMarkup(impact, act);
+        const lead = body.querySelector('.dp-account-impact-lead');
+        sayInto(lead, impactLead(act));
+        return lead;
+      },
+    });
+    return (await dialog.closed).accepted;
+  }
+
+  // What the server says the act withdrew and stopped -- never more.
+  function withdrawalReport(verb, result) {
+    const withdrawn = Array.isArray(result?.withdrawn_transfers) ? result.withdrawn_transfers.length : 0;
+    const stopped = Array.isArray(result?.cancelled_transfers) ? result.cancelled_transfers.length : 0;
+    const lead = say(`settings.withdrawal.${verb}`);
+    if (!withdrawn) return [lead, say('settings.withdrawal.none')];
+    if (stopped >= withdrawn) return [lead, say('settings.withdrawal.all', {count: withdrawn})];
+    return [lead, say('settings.withdrawal.some', {count: withdrawn, stopped})];
+  }
+
+  async function disableAccount(account) {
+    if (!await confirmImpact(account, 'disable')) return;
+    await accountAct(() => request('PATCH', `/accounts/${encodeURIComponent(account.id)}`, {enabled: false}, 15000),
+      result => withdrawalReport('disabled', result));
+  }
+
+  // An Integration account's Delete. A person's Remove is the same deletion,
+  // confirmed inside Edit User.
+  async function deleteAccount(account) {
+    if (!await confirmImpact(account, 'delete')) return;
+    await accountAct(() => request('DELETE', `/accounts/${encodeURIComponent(account.id)}`, undefined, 15000),
+      result => withdrawalReport('deleted', result));
+  }
+
+  async function enableAccount(account) {
+    await accountAct(() => request('PATCH', `/accounts/${encodeURIComponent(account.id)}`, {enabled: true}, 10000),
+      say('settings.users.account_enabled'));
+  }
+
+  /* Edit User: ONE dialog for a person's username, role, local password and
+   * lifecycle. Its title names the account's username, with the pencil that
+   * edits it (in a view of this dialog) right beside it; the chosen name is a
+   * draft until Apply.
+   *
+   * Apply sends only what changed, one request each and the role first: the
+   * role through PATCH /accounts/{id}, the password through POST
+   * /accounts/{id}/password (with the username when that changed too, so the
+   * two are one write), and a username alone through PUT
+   * /accounts/{id}/username, which keeps any password. These are separate server writes, never one
+   * transaction, so Apply stops at the first that fails, says exactly which
+   * took effect, and re-reads the account; a later Apply sends only what the
+   * re-read account still lacks. A write the server acknowledged is part of
+   * the account from then on, whether or not the re-read succeeds, so it is
+   * never sent again; an unanswered one stays unknown until a re-read says.
+   * A password write that went unanswered is never sent again by itself: its
+   * fields are cleared.
+   *
+   * Disable and Remove turn this same dialog into the server-backed impact
+   * confirmation (figures read when asked for); Back returns to the untouched
+   * draft, and the confirmation sends only its own act. Enable is sent
+   * directly. No lifecycle act ever sends the draft. The two password fields
+   * agreeing is only that -- the server's rules decide the rest. */
+  function editUser(initial) {
+    const id = initial.id;
+    const path = `/accounts/${encodeURIComponent(id)}`;
+    let account = initial;
+    let view = 'edit';
+    let act = '';
+    let pending = false;
+    let reread = true;      // the account shown is the server's latest read
+    let usernameDraft = null;   // the username chosen from its pencil, not yet applied
+    let handle = null;
+    const nodes = {};
+    const roleLabel = role => ROLE_LABELS[role] || role;
+    const appliedName = () => account?.username || '';
+    const wantedName = () => usernameDraft ?? appliedName();
+    const usernameChanged = () => usernameDraft !== null && usernameDraft !== appliedName();
+    const editTitle = () => say('settings.users.edit_title', {name: wantedName() || accountName(account || initial)});
+    const passwordState = () => {
+      const next = nodes.password.value;
+      const confirmed = nodes.confirm.value;
+      if (!next && !confirmed) return 'empty';
+      if (!confirmed) return 'incomplete';
+      return next !== confirmed ? 'mismatch' : 'match';
+    };
+    const roleChanged = () => Boolean(account) && nodes.role.value !== account.role;
+    const renameAlone = () => usernameChanged() && passwordState() === 'empty';
+
+    // The outcome: one Said, or a list of them said as sentences, each keyed
+    // (re-said in place); a server's own words are an argument, as it sent them.
+    const tell = (message, tone = '') => {
+      const parts = (Array.isArray(message) ? message : [message]).filter(Boolean);
+      nodes.outcome.innerHTML = parts.map(words).join(' ');
+      nodes.outcome.hidden = !parts.length;
+      nodes.outcome.dataset.tone = tone;
+    };
+
+    const paint = () => {
+      const state = passwordState();
+      nodes.confirmField.dataset.match = String(state === 'match');
+      nodes.confirm.setAttribute('aria-invalid', String(state === 'mismatch'));
+      nodes.passwordStatus.dataset.state = state;
+      sayInto(nodes.passwordStatus, state === 'empty' ? '' : say(`settings.users.password.${state}`));
+      nodes.usernameDraft.hidden = !usernameChanged();
+      sayInto(nodes.usernameDraft, usernameChanged()
+        ? say('settings.users.username_draft', {wanted: wantedName(), applied: appliedName()}) : '');
+      nodes.identity.innerHTML = account
+        ? [html(account.email || ''), words(roleLabel(account.role)), words(say(account.enabled ? 'settings.users.enabled' : 'settings.users.disabled'))]
+          .filter(Boolean).join(' · ')
+        : words(say('settings.users.gone'));
+      // Below 780px the table has no Sign-In column: the line says it
+      // (its stylesheet draws this item only there).
+      if (account) {
+        const methods = document.createElement('span');
+        methods.className = 'dp-users-edit-signin';
+        methods.innerHTML = ` · ${signInMethodList(account).map(words).join(', ')}`;
+        nodes.identity.append(methods);
+      }
+      nodes.stale.hidden = reread;
+      if (!handle) return;
+      handle.setBusy(pending);
+      if (view === 'confirm') {
+        handle.setAcceptEnabled(!pending);
+        return;
+      }
+      if (view === 'username') {
+        handle.setAcceptEnabled(Boolean(nodes.usernameInput.value.trim()));
+        return;
+      }
+      handle.setTitle(editTitle());
+      handle.setActionHidden('username', !account);
+      handle.setActionEnabled('username', Boolean(account) && !pending);
+      handle.setAcceptEnabled(Boolean(account) && !pending && ['empty', 'match'].includes(state)
+        && (roleChanged() || state === 'match' || renameAlone()));
+      handle.setActionHidden('disable', !account?.enabled);
+      handle.setActionHidden('enable', !account || account.enabled);
+      handle.setActionHidden('remove', !account);
+      ['disable', 'enable', 'remove'].forEach(action => handle.setActionEnabled(action, Boolean(account) && !pending));
+    };
+
+    const clearPassword = () => {
+      nodes.password.value = '';
+      nodes.confirm.value = '';
+    };
+
+    // The account as the server now has it, and whether it could be read. An
+    // unreadable directory keeps the last known account, with what the server
+    // acknowledged since (acknowledge); a directory without it means it is gone.
+    const refresh = async () => {
+      await loadUsers();
+      reread = Array.isArray(state.users.accounts);
+      if (!reread) return false;
+      const current = accountById(id);
+      account = current && liveAccount(current) ? current : null;
+      return true;
+    };
+    const acknowledge = change => { if (account) account = {...account, ...change}; };
+
+    const show = (next, focus = null) => {
+      view = next;
+      nodes.editView.hidden = next !== 'edit';
+      nodes.confirmView.hidden = next !== 'confirm';
+      nodes.usernameView.hidden = next !== 'username';
+      if (next !== 'edit') ['username', 'disable', 'enable', 'remove'].forEach(action => handle.setActionHidden(action, true));
+      if (next === 'username') {
+        handle.setTitle(say('settings.users.edit_username'));
+        handle.setAcceptLabel(say('settings.common.done'));
+        handle.setCancelLabel(say('settings.common.back'));
+        nodes.usernameInput.value = wantedName();
+        paint();
+        nodes.usernameInput.focus();
+        nodes.usernameInput.select();
+        return;
+      }
+      if (next === 'confirm') {
+        const destructive = act !== 'disable';
+        handle.setTitle(IMPACT[act].title(accountName(account)));
+        handle.setTone(destructive ? 'danger' : '', destructive ? '' : 'warning');
+        handle.setAcceptLabel(IMPACT[act].accept);
+        handle.setCancelLabel(say('settings.common.back'));
+        paint();
+        nodes.confirmView.querySelector('.dp-account-impact-lead').focus();
+        return;
+      }
+      handle.setTone('', '');
+      handle.setAcceptLabel(say('common.apply'));
+      handle.setCancelLabel(say('common.cancel'));
+      paint();
+      if (focus === 'username') handle.focusAction('username');
+      else (focus || nodes.role).focus();
+    };
+
+    // The username view's Done: the chosen name becomes the draft, nothing more.
+    const chooseUsername = () => {
+      const name = nodes.usernameInput.value.trim();
+      usernameDraft = name === appliedName() ? null : name;
+      show('edit', 'username');
+    };
+
+    async function apply() {
+      const role = nodes.role.value;
+      const name = wantedName();
+      const sendRole = roleChanged();
+      const sendPassword = passwordState() === 'match';
+      const sendRename = renameAlone();
+      const withName = sendPassword && usernameChanged();
+      const signsOut = Boolean(account?.has_password);
+      if (!sendRole && !sendPassword && !sendRename) return false;
+      pending = true;
+      tell('');
+      paint();
+      const done = [];
+      let failure = '';
+      let roleUnanswered = false;
+      let renameUnanswered = false;
+      if (sendRole) {
+        try {
+          await request('PATCH', path, {role}, 10000);
+          acknowledge({role});
+          done.push(say('settings.users.role_changed', {role: roleLabel(role)}));
+        } catch (error) {
+          roleUnanswered = !error?.status;
+          failure = roleUnanswered ? '' : say('settings.users.role_refused', {reason: text(error.message)});
+        }
+      }
+      if (!failure && !roleUnanswered && sendRename) {
+        try {
+          await request('PUT', `${path}/username`, {username: name}, 10000);
+          acknowledge({username: name});
+          usernameDraft = null;
+          done.push(say(signsOut ? 'settings.users.renamed_signed_out' : 'settings.users.renamed', {name}));
+        } catch (error) {
+          renameUnanswered = !error?.status;
+          failure = renameUnanswered ? '' : say('settings.users.rename_refused', {reason: text(error.message)});
+        }
+      }
+      if (!failure && !roleUnanswered && sendPassword) {
+        try {
+          await request('POST', `${path}/password`, {password: nodes.password.value, ...(withName ? {username: name} : {})}, 10000);
+          acknowledge({has_password: true, ...(withName ? {username: name} : {})});
+          if (withName) {
+            usernameDraft = null;
+            done.push(say('settings.users.renamed', {name}));
+          }
+          done.push(say('settings.users.password_saved'));
+          clearPassword();
+        } catch (error) {
+          if (error?.status) {
+            failure = say('settings.users.password_refused', {reason: text(error.message)});
+          } else {
+            failure = say('settings.users.password_unanswered');
+            clearPassword();
+          }
+        }
+      }
+      const read = await refresh();
+      if (roleUnanswered) {
+        // Unanswered: only a re-read account says whether it took effect.
+        if (!read) failure = say('settings.users.role_unknown');
+        else if (account?.role === role) done.push(say('settings.users.role_changed', {role: roleLabel(role)}));
+        else failure = say('settings.users.role_unchanged');
+        if (sendPassword) failure = [failure, say('settings.users.password_not_sent')].filter(Boolean);
+        if (sendRename) failure = [failure, say('settings.users.username_not_sent')].flat().filter(Boolean);
+      } else if (renameUnanswered) {
+        if (!read) failure = say('settings.users.rename_unknown');
+        else if (account?.username === name) {
+          usernameDraft = null;
+          done.push(say(signsOut ? 'settings.users.renamed_signed_out' : 'settings.users.renamed', {name}));
+        }
+        else failure = say('settings.users.rename_unchanged');
+      } else if (failure && sendRole && !done.length && (sendPassword || sendRename)) {
+        failure = [failure, say(sendPassword ? 'settings.users.password_not_sent' : 'settings.users.username_not_sent')];
+      }
+      pending = false;
+      if (!failure && account) {
+        notify(spoken(done), 'success');
+        return true;
+      }
+      tell([...done, ...[failure || say('settings.users.gone')].flat()], 'error');
+      paint();
+      return false;
+    }
+
+    async function enable() {
+      pending = true;
+      tell('');
+      paint();
+      let failure = '';
+      let unanswered = false;
+      try {
+        await request('PATCH', path, {enabled: true}, 10000);
+        acknowledge({enabled: true});
+      } catch (error) {
+        unanswered = !error?.status;
+        failure = unanswered ? say('settings.users.unanswered') : say('settings.users.enable_refused', {reason: text(error.message)});
+      }
+      const read = await refresh();
+      pending = false;
+      if (account?.enabled) tell(say('settings.users.enabled_done'), 'success');
+      else if (unanswered && !read) tell(say('settings.users.enable_unknown'), 'error');
+      else tell(failure || say('settings.users.still_disabled'), 'error');
+      paint();
+      nodes.role.focus();
+    }
+
+    async function confirmAct(next) {
+      pending = true;
+      tell('');
+      paint();
+      let impact = null;
+      try {
+        impact = await request('GET', `${path}/impact`, undefined, 10000);
+      } catch (error) {
+        tell(say('settings.users.impact_unreadable', {reason: text(error.message)}), 'error');
+      }
+      pending = false;
+      if (!impact) {
+        paint();
+        return;
+      }
+      act = next;
+      nodes.confirmView.innerHTML = `${impactMarkup(impact, act)}<p class="dp-account-impact-refusal" role="alert" hidden></p>`;
+      const lead = nodes.confirmView.querySelector('.dp-account-impact-lead');
+      sayInto(lead, impactLead(act));
+      lead.tabIndex = -1;
+      show('confirm');
+    }
+
+    // The confirmed act, and only it.
+    async function commitAct() {
+      const removing = act === 'remove';
+      pending = true;
+      paint();
+      let result = null;
+      let failure = '';
+      let unanswered = false;
+      try {
+        result = removing
+          ? await request('DELETE', path, undefined, 15000)
+          : await request('PATCH', path, {enabled: false}, 15000);
+        if (!removing) acknowledge({enabled: false});
+      } catch (error) {
+        unanswered = !error?.status;
+        failure = unanswered ? say('settings.users.no_response') : text(error.message);
+      }
+      const read = await refresh();
+      pending = false;
+      if (removing && (!failure || (read && !account))) {
+        notify(spoken(result ? withdrawalReport('removed', result) : say('settings.withdrawal.removed')), 'success');
+        return true;
+      }
+      if (!removing && account && (!failure || (read && !account.enabled))) {
+        show('edit');
+        tell(result ? withdrawalReport('disabled', result) : say('settings.withdrawal.disabled'), 'success');
+        return false;
+      }
+      const refusal = nodes.confirmView.querySelector('.dp-account-impact-refusal');
+      sayInto(refusal, unanswered && !read
+        ? say(removing ? 'settings.users.remove_unknown' : 'settings.users.disable_unknown')
+        : say(removing ? 'settings.users.remove_refused' : 'settings.users.disable_refused', {reason: failure || say('settings.users.gone_reason')}));
+      refusal.hidden = false;
+      paint();
+      return false;
+    }
+
+    const dialog = window.DPSettingsModal.open({
+      title: editTitle(),
+      acceptLabel: say('common.apply'),
+      cancelLabel: say('common.cancel'),
+      acceptDisabled: true,
+      className: 'dp-users-dialog dp-users-edit-dialog',
+      actions: [
+        {id: 'username', label: say('settings.users.edit_username'), placement: 'title', icon: '/icons/lucide/pencil.svg'},
+        {id: 'disable', label: say('settings.users.disable'), placement: 'leading'},
+        {id: 'enable', label: say('settings.users.enable'), placement: 'leading'},
+        {id: 'remove', label: say('settings.users.remove'), tone: 'danger', placement: 'leading'},
+      ],
+      mount(body, mounted) {
+        const has = Boolean(account.has_password);
+        body.innerHTML = `
+          <div class="dp-users-edit-view" data-edit-view="edit">
+            <p class="dp-modal-message dp-users-edit-identity"></p>
+            <p class="dp-users-username-draft" data-username-draft role="status" hidden></p>
+            <section class="dp-users-edit-group">
+              <h3 class="dp-users-edit-heading"${keyed(say('settings.users.edit.role_heading'))}>${html(t('settings.users.edit.role_heading'))}</h3>
+              <div data-edit-role></div>
+              <p class="dp-users-edit-note"${keyed(say('settings.users.edit.role_note'))}>${html(t('settings.users.edit.role_note'))}</p>
+            </section>
+            <section class="dp-users-edit-group">
+              <h3 class="dp-users-edit-heading">${words(say(has ? 'settings.users.edit.reset_password' : 'settings.users.edit.set_password'))}</h3>
+              <label class="dp-modal-field"><span class="form-label"${keyed(say('settings.users.edit.new_password'))}>${html(t('settings.users.edit.new_password'))}</span>
+                <input class="input" data-edit-field="password" type="password" maxlength="4096" autocomplete="new-password"></label>
+              <label class="dp-modal-field dp-users-password-confirm"><span class="form-label"${keyed(say('settings.users.edit.confirm_password'))}>${html(t('settings.users.edit.confirm_password'))}</span>
+                <span class="dp-users-password-input">
+                  <input class="input" data-edit-field="confirm" type="password" maxlength="4096" autocomplete="new-password"
+                         aria-describedby="dp-users-password-status">
+                  <span class="dp-users-password-check" aria-hidden="true">${window.DPIcons?.svg('circleCheck') || ''}</span>
+                </span></label>
+              <p class="dp-users-password-status" id="dp-users-password-status" aria-live="polite"></p>
+              <p class="dp-users-edit-note">${words(say(has ? 'settings.users.edit.keep_password' : 'settings.users.edit.keep_no_password'))}</p>
+              <p class="dp-users-edit-note"${keyed(say('settings.users.edit.password_note'))}>${html(t('settings.users.edit.password_note'))}</p>
+            </section>
+            <p class="dp-users-edit-outcome" role="alert" hidden></p>
+            <p class="dp-users-edit-stale" role="status" hidden${keyed(say('settings.users.edit.stale'))}>${html(t('settings.users.edit.stale'))}</p>
+          </div>
+          <div class="dp-users-edit-view dp-users-edit-confirm" data-edit-view="confirm" hidden></div>
+          <div class="dp-users-edit-view" data-edit-view="username" hidden>
+            <label class="dp-modal-field"><span class="form-label"${keyed(say('settings.users.field.username'))}>${html(t('settings.users.field.username'))}</span>
+              <input class="input" data-username-input type="text" maxlength="256" autocomplete="off" spellcheck="false"></label>
+            <p class="dp-users-edit-note">${words(say(has ? 'settings.users.edit.username_note_password' : 'settings.users.edit.username_note'))}</p>
+          </div>`;
+        handle = mounted;
+        Object.assign(nodes, {
+          identity: body.querySelector('.dp-users-edit-identity'),
+          editView: body.querySelector('[data-edit-view="edit"]'),
+          confirmView: body.querySelector('[data-edit-view="confirm"]'),
+          confirmField: body.querySelector('.dp-users-password-confirm'),
+          passwordStatus: body.querySelector('.dp-users-password-status'),
+          outcome: body.querySelector('.dp-users-edit-outcome'),
+          stale: body.querySelector('.dp-users-edit-stale'),
+          usernameView: body.querySelector('[data-edit-view="username"]'),
+          usernameInput: body.querySelector('[data-username-input]'),
+          usernameDraft: body.querySelector('[data-username-draft]'),
+          role: mountFields(body.querySelector('[data-edit-role]'), '',
+            [{name: 'role', label: say('settings.users.field.role'), choices: HUMAN_ROLES, value: account.role, ...ROLE_FIELD_HELP}]).role,
+        });
+        body.querySelectorAll('[data-edit-field]').forEach(input => { nodes[input.dataset.editField] = input; });
+        body.addEventListener('input', paint);
+        body.addEventListener('change', paint);
+        paint();
+        return nodes.identity;
+      },
+      onAction(action) {
+        if (pending || !account || view !== 'edit') return;
+        if (action === 'username') show('username');
+        else if (action === 'enable') void enable();
+        else if (action === 'disable' || action === 'remove') void confirmAct(action);
+      },
+      onCancel() {
+        if (pending) return false;
+        if (view === 'edit') return true;
+        show('edit', view === 'username' ? 'username' : null);
+        return false;
+      },
+      async onAccept() {
+        if (pending) return false;
+        if (view === 'username') { chooseUsername(); return false; }
+        return view === 'confirm' ? commitAct() : apply();
+      },
+    });
+    // The editor starts at its first field: the Role selector, once the one
+    // dropdown owner has projected it (its focus then goes to the trigger).
+    window.DPDropdowns?.refresh();
+    nodes.role.focus();
+    return dialog.closed;
+  }
+
+  /* The one-time token disclosure. The raw value exists only in this modal's
+   * own input; it is never stored in page state, and once the modal closes it
+   * cannot be shown again. */
+  async function issueToken(account) {
+    const values = await fieldsDialog({
+      title: say('settings.tokens.issue_title', {name: accountName(account)}), acceptLabel: say('settings.tokens.issue'),
+      intro: say('settings.tokens.issue_intro'),
+      fields: [{name: 'label', label: say('settings.tokens.field.label'), maxlength: 128}],
+    });
+    if (!values) return;
+    const issued = await accountAct(() => request('POST', `/accounts/${encodeURIComponent(account.id)}/tokens`,
+      {label: values.label}, 10000));
+    if (!issued?.token) return;
+    const dialog = window.DPSettingsModal.open({
+      title: say('settings.tokens.copy_title'),
+      dismiss: true,
+      cancelLabel: say('settings.common.done'),
+      className: 'dp-token-disclosure-dialog',
+      mount(body) {
+        return tokenDisclosure(body, issued);
+      },
+    });
+    await dialog.closed;
+  }
+
+  /* The one-time disclosure itself, into ``container``: the raw value lives
+   * only in its own input, and leaves the DOM with that container's content.
+   * Issue Token and a delivery profile's Create API Token both show it. */
+  function tokenDisclosure(container, issued) {
+    container.innerHTML = `
+      <div class="dp-token-disclosure" role="group"${keyed(null, {'aria-label': say('settings.tokens.disclosure')})}>
+        <b class="dp-token-disclosure-warning"${keyed(say('settings.tokens.copy_now'))}>${html(t('settings.tokens.copy_now'))}</b>
+        ${embeddedActionField(
+          `<input class="input" type="text" readonly autocomplete="off" spellcheck="false"${keyed(null, {'aria-label': say('settings.tokens.new_token')})}>`,
+          `<button class="btn btn-ghost btn-sm" type="button" data-token-copy${keyed(say('settings.tokens.copy'))}>${html(t('settings.tokens.copy'))}</button>`)}
+      </div>`;
+    const field = container.querySelector('input');
+    field.value = issued.token;
+    container.querySelector('[data-token-copy]').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(field.value);
+        notify(t('settings.tokens.copied'), 'success');
+      } catch (_) {
+        field.select();
+        notify(t('settings.tokens.copy_manually'), 'info');
+      }
+    });
+    return field;
+  }
+
+  async function revokeToken(account, tokenId) {
+    const confirmed = await window.DPSettingsModal.confirm({
+      title: say('settings.tokens.revoke_title'),
+      message: say('settings.tokens.revoke_message'),
+      confirmLabel: say('settings.tokens.revoke_accept'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    await accountAct(() => request('DELETE', `/accounts/${encodeURIComponent(account.id)}/tokens/${encodeURIComponent(tokenId)}`,
+      undefined, 10000), say('settings.tokens.revoked'));
+  }
+
+  /* ── Integration Delivery Profiles ─────────────────────────────────────
+   *
+   * The Admin-owned external delivery-profile catalog (GET/PUT
+   * /external/profiles), edited whole: every write names the revision it was
+   * read at and carries every other profile unchanged, so a concurrent edit is
+   * refused (stale_revision), never overwritten. The server decides
+   * everything else -- confinement, uniqueness, and whether a profile may be
+   * taken away from jobs that still depend on it (profile_in_use, with its
+   * own count) -- and its refusal is what this card shows. A profile stores
+   * stable client IDs; tokens are shown by their labels, read from the
+   * account directory this page already holds. */
+  const PROFILE_SOURCE_KINDS = Object.freeze(['links', 'magnet', 'torrent', 'nzb_link', 'nzb']
+    .map(kind => [kind, say(`settings.profiles.kind.${kind}`)]));
+  // The category strings *arr download clients send by default: suggestions
+  // to pick, never a policy. Any other category may be typed.
+  const PROFILE_CATEGORY_SUGGESTIONS = Object.freeze([
+    ['tv-sonarr', 'Sonarr · qBittorrent'], ['radarr', 'Radarr · qBittorrent'],
+    ['tv', 'Sonarr · Usenet'], ['movies', 'Radarr · Usenet']]);
+  const PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
+  const DEFAULT_RETENTION_HOURS = 168;
+
+  const profileById = id => (state.profiles.catalog?.profiles || []).find(profile => profile.id === id) || null;
+
+  // client ID -> the live tokens that authenticate as that client.
+  function tokenClients() {
+    const clients = new Map();
+    (state.users.accounts || []).filter(account => liveAccount(account) && isIntegration(account)).forEach(account => {
+      (state.users.tokens[account.id] || []).forEach(token => {
+        const entry = clients.get(token.client_id) || {clientId: token.client_id, tokens: []};
+        entry.tokens.push({label: text(token.label), account: accountName(account), enabled: !!account.enabled});
+        clients.set(token.client_id, entry);
+      });
+    });
+    return clients;
+  }
+
+  function clientLabel(clients, clientId) {
+    const entry = clients.get(clientId);
+    if (!entry) return say('settings.profiles.no_token_client');
+    return entry.tokens.map(token => `${token.label} · ${token.account}`).join(', ');
+  }
+
+  // A profile's API tokens by their own labels alone (beneath its name below
+  // 780px, fitProfilesTable): each authorized client's live tokens, or the
+  // table's own words for a client with none, or None.
+  function profileTokenNames(clients, profile) {
+    if (!profile.clients.length) return {text: say('settings.profiles.none'), missing: true};
+    const names = profile.clients.flatMap(clientId => clients.get(clientId)?.tokens.map(token => token.label) || [clientLabel(clients, clientId)]);
+    // ``markup``: each name, the table's own words keyed (re-said in place).
+    return {text: names.map(String).join(', '), markup: names.map(words).join(', '),
+      missing: !profile.clients.some(clientId => clients.has(clientId))};
+  }
+
+  function profileRows() {
+    const profiles = state.profiles;
+    if (profiles.error) return `<div class="dp-settings-load-error"><b${keyed(say('settings.profiles.load_failed'))}>${html(t('settings.profiles.load_failed'))}</b><span>${html(profiles.error)}</span></div>`;
+    if (!profiles.catalog) return `<div class="dp-settings-loading"${keyed(say('settings.profiles.loading'))}>${html(t('settings.profiles.loading'))}</div>`;
+    if (!profiles.catalog.profiles.length) {
+      return `<div class="dp-settings-users-empty"${keyed(say('settings.profiles.empty'))}>${html(t('settings.profiles.empty'))}</div>`;
+    }
+    const clients = tokenClients();
+    // Source Types are the editor's alone. Each path is one line; the
+    // tooltip (on focus too) and the editor hold the whole of a shortened one.
+    return `
+      <div class="dp-settings-users-table-wrap dp-settings-profiles-table-wrap">
+        <table class="t-table dp-settings-profiles-table">
+          <thead><tr>${['profile', 'categories', 'tokens'].map(column => `<th>${words(say(`settings.profiles.column.${column}`))}</th>`).join('')}<th class="dp-settings-profiles-paths">${
+            words(say('settings.profiles.column.paths'))}</th><th class="dp-settings-profiles-retention">${words(say('settings.profiles.column.retention'))}</th><th class="dp-settings-users-actions-head">${
+            words(say('settings.users.column.actions'))}</th></tr></thead>
+          <tbody>${profiles.catalog.profiles.map(profile => {
+            const id = html(profile.id);
+            const importRoot = profile.import_root || profile.local_root;
+            const tokens = profile.clients.length
+              ? profile.clients.map(clientId => `<div${clients.has(clientId) ? '' : ' class="dp-settings-users-detail"'}>${words(clientLabel(clients, clientId))}</div>`).join('')
+              : `<span class="dp-settings-users-detail">${words(say('settings.profiles.none'))}</span>`;
+            const mapped = importRoot !== profile.local_root;
+            const route = mapped ? `${profile.local_root} → ${importRoot}` : profile.local_root;
+            const names = profileTokenNames(clients, profile);
+            return `
+            <tr data-profile-row="${id}">
+              <td><b class="dp-settings-profile-name">${id}</b><span class="dp-settings-profile-token${names.missing ? ' dp-settings-users-detail' : ''}">${names.markup ?? words(names.text)}</span></td>
+              <td>${profile.categories.length ? profile.categories.map(category => `<span class="dp-settings-profile-chip">${html(category)}</span>`).join('') : `<span class="dp-settings-users-detail">${words(say('settings.profiles.none'))}</span>`}</td>
+              <td>${tokens}</td>
+              <td class="dp-settings-users-detail dp-settings-profiles-paths">
+                <div class="dp-settings-profile-path-lines" role="group"${keyed(null, {'aria-label': say('settings.profiles.column.paths')})} tabindex="0" data-tooltip="${html(route)}">
+                  <div class="dp-settings-profile-path"><span class="dp-settings-profile-path-text">${html(profile.local_root)}</span></div>${mapped ? `
+                  <div class="dp-settings-profile-path"><span class="dp-settings-profile-path-arrow">→</span> <span class="dp-settings-profile-path-text">${html(importRoot)}</span></div>` : ''}
+                </div>
+              </td>
+              <td class="dp-settings-users-detail dp-settings-profiles-retention">${words(say('settings.profiles.retention_hours', {hours: html(profile.retention_hours)}))}</td>
+              <td><div class="dp-settings-users-actions">
+                <button class="btn btn-ghost btn-sm" type="button" data-user-action="edit-profile" data-profile-id="${id}"${keyed(say('settings.users.edit'))}>${html(t('settings.users.edit'))}</button>
+              </div></td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  // The catalog write's refusal, in the server's own words and figures.
+  function profileRefusal(error) {
+    const detail = error?.detail && typeof error.detail === 'object' && !Array.isArray(error.detail) ? error.detail : {};
+    if (error?.status === 409 && detail.code === 'stale_revision') {
+      return {code: 'stale_revision', message: say('settings.profiles.stale')};
+    }
+    if (error?.status === 409 && detail.code === 'profile_in_use') {
+      return {code: 'profile_in_use', message: text((error.localized && error.message) || detail.message || error.message),
+        affected: Number(detail.affected_jobs || 0),
+        profiles: (Array.isArray(detail.profiles) ? detail.profiles : []).map(item => text(item?.id)).filter(Boolean)};
+    }
+    return {code: text(detail.code || 'error'), message: error?.message ? text(error.message) : say('settings.profiles.not_saved')};
+  }
+
+  async function writeCatalog(profiles, revision, retire = []) {
+    const body = {expected_revision: revision, profiles};
+    if (retire.length) body.retire_dependents = retire;
+    const saved = await request('PUT', '/external/profiles', body, 30000);
+    state.profiles = {catalog: {profiles: Array.isArray(saved?.profiles) ? saved.profiles : [],
+      revision: Number(saved?.revision || 0)}, error: ''};
+    paintUsers();
+    return saved;
+  }
+
+  const jobsPhrase = count => say('settings.profiles.jobs', {count});
+
+  // The server's own outcome of a retiring write, never assumed.
+  function retirementOutcome(saved, done) {
+    const retired = Number(saved?.retired_jobs || 0);
+    if (!retired) return done;
+    return saved?.cleanup_pending
+      ? say('settings.profiles.retired_pending', {done, jobs: jobsPhrase(retired)})
+      : say('settings.profiles.retired', {done, jobs: jobsPhrase(retired)});
+  }
+
+  // The consequence of retiring a profile's dependent jobs, stated before the
+  // explicit authorization is given.
+  const retirementMessage = count => say('settings.profiles.retire_message', {count});
+
+  function confirmRetirement({title, count, confirmLabel}) {
+    // Said words, keyed by the modal (an open confirmation is re-said in place).
+    return window.DPSettingsModal.confirm({title, message: retirementMessage(count), confirmLabel, tone: 'danger'});
+  }
+
+  function profileFormMarkup(profile, creating) {
+    const field = (name, label, control, hint = '') => `
+      <div class="dp-modal-field dp-profile-field" data-profile-section="${html(name)}">
+        <span class="form-label"${keyed(label)}>${html(label)}</span>${control}${hint ? `<span class="form-hint"${keyed(hint)}>${html(hint)}</span>` : ''}
+      </div>`;
+    return `
+      <div class="dp-profile-view" data-profile-view="form">
+        ${field('id', say('settings.profiles.field.id'), `<input class="input" data-profile-input="id" type="text" maxlength="64" autocomplete="off" spellcheck="false" ${keyed(null, {'aria-label': say('settings.profiles.field.id')})}${creating ? '' : ' readonly'}>`,
+          say(creating ? 'settings.profiles.id_hint_create' : 'settings.profiles.id_hint_edit'))}
+        ${field('categories', say('settings.profiles.column.categories'), `
+          <div class="dp-profile-chips" data-profile-categories role="list"${keyed(null, {'aria-label': say('settings.profiles.selected_categories')})}></div>
+          <div class="dp-profile-suggestions" data-profile-suggestions></div>
+          ${embeddedActionField(`<input class="input" data-profile-input="category" type="text" maxlength="64" autocomplete="off" spellcheck="false"${keyed(null, {'aria-label': say('settings.profiles.custom_category')})}>`,
+            `<button class="btn btn-ghost btn-sm" type="button" data-profile-add-category${keyed(say('settings.users.add'))}>${html(t('settings.users.add'))}</button>`)}`,
+          say('settings.profiles.categories_hint'))}
+        ${field('clients', say('settings.profiles.field.clients'), `
+          <div class="dp-profile-checks" data-profile-clients role="group"${keyed(null, {'aria-label': say('settings.profiles.field.clients')})}></div>
+          <button class="btn btn-ghost btn-sm dp-profile-create-token" type="button" data-profile-create-token${keyed(say('settings.profiles.create_token'))}>${html(t('settings.profiles.create_token'))}</button>`,
+          say('settings.profiles.clients_hint'))}
+        ${field('source_kinds', say('settings.profiles.field.kinds'), `
+          <div class="dp-profile-checks dp-profile-kinds" role="group"${keyed(null, {'aria-label': say('settings.profiles.field.kinds')})}>${PROFILE_SOURCE_KINDS.map(([kind, label]) => `
+            <label class="dp-profile-check"><input type="checkbox" data-profile-kind="${html(kind)}"> ${words(label)}</label>`).join('')}
+          </div>`)}
+        ${field('local_root', say('settings.profiles.field.local_root'), '<input class="input" data-profile-input="local_root" type="text" maxlength="1024" autocomplete="off" spellcheck="false"' + keyed(null, {'aria-label': say('settings.profiles.field.local_root')}) + '>',
+          say('settings.profiles.local_root_hint'))}
+        ${field('import_root', say('settings.profiles.field.import_root'), '<input class="input" data-profile-input="import_root" type="text" maxlength="1024" autocomplete="off" spellcheck="false"' + keyed(null, {'aria-label': say('settings.profiles.field.import_root')}) + '>',
+          say('settings.profiles.import_root_hint'))}
+        <div class="dp-profile-path-summary" data-profile-path-summary role="group"${keyed(null, {'aria-label': say('settings.profiles.path_summary')})}>
+          <span class="form-label"${keyed(say('settings.profiles.path_summary'))}>${html(t('settings.profiles.path_summary'))}</span>
+          <div class="dp-profile-path-summary-route" data-profile-path-route></div>
+        </div>
+        ${field('retention_hours', say('settings.profiles.column.retention'), embeddedActionField('<input class="input" data-profile-input="retention_hours" type="number" min="1" max="8760" step="1"' + keyed(null, {'aria-label': say('settings.profiles.retention_label')}) + '>', fieldUnit(say('settings.unit.hours'))),
+          say('settings.profiles.retention_hint'))}
+        <p class="dp-profile-error" data-profile-error role="alert" hidden></p>
+      </div>
+      <div class="dp-profile-view" data-profile-view="token" hidden>
+        <p class="dp-modal-message"${keyed(say('settings.profiles.token_intro'))}>${html(t('settings.profiles.token_intro'))}</p>
+        <label class="dp-modal-field"><span class="form-label"${keyed(say('settings.profiles.token_account'))}>${html(t('settings.profiles.token_account'))}</span><select class="input" data-token-input="account"></select></label>
+        <label class="dp-modal-field" data-token-new-account hidden><span class="form-label"${keyed(say('settings.profiles.token_new_account'))}>${html(t('settings.profiles.token_new_account'))}</span><input class="input" data-token-input="account_name" type="text" maxlength="256" autocomplete="off"></label>
+        <label class="dp-modal-field"><span class="form-label"${keyed(say('settings.tokens.field.label'))}>${html(t('settings.tokens.field.label'))}</span><input class="input" data-token-input="label" type="text" maxlength="128" autocomplete="off"></label>
+        <p class="dp-profile-error" data-token-error role="alert" hidden></p>
+      </div>
+      <div class="dp-profile-view" data-profile-view="disclosure" hidden></div>
+      <div class="dp-profile-view" data-profile-view="delete" hidden>
+        <p class="dp-modal-message" data-profile-delete-message></p>
+        <p class="dp-profile-error" data-profile-delete-error role="alert" hidden></p>
+      </div>`;
+  }
+
+  /* Create and Edit: one form in the canonical dialog. Create API Token is a
+   * view of the SAME dialog -- the profile draft stays in this dialog's own
+   * controls while the token form and then the one-time disclosure are shown,
+   * and the new token's client is selected on return. Nothing is written
+   * until Save; a refused Save keeps the dialog and its draft open.
+   *
+   * An existing profile's Delete (its footer, lower left) is a view of the
+   * same dialog too: it reads the profile's dependent jobs from the server,
+   * states the consequence and asks for its own confirmation -- Delete Profile,
+   * or Delete Profile & Retire Jobs when jobs depend on it. Back returns to the
+   * untouched draft; the confirmation writes the current catalog without this
+   * profile and never the draft. Jobs that appear after the count are only
+   * retired after a renewed confirmation with their own count. */
+  async function profileDialog(existing) {
+    if (!state.profiles.catalog) return;
+    const creating = !existing;
+    let base = state.profiles.catalog;
+    const draft = {
+      id: existing?.id || '',
+      categories: [...(existing?.categories || [])],
+      clients: new Set(existing?.clients || []),
+      // Clients the profile already grants stay listed (and granted) until
+      // the Admin removes them, even when no active token names them now.
+      retained: [...(existing?.clients || [])],
+      kinds: new Set(existing?.source_kinds || PROFILE_SOURCE_KINDS.map(([kind]) => kind)),
+    };
+    let view = 'form';
+    let importEdited = false;
+    let controls = {};
+    let dialogBody = null;
+
+    const title = creating ? say('settings.profiles.create') : say('settings.profiles.edit_title', {id: existing.id});
+    let deleting = null;      // {count} while the Delete confirmation is shown
+    let pending = false;
+
+    const show = (handle, next) => {
+      view = next;
+      dialogBody.querySelectorAll('[data-profile-view]').forEach(pane => { pane.hidden = pane.dataset.profileView !== next; });
+      handle.setActionHidden('delete', creating || next !== 'form');
+      if (next !== 'delete') {
+        handle.setTitle(title);
+        handle.setTone('', '');
+        handle.setAcceptEnabled(true);
+      }
+      if (next === 'form') {
+        handle.setAcceptLabel(say(creating ? 'settings.profiles.create_short' : 'settings.profiles.save'));
+        handle.setCancelLabel(say('common.cancel'));
+        handle.setActionHidden('reload', !dialogBody.dataset.stale);
+      } else if (next === 'delete') {
+        handle.setActionHidden('reload', true);
+        handle.setTitle(deleting.count ? say('settings.profiles.delete_title') : say('settings.profiles.delete_named', {id: existing.id}));
+        handle.setTone('danger', '');
+        handle.setAcceptLabel(say(deleting.count ? 'settings.profiles.delete_retire' : 'settings.profiles.delete'));
+        handle.setCancelLabel(say('settings.common.back'));
+        const message = dialogBody.querySelector('[data-profile-delete-message]');
+        sayInto(message, deleting.count ? retirementMessage(deleting.count) : say('settings.profiles.delete_only'));
+        message.tabIndex = -1;
+        message.focus();
+      } else if (next === 'token') {
+        handle.setAcceptLabel(say('settings.profiles.create_token_accept'));
+        handle.setCancelLabel(say('settings.common.back'));
+        handle.setActionHidden('reload', true);
+      } else {
+        handle.setAcceptLabel(say('settings.common.done'));
+        handle.setCancelLabel(say('settings.profiles.back'));
+        handle.setActionHidden('reload', true);
+      }
+    };
+    const showError = (node, message) => { sayInto(node, message || ''); node.hidden = !message; };
+
+    function paintCategories() {
+      const list = dialogBody.querySelector('[data-profile-categories]');
+      list.innerHTML = draft.categories.map(category => `
+        <span class="dp-settings-profile-chip" role="listitem">${html(category)}<button class="dp-profile-chip-remove" type="button" data-profile-remove-category="${html(category)}" ${keyed(null, {'aria-label': say('settings.profiles.remove_category', {name: category})})}>×</button></span>`).join('')
+        || `<span class="dp-settings-users-detail">${words(say('settings.profiles.no_categories'))}</span>`;
+      dialogBody.querySelector('[data-profile-suggestions]').innerHTML = PROFILE_CATEGORY_SUGGESTIONS
+        .filter(([category]) => !draft.categories.includes(category))
+        .map(([category, label]) => `<button class="btn btn-ghost btn-sm" type="button" data-profile-suggest="${html(category)}" data-tooltip="${html(label)}">+ ${html(category)}</button>`).join('');
+    }
+
+    function paintClients() {
+      const clients = tokenClients();
+      const ids = [...new Set([...clients.keys(), ...draft.retained])];
+      const list = dialogBody.querySelector('[data-profile-clients]');
+      list.innerHTML = ids.length ? ids.map(clientId => `
+        <label class="dp-profile-check"><input type="checkbox" data-profile-client="${html(clientId)}"${draft.clients.has(clientId) ? ' checked' : ''}> ${words(clientLabel(clients, clientId)).replace(/^(?!<span)(.*)$/s, '<span>$1</span>')}</label>`).join('')
+        : `<span class="dp-settings-users-detail">${words(say('settings.profiles.no_tokens'))}</span>`;
+    }
+
+    // Below 780px: the two paths as the table maps them, from the form's
+    // current values -- the DP Download Path, then the External Import Path
+    // where it differs; a path not yet entered is the dash.
+    function paintPathSummary() {
+      const local = controls.local_root.value.trim();
+      const imported = controls.import_root.value.trim();
+      const line = (value, arrow) => `<div class="dp-profile-path-summary-line">${arrow ? '<span class="dp-profile-path-summary-arrow">→</span> ' : ''}${html(value || '—')}</div>`;
+      dialogBody.querySelector('[data-profile-path-route]').innerHTML = line(local, false)
+        + (imported && imported !== local ? line(imported, true) : '');
+    }
+
+    function addCategory(value) {
+      const category = String(value || '').trim();
+      if (!category) return;
+      if (!draft.categories.some(item => item.toLowerCase() === category.toLowerCase())) draft.categories.push(category);
+      paintCategories();
+    }
+
+    function collect() {
+      const local = controls.local_root.value.trim();
+      const imported = controls.import_root.value.trim();
+      return {
+        id: controls.id.value.trim(),
+        categories: [...draft.categories],
+        clients: [...draft.clients],
+        source_kinds: PROFILE_SOURCE_KINDS.map(([kind]) => kind).filter(kind => draft.kinds.has(kind)),
+        representation: 'shared_path',
+        local_root: local,
+        import_root: imported === local ? '' : imported,
+        // Exactly the digits shown: anything else is not a whole number of hours.
+        retention_hours: /^\d+$/.test(controls.retention_hours.value) ? Number(controls.retention_hours.value) : NaN,
+      };
+    }
+
+    // What the form can say before asking: the server still decides.
+    function invalid(profile) {
+      if (!PROFILE_ID_PATTERN.test(profile.id)) return say('settings.profiles.invalid.id');
+      if (creating && base.profiles.some(item => item.id === profile.id)) return say('settings.profiles.invalid.exists', {id: profile.id});
+      if (!profile.categories.length) return say('settings.profiles.invalid.categories');
+      const taken = new Set(base.profiles.filter(item => item.id !== profile.id)
+        .flatMap(item => item.categories.map(category => category.toLowerCase())));
+      const clash = profile.categories.find(category => taken.has(category.toLowerCase()));
+      if (clash) return say('settings.profiles.invalid.clash', {category: clash});
+      if (!profile.clients.length) return say('settings.profiles.invalid.clients');
+      if (!profile.source_kinds.length) return say('settings.profiles.invalid.kinds');
+      const folder = text(state.settings?.download_folder || '/download').replace(/\/+$/, '') || '/';
+      const local = profile.local_root.replace(/\/+$/, '') || '/';
+      if (!local.startsWith('/') || (local !== folder && !local.startsWith(`${folder === '/' ? '' : folder}/`))) {
+        return say('settings.profiles.invalid.local_root', {folder});
+      }
+      if (profile.import_root && !profile.import_root.startsWith('/')) return say('settings.profiles.invalid.import_root');
+      if (!Number.isInteger(profile.retention_hours) || profile.retention_hours < 1 || profile.retention_hours > 8760) {
+        return say('settings.profiles.invalid.retention');
+      }
+      return '';
+    }
+
+    async function save(handle) {
+      const errorNode = dialogBody.querySelector('[data-profile-error]');
+      const profile = collect();
+      const problem = invalid(profile);
+      if (problem) { showError(errorNode, problem); return false; }
+      showError(errorNode, '');
+      const others = base.profiles.filter(item => item.id !== (existing?.id || profile.id));
+      const next = creating ? [...others, profile] : base.profiles.map(item => item.id === existing.id ? profile : item);
+      let saved;
+      try {
+        saved = await writeCatalog(next, base.revision);
+      } catch (error) {
+        const refusal = profileRefusal(error);
+        if (refusal.code === 'stale_revision') {
+          dialogBody.dataset.stale = '1';
+          handle.setActionHidden('reload', false);
+        }
+        // Changing paths or tokens takes the profile away from unsettled
+        // jobs: only an explicit retirement of exactly those jobs proceeds.
+        if (refusal.code === 'profile_in_use' && !creating && await confirmRetirement({
+          title: say('settings.profiles.save_title'), count: refusal.affected, confirmLabel: say('settings.profiles.save_retire')})) {
+          try {
+            saved = await writeCatalog(next, base.revision, [existing.id]);
+          } catch (retry) {
+            showError(errorNode, profileRefusal(retry).message);
+            return false;
+          }
+        } else {
+          showError(errorNode, refusal.message);
+          return false;
+        }
+      }
+      notify(String(retirementOutcome(saved, say(creating ? 'settings.profiles.created' : 'settings.profiles.saved'))), 'success');
+      return true;
+    }
+
+    // An intentional reconciliation: the catalog is re-read and the draft is
+    // re-based on it; nothing is written until the Admin saves again.
+    async function reload(handle) {
+      const errorNode = dialogBody.querySelector('[data-profile-error]');
+      await loadProfiles();
+      paintUsers();
+      if (!state.profiles.catalog) { showError(errorNode, state.profiles.error || say('settings.profiles.unreadable')); return; }
+      base = state.profiles.catalog;
+      delete dialogBody.dataset.stale;
+      handle.setActionHidden('reload', true);
+      if (!creating && !base.profiles.some(item => item.id === existing.id)) {
+        handle.setAcceptEnabled(false);
+        showError(errorNode, say('settings.profiles.deleted_elsewhere'));
+        return;
+      }
+      showError(errorNode, say('settings.profiles.reloaded'));
+    }
+
+    async function createToken(handle) {
+      const errorNode = dialogBody.querySelector('[data-token-error]');
+      const accountId = controls.account.value;
+      const label = controls.label.value.trim();
+      if (!label) { showError(errorNode, say('settings.profiles.token_label_missing')); return; }
+      if (accountId === '__new__' && !controls.account_name.value.trim()) { showError(errorNode, say('settings.profiles.token_account_missing')); return; }
+      showError(errorNode, '');
+      let issued;
+      try {
+        let id = accountId;
+        if (id === '__new__') {
+          id = (await request('POST', '/accounts', {kind: 'integration', display_name: controls.account_name.value.trim()}, 10000))?.id;
+        }
+        issued = await request('POST', `/accounts/${encodeURIComponent(id)}/tokens`, {label}, 10000);
+      } catch (error) {
+        showError(errorNode, error.message ? text(error.message) : say('settings.profiles.token_failed'));
+        await loadUsers();
+        return;
+      }
+      if (!issued?.token || !issued.client_id) { showError(errorNode, say('settings.profiles.token_failed')); return; }
+      draft.clients.add(issued.client_id);
+      if (!draft.retained.includes(issued.client_id)) draft.retained.push(issued.client_id);
+      const pane = dialogBody.querySelector('[data-profile-view="disclosure"]');
+      tokenDisclosure(pane, issued);
+      issued = null;
+      show(handle, 'disclosure');
+      pane.querySelector('[data-token-copy]')?.focus();
+      await loadUsers();
+    }
+
+    // Delete, asked for: the dependent jobs are counted now, never assumed.
+    async function askDelete(handle) {
+      const errorNode = dialogBody.querySelector('[data-profile-error]');
+      pending = true;
+      handle.setActionEnabled('delete', false);
+      showError(errorNode, '');
+      try {
+        const dependents = await request('GET', `/external/profiles/${encodeURIComponent(existing.id)}/dependents`,
+          undefined, 10000);
+        deleting = {count: Number(dependents?.affected_jobs || 0)};
+      } catch (error) {
+        showError(errorNode, say('settings.profiles.count_failed', {reason: error?.message ? text(error.message) : say('settings.profiles.count_failed_reason')}));
+        return;
+      } finally {
+        pending = false;
+        handle.setActionEnabled('delete', true);
+      }
+      showError(dialogBody.querySelector('[data-profile-delete-error]'), '');
+      show(handle, 'delete');
+    }
+
+    // The confirmed deletion, and only it: the current catalog without this
+    // profile, at its revision, retiring only the jobs that were confirmed.
+    async function commitDelete(handle) {
+      const errorNode = dialogBody.querySelector('[data-profile-delete-error]');
+      const catalog = state.profiles.catalog;
+      if (!catalog) { showError(errorNode, say('settings.profiles.unreadable_kept')); return false; }
+      const remaining = catalog.profiles.filter(item => item.id !== existing.id);
+      let saved;
+      try {
+        saved = await writeCatalog(remaining, catalog.revision, deleting.count ? [existing.id] : []);
+      } catch (error) {
+        const refusal = profileRefusal(error);
+        if (refusal.code === 'profile_in_use' && !deleting.count) {
+          // Jobs arrived after the count: the confirmation given did not cover
+          // them, so it is asked for again, with their own count.
+          deleting = {count: refusal.affected};
+          show(handle, 'delete');
+          showError(errorNode, say('settings.profiles.jobs_arrived', {jobs: jobsPhrase(refusal.affected)}));
+          return false;
+        }
+        if (refusal.code === 'stale_revision') dialogBody.dataset.stale = '1';
+        // Whatever the answer, the catalog is read again, and a new attempt
+        // starts from a fresh count (Back, then Delete).
+        await loadProfiles();
+        paintUsers();
+        const read = state.profiles.catalog;
+        if (!error?.status && read && !read.profiles.some(item => item.id === existing.id)) {
+          notify(t('settings.profiles.deleted'), 'success');
+          return true;
+        }
+        showError(errorNode, error?.status ? say('settings.profiles.delete_refused', {reason: refusal.message})
+          : read ? say('settings.profiles.delete_unanswered')
+            : say('settings.profiles.delete_unknown'));
+        handle.setAcceptEnabled(false);
+        return false;
+      }
+      notify(String(retirementOutcome(saved, say('settings.profiles.deleted'))), 'success');
+      return true;
+    }
+
+    function backToForm(handle) {
+      // The one-time value leaves the DOM with the disclosure.
+      dialogBody.querySelector('[data-profile-view="disclosure"]').innerHTML = '';
+      paintClients();
+      show(handle, 'form');
+      dialogBody.querySelector('[data-profile-create-token]')?.focus();
+    }
+
+    function openTokenView(handle) {
+      const integrations = (state.users.accounts || []).filter(account => liveAccount(account) && isIntegration(account) && account.enabled);
+      controls.account.innerHTML = integrations.map(account => `<option value="${html(account.id)}">${html(accountName(account))}</option>`).join('')
+        + `<option value="__new__"${keyed(say('settings.profiles.new_account'))}>${html(t('settings.profiles.new_account'))}</option>`;
+      controls.account_name.value = '';
+      controls.label.value = '';
+      dialogBody.querySelector('[data-token-new-account]').hidden = controls.account.value !== '__new__';
+      showError(dialogBody.querySelector('[data-token-error]'), '');
+      show(handle, 'token');
+      controls.label.focus();
+    }
+
+    const dialog = window.DPSettingsModal.open({
+      title,
+      acceptLabel: say(creating ? 'settings.profiles.create_short' : 'settings.profiles.save'),
+      className: 'dp-users-dialog dp-profile-dialog',
+      actions: [{id: 'reload', label: say('settings.profiles.reload'), placement: 'leading'},
+        ...(creating ? [] : [{id: 'delete', label: say('settings.users.delete'), tone: 'danger', placement: 'leading'}])],
+      mount(body, handle) {
+        dialogBody = body;
+        body.innerHTML = profileFormMarkup(existing, creating);
+        body.querySelectorAll('[data-profile-input], [data-token-input]').forEach(control => {
+          controls[control.dataset.profileInput || control.dataset.tokenInput] = control;
+        });
+        controls.id.value = draft.id;
+        controls.local_root.value = existing?.local_root || text(state.settings?.download_folder || '/download');
+        controls.import_root.value = existing ? (existing.import_root || existing.local_root) : controls.local_root.value;
+        importEdited = Boolean(existing?.import_root && existing.import_root !== existing.local_root);
+        controls.retention_hours.value = String(existing?.retention_hours || DEFAULT_RETENTION_HOURS);
+        body.querySelectorAll('[data-profile-kind]').forEach(box => { box.checked = draft.kinds.has(box.dataset.profileKind); });
+        paintCategories();
+        paintClients();
+        handle.setActionHidden('reload', true);
+
+        paintPathSummary();
+        controls.local_root.addEventListener('input', () => {
+          if (!importEdited) controls.import_root.value = controls.local_root.value;
+          paintPathSummary();
+        });
+        controls.import_root.addEventListener('input', () => {
+          importEdited = true;
+          paintPathSummary();
+        });
+        controls.category.addEventListener('keydown', event => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          addCategory(controls.category.value);
+          controls.category.value = '';
+        });
+        controls.account.addEventListener('change', () => {
+          body.querySelector('[data-token-new-account]').hidden = controls.account.value !== '__new__';
+        });
+        body.addEventListener('change', event => {
+          const kind = event.target.closest?.('[data-profile-kind]');
+          if (kind) kind.checked ? draft.kinds.add(kind.dataset.profileKind) : draft.kinds.delete(kind.dataset.profileKind);
+          const client = event.target.closest?.('[data-profile-client]');
+          if (client) client.checked ? draft.clients.add(client.dataset.profileClient) : draft.clients.delete(client.dataset.profileClient);
+        });
+        body.addEventListener('click', event => {
+          const suggestion = event.target.closest('[data-profile-suggest]');
+          if (suggestion) { addCategory(suggestion.dataset.profileSuggest); return; }
+          const remove = event.target.closest('[data-profile-remove-category]');
+          if (remove) {
+            draft.categories = draft.categories.filter(item => item !== remove.dataset.profileRemoveCategory);
+            paintCategories();
+            return;
+          }
+          if (event.target.closest('[data-profile-add-category]')) {
+            addCategory(controls.category.value);
+            controls.category.value = '';
+            controls.category.focus();
+            return;
+          }
+          if (event.target.closest('[data-profile-create-token]')) openTokenView(handle);
+        });
+        return creating ? controls.id : controls.local_root;
+      },
+      async onAccept(handle) {
+        if (pending) return false;
+        if (view === 'token') { await createToken(handle); return false; }
+        if (view === 'disclosure') { backToForm(handle); return false; }
+        if (view === 'delete') return commitDelete(handle);
+        return save(handle);
+      },
+      onCancel(handle) {
+        if (pending) return false;
+        if (view === 'token') { show(handle, 'form'); dialogBody.querySelector('[data-profile-create-token]')?.focus(); return false; }
+        if (view === 'disclosure') { backToForm(handle); return false; }
+        if (view === 'delete') { show(handle, 'form'); controls.local_root.focus(); return false; }
+        return true;
+      },
+      onAction(id) {
+        if (pending || view !== 'form') return;
+        if (id === 'reload') void reload(dialog);
+        if (id === 'delete') void askDelete(dialog);
+      },
+    });
+    await dialog.closed;
+  }
+
+  /* An account's own requests, newest first: what was asked for, its
+   * transfer's status, and whether the request was withdrawn. An outstanding
+   * request can be withdrawn here, one demand at a time, through the one
+   * withdrawal API; the transfer core decides what that means for the
+   * transfer (it stops only when no other request still needs it). */
+  const readActivity = account => request('GET',
+    `/requests?account_id=${encodeURIComponent(account.id)}&limit=50`, undefined, 10000)
+    .then(result => (Array.isArray(result?.requests) ? result.requests : []));
+
+  function activityMarkup(rows) {
+    const date = value => (window.downloadsDateMarkup ? window.downloadsDateMarkup(value) : html(value));
+    return rows.length ? `
+      <div class="dp-users-activity-wrap">
+        <table class="t-table dp-users-activity">
+          <thead><tr>${['download', 'status', 'requested', 'request'].map(column => `<th>${words(say(`settings.activity.column.${column}`))}</th>`).join('')}</tr></thead>
+          <tbody>${rows.map(row => `
+            <tr>
+              <td>${row.name ? html(row.name) : words(say('settings.activity.transfer', {id: row.transfer_id}))}</td>
+              <td>${html(row.status)}</td>
+              <td>${date(row.created_at)}</td>
+              <td>${row.withdrawn_at ? `${words(say('settings.activity.withdrawn'))} ${date(row.withdrawn_at)}`
+                : `<span class="dp-users-activity-outstanding">${words(say('settings.activity.outstanding'))}<button class="btn btn-ghost btn-sm" type="button" data-withdraw-demand="${html(row.id)}"${keyed(say('settings.activity.withdraw'))}>${html(t('settings.activity.withdraw'))}</button></span>`}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <p class="dp-modal-message"${keyed(say('settings.activity.recent'))}>${html(t('settings.activity.recent'))}</p>`
+      : `<p class="dp-modal-message"${keyed(say('settings.activity.none'))}>${html(t('settings.activity.none'))}</p>`;
+  }
+
+  // One request's withdrawal, reported as the server answered it: withdrawn,
+  // already withdrawn, refused with its reason, or unconfirmed without an answer.
+  async function withdrawAccountRequest(account, demandId, button) {
+    const confirmed = await window.DPSettingsModal.confirm({
+      title: say('settings.activity.withdraw_title'),
+      message: say('settings.activity.withdraw_message', {name: accountName(account)}),
+      confirmLabel: say('settings.activity.withdraw_accept'),
+    });
+    if (!confirmed) return;
+    setBusy(button, true, say('settings.activity.withdrawing'));
+    try {
+      const result = await request('POST', `/requests/${encodeURIComponent(demandId)}/withdraw`, undefined, 15000);
+      notify(t(result?.already_withdrawn ? 'settings.activity.already_withdrawn' : 'settings.activity.withdrawn_done'), 'success');
+    } catch (error) {
+      notify(error?.status ? t('settings.activity.withdraw_refused', {reason: text(error.message)})
+        : t('settings.activity.withdraw_unanswered'), 'error');
+    }
+  }
+
+  /* Account Details (Admin): the account's profile -- Display Name, Actual
+   * Name, Email with its verification: what its provider stated, or that the
+   * account entered it itself (never verified) -- and its Activity:
+   * its requests, each outstanding one withdrawable on its own. Read-only
+   * otherwise; it is not the signed-in account's My Account. */
+  const EMAIL_STATE = account => (!account.email ? ''
+    : say(`settings.email.${account.email_self_entered ? 'self_entered'
+      : account.email_verified ? 'verified' : account.email_verified_known ? 'unverified' : 'unstated'}`));
+
+  function accountProfileMarkup(account) {
+    // ``value``: markup (the account's own words escaped, the page's keyed).
+    const row = (label, value, missing) => `<div><dt>${words(label)}</dt><dd${value ? '' : ' class="is-missing"'}>${
+      value || words(missing)}</dd></div>`;
+    const unset = say('settings.account.not_set');
+    return `<dl class="dp-account-details-profile">
+      ${row(say('settings.users.field.display_name'), html(account.display_name || ''), unset)}
+      ${row(say('settings.account.actual_name'), html(account.actual_name || ''), unset)}
+      ${row(say('settings.account.email'), account.email ? `${html(account.email)} (${words(EMAIL_STATE(account))})` : '', say('settings.account.no_email'))}
+    </dl>`;
+  }
+
+  async function showAccountDetails(account) {
+    let rows;
+    try {
+      rows = await readActivity(account);
+    } catch (error) {
+      notify(error.message, 'error');
+      return;
+    }
+    let activity = null;
+    const repaint = async () => {
+      try {
+        rows = await readActivity(account);
+      } catch (error) {
+        notify(error.message, 'error');
+      }
+      if (activity?.isConnected) activity.innerHTML = activityMarkup(rows);
+    };
+    const dialog = window.DPSettingsModal.open({
+      title: say('settings.account.details_title', {name: accountName(account)}),
+      dismiss: true,
+      className: 'dp-users-activity-dialog dp-account-details-dialog',
+      mount(body) {
+        body.innerHTML = `
+          ${accountProfileMarkup(account)}
+          <section class="dp-account-details-activity"${keyed(null, {'aria-label': say('settings.account.activity')})}>
+            <h3 class="dp-account-details-heading"${keyed(say('settings.account.activity'))}>${html(t('settings.account.activity'))}</h3>
+            <div data-account-activity></div>
+          </section>`;
+        activity = body.querySelector('[data-account-activity]');
+        activity.innerHTML = activityMarkup(rows);
+        body.addEventListener('click', event => {
+          const button = event.target.closest('button[data-withdraw-demand]');
+          if (!button) return;
+          void withdrawAccountRequest(account, button.dataset.withdrawDemand, button).then(repaint);
+        });
+        return body.querySelector('dl');
+      },
+    });
+    await dialog.closed;
+  }
+
+  // Returns true when the click was a Users & Access action.
+  function usersAction(event) {
+    const button = event.target.closest('button[data-user-action]');
+    if (!button || !root()?.contains(button)) return false;
+    const action = button.dataset.userAction;
+    const account = accountById(button.dataset.accountId || '');
+    if (action === 'create-profile') void profileDialog(null);
+    else if (action === 'edit-profile') void profileDialog(profileById(button.dataset.profileId || ''));
+    else if (action === 'create-local') void createLocalAccount();
+    else if (action === 'create-integration') void createIntegrationAccount();
+    else if (action === 'merge') void mergeAccounts(String(button.dataset.mergeIds || '').split(',').filter(Boolean));
+    else if (action === 'deployment') void changeDeploymentType(button.dataset.deploymentTarget || '', button);
+    else if (action === 'default-language') void chooseDefaultLanguage(button);
+    else if (!account) return true;
+    else if (action === 'edit') { if (account.id !== selfId() && !account.protected) void editUser(account); }
+    else if (action === 'details') void showAccountDetails(account);
+    else if (action === 'disable') void disableAccount(account);
+    else if (action === 'enable') void enableAccount(account);
+    else if (action === 'delete') void deleteAccount(account);
+    else if (action === 'issue-token') void issueToken(account);
+    else if (action === 'revoke-token') void revokeToken(account, button.dataset.tokenId || '');
+    return true;
+  }
+
+  /* The OIDC card's header status, in the canonical three-state provider
+   * vocabulary -- the same words, tones and treatment every provider card uses.
+   *
+   * It is a projection of canonical CONFIGURATION and canonical VERIFICATION
+   * EVIDENCE and nothing else: not the DOM, not a toast, not runtime
+   * reachability, and not a second `verified` bit this page keeps. A Test that
+   * failed leaves complete configuration unverified, which is Configured --
+   * the concrete reason travels in the Test's own feedback, not in this word.
+   * Disabled OIDC states nothing at all. */
+  /* Username & Password's header status: whether a complete local credential
+   * (a username and a stored password) is durably configured -- the server's
+   * ``password_configured``. There is no independent verification of a
+   * password, so this never says Verified. */
+  function credentialStatus(a) {
+    return a?.password_configured && text(a?.username).trim()
+      ? {text: say('settings.status.configured'), tone: 'warning'} : {text: say('settings.status.unconfigured'), tone: 'error'};
+  }
+
+  function oidcHeaderStatus(a) {
+    return a?.oidc_enabled ? oidcConfigurationStatus(a) : {text: '', tone: 'none'};
+  }
+
+  // What the stored OIDC configuration IS, whether or not OIDC is switched on:
+  // the header rail says nothing while it is off (above); the handheld Test's
+  // colour always says it (headerTestControls).
+  function oidcConfigurationStatus(a) {
+    if (!a?.oidc_configured) return {text: say('settings.status.unconfigured'), tone: 'error'};
+    return a?.oidc_verified ? {text: say('settings.status.verified'), tone: 'success'} : {text: say('settings.status.configured'), tone: 'warning'};
+  }
+
+  /* ── Data & Maintenance ───────────────────────────────────────────────────
+   *
+   * Three cards in exactly the grammar every other migrated Settings page uses:
+   * the operational actions in the card's own right-aligned header rail, the
+   * one setting the page is actually about as a centred bordered island, and
+   * the policy numbers behind the canonical disclosure. Every editable control
+   * here is declared in COMMIT_FIELDS and committed by the canonical
+   * persistence owner -- a number or a path at its changed-blur boundary, a
+   * boolean the moment it is flipped. Nothing on this page waits for anything.
+   *
+   * Backups, Run Backup and Reset Database are ACTIONS, not persistence:
+   * each settles the page's pending field writes first, so it acts on the
+   * values the server has accepted rather than on a draft the operator left in
+   * a field. That settle is the one shared owner's, not a Maintenance timer. */
+  /* Recorded Events is a reading, not a setting: the journal's whole retained
+   * count, read when Settings loads. An unread or unreadable count is never
+   * shown as zero. */
+  function recordedEventsText() {
+    if (state.recordedEvents === undefined) return '…';
+    if (!Number.isInteger(state.recordedEvents)) return '—';
+    return count(state.recordedEvents);
+  }
+
+  function showRecordedEvents(value) {
+    state.recordedEvents = value;
+    const control = root()?.querySelector('[data-setting="event_journal_recorded"]');
+    if (control) control.value = recordedEventsText();
+  }
+
+  function maintenancePanel(s) {
+    /* Event Logging selects only how many events one Activity Log page shows;
+     * the journal itself is kept indefinitely, so nothing here retains, prunes
+     * or enables anything and the header rail stays empty. */
+    const eventLogging = card(say('settings.events.title'), `
+      <div class="dp-settings-event-logging-island dp-settings-island">
+        ${selectField('activity_log_page_size', say('settings.events.page_size'), s.activity_log_page_size ?? 100,
+          [50, 100, 250].map(count => [count, say('settings.events.count', {count})]),
+          say('settings.events.page_size_hint'),
+          {inline: true, className: 'dp-settings-event-logging-field'})}
+        ${input('event_journal_recorded', say('settings.events.recorded'), recordedEventsText(), {
+          inline: true, commit: false, readonly: true,
+          hint: say('settings.events.recorded_hint'),
+          className: 'dp-settings-event-logging-field dp-settings-event-logging-recorded',
+        })}
+      </div>
+    `, {
+      className: 'dp-settings-event-logging-card',
+      help: 'event-logging',
+      titlePrefix: familyIcon('maintenance', 'file-text'),
+      headerCenter: say('settings.events.copy'),
+      headerCenterClass: 'dp-settings-event-logging-header-copy',
+      hinted: true,
+    });
+    const backupEnabledId = fieldId('backup_enabled');
+    const backups = card(say('settings.backups.title'), `
+      <div class="dp-settings-backup-folder-island dp-settings-help-slot">
+        ${directoryField('backup_folder', say('settings.backups.folder'), s.backup_folder || '/app/data/backups', {
+          hint: say('settings.backups.folder_hint'),
+          browseAction: 'browse-backup-folder',
+          browseLabel: say('settings.backups.folder_browse'),
+          inline: true, embedAction: true, className: 'dp-settings-backup-folder-field',
+        })}
+      </div>
+      ${omitted('backup-additional-settings') ? '' : disclosureSection(say('settings.backups.additional'), 'backup-retention', tuningCells(
+        tuningGroup(
+          input('backup_interval_hours', say('settings.backups.interval'), s.backup_interval_hours ?? 24, {
+            type: 'number', min: 1, max: 168,
+            hint: say('settings.backups.interval_hint'),
+            embedAction: fieldUnit(say('settings.unit.hours')), controlClass: 'dp-settings-unit-field',
+          }),
+          input('backup_keep_days', say('settings.backups.keep_days'), s.backup_keep_days ?? 7, {
+            type: 'number', min: 1, max: 365,
+            hint: say('settings.backups.keep_days_hint'),
+            embedAction: fieldUnit(say('settings.unit.days')), controlClass: 'dp-settings-unit-field',
+          }),
+          input('backup_max_retained', say('settings.backups.max_retained'), s.backup_max_retained ?? 7, {
+            type: 'number', min: 1, max: 365,
+            hint: say('settings.backups.max_retained_hint'),
+            embedAction: fieldUnit(say('settings.unit.backups')), controlClass: 'dp-settings-unit-field',
+          }),
+        ),
+        tuningGroup(
+          input('stats_snapshot_interval_minutes', say('settings.backups.snapshot_interval'), s.stats_snapshot_interval_minutes ?? 60, {
+            type: 'number', min: 0, max: 1440,
+            hint: say('settings.backups.snapshot_interval_hint'),
+            embedAction: fieldUnit(say('settings.unit.minutes')), controlClass: 'dp-settings-unit-field',
+          }),
+          input('stats_snapshot_keep_days', say('settings.backups.snapshot_keep_days'), s.stats_snapshot_keep_days ?? 30, {
+            type: 'number', min: 1, max: 365,
+            hint: say('settings.backups.snapshot_keep_days_hint'),
+            embedAction: fieldUnit(say('settings.unit.days')), controlClass: 'dp-settings-unit-field',
+          }),
+        ),
+      ), false, say('settings.backups.additional_short'))}
+    `, {
+      className: 'dp-settings-backups-retention-card',
+      help: 'backups',
+      headerFit: 'wrap',
+      helpRow: false,
+      shortTitle: say('settings.backups.title_short'),
+      titlePrefix: familyIcon('maintenance', 'archive'),
+      headerCenter: say('settings.backups.copy'),
+      headerCenterClass: 'dp-settings-backups-header-copy',
+      hinted: true,
+      // Below 780px the two actions are one Backups menu (headerActionsMenu).
+      action: headerActionsMenu(say('settings.backups.title'), say('settings.backups.menu'), `<button class="btn btn-ghost btn-sm" type="button" data-action="backups"
+                  ${keyed(say('settings.backups.menu'), {'data-menu-label': say('settings.backups.management')})} data-menu-closes>${html(t('settings.backups.menu'))}</button>
+          <button class="btn btn-sm dp-settings-run-backup-success" type="button" data-action="run-backup"${keyed(say('settings.backups.run'))}>${html(t('settings.backups.run'))}</button>`,
+      `<label class="toggle-row dp-settings-toggle dp-settings-backups-header-toggle" for="${backupEnabledId}">
+        <span class="toggle">
+          <input id="${backupEnabledId}" data-setting="backup_enabled" type="checkbox" ${commitAttributes('backup_enabled')} ${checked(s.backup_enabled !== false)}
+                 ${keyed(null, {'aria-label': say('settings.backups.enable')})}>
+          <span class="ttrack"></span>
+        </span>
+      </label>`),
+    });
+    const reset = card(say('settings.reset.title'), `
+      <div class="dp-settings-caution">
+        <b${keyed(say('settings.reset.caution'))}>${html(t('settings.reset.caution'))}</b>
+        ${words(say('settings.reset.caution_detail'))}
+      </div>
+      <div class="dp-settings-database-reset-spacer" aria-hidden="true"></div>
+      <div class="dp-settings-database-wipe-row dp-settings-island">
+        ${toggle('db_wipe_enabled', say('settings.reset.allow'), say('settings.reset.allow_hint'), s.db_wipe_enabled, 'dp-settings-database-wipe-toggle dp-settings-island-member')}
+        <div class="dp-settings-actions dp-settings-database-wipe-action dp-settings-island-member">
+          <button class="btn btn-danger btn-sm" type="button" data-action="wipe-database"${keyed(say('settings.reset.action'))}>${html(t('settings.reset.action'))}</button>
+        </div>
+      </div>
+    `, {
+      className: 'dp-settings-database-wipe-card',
+      help: 'database-reset',
+      headerFit: 'wrap',
+      helpRow: false,
+      titlePrefix: familyIcon('maintenance', 'database-x'),
+      headerCenter: say('settings.reset.copy'),
+      headerCenterClass: 'dp-settings-database-wipe-header-copy',
+      hinted: true,
+    });
+    return (omitted('event-logging') ? '' : eventLogging) + backups + (omitted('database-reset') ? '' : reset);
+  }
+
+  function panel(name, body) {
+    return `<section class="dp-settings-panel" data-panel="${html(name)}" role="tabpanel" ${state.activeTab === name ? '' : 'hidden'}>${body}</section>`;
+  }
+
+  function render() {
+    const view = root();
+    if (!view || !state.settings || !state.auth) return;
+
+    // The inherited navigation still adds a Settings-only shell state before
+    // invoking loadSettings(). The clean page explicitly rejects that legacy
+    // state before its DOM is painted.
+    document.getElementById('content')?.classList.remove('settings-active');
+
+    view.classList.add('dp-settings-clean-view');
+    // A selection this installation does not present (Authentication, chosen
+    // before a change to Standalone) is Services from the first paint.
+    state.activeTab = tabName(state.activeTab);
+
+    const tabs = eligibleTabs().map(([id, label, icon]) => `
+      <button class="stab ${state.activeTab === id ? 'active' : ''}" type="button"
+              data-tab="${html(id)}" role="tab"
+              aria-selected="${state.activeTab === id ? 'true' : 'false'}"
+              tabindex="${state.activeTab === id ? '0' : '-1'}">
+        <span class="dp-settings-tab-chip" aria-hidden="true">
+          <img class="dp-settings-tab-glyph" src="/icons/lucide/${html(icon)}.svg" alt="">
+        </span>
+        <span class="dp-settings-tab-label"${keyed(label)}>${html(label)}</span>
+      </button>
+    `).join('');
+    // The compact navigator's two travel actions: actions, not tabs, each one
+    // section from the selected one.
+    const travel = (step, glyph, label) => `
+      <button class="dp-settings-nav-end dp-section-nav-end" type="button" data-settings-end="${step}"
+             ${keyed(null, {'aria-label': label})}>
+        ${window.DPIcons?.svg?.(glyph) || ''}
+      </button>`;
+
+    view.innerHTML = `
+      <section class="card dp-settings-master-card"${keyed(null, {'aria-label': say('settings.page_label')})}>
+        <div class="card-header dp-settings-master-header">
+          <div class="dp-settings-header-copy">
+            <div class="dp-settings-header-icon" aria-hidden="true"></div>
+            <div>
+              <div class="dp-settings-header-title">${html(t('settings.header.title'))}</div>
+              <div class="dp-settings-header-subtitle">${html(t('settings.header.hint'))}</div>
+            </div>
+          </div>
+          <div class="dp-settings-nav dp-section-nav">
+            <div class="dp-settings-nav-control dp-section-nav-control">
+              ${travel('previous', 'chevronLeft', say('settings.nav.previous'))}
+              <div class="stabs dp-settings-tabs dp-section-nav-strip" role="tablist"${keyed(null, {'aria-label': say('settings.nav.sections')})}>${tabs}</div>
+              ${travel('next', 'chevronRight', say('settings.nav.next'))}
+            </div>
+          </div>
+        </div>
+
+        <div class="dp-settings-master-body">
+          <div class="dp-settings-scroll">
+            <div class="dp-settings-panels">
+              ${panel('sources', sourcesPanel(state.settings))}
+              ${panel('downloads', downloadsPanel(state.settings))}
+              ${panel('extraction', extractionPanel(state.settings))}
+              ${panel('notifications', notificationsPanel(state.settings))}
+              ${offered('authentication') ? panel('authentication', authenticationPanel(state.auth)) : ''}
+              ${panel('users', usersPanel())}
+              ${panel('maintenance', maintenancePanel(state.settings))}
+            </div>
+          </div>
+        </div>
+      </section>`;
+
+    activateTab(state.activeTab);
+    fitPage();
+    void loadDefaultLanguage();
+    void loadLocalPort();
+    bindEvents(view);
+    updateOidcCallbackPreview();
+    snapshotProviderControls(view);
+    // Whatever was just rendered FROM canonical state IS the accepted baseline.
+    window.DPSettingsPersistence.adopt(view);
+    restoreDrafts(view);
+    document.dispatchEvent(new CustomEvent('downloadpulse:settings-rendered', {detail:{tab: state.activeTab}}));
+  }
+
+  // Every fitter that measures the page's words: after a render, and after a
+  // language change says them again (the Settings locale listener).
+  function fitPage() {
+    navigation.fit({measure: true});
+    fitServicesRows();
+    fitHeaderHints();
+    fitIslands();
+    fitDeploymentType();
+    fitAuthKpis();
+    fitHandheldBodies();
+  }
+
+  function activateTab(name) {
+    selectTabControl(name);
+    showTabPanel();
+  }
+
+  const standaloneDeployment = () => state.settings?.deployment_type === 'standalone';
+
+  /* Whether the account's presentation omits a part here: Easy, by the Easy
+   * list of this installation's deployment type (auth.js owns the lists and
+   * the choice). Role and deployment type have already decided what this
+   * page may hold; Easy only omits from that, and Advanced omits nothing. */
+  const omitted = part => window.downloadPulseAuth?.presentation?.omits(part, state.settings?.deployment_type) === true;
+
+  /* Unsaved edits across a change of presentation. Composing for Easy or
+   * Advanced rebuilds the page from canonical state, so what the operator
+   * changed and has not saved -- a field whose save was refused, the
+   * Username & Password draft awaiting Apply -- is carried across: taken from
+   * every control that holds one, then put back into that same control once
+   * it is on the page again (at once, or after a later return to Advanced).
+   * Nothing is dispatched, so the change writes nothing and the field stays
+   * exactly as unsaved as it was; the persistence owner's baseline stays the
+   * canonical value. */
+  const drafts = new Map();
+  const DRAFTABLE = 'input:not([type="file"]):not([type="hidden"]):not([readonly]):not([disabled]), '
+    + 'textarea:not([readonly]), select';
+
+  function draftIdentity(control) {
+    if (control.dataset.commitKey) return `commit:${window.DPSettingsPersistence.identity(control)}`;
+    return control.id ? `id:${control.id}` : '';
+  }
+
+  function unsaved(control) {
+    if (control.dataset.commitKey) return window.DPSettingsPersistence.dirty(control);
+    if (control.type === 'checkbox' || control.type === 'radio') return control.checked !== control.defaultChecked;
+    if (control.tagName === 'SELECT') return [...control.options].some(option => option.selected !== option.defaultSelected);
+    return control.value !== control.defaultValue;
+  }
+
+  function keepDrafts(view) {
+    view.querySelectorAll(DRAFTABLE).forEach(control => {
+      const identity = draftIdentity(control);
+      if (!identity || !unsaved(control)) return;
+      drafts.set(identity, control.type === 'checkbox' || control.type === 'radio'
+        ? {checked: control.checked} : {value: control.value});
+    });
+  }
+
+  function restoreDrafts(view) {
+    if (!drafts.size) return;
+    view.querySelectorAll(DRAFTABLE).forEach(control => {
+      const identity = draftIdentity(control);
+      const draft = identity && drafts.get(identity);
+      if (!draft) return;
+      drafts.delete(identity);
+      if ('checked' in draft) {
+        control.checked = draft.checked;
+      } else {
+        control.value = draft.value;
+        if (control.tagName === 'SELECT') window.DPDropdowns?.sync(control);
+      }
+    });
+    projectCredentialDraft();
+  }
+
+  // The account chose Easy or Advanced (auth.js) while this page is shown: it
+  // is composed again for it, from canonical state, with every unsaved edit
+  // carried across. Shown later, it is composed by its entry, which -- as
+  // every entry -- starts from canonical state (load, loadOwnNotifications).
+  document.addEventListener('downloadpulse:presentation-changed', () => {
+    const view = root();
+    if (!view || !state.settings || !settingsActive() || !view.querySelector('.dp-settings-master-card')) return;
+    keepDrafts(view);
+    if (selfContext()) renderOwnNotifications();
+    else if (state.auth) renderPreservingViewport();
+  });
+
+  /* The ONE collection of the tabs this installation presents, in order, with
+   * the labels it presents them by: the strip, Previous / Next, the arrow
+   * keys, the panels and the selection all follow it. */
+  function eligibleTabs() {
+    if (!standaloneDeployment()) return TABS;
+    return TABS.filter(([id]) => !SERVER_ONLY_TABS.includes(id))
+      .map(([id, label, icon]) => [id, STANDALONE_TAB_LABELS[id] || label, icon]);
+  }
+
+  const offered = name => eligibleTabs().some(([id]) => id === name);
+
+  // A tab name, or Services when it names no tab this installation presents.
+  const tabName = name => (offered(name) ? name : 'sources');
+
+  /* Select a tab at once; `motion` ({direction, distance}, the choice's own)
+   * slides the compact navigator's window when the selection moves it. */
+  function selectTabControl(name, motion = null) {
+    name = tabName(name);
+    state.activeTab = name;
+
+    const tabs = Array.from(root()?.querySelectorAll('[data-tab]:not(.dp-motion-still *)') || []);
+    // The navigator marks it selected when it places it: after copying the
+    // window that leaves, where a slide shows the choice.
+    navigation.place(motion, {tab: tabs.find(tab => tab.dataset.tab === name) || null, apply: () => tabs.forEach(tab => {
+      const active = tab.dataset.tab === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      tab.tabIndex = active ? '0' : '-1';
+    })});
+  }
+
+  /* The header's one row: the complete strip or the compact navigator,
+   * measured and placed by the shared section navigator (ui-section-nav.js).
+   * On a handheld (below 780px) the identity beside it gives way, as the
+   * navigator needs, through these approved levels and last to none at all;
+   * from 780px it is always the first. */
+  const navigation = window.DPSectionNav.create({
+    nav: () => root()?.querySelector('.dp-settings-nav'),
+    copy: '.dp-settings-header-copy',
+    identity: {title: '.dp-settings-header-title', hint: '.dp-settings-header-subtitle', levels: [
+      // The navigator writes a level's words as it places it (String(Said));
+      // a language change fits it again (the Settings locale listener).
+      {title: say('settings.header.title'), hint: say('settings.header.hint')},
+      {title: say('settings.header.title'), hint: say('settings.header.hint_short')},
+      {title: say('settings.header.title_short'), hint: say('settings.header.hint_short')},
+      {title: say('settings.header.title_shortest'), hint: say('settings.header.hint_shortest')},
+    ]},
+  });
+
+  // The panel of the tab selected NOW (a later choice made meanwhile wins).
+  function showTabPanel() {
+    root()?.querySelectorAll('[data-panel]:not(.dp-motion-still *)').forEach(section => {
+      section.hidden = section.dataset.panel !== state.activeTab;
+    });
+  }
+
+  /* The operator chose a tab (`via` 'tab', or 'travel' through Previous / Next):
+   * the strip changes at once and the panel slides across from the one on
+   * screen, by the tabs' displayed order. */
+  function chooseTab(name, via = 'tab') {
+    const order = Array.from(root()?.querySelectorAll('.dp-settings-tabs [data-tab]:not(.dp-motion-still *)') || []).map(tab => tab.dataset.tab);
+    // From the section chosen last -- what a slide still under way will
+    // show -- so a quick return turns back.
+    const from = order.indexOf(state.activeTab), to = order.indexOf(tabName(name));
+    const step = from >= 0 && to >= 0 ? to - from : 0;
+    const changed = tabName(name) !== state.activeTab;
+    // The compact navigator's window, when it moves, slides the same way.
+    selectTabControl(name, {direction: Math.sign(step), distance: Math.abs(step), via});
+    // A new section is shown from its top. The one leaving keeps its place:
+    // the slide keeps it drawn where it stood, measured before this commit.
+    const scroller = root()?.querySelector('.dp-settings-scroll');
+    const commit = () => {
+      showTabPanel();
+      if (changed && scroller) scroller.scrollTop = 0;
+    };
+    if (window.DPMotion) window.DPMotion.slide({element: scroller, axis: 'x', direction: Math.sign(step), distance: Math.abs(step)}, commit);
+    else commit();
+  }
+
+  // A collapsed provider card can only be re-collapsed by un-checking Enable
+  // while none of its own fields has been edited; remember the rendered values.
+  const providerBaselines = new WeakMap();
+
+  function controlSignature(el) {
+    return el.type === 'checkbox' || el.type === 'radio' ? (el.checked ? '1' : '0') : String(el.value ?? '');
+  }
+
+  function providerControls(card) {
+    return Array.from(card.querySelectorAll('.card-body input, .card-body select, .card-body textarea'))
+      .filter(el => !el.matches('[data-integration-enabled]'));
+  }
+
+  function snapshotProviderControls(view) {
+    view.querySelectorAll('.dp-settings-provider-card .dp-settings-disclosure').forEach(button => {
+      const card = button.closest('.dp-settings-provider-card');
+      if (card) providerBaselines.set(card, providerControls(card).map(el => [el, controlSignature(el)]));
+    });
+  }
+
+  /* The ONE disclosure behaviour, shared by every canonical disclosure chip.
+   * The body is addressed through aria-controls, so the same code serves a
+   * provider card and an executor-tuning card without knowing either. The
+   * operator's own opening or closing rolls the body down or up (`animate`);
+   * a reconciliation with server truth sets it at once. */
+  function setDisclosureExpanded(button, expanded, {animate = false} = {}) {
+    if (!button) return;
+    const persistKey = String(button.dataset.disclosurePersist || '');
+    if (persistKey) disclosureChoices.set(persistKey, !!expanded);
+    const body = document.getElementById(button.getAttribute('aria-controls'));
+    // A body whose height is measured from its own content (Network Sources'
+    // row) is measured as it opens, so its motion ends where it will rest.
+    if (expanded && body?.hidden && body.matches(SERVICES_LISTS.networkTop)) {
+      body.hidden = false;
+      servicesRowFit?.();
+    }
+    if (body && window.DPMotion) window.DPMotion.disclose(body, !!expanded, {animate, focusReturn: button});
+    else if (body) body.hidden = !expanded;
+    button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    const label = disclosureLabel(expanded, disclosureSubject(button));
+    sayAttr(button, 'data-tooltip', label);
+    sayAttr(button, 'aria-label', label);
+    button.closest('.dp-settings-provider-card')
+      ?.classList.toggle('dp-settings-provider-card--collapsed', !expanded);
+  }
+
+  function toggleAdditional(details, summary) {
+    const body = details.querySelector(':scope > .dp-settings-additional-body');
+    if (!body) { details.open = !details.open; return; }
+    if (!details.open || details.dataset.dpClosing === '1') {
+      delete details.dataset.dpClosing;
+      details.open = true;
+      window.DPMotion.disclose(body, true, {animate: true});
+      return;
+    }
+    details.dataset.dpClosing = '1';
+    window.DPMotion.disclose(body, false, {animate: true, focusReturn: summary, onClosed: () => {
+      if (details.dataset.dpClosing !== '1') return;
+      delete details.dataset.dpClosing;
+      details.open = false;
+      body.hidden = false;           // closed <details> hides it; ready for the next opening
+    }});
+  }
+
+  /* Render one integration card's presentation from COMMITTED canonical state.
+   * Never from the operator's click: the visible toggle must not be able to
+   * report a participation state the server has not accepted. */
+  function renderIntegrationState(card, identity) {
+    const entry = state.settings?.integrations?.[identity] || {};
+    const enabled = entry.enabled !== false;
+    const input = card.querySelector(`[data-integration-enabled="${identity}"]`);
+    if (input) input.checked = enabled;
+    const disclosure = card.querySelector('.dp-settings-disclosure');
+    if (disclosure) {
+      // Converging canonical truth is not a reason to OPEN a card: enabled
+      // state is not expansion state. Withdrawing a provider does put its
+      // configuration away again -- unless the operator has edits in it, which
+      // this must never discard.
+      // A card the operator's own action has already put away (or is putting
+      // away) is left to finish; converging never restarts that motion.
+      if (!enabled && !providerDirty(card) && disclosure.getAttribute('aria-expanded') === 'true') {
+        setDisclosureExpanded(disclosure, false);
+      }
+    }
+    paintStatusNodes(card, providerStatus(enabled, !!entry.configured, !!entry.verified),
+      providerStatus(true, !!entry.configured, !!entry.verified));
+  }
+
+  /* The ONE immediate canonical operational control.
+   *
+   * An integration/source Enable toggle is operational state, not a deferred
+   * form field: it decides whether that integration participates at all and
+   * whether its managed lifecycle component has to be running. Leaving it in
+   * the page-level whole-settings write (since retired) let the visible toggle
+   * read ON while `integrations.<id>.enabled` stayed false -- exactly the divergence
+   * that made an enabled Usenet integration report an unreachable service.
+   *
+   * It persists through the existing generic integration-configuration
+   * mutation -- no second enable endpoint, no per-integration bypass -- and the
+   * identity comes from the control itself, so every toggle of this class
+   * shares one path. Every ordinary settings field crosses its own declared
+   * field boundary (COMMIT_FIELDS); neither waits for anything. */
+  async function providerEnableChanged(input) {
+    const identity = input.dataset.integrationEnabled;
+    const card = input.closest('.dp-settings-provider-card');
+    if (!identity || !card) return;
+    const desired = input.checked;
+    input.disabled = true;
+    // The card's disclosure moves with the operator's ACTION, so its existing
+    // motion begins on the click, not when the server answers: withdrawing a
+    // provider puts its (unedited) configuration away; admitting one that has
+    // nothing configured puts its configuration in front of them -- the ONE
+    // automatic expansion in Services. Presentation only: what the provider
+    // IS stays the accepted state below, and a refusal reverses the motion.
+    const disclosure = card.querySelector('.dp-settings-disclosure');
+    const wasExpanded = disclosure?.getAttribute('aria-expanded') === 'true';
+    const configured = !!state.settings?.integrations?.[identity]?.configured;
+    const intended = !desired && !providerDirty(card) ? false : (desired && !configured ? true : wasExpanded);
+    if (disclosure && intended !== wasExpanded) setDisclosureExpanded(disclosure, intended, {animate: true});
+    try {
+      const result = await request(
+        'PATCH', `/integrations/${encodeURIComponent(identity)}/configuration`,
+        {enabled: desired}, 15000);
+      adoptIntegration(identity, result);
+      const accepted = state.settings?.integrations?.[identity] || {};
+      // A card replaced while this was in flight was rendered from canonical
+      // state already; only this card, still on the page, converges here.
+      // Every other drawing of the provider (Services' card, the setup
+      // wizard's) shows the accepted participation too.
+      for (const other of providerCards(identity)) if (other !== card) renderIntegrationState(other, identity);
+      if (card.isConnected) {
+        renderIntegrationState(card, identity);
+        // The admission the server ACCEPTED keeps an unconfigured provider's
+        // configuration open (whatever the click predicted about it).
+        if (disclosure && accepted.enabled !== false && !accepted.configured && disclosure.getAttribute('aria-expanded') !== 'true') {
+          setDisclosureExpanded(disclosure, true, {animate: true});
+        }
+      }
+      const committed = accepted.enabled !== false;
+      notify(`${integrationDisplayName(card, identity)} ${committed ? 'enabled' : 'disabled'}`, 'success');
+    } catch (error) {
+      // Nothing optimistic is left lying: the disclosure turns back from
+      // wherever its motion has it drawn, and the control and the card return
+      // to the canonical namespace the server last confirmed.
+      if (card.isConnected) {
+        if (disclosure && (disclosure.getAttribute('aria-expanded') === 'true') !== wasExpanded) {
+          setDisclosureExpanded(disclosure, wasExpanded, {animate: true});
+        }
+        renderIntegrationState(card, identity);
+      }
+      notify(error.message, 'error');
+    } finally {
+      input.disabled = false;
+    }
+    try { window.DPProviderStatus?.refresh(); } catch (_) {}
+  }
+
+  // Whether the operator has edits in a provider card that putting it away
+  // must never discard.
+  function providerDirty(card) {
+    const baseline = providerBaselines.get(card) || [];
+    return baseline.some(([el, value]) => el.isConnected && controlSignature(el) !== value);
+  }
+
+  /* Render one integration GROUP's presentation from COMMITTED canonical
+   * state -- the same rule as renderIntegrationState, for the same reason. */
+  function renderGroupState(card, groupId) {
+    const entry = state.settings?.integration_groups?.[groupId] || {};
+    const input = card.querySelector(`[data-integration-group-enabled="${groupId}"]`);
+    if (input) input.checked = entry.enabled !== false;
+  }
+
+  function adoptIntegrationGroup(groupId, result) {
+    const {ok, group_id, ...entry} = result || {};
+    syncGlobalSettings({...state.settings,
+      integration_groups: {...state.settings?.integration_groups, [groupId]: entry}});
+  }
+
+  /* The group master, on the same immediate path as every member toggle.
+   *
+   * It is a participation GATE: it persists one boolean scoped to the group
+   * and writes no member namespace, so the members' own preferences are
+   * exactly as they were on both sides of it. */
+  async function groupEnableChanged(input) {
+    const groupId = input.dataset.integrationGroupEnabled;
+    const card = input.closest('[data-integration-group]');
+    if (!groupId || !card) return;
+    const desired = input.checked;
+    input.disabled = true;
+    try {
+      const result = await request(
+        'PATCH', `/integration-groups/${encodeURIComponent(groupId)}/configuration`,
+        {enabled: desired}, 15000);
+      adoptIntegrationGroup(groupId, result);
+      renderGroupState(card, groupId);
+      const committed = state.settings?.integration_groups?.[groupId]?.enabled !== false;
+      notify(`${result?.label || groupId} ${committed ? 'enabled' : 'disabled'}`, 'success');
+    } catch (error) {
+      // Nothing optimistic is left lying: the control returns to the canonical
+      // group state the server last confirmed.
+      renderGroupState(card, groupId);
+      notify(error.message, 'error');
+    } finally {
+      input.disabled = false;
+    }
+    try { window.DPProviderStatus?.refresh(); } catch (_) {}
+  }
+
+  function integrationDisplayName(card, identity) {
+    return card.querySelector('.card-title .dp-settings-card-title-text')?.textContent?.trim()
+      || card.querySelector('.card-title')?.textContent?.trim()
+      || identity;
+  }
+
+  /* The handheld header actions menu (headerActionsMenu: Backups). A
+   * popover's own toggle does not bubble, so the page listens in the capture
+   * phase. Open, it sits under its trigger, right edges aligned, inside the
+   * window (above the trigger where there is more room), follows a scroll or
+   * resize, and puts focus on its first action; the platform closes it on
+   * Escape or an outside press and returns focus to the trigger. Nothing here
+   * runs an action. When the page reaches 780px an idle menu closes (the
+   * direct actions take over); one whose action is running stays until that
+   * action answers. */
+  const HANDHELD = window.matchMedia('(max-width: 779px)');
+  const TEST_MENU_EDGE = 8;
+  const TEST_MENU_GAP = 6;
+  function placeHeaderTestMenu(menu) {
+    const trigger = menu.closest('.dp-settings-header-test-shell')?.querySelector('.dp-settings-header-test-trigger');
+    if (!trigger || !menu.matches(':popover-open')) return;
+    const box = trigger.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    menu.style.maxHeight = '';
+    const size = menu.getBoundingClientRect();
+    const below = vh - box.bottom - TEST_MENU_GAP - TEST_MENU_EDGE;
+    const above = box.top - TEST_MENU_GAP - TEST_MENU_EDGE;
+    const up = size.height > below && above > below;
+    const room = Math.max(0, up ? above : below);
+    menu.style.maxHeight = `${room}px`;
+    menu.style.left = `${Math.max(TEST_MENU_EDGE, Math.min(box.right - size.width, vw - TEST_MENU_EDGE - size.width))}px`;
+    menu.style.top = `${up ? box.top - TEST_MENU_GAP - Math.min(size.height, room) : box.bottom + TEST_MENU_GAP}px`;
+  }
+  const openTestMenus = () => document.querySelectorAll('#view-settings .dp-settings-header-test-menu:popover-open');
+  const followTestMenus = () => openTestMenus().forEach(placeHeaderTestMenu);
+  const testMenuRunning = menu => !!menu.querySelector('button[data-dp-settings-markup]');
+  // The menu's content, drawn as it opens: each of the card's actions.
+  function drawHeaderTestMenu(menu) {
+    if (testMenuRunning(menu)) return;
+    const actions = menu.closest('.dp-settings-card-header-controls')?.querySelector(':scope > .dp-settings-header-action')
+      || menu.closest('.dp-settings-users-integration-head')?.querySelector(':scope > .dp-settings-users-actions');
+    if (!actions) return;
+    menu.replaceChildren(...Array.from(actions.querySelectorAll(':scope > :is(button[data-action], button[data-user-action])'), button => {
+      const item = button.cloneNode(true);
+      if (item.dataset.menuLabel) {
+        // Its menu words, and their key: a language change says these, not the button's.
+        item.textContent = item.dataset.menuLabel;
+        const key = /(?:^|;)data-menu-label:([^;]+)/.exec(item.dataset.i18nAttr || '')?.[1];
+        if (key) item.dataset.i18n = key;
+        else delete item.dataset.i18n;
+      }
+      return item;
+    }));
+  }
+
+  /* A menu's action has answered (setBusy, the page's one busy owner): a menu
+   * closed meanwhile lets go of it; one still open while the page has left
+   * the handheld width closes -- the direct action is the page's there -- and
+   * hands focus to that action. A handheld menu stays, showing the answer. */
+  function settleHeaderTestMenu(button) {
+    const menu = button.closest?.('.dp-settings-header-test-menu');
+    if (!menu) return;
+    if (!menu.matches(':popover-open')) {
+      menu.replaceChildren();
+      return;
+    }
+    if (HANDHELD.matches) return;
+    // Focus was in the menu, or nowhere (a running Test's own button gives it
+    // up while disabled): it goes to the direct action, never from elsewhere.
+    const active = document.activeElement;
+    const focused = !active || active === document.body || menu.contains(active);
+    menu.hidePopover();
+    if (focused) {
+      menu.closest('.dp-settings-card-header-controls')
+        ?.querySelector(`:scope > .dp-settings-header-action > [data-action="${CSS.escape(button.dataset.action || '')}"]`)
+        ?.focus({preventScroll: true});
+    }
+  }
+  function bindHeaderTestMenus(view) {
+    // Before the page's dispatch runs the action (the capture phase).
+    view.addEventListener('click', event => {
+      event.target.closest?.('.dp-settings-header-test-menu:popover-open > [data-menu-closes]')
+        ?.parentElement.hidePopover();
+    }, true);
+    view.addEventListener('beforetoggle', event => {
+      const menu = event.target;
+      if (menu instanceof HTMLElement && menu.matches('.dp-settings-header-test-menu') && event.newState === 'open') {
+        drawHeaderTestMenu(menu);
+      }
+    }, true);
+    view.addEventListener('toggle', event => {
+      const menu = event.target;
+      if (!(menu instanceof HTMLElement) || !menu.matches('.dp-settings-header-test-menu')) return;
+      const open = event.newState === 'open';
+      menu.closest('.dp-settings-header-test-shell')?.querySelector('.dp-settings-header-test-trigger')
+        ?.setAttribute('aria-expanded', String(open));
+      const anyOpen = openTestMenus().length > 0;
+      window[anyOpen ? 'addEventListener' : 'removeEventListener']('resize', followTestMenus);
+      document[anyOpen ? 'addEventListener' : 'removeEventListener']('scroll', followTestMenus, {capture: true});
+      // A closed menu holds nothing -- unless its Test is still running, whose
+      // own handler finishes on the button it was given.
+      if (!open) {
+        if (!testMenuRunning(menu)) menu.replaceChildren();
+        return;
+      }
+      placeHeaderTestMenu(menu);
+      menu.querySelector(':is(button[data-action], button[data-user-action])')?.focus({preventScroll: true});
+    }, true);
+    HANDHELD.addEventListener('change', () => {
+      if (HANDHELD.matches) return;
+      openTestMenus().forEach(menu => {
+        if (!testMenuRunning(menu)) menu.hidePopover();
+      });
+    });
+  }
+
+  function bindEvents(view) {
+    if (view.dataset.dpSettingsEventsBound === '1') return;
+    view.dataset.dpSettingsEventsBound = '1';
+
+    // The page's width changed (window, sidebar, or the page shown again):
+    // the header's navigation compares its measured widths with the new room.
+    if (typeof ResizeObserver === 'function') new ResizeObserver(() => navigation.fit()).observe(view);
+
+    bindHeaderTestMenus(view);
+
+    view.addEventListener('keydown', event => {
+      const current = event.target.closest('.dp-settings-tabs [data-tab]');
+      if (!current || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const buttons = Array.from(view.querySelectorAll('.dp-settings-tabs [data-tab]:not(.dp-motion-still *)'));
+      let index = buttons.indexOf(current);
+      if (event.key === 'Home') index = 0;
+      else if (event.key === 'End') index = buttons.length - 1;
+      // The arrow toward the next section: Left in a right-to-left page.
+      else index = (index + (event.key === (getComputedStyle(current).direction === 'rtl' ? 'ArrowLeft' : 'ArrowRight') ? 1 : -1) + buttons.length) % buttons.length;
+      const next = buttons[index];
+      chooseTab(next.dataset.tab);
+      // (The navigator positions its own window; focus never scrolls it.)
+      next.focus({preventScroll: true});
+    });
+
+    view.addEventListener('input', event => {
+      if (event.target.matches?.('#dp-settings-field-auth-username, #dp-settings-field-auth-password')) projectCredentialDraft();
+      if (event.target.id === fieldId('discord_avatar_url')) projectAvatarAction();
+      if (event.target.id === fieldId('public_base_url')) updateOidcCallbackPreview();
+    });
+
+    // A commit of the Local Network switch ended (accepted or rolled back).
+    view.addEventListener('dp-settings-settled', event => {
+      if (event.target.id === fieldId('private_lan_connections')) projectPrivateLanDependency();
+      if (event.target.id === fieldId('media_youtube_player_clients')) projectPlayerClientNotice();
+    });
+
+    view.addEventListener('change', event => {
+      if (event.target.id === fieldId('private_lan_connections')) projectPrivateLanDependency();
+      if (event.target.matches('[data-integration-enabled]')) void providerEnableChanged(event.target);
+      if (event.target.matches('[data-integration-group-enabled]')) void groupEnableChanged(event.target);
+      if (event.target.id === fieldId('public_base_url')) updateOidcCallbackPreview();
+      if (event.target.id === 'dp-settings-avatar-file') uploadAvatar(event.target);
+      if (event.target.matches('[data-local-port-field]')) void changeLocalPort(event.target);
+    });
+
+    // Pressing the Avatar URL field's own action does not take focus from the
+    // field, so the press is no commit boundary for a URL being typed there:
+    // what happens to that draft is the action's decision (clearAvatar).
+    view.addEventListener('mousedown', event => {
+      if (event.target.closest?.('[data-avatar-action]')) event.preventDefault();
+    });
+
+    view.addEventListener('click', event => {
+      // A tap that only showed an element's tooltip (data-tooltip-touch,
+      // ui-tooltip.js cancels it: a Revoke drawn as its glyph) is not its use.
+      if (event.defaultPrevented && event.target.closest?.('[data-tooltip-touch]')) return;
+      // Additional Settings (a native <details>): its body rolls down as it
+      // opens and up before it closes; `open` stays the one state.
+      const summary = event.target.closest('.dp-settings-additional > summary');
+      if (summary && window.DPMotion) {
+        event.preventDefault();
+        toggleAdditional(summary.parentElement, summary);
+        return;
+      }
+      const disclosure = event.target.closest('.dp-settings-disclosure');
+      if (disclosure) {
+        event.preventDefault();
+        setDisclosureExpanded(disclosure, disclosure.getAttribute('aria-expanded') !== 'true', {animate: true});
+        return;
+      }
+      const tab = event.target.closest('.dp-settings-tabs [data-tab]');
+      if (tab) {
+        chooseTab(tab.dataset.tab);
+        return;
+      }
+      // Previous / Next: one section from the selected one, through the same
+      // choice. Focus stays on the action while it has somewhere to go, and
+      // follows to the section once it has none (the action is then gone).
+      const travel = event.target.closest('.dp-settings-nav-end');
+      if (travel) {
+        const tabs = Array.from(view.querySelectorAll('.dp-settings-tabs [data-tab]:not(.dp-motion-still *)'));
+        const index = tabs.findIndex(tab => tab.getAttribute('aria-selected') === 'true')
+          + (travel.dataset.settingsEnd === 'previous' ? -1 : 1);
+        const target = tabs[index];
+        if (!target) return;
+        const focused = document.activeElement === travel;
+        chooseTab(target.dataset.tab, 'travel');
+        if (focused && (index === 0 || index === tabs.length - 1)) target.focus({preventScroll: true});
+        return;
+      }
+
+      // A help chip only explains: it opens its card's read-only help and
+      // reaches no other handler.
+      const help = event.target.closest('[data-settings-help]');
+      if (help) {
+        window.DPSettingsHelp?.open(help.dataset.settingsHelp);
+        return;
+      }
+
+      if (usersAction(event)) return;
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const action = button.dataset.action;
+      if (apiKeyProviderAction(action, button)) return;
+      if (deviceAccountAction(action, button)) return;
+      else if (action === 'test-usenet') testUsenet(button);
+      else if (action === 'clear-archive-passwords') clearArchivePasswords(button);
+      else if (action === 'test-discord') testDiscordDelivery(button);
+      else if (action === 'clear-webhook') clearWebhook(button);
+      else if (action === 'upload-avatar') byId('dp-settings-avatar-file')?.click();
+      else if (action === 'clear-avatar') clearAvatar(button);
+      else if (action === 'browse-download-folder') void browseDirectory('download');
+      else if (action === 'browse-backup-folder') void browseDirectory('backup');
+      else if (action === 'send-report') sendStatsReport(button);
+      else if (action === 'run-backup') runBackup(button);
+      else if (action === 'backups') openBackups();
+      else if (action === 'wipe-database') wipeDatabaseClean(button);
+      else if (action === 'clear-password') clearPassword(button);
+      else if (action === 'apply-credentials') void applyCredentials(button);
+      else if (action === 'clear-oidc-secret') clearOidcSecret(button);
+      else if (action === 'verify-oidc') verifyOidc(button);
+      else if (action === 'copy-oidc-callback') copyOidcCallback();
+      else if (action === 'logout-session') logoutSession(button);
+      else if (action === 'media-player-clients-automatic') usePlayerClientsAutomatic();
+    });
+  }
+
+  function fieldFor(key) {
+    return byId(fieldId(key));
+  }
+
+  function valueOf(key, fallback = '') {
+    const field = fieldFor(key);
+    return field ? String(field.value ?? '').trim() : fallback;
+  }
+
+  /* There is no whole-settings payload on this page at all.
+   *
+   * Every editable Settings control -- on all six tabs -- is a declared
+   * COMMIT_FIELDS control written one field at a time by the canonical
+   * persistence owner through its own canonical namespace. No act collects the
+   * form, so no act can replay a stale page snapshot over a value the operator
+   * already committed, and there is nothing left for a deferred write to carry.
+   * The single-field settings-document write (writeSettingsDocument) is a
+   * read-modify-write against freshly read canonical truth, never against the
+   * rendered page. */
+
+  // Each scoped surface answers with the canonical namespace it just wrote;
+  // adopt it into the cached document so every later read (and the whole-
+  // settings echo) sees the value the server accepted.
+  function adoptIntegration(identity, result) {
+    const {ok, ...entry} = result || {};
+    syncGlobalSettings({...state.settings,
+      integrations: {...state.settings?.integrations, [identity]: entry}});
+  }
+
+  function adoptTransferPolicy(result) {
+    const {ok, last_apply_error, ...policy} = result || {};
+    syncGlobalSettings({...state.settings, transfer_policy: policy});
+    projectPrivateLanDependency();
+  }
+
+  /* A control's committed value, in the shape its canonical namespace holds.
+   *
+   * A checkbox holds a boolean; a number control holds a number -- including a
+   * fractional one, because a disk-space guard measured in gigabytes is not an
+   * integer and truncating it here would silently save a value the operator did
+   * not choose. A number draft reaches this only once the persistence owner has
+   * read it exactly (``DPSettingsPersistence.numberDraft``): anything that is
+   * not exactly a number in the control's range was refused before any request,
+   * so nothing here guesses, truncates or substitutes 0. */
+  function committedValue(key, raw) {
+    const field = fieldFor(key);
+    // A control whose empty state stands for one canonical value (``blank``,
+    // e.g. a timeout's "no limit") commits exactly that value when empty.
+    const blank = COMMIT_FIELDS[key]?.blank;
+    if (blank !== undefined && String(raw ?? '').trim() === '') return blank;
+    if (field && field.type === 'checkbox') return raw === true || raw === '1';
+    if (field && field.type === 'number') return window.DPSettingsPersistence.numberDraft(field, raw).value;
+    if (COMMIT_FIELDS[key]?.integer) return Number(raw);
+    if (COMMIT_FIELDS[key]?.list) return String(raw ?? '').split(',').map(item => item.trim()).filter(Boolean);
+    return String(raw ?? '');
+  }
+
+  /* The WRITABLE whole-settings document: the canonical namespaces are written
+   * only through their own scoped surfaces, and the read-only compatibility
+   * names the server derives from them are never echoed back. */
+  function settingsDocument(source) {
+    const document = {...(source || {})};
+    delete document.integrations;
+    delete document.integration_groups;
+    delete document.transfer_policy;
+    delete document.execution_runtime_limits;
+    for (const name of document.compatibility_fields || []) delete document[name];
+    delete document.compatibility_fields;
+    return document;
+  }
+
+  /* How each canonical namespace a changed-blur control can belong to is
+   * written. Every scope dispatches exactly ONE scoped mutation carrying only
+   * the field that changed, and adopts exactly what the server accepted. */
+  /* How ONE integration namespace is written, for any integration.
+   *
+   * Every integration-owned option -- an AllDebrid rate limit, an aria2 split
+   * count, a Usenet article cache -- is the same act against the same scoped
+   * mutation, so it is declared once here rather than once per integration. */
+  function registerIntegrationScope(persistence, identity) {
+    persistence.defineScope(`integration:${identity}`, {
+      commit: async ({key, draft}) => {
+        const option = COMMIT_FIELDS[key].option;
+        // A secret is declared by the page's own table of integration-owned
+        // secret controls; the generic persistence owner knows nothing about it.
+        const secret = INTEGRATION_SECRET_CONTROLS[key];
+        const live = !!COMMIT_FIELDS[key].liveTuning;
+        if (live && !(await confirmLiveTuning())) throw cancelledCommit();
+        const result = await request('PATCH', `/integrations/${identity}/configuration`,
+          secret
+            ? withTestedDrafts(identity, {options: {[option]: String(draft ?? '')}})
+            : {options: {[option]: committedValue(key, draft)}}, live ? 60000 : 15000);
+        adoptIntegration(identity, result);
+        if (live) reportLiveTuning(result?.job_tuning);
+        if (!secret) {
+          const accepted = (state.settings?.integrations?.[identity]?.options || {})[option];
+          return acceptedValue(key, accepted, draft);
+        }
+        // A credential is NEVER projected back into the browser. The accepted
+        // presentation of one is the blank/configured row the backend's own
+        // redacted projection describes, so returning '' is what makes the
+        // canonical baseline hold no secret -- and what returns the visible
+        // field to that presentation. Verification needs no step here: the
+        // stored evidence simply stops describing the saved configuration.
+        if (typeof secret.converge === 'function') secret.converge(draft);
+        // A replaced key may belong to another account: withdraw the line the
+        // previous key's account produced, drop the provider's answer about the
+        // previous key, and ask for the current one.
+        forgetApiKeyAccount(identity);
+        try { window.DPProviderStatus?.forget(identity); window.DPProviderStatus?.refresh(); } catch (_) {}
+        return '';
+      },
+    });
+  }
+
+  /* Before a tuning change is saved: running downloads will reconnect, so the
+   * operator confirms it first. The count is DownloadPulse's own downloads that
+   * aria2 reports running right now (``/aria2/downloads`` lists only owned
+   * ones) -- a snapshot: the save itself decides which downloads it reaches.
+   * When that cannot be read, nothing is assumed idle. */
+  async function confirmLiveTuning() {
+    let running = null;
+    try {
+      const listing = await request('GET', '/aria2/downloads', undefined, 10000);
+      const count = Number(listing?.summary?.active);
+      if (Number.isInteger(count) && count >= 0) running = count;
+    } catch (_) {
+      running = null;
+    }
+    if (running === 0) return true;
+    // One whole message per case (the notice, then who reconnects), re-worded while open.
+    const message = running === null ? 'settings.live_tuning.confirm_unknown' : 'settings.live_tuning.confirm_count';
+    const values = running === null ? undefined : {count: running};
+    return window.DPSettingsModal.confirm({
+      title: t('settings.live_tuning.confirm_title'),
+      message: t(message, values),
+      confirmLabel: t('settings.live_tuning.confirm_accept'),
+      keys: {title: 'settings.live_tuning.confirm_title', message, messageValues: values, accept: 'settings.live_tuning.confirm_accept'},
+    });
+  }
+
+  // A commit the operator declined: the persistence owner returns the field to
+  // its saved value and reports nothing.
+  function cancelledCommit() {
+    const error = new Error('Not saved');
+    error.cancelled = true;
+    return error;
+  }
+
+  /* What the save did to existing downloads, as the server observed it per
+   * download. Saving and reaching the downloads are reported separately:
+   * success only when every download it found took the new values. */
+  function reportLiveTuning(outcome) {
+    if (!outcome) return;
+    if (outcome.daemon === 'unavailable') {
+      notify(t('settings.live_tuning.daemon_unavailable'), 'warning');
+      return;
+    }
+    // Which downloads exist could not be read in time: unknown, never zero.
+    if (outcome.selection === 'unavailable') {
+      notify(t('settings.live_tuning.selection_unavailable'), 'warning');
+      return;
+    }
+    const selected = Number(outcome.selected) || 0;
+    const applied = Number(outcome.applied) || 0;
+    const settled = applied + (Number(outcome.unchanged) || 0);
+    if (selected === 0) return;
+    if (settled === selected) {
+      if (applied) notify(t('settings.live_tuning.applied', {count: selected}), 'success');
+      return;
+    }
+    // Each part is a whole sentence of its own.
+    const parts = [t('settings.live_tuning.partial', {settled, count: selected})];
+    const refused = Number(outcome.refused) || 0;
+    const interrupted = Number(outcome.interrupted) || 0;
+    const ended = Number(outcome.gone) || 0;
+    const unknown = (Number(outcome.uncertain) || 0) + (Number(outcome.unavailable) || 0)
+      + (Number(outcome.not_reached) || 0);
+    if (refused) parts.push(t('settings.live_tuning.refused', {count: refused}));
+    if (unknown) parts.push(t('settings.live_tuning.unknown', {count: unknown}));
+    if (interrupted) parts.push(t('settings.live_tuning.interrupted', {count: interrupted}));
+    if (ended) parts.push(t('settings.live_tuning.ended', {count: ended}));
+    const later = Number(outcome.superseded) || 0;
+    if (later) parts.push(t('settings.live_tuning.superseded', {count: later}));
+    notify(parts.join(' '), 'warning');
+  }
+
+  /* An accepted canonical value in the SIGNATURE shape the control shows, so a
+   * boolean namespace value and a checkbox agree about what "unchanged" means. */
+  function acceptedValue(key, accepted, draft) {
+    // ...and that canonical value is shown as the empty control again.
+    const blank = COMMIT_FIELDS[key]?.blank;
+    if (blank !== undefined && accepted !== undefined && accepted !== null && String(accepted) === String(blank)) {
+      return '';
+    }
+    if (accepted === undefined || accepted === null) return draft;
+    if (typeof accepted === 'boolean') return accepted ? '1' : '0';
+    if (Array.isArray(accepted)) return accepted.join(', ');
+    return String(accepted);
+  }
+
+  function registerCommitScopes() {
+    const persistence = window.DPSettingsPersistence;
+
+    for (const identity of INTEGRATION_SCOPES) registerIntegrationScope(persistence, identity);
+
+    persistence.defineScope('transfer-policy', {
+      commit: async ({key, draft}) => {
+        const option = COMMIT_FIELDS[key].option;
+        const result = await request('PATCH', '/transfer-policy',
+          {[option]: committedValue(key, draft)}, 15000);
+        adoptTransferPolicy(result);
+        return acceptedValue(key, policyOf(state.settings)[option], draft);
+      },
+    });
+
+    /* The authentication namespace. PUT /auth/config is a PARTIAL update --
+     * every ordinary field it does not carry is left exactly as stored -- so
+     * one changed control is one request naming one field, like every other
+     * scope here. A secret converges to blank because that is its accepted
+     * PRESENTATION: the stored value is never projected back. */
+    persistence.defineScope('auth-config', {
+      commit: async ({key, draft}) => {
+        const declared = COMMIT_FIELDS[key];
+        const value = authCommittedValue(key, draft);
+        const authorization = await authorizeAuthCommit(key, value);
+        // Declined at the open-mode gate: nothing was written, so the canonical
+        // value the control was rendered from is exactly what it converges back
+        // to -- no error, no second write, no stale draft left behind.
+        if (!authorization.allowed) return authControlValue(key, state.auth);
+        // The confirmation travels WITH the field it authorized, in the one
+        // partial mutation this commit already makes. It is not a second write,
+        // not a flag this page holds, and not something a later commit can
+        // inherit: the gate minted it for this act and it is spent here.
+        const result = await request('PUT', '/auth/config',
+          {[declared.option]: value, ...(authorization.proof || {})}, 15000);
+        adoptAuthentication(result);
+        return declared.redacted ? '' : authControlValue(key, result);
+      },
+    });
+
+    persistence.defineScope('settings-document', {
+      commit: async ({key, draft}) => {
+        const declared = COMMIT_FIELDS[key];
+        const option = declared.option;
+        const result = selfContext()
+          ? await writeOwnNotifications({[option]: committedValue(key, draft)})
+          : await writeSettingsDocument({[option]: committedValue(key, draft)});
+        // What this document holds decides what several Notifications controls
+        // SHOW -- each card's status, and whether each destructive action has
+        // anything to act on -- so the surface converges on whatever the server
+        // accepted. It repaints; it never rebuilds a control.
+        paintNotifications();
+        // A stored secret is NEVER projected back into the browser. The
+        // accepted presentation of one is the blank/configured row the
+        // backend's own redacted projection describes, so returning '' is what
+        // makes the canonical baseline hold no secret -- and what returns the
+        // visible field to that presentation.
+        if (declared.secret) return '';
+        // A redacted option's canonical echo is blank BY DESIGN, so it cannot
+        // describe what the server accepted. The draft it accepted is the
+        // accepted value; nothing else here differs.
+        return declared.redacted ? draft : acceptedValue(key, result?.[option], draft);
+      },
+    });
+  }
+
+  /* The ONE whole-settings write.
+   *
+   * The surface has no partial write, so every caller -- a field commit and the
+   * one destructive settings-document clear alike -- is a read-modify-write
+   * against FRESHLY read canonical truth: never against the rendered page,
+   * which would replay unrelated drafts, and never against a cached document,
+   * which could be stale. Declared once so there is exactly one such write. */
+  async function writeSettingsDocument(overrides, clears = []) {
+    const canonical = await request('GET', '/settings', null, 15000);
+    const result = await request('PUT', '/settings',
+      {...settingsDocument(canonical), clear_secrets: clears, ...overrides}, 15000);
+    syncGlobalSettings(result);
+    // A moved Download Folder leaves these delivery profiles outside it: they
+    // are kept as saved and not delivered to until their DP Download Path moves.
+    const stranded = Array.isArray(result?.delivery_profiles_outside_download_folder)
+      ? result.delivery_profiles_outside_download_folder.map(text).filter(Boolean) : [];
+    if (stranded.length) {
+      notify(t('settings.downloads.profiles_stranded', {count: stranded.length, profiles: stranded.join(', ')}), 'warn');
+    }
+    return result;
+  }
+
+  /* In the self context the same settings-document fields are a User's own
+   * notification document, which HAS a partial write: one request naming the
+   * changed fields (and any explicit clear), answered with the accepted
+   * secret-free projection. */
+  async function writeOwnNotifications(overrides, clears = []) {
+    const result = await request('PUT', OWN_NOTIFICATIONS, {...overrides, clear_secrets: clears}, 15000);
+    syncNotificationDocument(result);
+    return result;
+  }
+
+  /* Proof of what a successful Test actually exercised.
+   *
+   * This is NOT verification state and it is NOT authority. It is an opaque
+   * token the SERVER minted for the draft the SERVER tested, held only so the
+   * Save that promotes that draft can present it; the server then re-derives
+   * the fingerprint from the configuration it actually saved and accepts the
+   * token only for that. A token for a draft the operator has since changed
+   * matches nothing, so testing A and saving B stays Configured.
+   *
+   * Page-lifetime only: never stored, never read back as truth, and the page
+   * is not worse off without it -- the operator simply tests again.
+   */
+  const testedDrafts = new Map();
+
+  function rememberTestedDraft(identity, proof) {
+    if (!proof) return;
+    testedDrafts.set(identity, [...(testedDrafts.get(identity) || []).slice(-3), String(proof)]);
+  }
+
+  const testedDraftProofs = identity => testedDrafts.get(identity) || [];
+
+  /* Hygiene only, never authority: a Test that failed means the server has
+   * already superseded the proofs it minted for that material, so holding them
+   * would only send tokens it will refuse. The server remains the authority on
+   * whether any proof is still valid. */
+  const forgetTestedDrafts = identity => testedDrafts.delete(identity);
+
+  /* A request carries only what it is about. Proof of a successful Test is
+   * added ONLY when there is one to present. */
+  function withTestedDrafts(identity, body) {
+    const proofs = testedDraftProofs(identity);
+    return proofs.length ? {...body, verification: proofs} : body;
+  }
+
+  /* Converge the credential row on ACCEPTED canonical state.
+   *
+   * The row has to change, because the accepted state changes what it SHOWS --
+   * whether a key is present, and therefore whether the Clear action exists at
+   * all. Only the parts that depend on that are rebuilt; the INPUT ELEMENT IS
+   * NEVER REPLACED. Destroying a control the operator may still be editing
+   * would remove focus from it, which IS its commit boundary -- so a draft
+   * they had not finished would be persisted by this owner's own re-render
+   * rather than by them leaving the field.
+   *
+   * A key typed after this write was dispatched is therefore simply left
+   * alone: it stays visible, stays dirty against the blank accepted baseline,
+   * and commits on its own blur. Only the draft this write actually carried is
+   * consumed. */
+  function renderAllDebridCredential(dispatched) {
+    const configured = !!allDebridOf(state.settings).api_key_configured;
+    for (const card of providerCards('alldebrid')) {
+      const row = card.querySelector('.dp-settings-alldebrid-key-row');
+      if (!row) continue;
+      const field = card.querySelector('[data-setting="alldebrid_api_key"]');
+      if (field) {
+        if (String(field.value ?? '') === String(dispatched ?? '')) field.value = '';
+        sayAttr(field, 'placeholder', ALLDEBRID_KEY_PLACEHOLDER(configured));
+      }
+      row.classList.toggle('is-configured', configured);
+      // Only the parts that DEPEND on whether a key is stored: the hint and the
+      // destructive action's state. The input element itself
+      // is still never replaced -- destroying a control the operator may be
+      // editing would remove focus from it, which IS its commit boundary.
+      sayInto(row.querySelector('.dp-settings-inline-field-info > .form-hint'), ALLDEBRID_KEY_HINT(configured));
+
+      // The action never appears or disappears; only its state converges.
+      renderKeyRemove(row.querySelector('[data-action="clear-alldebrid-key"]'), configured);
+      renderIntegrationState(card, 'alldebrid');
+    }
+    renderApiKeyAccount('alldebrid');
+  }
+
+  /* Erasing the stored credential.
+   *
+   * Destructive, so it is an explicit action behind the ONE canonical Settings
+   * confirmation (ui-settings-modal.js) and never a commit boundary. The dialog
+   * is a GATE in front of this owner: declining it performs no mutation at all,
+   * and the accepted canonical projection is what renders on success.
+   *
+   * It carries ONLY the removal, through the same canonical integration
+   * mutation every other AllDebrid write uses: a replacement the operator typed
+   * belongs to its own changed-blur boundary, which the settle below orders
+   * before this, so the stored key ends up removed either way and this request
+   * never saves one. A failure converges nothing. */
+  async function clearAllDebridKey(button) {
+    if (!button.closest('.dp-settings-provider-card--alldebrid')) return;
+    const confirmed = await confirmClearKey('AllDebrid');
+    if (!confirmed) return;
+    await window.DPSettingsPersistence.settle(settleScope(button));
+    setBusy(button, true, say('settings.key.clearing'));
+    try {
+      const result = await request('PATCH', '/integrations/alldebrid/configuration',
+        {options: {}, clear_secrets: ['api_key']}, 15000);
+      adoptIntegration('alldebrid', result);
+      // Releasing the busy state re-enables the button, so convergence has to
+      // be the LAST word: with no key stored the action must end up disabled,
+      // not resurrected by the spinner being taken off it.
+      setBusy(button, false);
+      forgetApiKeyAccount('alldebrid');
+      renderAllDebridCredential('');
+      notify(t('settings.key.cleared', {provider: 'AllDebrid'}), 'success');
+      try { window.DPProviderStatus?.forget('alldebrid'); window.DPProviderStatus?.refresh(); } catch (_) {}
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+  }
+
+  /* Erasing the stored archive-password list.
+   *
+   * The same act, the same machinery and the same order as erasing the stored
+   * AllDebrid key: destructive, therefore an explicit action behind the ONE
+   * canonical Settings confirmation (ui-settings-modal.js) and never a commit
+   * boundary. Declining performs no mutation at all. Every pending field
+   * commit is settled first, so a list the operator was still editing is
+   * written before -- never after -- the removal, and the request carries only
+   * the removal itself through the one whole-settings write. The accepted
+   * canonical projection is what the editor then converges on. */
+  async function clearArchivePasswords(button) {
+    const confirmed = await window.DPSettingsModal.confirm({
+      tone: 'danger',
+      title: t('settings.extraction.clear_title'),
+      message: t('settings.extraction.clear_message'),
+      confirmLabel: t('settings.extraction.clear'),
+      keys: {title: 'settings.extraction.clear_title', message: 'settings.extraction.clear_message', accept: 'settings.extraction.clear'},
+    });
+    if (!confirmed) return;
+    await window.DPSettingsPersistence.settle(root());
+    setBusy(button, true, say('settings.key.clearing'));
+    let removed = false;
+    try {
+      await writeSettingsDocument({}, ['extraction_password']);
+      removed = true;
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+    // Convergence is the LAST word on this control: releasing the busy state
+    // re-enables the button, and with nothing left to clear the editor's own
+    // owner must be the one to decide whether it stays enabled.
+    if (!removed) return;
+    window.DPArchivePasswords?.clear();
+    notify(t('settings.extraction.cleared'), 'success');
+  }
+
+  /* One authentication write, carrying ONLY what it is about.
+   *
+   * PUT /auth/config is a partial update: every ordinary field it does not
+   * name is left exactly as stored. There is therefore no whole-form
+   * authentication payload anywhere on this page, and no act can replay a
+   * control it is not about. Actions share the auth lane with field commits so
+   * "last write wins" means the operator's last action. */
+  function writeAuthentication(changes) {
+    return window.DPSettingsPersistence.perform('auth-config', '', async () => {
+      const result = await request('PUT', '/auth/config', changes, 15000);
+      adoptAuthentication(result);
+      return result;
+    });
+  }
+
+  function connectionTestPayload(kind) {
+    if (kind === 'alldebrid') {
+      // Entry/replacement commits on changed blur and removal is its own
+      // explicit action, so no credential intent is ever pending at Test time:
+      // the draft this reads is whatever the field still holds -- after the
+      // settle above, ordinarily nothing -- and never a removal.
+      return {api_key: valueOf('alldebrid_api_key')};
+    }
+    if (kind === 'debridlink') return {api_key: valueOf('debridlink_api_key')};
+    if (kind === 'premiumize') return {api_key: valueOf('premiumize_api_key')};
+    throw new Error(`Unsupported connection test: ${kind}`);
+  }
+  /* What an explicit action settles first: Services' pending field commits (the
+   * click may have ended a field's edit), so the action reads the current
+   * draft. The setup wizard's surface commits only by its own Save, so there
+   * the action carries no draft and only waits for writes already under way. */
+  function settleScope(control) {
+    return control?.closest?.('.dp-setup-provider-surface') ? null : root();
+  }
+
+  async function testConnection(kind, button) {
+    // An explicit action reads the CURRENT draft, and never races a blur that
+    // the same click started.
+    await window.DPSettingsPersistence.settle(settleScope(button));
+    const endpoints = {
+      alldebrid: '/settings/validate-alldebrid',
+      debridlink: '/settings/validate-debridlink',
+      premiumize: '/settings/validate-premiumize',
+    };
+    const labels = {alldebrid: 'AllDebrid', debridlink: 'Debrid-Link', premiumize: 'Premiumize'};
+    setBusy(button, true, say('settings.testing'));
+    try {
+      // A Test on the setup wizard's surface reads that surface's own field
+      // (there, nothing unsaved): never a draft in Services' card.
+      const surface = button.closest('.dp-setup-provider-surface');
+      const own = surface?.querySelector(`[data-setting="${kind}_api_key"]`);
+      const payload = surface ? {api_key: String(own?.value ?? '').trim()} : connectionTestPayload(kind);
+      const result = await request('POST', endpoints[kind], payload, 20000);
+      rememberTestedDraft(kind, result.verification);
+      // A Test of exactly the SAVED configuration establishes durable
+      // verification, so the header must stop saying Unverified about a
+      // configuration this action just proved. Published through the one
+      // acceptance seam, like every other accepted canonical change.
+      publishAccepted(result);
+      notify(t(result.username ? 'settings.account.connected_toast_as' : 'settings.account.connected_toast', {provider: labels[kind], who: result.username}), 'success');
+    } catch (error) {
+      forgetTestedDrafts(kind);
+      notify(t('settings.provider_error', {provider: labels[kind], message: error.message}), 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  /* The Discord section's own Test.
+   *
+   * It proves the SAVED configuration -- there is no draft left to carry,
+   * because every field on this page commits at its own boundary and the
+   * settle below finishes any that is still pending, so the value the operator
+   * just entered IS what gets exercised. Participation is deliberately
+   * irrelevant: a switched-off section that is still configured can be proven.
+   *
+   * It persists nothing. What it establishes is durable VERIFICATION EVIDENCE,
+   * recorded by the backend about the exact material it tested, and this page
+   * only adopts and reports the derived answer. There is no local `verified`
+   * bit anywhere. */
+  async function testDiscordDelivery(button) {
+    await window.DPSettingsPersistence.settle(root());
+    setBusy(button, true, say('settings.testing'));
+    try {
+      const result = selfContext()
+        ? await request('POST', `${OWN_NOTIFICATIONS}/test-discord`, undefined, 20000)
+        : await request('POST', '/settings/validate-discord', undefined, 20000);
+      adoptNotifications(result.notifications);
+      notify(t('settings.notifications.test_sent'), 'success');
+    } catch (error) {
+      await refreshNotificationState();
+      notify(t('settings.notifications.test_failed', {reason: text(error.message)}), 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  /* The Statistics Reporting section's own Test: the existing immediate-report
+   * pipeline, against the saved effective destination and the saved window, on
+   * exactly the terms above. */
+  async function sendStatsReport(button) {
+    await window.DPSettingsPersistence.settle(root());
+    setBusy(button, true, say('settings.reports.sending'));
+    try {
+      const result = selfContext()
+        ? await request('POST', `${OWN_NOTIFICATIONS}/send-report`, undefined, 20000)
+        : await request('POST', '/settings/send-stats-report', undefined, 20000);
+      adoptNotifications(result.notifications);
+      notify(t('settings.reports.sent', {hours: text(result.hours)}), 'success');
+    } catch (error) {
+      await refreshNotificationState();
+      notify(t('settings.reports.failed', {reason: text(error.message)}), 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  /* The provider-level Usenet Test.
+   *
+   * It settles every pending field-boundary write first, so the collection it
+   * asks the backend to test is the one the operator has actually finished
+   * editing -- and then asks for exactly that: the CANONICAL SAVED collection.
+   * No server list, no credential and no aggregation crosses the wire from
+   * here. Which servers participate, what each proof exercises and whether
+   * Usenet ends up Verified are all the backend's, decided from the same
+   * per-server evidence the individual Test records. */
+  async function testUsenet(button) {
+    await window.DPSettingsPersistence.settle(settleScope(button));
+    setBusy(button, true, say('settings.testing'));
+    try {
+      const result = await request('POST', '/usenet/test', undefined, 60000);
+      publishAccepted(result);
+      if (!result.tested) {
+        notify(t('settings.usenet_test.none'), 'warn');
+      } else if (result.ok) {
+        notify(t('settings.usenet_test.verified', {passed: result.passed, tested: result.tested}), 'success');
+      } else {
+        const failed = (result.servers || []).filter(item => !item.ok);
+        const named = failed.map(item => item.name).filter(Boolean).join(', ');
+        notify(t(named ? 'settings.usenet_test.failed_named' : 'settings.usenet_test.failed', {failed: result.failed, tested: result.tested, named}), 'error');
+      }
+    } catch (error) {
+      notify(t('settings.provider_error', {provider: 'Usenet', message: error.message}), 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  /* Uploading an avatar produces a canonical URL, so it is completed the way
+   * any other value change is: the field takes the accepted URL and commits it
+   * through the ONE persistence owner. There is no second upload path and no
+   * value that is durable only until the page is left.
+   *
+   * Pending field-boundary writes are settled first, so the Display Name the
+   * operator typed immediately before reaching for the file picker is saved in
+   * the order they did it. */
+  async function uploadAvatar(inputEl) {
+    const file = inputEl.files?.[0];
+    if (!file) return;
+    await window.DPSettingsPersistence.settle(root());
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const result = await request('POST', '/settings/upload-avatar', body, 20000);
+      const avatar = fieldFor('discord_avatar_url');
+      if (avatar) {
+        avatar.value = result.url || '';
+        window.DPSettingsPersistence.commit(avatar);
+      }
+      projectAvatarAction();
+      notify(t('settings.avatar.uploaded'), 'success');
+      if (result.warning) notify(result.warning, 'warn');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      inputEl.value = '';
+    }
+  }
+
+  /* Erasing the stored avatar.
+   *
+   * The same act, the same machinery and the same order as erasing the stored
+   * AllDebrid key or the archive-password list: destructive, therefore an
+   * explicit action behind the ONE canonical Settings confirmation and never a
+   * commit boundary. Declining performs no mutation at all. A URL only TYPED
+   * into the field is never submitted in order to be cleared: with nothing
+   * stored, Clear simply empties the field (nothing to remove, nothing sent);
+   * with a URL stored, any newer draft is set aside BEFORE the confirmation
+   * and the settle -- so neither the dialog's focus change nor the settle can
+   * commit it -- and is given back untouched if the operator declines. Every
+   * OTHER pending field commit is settled first, as before. */
+  async function clearAvatar(button) {
+    const avatar = fieldFor('discord_avatar_url');
+    const persistence = window.DPSettingsPersistence;
+    const accepted = avatar ? String(persistence.baseline(avatar) ?? '') : '';
+    if (!String(state.settings?.discord_avatar_url || '').trim()) {
+      if (avatar) avatar.value = accepted;
+      projectAvatarAction();
+      avatar?.focus();
+      return;
+    }
+    const draft = avatar ? avatar.value : '';
+    if (avatar) avatar.value = accepted;
+    const confirmed = await window.DPSettingsModal.confirm({
+      tone: 'danger',
+      title: say('settings.avatar.clear_title'),
+      message: say('settings.avatar.clear_message'),
+      confirmLabel: say('settings.avatar.clear_accept'),
+    });
+    if (!confirmed) {
+      if (avatar && avatar.value === accepted) avatar.value = draft;
+      projectAvatarAction();
+      return;
+    }
+    await window.DPSettingsPersistence.settle(root());
+    // Busy without a new label: the one action slot keeps its size.
+    setBusy(button, true);
+    try {
+      await writeSettingsDocument({discord_avatar_url: ''});
+      const avatar = fieldFor('discord_avatar_url');
+      if (avatar) {
+        avatar.value = '';
+        // The removal IS canonical now, so it becomes the control's accepted
+        // baseline; otherwise the next blur would re-commit the erased URL.
+        window.DPSettingsPersistence.accept(avatar, '');
+      }
+      // Releasing the busy state re-enables the button, so convergence has to
+      // be the LAST word: with nothing stored the action must end up disabled,
+      // not resurrected by the spinner being taken off it.
+      setBusy(button, false);
+      paintNotifications();
+      notify(t('settings.avatar.cleared'), 'success');
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+  }
+
+  /* Erasing ONE stored webhook.
+   *
+   * The canonical way to remove a destination, and the only one: a blanked
+   * field is never a clear, so nothing an operator types can quietly destroy a
+   * stored secret. It carries only the removal -- a replacement they typed
+   * belongs to its own changed-blur boundary, which the settle below orders
+   * before this -- and it touches no other destination: clearing the Download
+   * Added override restores the primary-webhook fallback, and clearing the
+   * reporting override restores the primary-Discord fallback, both entirely by
+   * the backend's own effective-destination rule rather than by anything
+   * written here. */
+  async function clearWebhook(button) {
+    const key = String(button?.dataset.webhook || '');
+    const spec = WEBHOOK_CONTROLS[key];
+    if (!spec) return;
+    const confirmed = await window.DPSettingsModal.confirm({
+      tone: 'danger',
+      title: spec.confirm.title,
+      message: spec.confirm.message,
+      confirmLabel: say('settings.webhook.clear_accept'),
+    });
+    if (!confirmed) return;
+    await window.DPSettingsPersistence.settle(root());
+    setBusy(button, true, say('settings.key.clearing'));
+    try {
+      if (selfContext()) await writeOwnNotifications({}, [key]);
+      else await writeSettingsDocument({}, [key]);
+      setBusy(button, false);
+      paintNotifications();
+      notify(t('settings.webhook.cleared', {name: String(spec.label)}), 'success');
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+  }
+
+  /* The ONE deterministic preamble every Data & Maintenance ACTION shares.
+   *
+   * Running a backup, opening Backups and browsing for a folder all depend on
+   * values the operator may still be editing -- the Backup Folder above all --
+   * so each one first settles the page's pending field writes through the ONE
+   * canonical persistence owner. No Maintenance timer, queue or flush flag
+   * exists: `settle()` flushes every dirty control and waits for every
+   * outstanding scoped write, exactly as it does for Test, Verify and every
+   * other explicit action on Settings. */
+  const settlePendingWrites = () => window.DPSettingsPersistence.settle(root());
+
+  async function browseDirectory(purpose) {
+    await settlePendingWrites();
+    window.DPSettingsDirectoryPicker?.open(purpose);
+  }
+
+  async function runBackup(button) {
+    await settlePendingWrites();
+    setBusy(button, true, say('settings.backups.running'));
+    try {
+      const result = await request('POST', '/admin/backup', undefined, 30000);
+      if (result.skipped) notify(t('settings.backups.skipped'), 'warn');
+      else notify(t('settings.backups.completed'), 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+    }
+  }
+
+  /* The Backups manager belongs to its one state owner
+   * (ui-settings-backup-manager.js); this page only settles its pending writes
+   * first, so the manager reads the Backup Folder the server has accepted. */
+  async function openBackups() {
+    await settlePendingWrites();
+    await window.DPBackupManager?.open();
+  }
+
+  /* The destructive reset. Its safety is unchanged and is owned in four
+   * places, none of them this guard: the typed confirmation below, the
+   * processing-paused requirement, the pre-reset backup (which aborts the
+   * reset when it fails), and the backend's own re-check of every one of those
+   * after maintenance admission has closed.
+   *
+   * `Allow Database Reset` is committed the moment it is flipped, like every
+   * other Settings toggle, so there is no draft state for it to be in: the
+   * settle below finishes any write still in flight and the canonical value is
+   * then what this reads. The toggle still authorizes nothing by itself. */
+  async function wipeDatabaseClean(button) {
+    await settlePendingWrites();
+    if (!state.settings?.db_wipe_enabled) {
+      notify(t('settings.reset.locked'), 'warn');
+      return;
+    }
+    const confirmed = await window.DPSettingsModal.confirm({
+      title: say('settings.reset.confirm_title'),
+      message: say('settings.reset.confirm_message'),
+      confirmLabel: say('settings.reset.confirm_accept'),
+      tone: 'danger',
+      typedPhrase: 'WIPE',
+    });
+    if (!confirmed) return;
+
+    setBusy(button, true, say('settings.reset.wiping'));
+    try {
+      const result = await request('POST', '/admin/database/wipe', {confirm: true}, 60000);
+      notify(t('settings.reset.done'), 'success');
+      try { if (typeof loadStats === 'function') loadStats(); } catch (_) {}
+      try { if (typeof loadRecent === 'function') loadRecent(); } catch (_) {}
+      try {
+        if (document.getElementById('view-torrents')?.classList.contains('active') && typeof loadTorrents === 'function') loadTorrents();
+      } catch (_) {}
+      renderPreservingViewport();
+      focusSurvivor('[data-action="wipe-database"]', '.dp-settings-tabs [data-tab="maintenance"]');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setBusy(button, false);
+      // A failed wipe kept its button: return to it once re-enabled so the retry is one keypress away.
+      if (button?.isConnected) button.focus();
+    }
+  }
+
+  /* Erasing a stored credential is an explicit CONFIRMED act, and it carries
+   * only its own removal -- never the rest of the form, and never an inference
+   * from an empty field. */
+  async function clearPassword(button) {
+    const entersOpenMode = !state.auth?.oidc_enabled && !!state.auth?.authentication_required;
+    const confirmed = await window.DPSettingsModal.confirm({
+      title: say('settings.auth.clear_password_title'),
+      message: entersOpenMode
+        ? say('settings.auth.clear_password_open')
+        : say('settings.auth.clear_password_message'),
+      confirmLabel: say('settings.auth.clear_password_accept'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    await window.DPSettingsPersistence.settle(root());
+    setBusy(button, true, say('settings.key.clearing'));
+    try {
+      // Erasing the last interactive credential IS an open-mode transition, and
+      // the modal above is where the operator confirmed that exact act -- its
+      // message says so. The proof therefore travels with this mutation, for
+      // the same reason and in the same shape as the Enable toggles'.
+      await writeAuthentication({
+        auth_password_enabled: false,
+        clear_password: true,
+        ...(entersOpenMode ? {confirm_open_mode: true} : {}),
+      });
+      notify(t('settings.auth.password_cleared'), 'success');
+      // Releasing the busy state re-enables the button, so the derived state is
+      // projected again afterwards: with nothing stored the action stays in
+      // place, disabled. The password field is where the operator goes next.
+      setBusy(button, false);
+      paintAuthDerived();
+      focusSurvivor(`#${fieldId('auth_password')}`);
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+    if (button?.isConnected) button.focus();
+  }
+
+  /* The local credential: a DRAFT until Apply.
+   *
+   * Username and Password are one credential. Neither is enrolled in
+   * field-boundary persistence, so typing, blurring or a reflow writes
+   * nothing; Apply is the one act that changes them, as ONE PUT /auth/config
+   * carrying both, which the server validates and commits atomically with
+   * the authentication settings (api/auth_config_routes.py). What the draft
+   * may ask for, checked here before anything is sent and again by the server:
+   *   - a username change brings a new password with it (a new name is never
+   *     bound to the stored password);
+   *   - a new credential needs both a username and a password;
+   *   - a blank password means "keep the stored one"; nothing to change is
+   *     nothing to send.
+   * The applied username is canonical state (state.auth.username); the
+   * password is never projected back. */
+  let credentialApply = null;            // the one Apply in flight
+
+  function credentialDraft() {
+    const username = text(fieldFor('auth_username')?.value).trim();
+    const password = String(fieldFor('auth_password')?.value || '');
+    const applied = text(state.auth?.username).trim();
+    const renamed = username !== applied;
+    let problem = '';
+    if (!username && (password || applied)) problem = say('settings.auth.enter_username');
+    else if (renamed && !password) problem = say('settings.auth.rename_needs_password');
+    return {username, password, renamed, dirty: renamed || !!password, problem};
+  }
+
+  // Apply is offered exactly while there is a valid change and none in flight.
+  function projectCredentialDraft() {
+    const button = root()?.querySelector('[data-action="apply-credentials"]');
+    if (!button || credentialApply) return;
+    const draft = credentialDraft();
+    button.disabled = !draft.dirty || !!draft.problem;
+    sayAttr(button, 'data-tooltip', draft.dirty && draft.problem ? draft.problem : say('settings.auth.apply_credentials'));
+  }
+
+  async function applyCredentials(button) {
+    const draft = credentialDraft();
+    if (credentialApply || !draft.dirty) return;
+    if (draft.problem) {
+      notify(String(draft.problem), 'error');
+      return;
+    }
+    const payload = {auth_password: draft.password};
+    if (draft.renamed) payload.auth_username = draft.username;
+    setBusy(button, true, say('settings.auth.applying'));
+    credentialApply = writeAuthentication(payload);
+    try {
+      await credentialApply;
+      // Only what the operator still shows is reconciled: a draft typed while
+      // the request was in flight is newer intent and is kept.
+      const passwordField = fieldFor('auth_password');
+      if (passwordField && passwordField.value === draft.password) passwordField.value = '';
+      const usernameField = fieldFor('auth_username');
+      if (usernameField && text(usernameField.value).trim() === draft.username) usernameField.value = text(state.auth?.username);
+      notify(t('settings.auth.credentials_applied'), 'success');
+    } catch (error) {
+      // Nothing was changed by the server; the draft stays for correction.
+      notify(error.message, 'error');
+    } finally {
+      credentialApply = null;
+      setBusy(button, false);
+      paintAuthDerived();
+    }
+  }
+
+  async function clearOidcSecret(button) {
+    const confirmed = await window.DPSettingsModal.confirm({
+      title: say('settings.oidc.clear_secret_title'),
+      message: say('settings.oidc.clear_secret_message'),
+      confirmLabel: say('settings.oidc.clear_secret_accept'),
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
+    await window.DPSettingsPersistence.settle(root());
+    setBusy(button, true, say('settings.key.clearing'));
+    try {
+      await writeAuthentication({clear_oidc_client_secret: true});
+      notify(t('settings.oidc.secret_cleared'), 'success');
+      setBusy(button, false);
+      paintAuthDerived();
+      focusSurvivor(`#${fieldId('oidc_client_secret')}`);
+      return;
+    } catch (error) {
+      notify(error.message, 'error');
+    }
+    setBusy(button, false);
+    if (button?.isConnected) button.focus();
+  }
+
+  function clearOidcResources({closePopup = true} = {}) {
+    const oidc = state.oidc;
+    if (oidc.poll) {
+      window.clearInterval(oidc.poll);
+      oidc.poll = null;
+    }
+    if (oidc.channel) {
+      try { oidc.channel.close(); } catch (_) {}
+      oidc.channel = null;
+    }
+    if (oidc.messageHandler) {
+      window.removeEventListener('message', oidc.messageHandler);
+      oidc.messageHandler = null;
+    }
+    if (closePopup && oidc.popup && !oidc.popup.closed) {
+      try { oidc.popup.close(); } catch (_) {}
+    }
+    oidc.popup = null;
+    setBusy(oidc.button, false);
+    oidc.button = null;
+  }
+
+  async function finishOidc(result) {
+    const oidc = state.oidc;
+    if (oidc.completed) return;
+    oidc.completed = true;
+    clearOidcResources();
+
+    try {
+      if (window.downloadPulseAuth) await window.downloadPulseAuth.refreshSession({force: true});
+      const auth = await request('GET', '/auth/config', undefined, 7000);
+      const generation = acceptAuth(auth, {probe: false});
+      state.activeTab = 'authentication';
+      renderPreservingViewport();
+      void probeOidcRuntime(auth, generation);
+    } catch (_) {}
+
+    const ok = !!result?.ok;
+    // A key the verification window names is said from the catalog; its own
+    // words are the fallback.
+    const named = typeof result?.message_key === 'string' && window.DPI18n.has(result.message_key) ? t(result.message_key) : '';
+    notify(
+      named || result?.message || (ok
+        ? t('settings.oidc.verify_ok')
+        : t('settings.oidc.verify_failed')),
+      ok ? 'success' : 'error'
+    );
+  }
+
+  function armOidc(popup, button) {
+    const oidc = state.oidc;
+    oidc.completed = false;
+    oidc.popup = popup;
+    oidc.button = button;
+
+    if ('BroadcastChannel' in window) {
+      try {
+        oidc.channel = new BroadcastChannel('downloadpulse-oidc-verification');
+        oidc.channel.onmessage = event => {
+          if (event?.data?.type === 'downloadpulse-oidc-verification') finishOidc(event.data);
+        };
+      } catch (_) {
+        oidc.channel = null;
+      }
+    }
+
+    oidc.messageHandler = event => {
+      if (event.origin !== window.location.origin) return;
+      if (event?.data?.type === 'downloadpulse-oidc-verification') finishOidc(event.data);
+    };
+    window.addEventListener('message', oidc.messageHandler);
+
+    oidc.poll = window.setInterval(() => {
+      if (!oidc.popup || !oidc.popup.closed || oidc.completed) return;
+      window.clearInterval(oidc.poll);
+      oidc.poll = null;
+      window.setTimeout(() => {
+        if (!oidc.completed) finishOidc({
+          ok: false,
+          message: t('settings.oidc.window_closed'),
+        });
+      }, 250);
+    }, 300);
+  }
+
+  function renderOidcWaiting(popup) {
+    try {
+      popup.document.open();
+      // Another document, written once: its words in the shown language, as text.
+      popup.document.write(`<!doctype html><html lang="${html(window.DPI18n.locale())}"><head><meta charset="utf-8"><title>${html(t('settings.oidc.waiting_title'))}</title></head><body style="font-family:system-ui;background:#090812;color:#f4f1ff;display:grid;place-items:center;min-height:100vh;margin:0"><main style="text-align:center"><h1 style="font-size:20px">${html(t('settings.oidc.waiting_heading'))}</h1><p>${html(t('settings.oidc.waiting_detail'))}</p></main></body></html>`);
+      popup.document.close();
+    } catch (_) {}
+  }
+
+  async function verifyOidc(button) {
+    const oidc = state.oidc;
+    if (oidc.popup && !oidc.popup.closed) {
+      try { oidc.popup.focus(); } catch (_) {}
+      return;
+    }
+
+    const width = 520;
+    const height = 680;
+    const left = Math.max(0, Math.round((window.screenX || 0) + ((window.outerWidth || screen.width) - width) / 2));
+    const top = Math.max(0, Math.round((window.screenY || 0) + ((window.outerHeight || screen.height) - height) / 2));
+    const popup = window.open('', 'downloadpulse-oidc-verification', `popup=yes,width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+    if (!popup) {
+      notify(t('settings.oidc.popup_blocked'), 'error');
+      return;
+    }
+
+    renderOidcWaiting(popup);
+    armOidc(popup, button);
+    setBusy(button, true, say('settings.testing'));
+    // The window is opened synchronously from the click so the browser does
+    // not block it; only then is every pending field commit flushed.
+    await window.DPSettingsPersistence.settle(root());
+
+    /* What is tested is the configuration that is STORED. Every OIDC control
+     * commits at its own field boundary and the settle above flushes any that
+     * has not yet, so the stored configuration IS the operator's current
+     * intent -- there is no unsaved draft left to test. The secret is
+     * deliberately absent: the browser does not hold it, and the endpoint
+     * falls back to the stored one. */
+    const a = state.auth || {};
+    const verification = {
+      oidc_provider_name: authControlValue('oidc_provider_name', a),
+      oidc_issuer_url: authControlValue('oidc_issuer_url', a),
+      oidc_client_id: authControlValue('oidc_client_id', a),
+      oidc_scopes: Array.isArray(a.oidc_scopes) ? a.oidc_scopes.slice() : [],
+      oidc_allow_all: !!a.oidc_allow_all,
+      oidc_allowed_subjects: Array.isArray(a.oidc_allowed_subjects) ? a.oidc_allowed_subjects.slice() : [],
+      oidc_allowed_emails: Array.isArray(a.oidc_allowed_emails) ? a.oidc_allowed_emails.slice() : [],
+      oidc_allowed_groups: Array.isArray(a.oidc_allowed_groups) ? a.oidc_allowed_groups.slice() : [],
+      oidc_group_claim: authControlValue('oidc_group_claim', a),
+      public_base_url: text(a.public_base_url_env_override ? '' : a.public_base_url) || undefined,
+      return_to: '/oidc-verify-complete.html',
+    };
+
+    try {
+      const result = await request('POST', '/auth/oidc/verify-config', verification, 10000);
+      if (!result.authorization_url) throw new Error(t('settings.oidc.no_authorization_url'));
+      if (popup.closed) throw new Error(t('settings.oidc.closed_early'));
+      popup.location.replace(result.authorization_url);
+    } catch (error) {
+      oidc.completed = true;
+      clearOidcResources();
+      notify(error.message, 'error');
+    }
+  }
+
+  async function logoutSession(button) {
+    setBusy(button, true, say('settings.auth.logging_out'));
+    try {
+      if (!window.downloadPulseAuth) throw new Error(t('settings.auth.no_session'));
+      await window.downloadPulseAuth.logout();
+    } catch (error) {
+      notify(error.message, 'error');
+      setBusy(button, false);
+    }
+  }
+
+  // The one Settings entry (app.js navigation): every entry opens on Services.
+  async function load() {
+    if (selfContext()) return loadOwnNotifications();
+    drafts.clear();
+    state.activeTab = 'sources';
+    document.getElementById('content')?.classList.remove('settings-active');
+
+    if (state.loading) return state.loading;
+    const generation = ++loadGeneration;
+    state.loading = (async () => {
+      const view = root();
+      if (!view) return;
+      view.classList.add('dp-settings-clean-view');
+      view.innerHTML = `<div class="dp-settings-loading">${html(t('settings.loading'))}</div>`;
+
+      const settingsPromise = request('GET', '/settings', undefined, 10000);
+      const authPromise = request('GET', '/auth/config', undefined, 7000);
+      state.recordedEvents = undefined;
+      const recordedPromise = request('GET', '/events/count', undefined, 7000).then(
+        result => (Number.isInteger(result?.recorded) ? result.recorded : null), () => null);
+
+      let settings;
+      try {
+        settings = await settingsPromise;
+      } catch (error) {
+        if (generation !== loadGeneration || !settingsActive()) return;
+        view.innerHTML = `<div class="dp-settings-load-error"><b>${html(t('settings.load_failed'))}</b><span>${html(error.message)}</span></div>`;
+        notify(error.message, 'error');
+        return;
+      }
+
+      if (generation !== loadGeneration || !settingsActive()) return;
+      syncGlobalSettings(settings);
+      state.auth = fallbackAuthFromSettings(settings);
+      syncAuthIntoSettings(state.auth);
+      state.users = {accounts: null, tokens: {}, error: ''};
+      state.profiles = {catalog: null, error: ''};
+      render();
+      void loadUsers();
+
+      void recordedPromise.then(recorded => {
+        if (generation === loadGeneration) showRecordedEvents(recorded);
+      });
+
+      void authPromise.then(auth => {
+        if (generation !== loadGeneration || !settingsActive()) return;
+        const authGen = acceptAuth(auth, {probe: false});
+        state.activeTab = state.activeTab || 'sources';
+        renderPreservingViewport();
+        void probeOidcRuntime(auth, authGen);
+      }).catch(error => {
+        if (generation !== loadGeneration) return;
+        markAuthUnavailable(error);
+      });
+    })().finally(() => {
+      state.loading = null;
+    });
+    return state.loading;
+  }
+
+  /* A standard User's own Notifications: the same entry, the same owner and
+   * the same two cards, read from and written to the User's own document. */
+  async function loadOwnNotifications() {
+    drafts.clear();
+    state.activeTab = 'notifications';
+    document.getElementById('content')?.classList.remove('settings-active');
+    if (state.loading) return state.loading;
+    const generation = ++loadGeneration;
+    state.loading = (async () => {
+      const view = root();
+      if (!view) return;
+      view.classList.add('dp-settings-clean-view');
+      view.innerHTML = `<div class="dp-settings-loading"${keyed(say('settings.notifications.loading'))}>${html(t('settings.notifications.loading'))}</div>`;
+      let own;
+      try {
+        own = await request('GET', OWN_NOTIFICATIONS, undefined, 10000);
+      } catch (error) {
+        if (generation !== loadGeneration || !settingsActive()) return;
+        view.innerHTML = `<div class="dp-settings-load-error"><b${keyed(say('settings.notifications.load_failed'))}>${html(t('settings.notifications.load_failed'))}</b><span>${html(error.message)}</span></div>`;
+        notify(error.message, 'error');
+        return;
+      }
+      if (generation !== loadGeneration || !settingsActive()) return;
+      syncNotificationDocument(own);
+      renderOwnNotifications();
+    })().finally(() => {
+      state.loading = null;
+    });
+    return state.loading;
+  }
+
+  /* One standard master card holding the two Notifications cards, under the
+   * Settings master header's own structure: the Notifications family chip and
+   * one title/hint block, and nothing on the right -- no Tuning Deck and no tab
+   * strip. */
+  function renderOwnNotifications() {
+    const view = root();
+    if (!view || !state.settings) return;
+    view.classList.add('dp-settings-clean-view');
+    view.innerHTML = `
+      <section class="card dp-settings-master-card dp-settings-master-card--own"${keyed(null, {'aria-label': say('settings.tab.notifications')})}>
+        <div class="card-header dp-settings-master-header">
+          <div class="dp-settings-header-copy">
+            ${familyIcon('notifications', 'bell-ring')}
+            <div>
+              <div class="dp-settings-header-title"${keyed(say('settings.own_notifications.title'))}>${html(t('settings.own_notifications.title'))}</div>
+              <div class="dp-settings-header-subtitle"${keyed(say('settings.own_notifications.subtitle'))}>${html(t('settings.own_notifications.subtitle'))}</div>
+            </div>
+          </div>
+        </div>
+        <div class="dp-settings-master-body">
+          <div class="dp-settings-scroll">
+            <div class="dp-settings-panels">
+              ${panel('notifications', notificationsPanel(state.settings, true))}
+            </div>
+          </div>
+        </div>
+      </section>`;
+    // The same two cards, the same one hinted-header fitter as Settings.
+    fitHeaderHints();
+    bindEvents(view);
+    window.DPSettingsPersistence.adopt(view);
+    restoreDrafts(view);
+  }
+
+  // app.js owns generic navigation and calls this canonical Settings entry point.
+  window.loadSettings = load;
+  try { loadSettings = load; } catch (_) {}
+
+  /* The ONE neutral acceptance seam.
+   *
+   * This page is not the only canonical writer of provider configuration: a
+   * Usenet server card writes its own records, and a saved, removed or
+   * credentialed server can change that provider's derived ``configured`` and
+   * ``verified`` state. When any such owner's scoped mutation is ACCEPTED it
+   * publishes the integration's own identity and canonical public projection,
+   * and this page adopts it exactly as it adopts the ones it issues itself --
+   * through the same single synchronisation owner, re-rendering only that
+   * provider's header state.
+   *
+   * It names no integration, so another owner needs no new callback; it
+   * re-renders no page, so no pending draft is destroyed; and it polls for
+   * nothing.
+   */
+  /* Publish an accepted canonical projection a response carried. The seam
+   * below is the one consumer; a response that accepted nothing publishes
+   * nothing. */
+  function publishAccepted(result) {
+    const identity = String(result?.integration_id || '');
+    const integration = result?.integration;
+    if (!identity || !integration) return;
+    document.dispatchEvent(new CustomEvent('downloadpulse:integration-accepted',
+      {detail: {integration_id: identity, integration}}));
+  }
+
+  document.addEventListener('downloadpulse:integration-accepted', event => {
+    const identity = String(event.detail?.integration_id || '');
+    const projection = event.detail?.integration;
+    if (!identity || !projection || !state.settings) return;
+    adoptIntegration(identity, projection);
+    const card = root()?.querySelector(`[data-integration-enabled="${identity}"]`)
+      ?.closest('.dp-settings-provider-card');
+    if (card) renderIntegrationState(card, identity);
+    try { window.DPProviderStatus?.refresh(); } catch (_) {}
+  });
+
+  // Fonts that finish loading change the tabs' and the copy's own widths.
+  document.fonts?.addEventListener?.('loadingdone', () => {
+    navigation.fit({measure: true});
+    headerHintFit?.();
+    islandFit?.();
+    authKpiFit?.();
+    handheldBodyFit?.();
+    usersTableFit?.();
+    integrationAccountsFit?.();
+    profilesTableFit?.();
+  });
+
+  registerCommitScopes();
+  /* A language change while Settings is shown. DPI18n.render() has already
+   * said every keyed word in place (labels, hints, names, open dialogs) --
+   * values, focus, open disclosures and tests in flight untouched. Here, what
+   * it cannot: the busy labels, the account lines worded by the premium
+   * account owner, the subtitle languages Intl names, the Authentication
+   * Status values (their painter's text), and the fitters, which
+   * measure words. Nothing is read from the server and nothing is written. */
+  document.addEventListener('downloadpulse:locale-changed', () => {
+    const view = root();
+    if (!view || !view.querySelector('.dp-settings-master-card')) return;
+    view.querySelectorAll('[data-dp-busy-key]').forEach(button => { button.textContent = t(button.dataset.dpBusyKey); });
+    for (const id of Object.keys(API_KEY_ACCOUNT_LINES)) {
+      const line = view.querySelector(`[data-${id}-account] .dp-settings-account-expiry`);
+      const account = apiKeyAccounts[id];
+      if (line && account) line.textContent = accountExpiry(id, account) || (standardAccount(account) ? t('settings.account.free') : '');
+    }
+    for (const id of Object.keys(DEVICE_ACCOUNTS)) {
+      const line = view.querySelector(`[data-${id}-connection] .dp-settings-account-expiry`);
+      const account = deviceConnections[id].account || {};
+      if (line) line.textContent = accountExpiry(id, account) || (standardAccount(account) ? t('settings.account.free') : '');
+    }
+    relabelSubtitleLanguages();
+    // The counts written as figures: the recorded events and an open impact confirmation's.
+    const recorded = view.querySelector('[data-setting="event_journal_recorded"]');
+    if (recorded) recorded.value = recordedEventsText();
+    document.querySelectorAll('.dp-account-impact-figures dd[data-dp-count]').forEach(figure => {
+      figure.textContent = count(figure.dataset.dpCount) + (figure.textContent.endsWith('+') ? '+' : '');
+    });
+    // The Authentication Status values, which its painter writes as text.
+    if (state.auth && view.querySelector('.dp-settings-auth-kpi')) paintAuthKpis(state.auth);
+    view.querySelectorAll('.dp-settings-help-chip').forEach(chip => { chip.dataset.tooltip = chip.getAttribute('aria-label') || ''; });
+    void paintDefaultLanguage();
+    fitPage();
+  });
+
+  /* Settings opened at one of its tabs, for a surface outside this page that
+   * points the operator there (the setup wizard): the page is loaded exactly
+   * as a sidebar visit loads it, then that tab is selected. */
+  function openTab(name) {
+    const entries = Array.from(document.querySelectorAll('.nav-item[data-view="settings"]'));
+    const entry = entries.find(item => item.getClientRects().length) || entries[0];
+    if (!entry || typeof window.nav !== 'function') return;
+    document.addEventListener('downloadpulse:settings-rendered', () => activateTab(name), {once: true});
+    window.nav(entry);
+  }
+
+  /* The premium services' authoritative state, as the setup wizard's chooser
+   * shows it: whether each is configured, verified and enabled -- three facts,
+   * never merged -- read afresh from the server, which also refreshes this
+   * page's cached document. */
+  const PREMIUM_SERVICES = Object.freeze(['usenet', 'alldebrid', 'debridlink', 'premiumize', 'realdebrid', 'torbox']);
+  async function providerStatuses() {
+    const settings = await request('GET', '/settings', undefined, 10000);
+    syncGlobalSettings(settings);
+    return Object.fromEntries(PREMIUM_SERVICES.map(id => {
+      // An integration absent from the document is off, as its card draws it.
+      const entry = settings?.integrations?.[id];
+      return [id, {enabled: !!entry && entry.enabled !== false, configured: !!entry?.configured, verified: !!entry?.verified}];
+    }));
+  }
+
+  /* A provider's card, drawn into the setup wizard (``container``) as Easy
+   * shows it, from the same builder Services uses: the same controls,
+   * actions, validation and persistence scopes. Its fields commit only by the
+   * wizard's Save (``save``: every changed field through its own scope, and
+   * a record not created yet -- a new Usenet server -- through its scope's
+   * one creation; resolves to whether all were accepted) and are discarded by
+   * leaving it unsaved. Every action -- Test, Enable, Remove, Connect,
+   * Disconnect, a server's SSL, name and Clear -- acts at once, exactly as on
+   * Services. */
+  const WIZARD_PROVIDERS = PREMIUM_SERVICES;
+  async function mountProvider(identity, container) {
+    if (!WIZARD_PROVIDERS.includes(identity)) throw new Error(`No wizard configuration for ${identity}`);
+    const persistence = window.DPSettingsPersistence;
+    const settings = await request('GET', '/settings', undefined, 10000);
+    syncGlobalSettings(settings);
+    renderSurface = 'wizard';
+    renderOnly = identity;
+    let markup;
+    try { markup = sourcesPanel(settings); } finally { renderSurface = null; renderOnly = null; }
+    container.innerHTML = `<div class="dp-setup-provider-surface" data-commit-explicit>${markup}</div>`;
+    const surface = container.firstElementChild;
+    window.DPI18n?.render(surface);
+    persistence.adopt(surface);
+    surface.addEventListener('click', event => {
+      const button = event.target.closest?.('button[data-action]');
+      if (!button || !surface.contains(button) || button.disabled) return;
+      const action = button.dataset.action;
+      if (apiKeyProviderAction(action, button) || deviceAccountAction(action, button)) return;
+      if (action === 'test-usenet') testUsenet(button);
+    });
+    surface.addEventListener('change', event => {
+      if (event.target.matches?.('[data-integration-enabled]')) void providerEnableChanged(event.target);
+    });
+    const fields = () => Array.from(surface.querySelectorAll('[data-commit-key]'));
+    return Object.freeze({
+      surface,
+      dirty: () => fields().some(field => persistence.dirty(field)),
+      // Saved only when every changed field's write -- its own, or the same
+      // draft's already on its way -- was ACCEPTED; nothing changed is saved.
+      async save() {
+        const writes = [];
+        const creating = new Set();
+        for (const field of fields().filter(control => persistence.dirty(control))) {
+          // A record with no id yet is created whole, from what it shows, by
+          // its scope's one creation -- once, never field by field.
+          const record = field.closest('[data-commit-instance]');
+          if (record && !record.dataset.commitInstance) {
+            if (!creating.has(record)) writes.push(persistence.materialize(field));
+            creating.add(record);
+          } else {
+            writes.push(persistence.commit(field));
+          }
+        }
+        const results = await Promise.all(writes);
+        return results.every(result => result === true);
+      },
+    });
+  }
+
+  /* The ONE whole-settings write (writeSettingsDocument), for a surface that
+   * changes a settings-document value outside this page (the setup wizard's
+   * Download Directory): never a second write path. */
+  window.DPSettingsPage = Object.freeze({load, openTab, writeDocument: overrides => writeSettingsDocument(overrides), providerStatuses, mountProvider,
+    providerArtwork,
+    // A card's contextual Help chip, from this page's one emitter, for a surface
+    // that offers the same topic outside Settings (the setup wizard's Premium
+    // Services and each service's view there): `title` names the card it
+    // explains -- its title key, or {name}, a service's own name.
+    helpChip: (topic, title) => helpChip(topic, typeof title === 'string' ? say(title) : String(title?.name || ''))});
+})();

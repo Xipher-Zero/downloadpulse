@@ -1,0 +1,121 @@
+"""Final-state cross-page consistency contracts."""
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+
+
+def read_static(name: str) -> str:
+    return (STATIC / name).read_text(encoding="utf-8")
+
+
+def test_recent_activity_empty_icon_matches_downloads_size() -> None:
+    dashboard = read_static("ui-dashboard.css")
+    downloads = read_static("ui-downloads-page.css")
+    assert "#dash-activity-card.dp-dashboard-activity .empty-icon" in dashboard
+    assert "width: 76px !important" in dashboard
+    assert "height: 76px !important" in dashboard
+    assert "#view-torrents .empty-icon" in downloads
+    assert "width: 76px" in downloads
+    assert "height: 76px" in downloads
+
+
+def test_downloads_footer_has_no_separator_and_uses_shared_bottom_datum() -> None:
+    downloads = read_static("ui-downloads-page.css")
+    runtime = read_static("ui-accessibility-runtime.js")
+    assert "height: 100% !important" in downloads
+    assert "margin-bottom: 0 !important" in downloads
+    assert "calc(100vh - var(--dp-shell-header)" not in downloads
+    assert "#torrent-pagination" in downloads
+    assert "border-top: 0;" in downloads
+    assert "removeProperty('border-top')" not in runtime
+
+
+def test_downloads_pager_uses_canonical_material_bridge() -> None:
+    shared = read_static("ui-shared-contract.css")
+    assert ".dp-pager-btn" in shared
+    assert "var(--dp-secondary-surface)" in shared
+    assert "var(--dp-segment-active-surface)" in shared
+    assert '[aria-current="page"]' in shared
+    assert "var(--dp-focus-ring)" in shared
+
+
+def test_provider_status_has_one_neutral_centered_presentation_owner() -> None:
+    shell = read_static("ui-shell-provider-status.css")
+    provider = read_static("ui-provider-state.css")
+    account = read_static("ui-premium-account-status.js")
+    runtime = read_static("ui-accessibility-runtime.js")
+
+    assert "#sidebar .sidebar-footer::before" not in shell
+    assert ".conn-row:has(#dot-api)" not in shell
+    assert "AllDebrid: Connected" not in shell
+    # DP 1.0.12 canonical flattening (Gate 9 round 3 fix-forward): the old
+    # ::before pseudo-title was always suppressed by a correction layer and
+    # never rendered; the real heading is the explicit element the runtime
+    # creates.
+    assert ".dp-provider-status-list::before" not in provider
+    assert ".dp-provider-status-heading" in provider
+    assert ".dp-provider-status-row" in provider
+    assert "justify-content: center;" in provider
+    assert "text-align: center;" in provider
+
+    assert '#premium-row[style*="display:none"]' in shell
+    assert "#lbl-premium::before" in shell
+    assert "content: none !important" in shell
+    assert "line('dp-provider-premium-until'," in account
+    assert "line('dp-provider-premium-days'," in account
+    assert "'dp-provider-premium-account dp-provider-premium-account--compact'" in account
+    assert "normalizeProviderPremiumLabel" not in runtime
+    assert "AllDebrid Premium until " not in runtime
+
+
+def test_quick_add_focus_resets_to_universal_field_language() -> None:
+    # 1.0.14: Quick Add's entry is one universal field holding its action
+    # (.dp-action-field: Add inside the field), so its material, hover and
+    # focus ring are that field's; the textarea inside is bare.
+    dashboard = read_static("ui-dashboard.css")
+    universal = read_static("ui-universal-language.css")
+    assert '<div class="direct-link-entry dp-action-field">' in read_static("index.html")
+    assert "textarea.input.direct-link-input" not in dashboard
+    assert ".dp-action-field:focus-within" in universal
+    assert "color-mix(in srgb, var(--dp-accent-purple-bright) 72%, var(--dp-border-strong))" in universal
+    # The light resting inset and control surface add no specificity (:where),
+    # so focus rings and compound fields' bare controls win at the universal
+    # owner; no page carries a local light focus or transparency patch.
+    assert ":where(body.light) :is(.dp-field, .input, .dp-action-field),\n:where(body.light) select.input,\n:where(body.light) textarea.input {\n  box-shadow: inset 0 1px rgba(255,255,255,.85);" in universal
+    assert ":where(body.light) :is(.dp-field, .input),\n:where(body.light) :is(.dp-field, .input):focus,\n:where(body.light) select.input,\n:where(body.light) textarea.input { background: var(--dp-chrome-input-surface); }" in universal
+    assert "body.light :is(.dp-field, .input, .dp-action-field)," not in universal
+    assert "body.light textarea.input {" not in universal and "body.light textarea.input," not in universal
+    assert "body.light #view-dashboard .direct-link-input" not in dashboard
+    assert "direct-link-entry:focus-within" not in dashboard
+
+
+def test_cross_page_owners_remain_in_deliberate_cascade_order() -> None:
+    overlay = read_static("style.css")
+    shared = overlay.index("/ui-shared-contract.css?v=33")
+    shell = overlay.index("/ui-shell.css?v=24")
+    provider = overlay.index("/ui-shell-provider-status.css?v=25")
+    dashboard = overlay.index("/ui-dashboard.css?v=24")
+    downloads = overlay.index("/ui-downloads-page.css?v=30")
+    transfer = overlay.index("/ui-transfer-contract.css?v=33")
+    visual = overlay.index("/ui-visual-accents.css?v=22")
+    signal = overlay.index("/ui-shell-signal-field.css?v=21")
+    assert shared < shell < provider < dashboard < downloads < transfer < visual < signal
+
+
+def test_global_toast_uses_one_topbar_safe_anchor_across_pages() -> None:
+    shared = read_static("ui-shared-contract.css")
+    toast = read_static("ui-toast-contract.css")
+    operator = read_static("operator-title.js")
+
+    assert "--dp-toast-bottom-offset" not in shared
+    assert "bottom: var(--dp-toast-bottom-offset);" not in shared
+    assert "#toasts" in toast
+    assert "bottom: auto !important;" in toast
+    assert "pointer-events: none;" in toast
+    assert "function toastSafeLane()" in operator
+    assert "function updateToastHostPosition()" in operator
+    assert "const desiredTop = lane.top + ((lane.bottom - lane.top) - renderedRect.height) / 2;" in operator
+    assert "#view-settings" not in toast
+    assert ".active" not in toast

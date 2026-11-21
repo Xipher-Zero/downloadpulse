@@ -1,0 +1,579 @@
+name: Browser Runtime
+
+on:
+  push:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+      - 'audit/**'
+    tags:
+      - 'v*'
+      - 'internal-v*'
+  pull_request:
+    branches:
+      - main
+      - '1.0.0'
+      - 'staging/**'
+  workflow_dispatch:
+    inputs:
+      anchor_sha:
+        description: 'Optional qualification anchor commit SHA (defaults to the candidate first parent)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # The suite runs once, split by whole spec file across independent runners,
+  # weighted by measured duration (.github/qualification/shard_inventory.py
+  # browser-plan; fullyParallel is off, so a file never splits). Each
+  # shard serves its own candidate containers, so no two shards share a backend,
+  # and within a shard the files share one exactly as before
+  # (docs/QUALIFICATION_DETERMINISM.md section 11).
+  browser-runtime:
+    name: browser-runtime ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    # The blocking budget is 20 minutes; this only stops a severe regression.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/9', '2/9', '3/9', '4/9', '5/9', '6/9', '7/9', '8/9', '9/9']
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PW_SHARD: ${{ matrix.shard }}
+      SHARD_ID: shard-${{ strategy.job-index }}
+      IMAGE: downloadpulse-browser:${{ github.sha }}
+      DP_BASE_URL: http://127.0.0.1:8080
+      DP_AUTH_BASE_URL: http://127.0.0.1:8081
+      # The candidate image serving the real application with the test-only
+      # composition backend/tests/browser_contract_app.py (INPUT_REQUIRED contract).
+      DP_CONTRACT_BASE_URL: http://127.0.0.1:8084
+      # The candidate image with its own seeded Usenet configuration
+      # (usenet-live-provider-status.spec.js).
+      DP_USENET_BASE_URL: http://127.0.0.1:8085
+
+    steps:
+      # First, before anything that can fail (it needs no checkout): every
+      # attempt of a shard leaves evidence, so a re-run that dies before its
+      # results is judged as unfinished rather than letting an earlier
+      # attempt's results stand in for it.
+      - name: Record this shard's identity
+        run: |
+          mkdir -p "$RUNNER_TEMP/qualification/candidate/full"
+          printf '%s\n' "$PW_SHARD" > "$RUNNER_TEMP/qualification/candidate/full/shard.txt"
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Resolve qualification anchor and publish identity
+        env:
+          QUALIFICATION_EVENT: ${{ github.event_name }}
+          QUALIFICATION_BEFORE: ${{ github.event.before }}
+          QUALIFICATION_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QUALIFICATION_INPUT_ANCHOR: ${{ inputs.anchor_sha }}
+        run: |
+          set -euo pipefail
+          classifier=.github/qualification/failure_classifier.py
+          mkdir -p "$RUNNER_TEMP/qualification"
+          python "$classifier" budget >> "$GITHUB_ENV"
+          set +e
+          resolved="$(python "$classifier" resolve-anchor \
+            --event "$QUALIFICATION_EVENT" \
+            --candidate-sha "$GITHUB_SHA" \
+            --before "$QUALIFICATION_BEFORE" \
+            --pr-base-sha "$QUALIFICATION_PR_BASE_SHA" \
+            --input-anchor "$QUALIFICATION_INPUT_ANCHOR")"
+          set -e
+          anchor_sha="$(printf '%s\n' "$resolved" | sed -n 's/^QUALIFICATION_ANCHOR_SHA=//p')"
+          anchor_reason="$(printf '%s\n' "$resolved" | sed -n 's/^QUALIFICATION_ANCHOR_REASON=//p')"
+          {
+            echo "CANDIDATE_SHA=$GITHUB_SHA"
+            echo "QUALIFICATION_ANCHOR_SHA=$anchor_sha"
+            echo "QUALIFICATION_ANCHOR_REASON=$anchor_reason"
+          } >> "$GITHUB_ENV"
+          python "$classifier" metadata \
+            --candidate-sha "$GITHUB_SHA" \
+            --anchor-sha "$anchor_sha" \
+            --anchor-reason "$anchor_reason" \
+            --event "$QUALIFICATION_EVENT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --workflow "Browser Runtime" \
+            --output-json "$RUNNER_TEMP/qualification/qualification-metadata.json" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload qualification metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-qualification-metadata-${{ github.sha }}-${{ env.SHARD_ID }}
+          path: ${{ runner.temp }}/qualification/qualification-metadata.json
+          if-no-files-found: error
+          retention-days: 14
+
+      # Docker Hub pulls (the Python base image, BuildKit) are authenticated:
+      # anonymous runner pulls are rate-limited. Where the secret is not
+      # available (a pull request from a fork) the pull stays anonymous.
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.XIPHERZERO_DOCKER_PAT }}
+        run: |
+          if [ -n "$DOCKERHUB_TOKEN" ]; then
+            printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username xipherzero --password-stdin
+          else
+            echo "Docker Hub credentials are not available to this run; pulling anonymously"
+          fi
+
+      - name: Build exact candidate container
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg APP_VERSION="$(cat VERSION)" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            -t "$IMAGE" .
+
+      - name: Start open and password-authenticated candidates
+        run: |
+          set -euo pipefail
+          # One definition of "start the open + password-authenticated runtime pair",
+          # reused by the candidate, the fresh candidate for bounded runs, and the anchor.
+          cat > "$RUNNER_TEMP/qualification/runtime.sh" <<'RUNTIME'
+          start_runtime() {
+            local image="$1" open_name="$2" auth_name="$3" open_port="$4" auth_port="$5" auth_dir="$6" port ready
+            # An existing installation, never a new one: a configuration file
+            # is present at its first start, so it opens no Setup Wizard
+            # (services.setup_lifecycle) and every spec meets the application
+            # as an operator's running installation.
+            mkdir -p "${auth_dir}-open"
+            echo '{}' > "${auth_dir}-open/config.json"
+            docker run -d --name "$open_name" -p "127.0.0.1:${open_port}:8095" -v "${auth_dir}-open:/app/config" "$image" || return 1
+
+            mkdir -p "$auth_dir"
+            docker run --rm --entrypoint python "$image" -c '
+          import json
+          from auth.passwords import hash_password
+          print(json.dumps({
+              "auth_password_enabled": True,
+              "auth_username": "browser",
+              "auth_password_hash": hash_password("browser-secret"),
+              "auth_oidc_enabled": False,
+          }))
+          ' > "$auth_dir/config.json" || return 1
+
+            docker run -d --name "$auth_name" -p "127.0.0.1:${auth_port}:8095" -v "$auth_dir:/app/config" "$image" || return 1
+
+            for port in "$open_port" "$auth_port"; do
+              ready=0
+              for _ in $(seq 1 90); do
+                if curl -fsS "http://127.0.0.1:${port}/api/health" >/dev/null; then
+                  ready=1
+                  break
+                fi
+                sleep 1
+              done
+              if [ "$ready" -ne 1 ]; then
+                docker logs "$open_name" || true
+                docker logs "$auth_name" || true
+                return 1
+              fi
+            done
+          }
+          RUNTIME
+          . "$RUNNER_TEMP/qualification/runtime.sh"
+          start_runtime "$IMAGE" dp-browser-open dp-browser-auth 8080 8081 "$RUNNER_TEMP/dp-browser-auth-config"
+          # The same candidate image, serving the real application through the
+          # test-only composition that can raise a real INPUT_REQUIRED challenge.
+          # An existing installation too (see start_runtime).
+          mkdir -p "$RUNNER_TEMP/dp-browser-contract-config"
+          echo '{}' > "$RUNNER_TEMP/dp-browser-contract-config/config.json"
+          docker run -d --name dp-browser-contract -p "127.0.0.1:8084:8095" \
+            -v "$RUNNER_TEMP/dp-browser-contract-config:/app/config" "$IMAGE" \
+            uvicorn browser_contract_app:app --app-dir /app/tests --host 0.0.0.0 --port 8095 --workers 1
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:8084/api/health" >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then docker logs dp-browser-contract || true; exit 1; fi
+          # The same candidate image on its own server for the live Provider
+          # Status contract: Usenet disabled, one news server, and that server's
+          # durable verification evidence -- all derived by the image's own
+          # canonical functions, exactly like the password-auth configuration.
+          usenet_dir="$RUNNER_TEMP/dp-browser-usenet-config"
+          mkdir -p "$usenet_dir"
+          docker run --rm --entrypoint python "$IMAGE" -c '
+          import json
+          from integrations.usenet.definition import UsenetOptions, UsenetServer, definition
+          options = UsenetOptions(servers=[UsenetServer(
+              id="live-status", host="news.live-status.invalid", username="browser",
+              password="browser-secret", connections=4)]).model_dump()
+          fingerprints = definition.verification_fingerprints(options)
+          evidence = {subject: pair[0] for subject, pair in fingerprints.items()}
+          print(json.dumps({"integrations": {"usenet": {
+              "enabled": False, "options": options, "verification": evidence}}}))
+          ' > "$usenet_dir/config.json"
+          docker run -d --name dp-browser-usenet -p "127.0.0.1:8085:8095" -v "$usenet_dir:/app/config" "$IMAGE"
+          ready=0
+          for _ in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:8085/api/health" >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then docker logs dp-browser-usenet || true; exit 1; fi
+
+      # The locked Playwright's Chromium and the Ubuntu packages its
+      # --with-deps installs are cached by the lock file and the OS release, so
+      # a hit downloads no package: only apt's own index is still fetched.
+      # apt resolves and verifies every package against that signed index (a
+      # cached .deb whose checksum no longer matches is fetched again); a miss
+      # installs exactly as before.
+      - name: Identify the runner OS release
+        id: runner_os
+        run: |
+          . /etc/os-release
+          echo "release=${ID}-${VERSION_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the locked Playwright Chromium and its system packages
+        id: playwright_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/dp-playwright-apt
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner_os.outputs.release }}-${{ hashFiles('frontend/browser/package-lock.json') }}
+
+      - name: Install and audit locked Playwright Chromium
+        id: playwright_install
+        working-directory: frontend/browser
+        env:
+          PLAYWRIGHT_CACHED: ${{ steps.playwright_cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+          debs="$HOME/.cache/dp-playwright-apt"
+          mkdir -p "$debs"
+          if compgen -G "$debs/*.deb" > /dev/null; then sudo cp "$debs"/*.deb /var/cache/apt/archives/; fi
+          npx playwright install --with-deps chromium
+          if [ "$PLAYWRIGHT_CACHED" != true ] && compgen -G "/var/cache/apt/archives/*.deb" > /dev/null; then
+            cp /var/cache/apt/archives/*.deb "$debs"/
+          fi
+          echo "packages=$(find "$debs" -name '*.deb' | wc -l)" >> "$GITHUB_OUTPUT"
+
+      # The specs block the web fonts, so the page is set in the system's
+      # default sans-serif, system-ui and monospace, and many measure that
+      # text (a title on one row at 320px, a short label only where the full
+      # one does not fit). Those widths are a font's: unpinned, the runner's
+      # own default failed them on every shard without saying anything about
+      # the application. The exact Noto builds the specs were written against
+      # are fetched from their upstream releases by SHA-256 and made the
+      # defaults, for the candidate and the anchor alike (both run here).
+      - name: Restore the pinned browser fonts
+        id: browser_fonts_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dp-browser-fonts
+          key: browser-fonts-${{ hashFiles('.github/qualification/install_browser_fonts.sh') }}
+
+      - name: Pin the fonts the browser specs measure
+        run: bash .github/qualification/install_browser_fonts.sh "$HOME/.cache/dp-browser-fonts"
+
+      - name: Save the pinned browser fonts
+        if: steps.browser_fonts_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dp-browser-fonts
+          key: ${{ steps.browser_fonts_cache.outputs.cache-primary-key }}
+
+      - name: Save the locked Playwright Chromium and its system packages
+        if: steps.playwright_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/dp-playwright-apt
+          key: ${{ steps.playwright_cache.outputs.cache-primary-key }}
+
+      - name: Inventory and run browser runtime contract
+        id: full_browser
+        working-directory: frontend/browser
+        run: |
+          set -uo pipefail
+          full="$RUNNER_TEMP/qualification/candidate/full"
+          mkdir -p "$full"
+          # This shard's whole spec files, and the whole suite's listing for the inventory.
+          if ! plan="$(python3 "$GITHUB_WORKSPACE/.github/qualification/shard_inventory.py" browser-plan --shard "$PW_SHARD" --dir .)"; then
+            echo "::error title=Browser shard plan::no spec files planned for shard $PW_SHARD"; exit 1
+          fi
+          read -r -a specs <<< "$(printf '%s' "$plan" | tr '\n' ' ')"
+          if [ "${#specs[@]}" -eq 0 ]; then echo "::error title=Browser shard plan::shard $PW_SHARD has no spec files"; exit 1; fi
+          printf '%s\n' "${specs[@]}" > "$full/specs.txt"
+          NO_COLOR=1 npx playwright test --config=playwright.config.js --list > "$full/full-list.txt" 2>&1
+          NO_COLOR=1 npx playwright test --config=playwright.config.js --list "${specs[@]}" 2>&1 | tee "$RUNNER_TEMP/playwright-list.log"
+          discovered="$(sed -nE 's/.*Total: ([0-9]+) tests? in .*/\1/p' "$RUNNER_TEMP/playwright-list.log" | tail -n1)"
+
+          # The full suite runs exactly once. Its exit status is evidence, not the gate:
+          # the classification step decides, so evidence is always generated first.
+          set +e
+          NO_COLOR=1 PLAYWRIGHT_JSON_OUTPUT_NAME="$full/results.json" npm test -- "${specs[@]}" --workers=1 --reporter=line,json 2>&1 | tee "$RUNNER_TEMP/playwright.log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          echo "$test_status" > "$full/exit_code.txt"
+          cp "$RUNNER_TEMP/playwright.log" "$full/playwright.log"
+          # Preserve the original traces before any later Playwright run can clean test-results.
+          if [ -d test-results ]; then cp -a test-results "$full/test-results"; fi
+
+          running="$(sed -nE 's/.*Running ([0-9]+) tests? using .*/\1/p' "$RUNNER_TEMP/playwright.log" | tail -n1)"
+          passed="$(sed -nE 's/^[[:space:]]*([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/playwright.log" | tail -n1)"
+          printf 'discovered=%s\nrunning=%s\npassed=%s\n' "$discovered" "$running" "$passed" | tee "$RUNNER_TEMP/playwright-counts.txt"
+          {
+            echo "### Browser Runtime qualification inventory (shard $PW_SHARD)"
+            echo
+            cat "$RUNNER_TEMP/playwright-counts.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "full browser run exited with status $test_status; the classification step decides the gate"
+
+      - name: Classify full browser run (candidate vs anchor)
+        id: classify_browser
+        run: |
+          set -uo pipefail
+          set +e
+          classifier="$GITHUB_WORKSPACE/.github/qualification/failure_classifier.py"
+          q="$RUNNER_TEMP/qualification"
+          cand="$q/candidate"
+          anch="$q/anchor"
+          anchor_src="$q/anchor-src"
+          mkdir -p "$cand/isolated" "$anch/isolated" "$anchor_src"
+          deadline=$(( $(date +%s) + MAX_CLASSIFICATION_WALL_TIME_SECONDS ))
+
+          python "$classifier" plan --domain browser --candidate-results "$cand" \
+            --output-json "$cand/plan.json" --output-tsv "$cand/plan.tsv"
+          plan_rc=$?
+
+          # run_cases <browser-dir> <results-dir> <base-url> <auth-url> <playwright-output-root> <plan.tsv> <stage>
+          # Runs ONLY the failing case(s) from the plan: stage 1 is ISOLATED_RUNS_PER_REF runs each;
+          # stage d is the single bounded discriminator stage of DISCRIMINATOR_RUNS_PER_REF runs each.
+          run_cases() {
+            local dir="$1" out="$2" base="$3" auth="$4" pwout="$5" plan="$6" stage="$7" slug file pattern i count tag remaining
+            if [ "$stage" = d ]; then count="$DISCRIMINATOR_RUNS_PER_REF"; tag=d; else count="$ISOLATED_RUNS_PER_REF"; tag=; fi
+            while IFS=$'\t' read -r slug file pattern; do
+              for i in $(seq 1 "$count"); do
+                remaining=$(( deadline - $(date +%s) ))
+                if [ "$remaining" -le 0 ]; then
+                  echo "wall-time budget exhausted" > "$out/budget_exhausted.txt"
+                  return 0
+                fi
+                (
+                  cd "$dir" || exit 1
+                  DP_BASE_URL="$base" DP_AUTH_BASE_URL="$auth" NO_COLOR=1 \
+                    PLAYWRIGHT_JSON_OUTPUT_NAME="$out/$slug.$tag$i.json" \
+                    timeout "$remaining" npx playwright test --config=playwright.config.js --workers=1 \
+                      --reporter=json --output="$pwout/$slug.$tag$i" "$file" -g "$pattern" \
+                      < /dev/null > "$out/$slug.$tag$i.log" 2>&1
+                )
+              done
+            done < "$plan"
+          }
+
+          if [ "$plan_rc" -eq 11 ]; then
+            . "$q/runtime.sh"
+
+            # Candidate: fresh runtime pair, the candidate's own frontend, bounded runs. The
+            # container entrypoint re-owns its mounted config, so each pair gets its own config dir.
+            docker rm -f dp-browser-open dp-browser-auth >/dev/null 2>&1
+            if start_runtime "$IMAGE" dp-browser-open dp-browser-auth 8080 8081 "$RUNNER_TEMP/dp-browser-auth-config-bounded"; then
+              run_cases "$GITHUB_WORKSPACE/frontend/browser" "$cand/isolated" \
+                http://127.0.0.1:8080 http://127.0.0.1:8081 "$cand/pw-output" "$cand/plan.tsv" 1
+            else
+              printf '%s\n' "candidate runtime pair did not become healthy for the bounded runs" > "$cand/isolated/infrastructure_failure.txt"
+            fi
+
+            # Anchor: its own tree, its own image, its own locked browser dependencies and
+            # specs, on separate ports. Nothing from the candidate is mixed in.
+            anchor_infra() { printf '%s\n' "$1" > "$anch/isolated/infrastructure_failure.txt"; }
+            anchor_image="downloadpulse-browser-anchor:$QUALIFICATION_ANCHOR_SHA"
+            build_budget=$(( deadline - $(date +%s) ))
+            [ "$build_budget" -ge 1 ] || build_budget=1
+            if ! git -C "$GITHUB_WORKSPACE" archive "$QUALIFICATION_ANCHOR_SHA" | tar -x -C "$anchor_src"; then
+              anchor_infra "could not check out anchor $QUALIFICATION_ANCHOR_SHA"
+            elif ! timeout "$build_budget" docker build \
+                --build-arg APP_VERSION="$(cat "$anchor_src/VERSION")" \
+                --build-arg VCS_REF="$QUALIFICATION_ANCHOR_SHA" \
+                -t "$anchor_image" "$anchor_src" > "$anch/docker-build.log" 2>&1; then
+              anchor_infra "could not build the anchor image from its own tree (see docker-build.log)"
+            elif ! start_runtime "$anchor_image" dp-anchor-open dp-anchor-auth 8082 8083 "$RUNNER_TEMP/dp-anchor-auth-config"; then
+              anchor_infra "anchor runtime pair did not become healthy"
+            elif ! ( cd "$anchor_src/frontend/browser" && npm ci --ignore-scripts && npx playwright install chromium ) \
+                > "$anch/playwright-install.log" 2>&1; then
+              anchor_infra "anchor browser dependencies could not be installed from its own lockfile (see playwright-install.log)"
+            else
+              run_cases "$anchor_src/frontend/browser" "$anch/isolated" \
+                http://127.0.0.1:8082 http://127.0.0.1:8083 "$anch/pw-output" "$cand/plan.tsv" 1
+            fi
+
+            # Single bounded second stage. Only when the first stage could not discriminate candidate
+            # from anchor, and only for the affected case(s); the classifier owns that decision.
+            python "$classifier" discriminate --domain browser \
+              --candidate-sha "$CANDIDATE_SHA" --anchor-sha "$QUALIFICATION_ANCHOR_SHA" \
+              --candidate-results "$cand" --anchor-results "$anch" \
+              --registry .github/qualification/known_flakes.json --output-tsv "$q/discriminate.tsv"
+            if [ "$?" -eq 14 ]; then
+              run_cases "$GITHUB_WORKSPACE/frontend/browser" "$cand/isolated" \
+                http://127.0.0.1:8080 http://127.0.0.1:8081 "$cand/pw-output" "$q/discriminate.tsv" d
+              run_cases "$anchor_src/frontend/browser" "$anch/isolated" \
+                http://127.0.0.1:8082 http://127.0.0.1:8083 "$anch/pw-output" "$q/discriminate.tsv" d
+            fi
+            docker logs dp-anchor-open > "$anch/anchor-open.log" 2>&1
+            docker logs dp-anchor-auth > "$anch/anchor-auth.log" 2>&1
+            docker rm -f dp-anchor-open dp-anchor-auth >/dev/null 2>&1
+          fi
+
+          python "$classifier" classify --domain browser \
+            --candidate-sha "$CANDIDATE_SHA" --anchor-sha "$QUALIFICATION_ANCHOR_SHA" \
+            --candidate-results "$cand" --anchor-results "$anch" \
+            --registry .github/qualification/known_flakes.json \
+            --output-json "$q/browser-classification.json" --output-summary "$q/browser-classification.md"
+          rc=$?
+          cat "$q/browser-classification.md" >> "$GITHUB_STEP_SUMMARY"
+          classification="$(jq -r .classification "$q/browser-classification.json")"
+          echo "browser classification: $classification (exit $rc)"
+
+          # Inventory invariant: every discovered test ran, and every test that ran either
+          # passed or is one of the failing cases the classifier just accounted for.
+          discovered="" running="" passed=""
+          . "$RUNNER_TEMP/playwright-counts.txt"
+          failed="$(jq -r '.failed // 0' "$cand/plan.json")"
+          inventory_ok=1
+          test -n "$discovered" && test -n "$running" && test -n "$passed" || inventory_ok=0
+          [ "$inventory_ok" -eq 1 ] && [ "$discovered" -eq "$running" ] || inventory_ok=0
+          [ "$inventory_ok" -eq 1 ] && [ "$running" -eq $(( passed + failed )) ] || inventory_ok=0
+
+          case "$rc" in
+            0)
+              if [ "$inventory_ok" -ne 1 ] || [ "$failed" -ne 0 ]; then
+                echo "::error title=Browser inventory::discovered=$discovered running=$running passed=$passed failed=$failed do not reconcile"
+                exit 1
+              fi
+              exit 0
+              ;;
+            10)
+              if [ "$inventory_ok" -ne 1 ]; then
+                echo "::error title=Browser inventory::discovered=$discovered running=$running passed=$passed failed=$failed do not reconcile"
+                exit 1
+              fi
+              echo "::warning title=KNOWN_FLAKE::Non-blocking known flake matched an active registry entry and reproduced on the anchor. See the step summary."
+              exit 0
+              ;;
+            *)
+              echo "::error title=Browser qualification::$classification (classifier exit $rc). See the step summary and the browser classification artifact."
+              exit "$rc"
+              ;;
+          esac
+
+      - name: Upload browser qualification diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-qualification-${{ github.sha }}-${{ env.SHARD_ID }}
+          path: |
+            ${{ runner.temp }}/playwright-list.log
+            ${{ runner.temp }}/playwright.log
+            ${{ runner.temp }}/playwright-counts.txt
+            frontend/browser/test-results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the cases this shard ran
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-executed-${{ github.sha }}-${{ env.SHARD_ID }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/qualification/candidate/full/shard.txt
+            ${{ runner.temp }}/qualification/candidate/full/specs.txt
+            ${{ runner.temp }}/qualification/candidate/full/full-list.txt
+            ${{ runner.temp }}/qualification/candidate/full/results.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload browser classification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-classification-${{ github.sha }}-${{ env.SHARD_ID }}
+          path: |
+            ${{ runner.temp }}/qualification/candidate
+            ${{ runner.temp }}/qualification/anchor
+            ${{ runner.temp }}/qualification/browser-classification.json
+            ${{ runner.temp }}/qualification/browser-classification.md
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload two-provider checkpoint visual verification
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: two-provider-visual-verification-${{ github.sha }}-${{ env.SHARD_ID }}
+          path: frontend/browser/test-results/checkpoint-*.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Show candidate logs on failure
+        if: failure()
+        run: |
+          docker logs dp-browser-open || true
+          docker logs dp-browser-auth || true
+          docker logs dp-browser-contract || true
+          docker logs dp-browser-usenet || true
+
+      - name: Stop candidate and anchor containers
+        if: always()
+        run: |
+          docker rm -f dp-browser-open dp-browser-auth dp-browser-contract dp-browser-usenet dp-anchor-open dp-anchor-auth >/dev/null 2>&1 || true
+
+  # Every listed browser case ran exactly once, in the shard that owns its spec
+  # file: every shard's own results (their latest attempt) against the suite's
+  # listing. Missing evidence fails it; it never passes by default.
+  inventory:
+    runs-on: ubuntu-latest
+    needs: browser-runtime
+    if: ${{ !cancelled() }}
+    # The run's artifacts are listed through the REST API (github-token + run-id
+    # below), which returns every attempt's artifacts: after "Re-run failed jobs"
+    # the shards that passed earlier keep their evidence, and each shard's latest
+    # attempt is the one judged.
+    permissions:
+      contents: read
+      actions: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # The browser-runtime matrix's shard count.
+      BROWSER_SHARDS: 9
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Download every shard's results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: browser-executed-${{ github.sha }}-*
+          path: ${{ runner.temp }}/executed
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
+
+      - name: Every listed case ran exactly once
+        run: |
+          set -uo pipefail
+          lists=$(find "$RUNNER_TEMP/executed" -name full-list.txt -exec sha256sum {} + | cut -d' ' -f1 | sort -u | wc -l)
+          if [ "$lists" != 1 ]; then echo "the shards listed different suites ($lists listings)"; exit 1; fi
+          listing="$(find "$RUNNER_TEMP/executed" -name full-list.txt | sort | head -n1)"
+          python3 .github/qualification/shard_inventory.py browser-verify --full-list "$listing" \
+            --executed "$RUNNER_TEMP/executed" --shards "$BROWSER_SHARDS" --dir frontend/browser | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"

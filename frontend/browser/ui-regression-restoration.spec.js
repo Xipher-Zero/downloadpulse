@@ -1,0 +1,606 @@
+const { test, expect } = require('@playwright/test');
+
+const MARKERS=['DPActivityLog','DPArchivePasswords','DPDownloads'];
+async function ready(page){await page.goto('/');await page.waitForFunction(markers=>markers.every(marker=>Boolean(window[marker])),MARKERS);}
+
+test('Activity Log keeps Search first and its one filter control after it, apart and on one line',async({page})=>{
+ await page.setViewportSize({width:1600,height:900});
+ await page.route('**/api/events*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[],limit:100,snapshot:0,has_more:false,next_before:null,newer_available:false,search:{text:'none',pending:0,complete:true}})}));
+ await ready(page);await page.evaluate(()=>nav(document.querySelector('[data-view="events"]')));
+ const geometry=await page.locator('#view-events .dp-activity-search-row').evaluate(row=>{
+  const span=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+  return {children:[...row.children].filter(node=>!node.hidden).map(node=>node.id||node.className),search:span(row.querySelector('#ev-search')),filter:span(row.querySelector('#ev-filter'))};
+ });
+ expect(geometry.children).toEqual(['ev-search','ev-filter']);
+ expect(geometry.search.right).toBeLessThanOrEqual(geometry.filter.left+1);
+ expect(Math.abs((geometry.search.top+geometry.search.bottom)/2-(geometry.filter.top+geometry.filter.bottom)/2)).toBeLessThan(1);
+ expect(geometry.filter.width).toBeGreaterThan(0);
+});
+
+test('Activity Log search keeps focus across debounced refreshes and other controls still initialize exactly once',async({page})=>{
+ await page.setViewportSize({width:1600,height:900});
+ let requestCount=0;
+ await page.route('**/api/events*',route=>{requestCount+=1;return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[],limit:100,snapshot:0,has_more:false,next_before:null,newer_available:false,search:{text:'none',pending:0,complete:true}})});});
+ await ready(page);await page.evaluate(()=>nav(document.querySelector('[data-view="events"]')));
+ await expect(page.locator('#ev-filter')).toBeVisible();
+ const search=page.locator('#ev-search');
+ await search.click();
+ await page.keyboard.type('a');
+ await page.waitForTimeout(400);
+ await expect.poll(()=>page.evaluate(()=>document.activeElement?.id)).toBe('ev-search');
+ await page.keyboard.type('bc',{delay:150});
+ await page.waitForTimeout(400);
+ await expect.poll(()=>page.evaluate(()=>document.activeElement?.id)).toBe('ev-search');
+ await expect(search).toHaveValue('abc');
+ await expect.poll(()=>requestCount).toBeGreaterThanOrEqual(3);
+ // The one filter control and its panel initialize exactly once (no projected
+ // select shells) and remain interactive after the repeated debounced refreshes.
+ expect(await page.evaluate(()=>({filters:document.querySelectorAll('#view-events #ev-filter').length,panels:document.querySelectorAll('#ev-filter-panel').length,shells:document.querySelectorAll('#view-events .dp-dropdown-shell').length}))).toEqual({filters:1,panels:1,shells:0});
+ const before=requestCount;
+ await page.locator('#ev-filter').click();
+ await page.locator('#ev-filter-panel fieldset[data-filter="level"] label',{hasText:/^Error$/}).click();
+ await page.locator('#ev-filter-panel [data-filter-action="apply"]').click();
+ await expect.poll(()=>requestCount).toBe(before+1);
+});
+
+test('Archive Passwords hydrate stored values and Show all/Hide all keep identical geometry',async({page})=>{
+ await page.route('**/api/settings/extraction-passwords',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({passwords:'alpha\nbeta'})}));
+ await ready(page);await page.evaluate(async()=>{nav(document.querySelector('[data-view="settings"]'));await loadSettings();});
+ const tab=page.locator('#view-settings [data-tab="extraction"]:not(.dp-motion-still *)');if(await tab.count())await tab.click();
+ const source=page.locator('#view-settings [data-panel="extraction"] [data-setting="extraction_password"]');
+ await expect.poll(()=>source.inputValue()).toBe('alpha\nbeta');
+ const editor=page.locator('.dp-settings-extraction-password-editor');
+ const rows=editor.locator('.dp-settings-password-line');await expect(rows).toHaveCount(3);
+ await expect(rows.nth(0)).toHaveAttribute('type','text');await expect(rows.nth(1)).toHaveAttribute('type','text');
+ const eye=editor.locator('.dp-settings-password-eye');await expect(eye).toContainText('Show all');
+ const measure=()=>eye.evaluate(button=>{const label=button.querySelector('.dp-settings-password-eye-label'),bs=getComputedStyle(button),ls=getComputedStyle(label),br=button.getBoundingClientRect(),lr=label.getBoundingClientRect();return{text:label.textContent,width:br.width,height:br.height,labelHeight:lr.height,fontFamily:ls.fontFamily,fontSize:ls.fontSize,fontWeight:ls.fontWeight,lineHeight:ls.lineHeight,whiteSpace:ls.whiteSpace,buttonWhiteSpace:bs.whiteSpace};});
+ const show=await measure();await eye.click();await expect(eye).toContainText('Hide all');await expect(rows.nth(0)).toHaveValue('alpha');await expect(rows.nth(1)).toHaveValue('beta');await expect(rows.nth(2)).toHaveValue('');const hide=await measure();
+ expect(show.whiteSpace).toBe('nowrap');expect(show.buttonWhiteSpace).toBe('nowrap');expect(show.labelHeight).toBeLessThan(20);
+ expect(hide.whiteSpace).toBe('nowrap');expect(hide.buttonWhiteSpace).toBe('nowrap');expect(hide.labelHeight).toBeLessThan(20);
+ expect({width:show.width,height:show.height,fontFamily:show.fontFamily,fontSize:show.fontSize,fontWeight:show.fontWeight,lineHeight:show.lineHeight}).toEqual({width:hide.width,height:hide.height,fontFamily:hide.fontFamily,fontSize:hide.fontSize,fontWeight:hide.fontWeight,lineHeight:hide.lineHeight});
+});
+
+test('Archive Passwords empty Backspace does not delete the row or navigate to the previous one',async({page})=>{
+ await page.route('**/api/settings/extraction-passwords',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({passwords:'alpha\nbeta'})}));
+ await ready(page);await page.evaluate(async()=>{nav(document.querySelector('[data-view="settings"]'));await loadSettings();});
+ const tab=page.locator('#view-settings [data-tab="extraction"]:not(.dp-motion-still *)');if(await tab.count())await tab.click();
+ const source=page.locator('#view-settings [data-panel="extraction"] [data-setting="extraction_password"]');
+ await expect.poll(()=>source.inputValue()).toBe('alpha\nbeta');
+ const editor=page.locator('.dp-settings-extraction-password-editor');
+ const rows=editor.locator('.dp-settings-password-line');await expect(rows).toHaveCount(3);
+ // Row 2 (index 1, "beta") is already non-empty text -- normal Backspace on
+ // real text must still edit it normally.
+ await rows.nth(1).click();await rows.nth(1).press('End');await rows.nth(1).press('Backspace');
+ await expect(rows.nth(1)).toHaveValue('bet');
+ await expect(rows).toHaveCount(3);
+ await expect.poll(()=>source.inputValue()).toBe('alpha\nbet');
+ // Row 3 (index 2) is the trailing empty row. Backspace there used to delete
+ // the row and jump focus back to row 2 -- it must now be a no-op.
+ await rows.nth(2).click();
+ await expect.poll(()=>page.evaluate(()=>document.activeElement?.dataset?.passwordIndex)).toBe('2');
+ await rows.nth(2).press('Backspace');
+ await expect(rows).toHaveCount(3);
+ await expect.poll(()=>page.evaluate(()=>document.activeElement?.dataset?.passwordIndex)).toBe('2');
+ expect(await source.inputValue()).toBe('alpha\nbet');
+});
+
+test('Theme toggle glyph shows the target theme, not the current one, on load and after toggling',async({page})=>{
+ await ready(page);
+ const initial=await page.evaluate(()=>({title:document.getElementById('theme-toggle').dataset.tooltip,ariaLabel:document.getElementById('theme-toggle').getAttribute('aria-label'),hasCircle:!!document.querySelector('#theme-toggle svg circle'),isLight:document.body.classList.contains('light')}));
+ expect(initial.isLight).toBe(false);
+ expect(initial.title).toBe('Switch to light mode');
+ expect(initial.ariaLabel).toBe('Switch to light mode');
+ expect(initial.hasCircle).toBe(true); // sun glyph while dark
+ await page.click('#theme-toggle');
+ const afterLight=await page.evaluate(()=>({title:document.getElementById('theme-toggle').dataset.tooltip,ariaLabel:document.getElementById('theme-toggle').getAttribute('aria-label'),hasCircle:!!document.querySelector('#theme-toggle svg circle'),isLight:document.body.classList.contains('light')}));
+ expect(afterLight.isLight).toBe(true);
+ expect(afterLight.title).toBe('Switch to dark mode');
+ expect(afterLight.ariaLabel).toBe('Switch to dark mode');
+ expect(afterLight.hasCircle).toBe(false); // moon glyph while light
+ await page.click('#theme-toggle');
+ const backToDark=await page.evaluate(()=>({title:document.getElementById('theme-toggle').dataset.tooltip,hasCircle:!!document.querySelector('#theme-toggle svg circle'),isLight:document.body.classList.contains('light')}));
+ expect(backToDark.isLight).toBe(false);
+ expect(backToDark.title).toBe('Switch to light mode');
+ expect(backToDark.hasCircle).toBe(true);
+});
+
+test('Downloads and Activity Log master-card titles change without touching sidebar, page header, or Statistics',async({page})=>{
+ await ready(page);
+ await page.locator('#sidebar .nav-item[data-view="torrents"]').click();
+ await expect(page.locator('.dp-downloads-heading')).toHaveText('On the Books');
+ await expect(page.locator('#torrent-card-title')).toHaveAttribute('aria-label',/^On the Books\. /);
+ await expect(page.locator('#sidebar .nav-item[data-view="torrents"] .nav-label')).toHaveText('Downloads');
+ await expect(page.locator('#page-title')).toHaveText('Downloads');
+ await page.locator('#sidebar .nav-item[data-view="events"]').click();
+ await expect(page.locator('.dp-activity-heading')).toHaveText('For the Record');
+ await expect(page.locator('#sidebar .nav-item[data-view="events"] .nav-label')).toHaveText('Activity Log');
+ await expect(page.locator('#page-title')).toHaveText('Activity Log');
+ await page.locator('#sidebar .nav-item[data-view="stats"]').click();
+ await expect(page.locator('.dp-stats-heading')).toHaveText('By The Numbers');
+});
+
+/* DP 1.0.13 Settings consolidation.
+ *
+ * Archive Passwords stopped depending on Apply Settings. The specialized
+ * masked line editor is unchanged; what changed is that the field it carries
+ * is now an ordinary declared control of the canonical `settings-document`
+ * scope, committed at the composite control's own boundary -- focus leaving
+ * the editor -- rather than by a deferred footer write. The invariants these
+ * cases have always owned survive verbatim: an edit reaches the backend, it
+ * survives rerender, navigation and a fresh reload, a hydration that lands
+ * after the write cannot clobber it, the whole multi-row list is submitted,
+ * and nothing ever asks for a clear on its own.
+ */
+const extractionRoutes = async (page, state) => {
+ await page.route('**/api/settings/extraction-passwords',async route=>{
+  if(state.gate&&state.saved){state.postSaveReads+=1;await state.gate;}
+  else if(state.hydrateGate){await state.hydrateGate;}
+  await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({passwords:state.passwords})});
+ });
+ await page.route(/\/api\/settings(?:\?.*)?$/,async route=>{
+  const request=route.request();
+  if(request.method()==='GET'){
+   const response=await route.fetch();const body=await response.json();
+   body.extraction_password='';body.extraction_password_configured=Boolean(state.passwords);
+   await route.fulfill({response,json:body});return;
+  }
+  if(request.method()!=='PUT'){await route.continue();return;}
+  const payload=request.postDataJSON();state.puts.push(payload);
+  const clears=new Set(payload.clear_secrets||[]);
+  if(clears.has('extraction_password'))state.passwords='';
+  else if(String(payload.extraction_password||'').trim())state.passwords=String(payload.extraction_password).trim();
+  state.saved=true;
+  await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({...payload,extraction_password:'',extraction_password_configured:Boolean(state.passwords),ok:true})});
+ });
+};
+
+const openExtraction = async page => {
+ await ready(page);await page.evaluate(async()=>{nav(document.querySelector('[data-view="settings"]'));await loadSettings();});
+ await page.locator('#view-settings [data-tab="extraction"]:not(.dp-motion-still *)').click();
+};
+
+/* The composite control's commit boundary: focus leaves the editor. */
+const leaveEditor = page => page.locator('#dp-settings-field-extract-max-concurrent').click();
+
+test('Archive Passwords persist edits across the commit boundary, rerender, navigation, and fresh reload',async({page})=>{
+ let releasePostSaveHydrate;
+ const state={passwords:'alpha\nbeta',saved:false,postSaveReads:0,puts:[]};
+ state.gate=new Promise(resolve=>{releasePostSaveHydrate=resolve;});
+ await extractionRoutes(page,state);
+ await openExtraction(page);
+ const source=page.locator('#view-settings [data-panel="extraction"] [data-setting="extraction_password"]');
+ await expect.poll(()=>source.inputValue()).toBe('alpha\nbeta');
+ let rows=page.locator('.dp-settings-extraction-password-editor .dp-settings-password-line');await expect(rows).toHaveCount(3);
+ await rows.nth(0).fill('gamma');
+ await expect.poll(()=>source.inputValue()).toBe('gamma\nbeta');
+
+ // No Apply exists on this tab at all; leaving the editor is the whole act.
+ await expect(page.locator('#view-settings button[data-action="save"]')).toHaveCount(0);
+ await leaveEditor(page);
+ await expect.poll(()=>state.puts.length).toBe(1);
+ expect(state.puts[0].extraction_password).toBe('gamma\nbeta');
+ expect(state.puts[0].clear_secrets||[]).not.toContain('extraction_password');
+
+ // A hydration that lands AFTER the write must not resurrect the old list.
+ await expect.poll(()=>state.postSaveReads).toBeGreaterThanOrEqual(0);
+ await expect(source).toHaveValue('gamma\nbeta');
+ releasePostSaveHydrate();
+ await expect.poll(()=>source.inputValue()).toBe('gamma\nbeta');
+
+ await page.locator('#view-settings [data-tab="downloads"]:not(.dp-motion-still *)').click();
+ await page.locator('#view-settings [data-tab="extraction"]:not(.dp-motion-still *)').click();
+ await expect(source).toHaveValue('gamma\nbeta');
+ await page.reload();await page.waitForFunction(markers=>markers.every(marker=>Boolean(window[marker])),MARKERS);
+ await page.evaluate(async()=>{nav(document.querySelector('[data-view="settings"]'));await loadSettings();});
+ await page.locator('#view-settings [data-tab="extraction"]:not(.dp-motion-still *)').click();
+ await expect.poll(()=>source.inputValue()).toBe('gamma\nbeta');
+ rows=page.locator('.dp-settings-extraction-password-editor .dp-settings-password-line');
+ const eye=page.locator('.dp-settings-extraction-password-editor .dp-settings-password-eye');await eye.click();
+ await expect(rows.nth(0)).toHaveValue('gamma');await expect(rows.nth(1)).toHaveValue('beta');
+});
+
+test('Archive Passwords write nothing at all while hydration is pending',async({page})=>{
+ let releaseHydrate;
+ const state={passwords:'alpha\nbeta',saved:false,postSaveReads:0,puts:[]};
+ state.hydrateGate=new Promise(resolve=>{releaseHydrate=resolve;});
+ await extractionRoutes(page,state);
+ await openExtraction(page);
+
+ // The deferred clear-on-save checkbox is gone entirely -- not hidden.
+ await expect(page.locator('#view-settings [data-panel="extraction"] [data-clear-secret="extraction_password"]')).toHaveCount(0);
+
+ // Before the stored list has been read, an empty editor means "not known
+ // yet", never "no passwords": crossing the boundary must write nothing, so
+ // the stored list can be neither replaced nor cleared.
+ await leaveEditor(page);
+ await page.waitForTimeout(500);
+ for(const payload of state.puts) expect(payload.clear_secrets||[]).not.toContain('extraction_password');
+ for(const payload of state.puts) expect(String(payload.extraction_password||'')).not.toBe('');
+ expect(state.passwords).toBe('alpha\nbeta');
+
+ releaseHydrate();
+ const source=page.locator('#view-settings [data-panel="extraction"] [data-setting="extraction_password"]');
+ await expect.poll(()=>source.inputValue()).toBe('alpha\nbeta');
+});
+
+test('Archive Passwords submit the full edited multi-row list with no clear request',async({page})=>{
+ const state={passwords:'alpha\nbeta\ngamma',saved:false,postSaveReads:0,puts:[]};
+ await extractionRoutes(page,state);
+ await openExtraction(page);
+ const source=page.locator('#view-settings [data-panel="extraction"] [data-setting="extraction_password"]');
+ await expect.poll(()=>source.inputValue()).toBe('alpha\nbeta\ngamma');
+ const rows=page.locator('.dp-settings-extraction-password-editor .dp-settings-password-line');
+ await expect(rows).toHaveCount(4);
+ await rows.nth(0).fill('ALPHA');
+ await expect.poll(()=>rows.count()).toBe(4);
+ await rows.nth(3).fill('delta');
+ await expect.poll(()=>source.inputValue()).toBe('ALPHA\nbeta\ngamma\ndelta');
+ await leaveEditor(page);
+ await expect.poll(()=>state.puts.length).toBeGreaterThan(0);
+ const putBody=state.puts[state.puts.length-1];
+ expect(putBody.extraction_password).toBe('ALPHA\nbeta\ngamma\ndelta');
+ expect(putBody.clear_secrets||[]).not.toContain('extraction_password');
+ expect(state.passwords).toBe('ALPHA\nbeta\ngamma\ndelta');
+});
+
+test('Torrent and magnet source identities use the rotated Lucide Magnet while MegaUp reuses the Mega host asset',async({page})=>{
+ await ready(page);
+ const result=await page.evaluate(()=>{
+  const presentation=window.DPTransferSourcePresentation;
+  // Colours as drawn (sRGB), whatever notation the computed value uses.
+  const srgb=colour=>{const c=document.createElement('canvas').getContext('2d');c.fillStyle=colour;c.fillRect(0,0,1,1);const [r,g,b]=c.getImageData(0,0,1,1).data;return `rgb(${r}, ${g}, ${b})`;};
+  const probe=identity=>{const slot=document.createElement('span');slot.className='dp-source-icon-slot';slot.innerHTML=presentation.sourceIconMarkup(identity);document.body.appendChild(slot);const svg=slot.querySelector('svg'),img=slot.querySelector('img'),value={slotColor:srgb(getComputedStyle(slot).color),glyphColor:svg?srgb(getComputedStyle(svg).color):null,transform:svg?getComputedStyle(svg).transform:null,classes:svg?[...svg.classList]:[],pathCount:svg?.querySelectorAll('path').length||0,firstPath:svg?.querySelector('path')?.getAttribute('d')||'',src:img?.getAttribute('src')||''};slot.remove();return value;};
+  return {magnet:probe({kind:'magnet'}),torrent:probe({kind:'torrent_file'}),megaup:probe({kind:'host',host:'megaup.net'}),megaupAsset:presentation.hostAsset('cdn.megaup.net')};
+ });
+ for(const item of [result.magnet,result.torrent]){expect(item.classes).toContain('lucide-magnet');expect(item.classes).toContain('dp-source-magnet');expect(item.glyphColor).toBe('rgb(20, 255, 140)');expect(item.slotColor).not.toBe(item.glyphColor);expect(item.pathCount).toBe(3);expect(item.firstPath).toBe('m12 15 4 4');const [a,b]=item.transform.match(/matrix\(([^,]+), ([^,]+)/).slice(1).map(Number);expect(Math.round(Math.atan2(b,a)*180/Math.PI)).toBe(135);}
+ expect(result.megaup.src).toBe('/icons/hosts/mega.svg');expect(result.megaupAsset).toBe('/icons/hosts/mega.svg');
+});
+
+test('Dashboard Recent Items renders host artwork on cold load without navigation and emits one canonical event per render',async({page})=>{
+ await page.setViewportSize({width:1440,height:900});
+ const items=Array.from({length:6},(_,i)=>({
+  id:i+1,name:`Cold load transfer ${i+1}`,status:'completed',progress:100,size_bytes:1048576*(i+1),created_at:'2026-09-08 17:00:00',
+  current_source_identity:{kind:'host',host:'rapidgator.net'},current_provider_id:'alldebrid',current_provider_name:'AllDebrid',delivering_provider_id:'alldebrid',delivering_provider_name:'AllDebrid',active_provider_id:'alldebrid',active_provider_name:'AllDebrid',provider_provenance_status:'known'
+ }));
+ await page.route('**/api/torrents*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items,total:items.length,page:1,page_size:items.length})}));
+ await page.addInitScript(()=>{window.__recentEvents=0;document.addEventListener('downloadpulse:dashboard-recent-rendered',()=>{window.__recentEvents+=1;});});
+ // Dashboard is the default surface; no nav() runs at startup. The bootstrap
+ // loadRecent() fires before the lazy-loaded canonical owner registers, yet the
+ // Recent Items table must still reconcile to host artwork once the owner is ready.
+ await page.goto('/');
+ await expect(page.locator('#dash-tbody .dp-source-host-logo')).toHaveCount(6);
+ await expect.poll(()=>page.locator('#dash-tbody .dp-source-host-logo').evaluateAll(nodes=>nodes.every(node=>node.complete&&node.naturalWidth>0))).toBe(true);
+ // The cold-load render has happened and the canonical owner is registered (the
+ // shell polls the runtime speed continuously, so the network never idles).
+ await expect.poll(()=>page.evaluate(()=>typeof window.__dpRegisterRecentRenderer==='function'&&window.__recentEvents>=1)).toBe(true);
+ // The canonical owner is the sole producer of the event and the app.js
+ // entrypoint never becomes a second renderer: one explicit refresh => one event.
+ const state=await page.evaluate(async()=>{
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  const before=window.__recentEvents;
+  await window.loadRecent();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  return {registered:typeof window.__dpRegisterRecentRenderer,delta:window.__recentEvents-before};
+ });
+ expect(state.registered).toBe('function');
+ expect(state.delta).toBe(1);
+});
+
+test('Dashboard Download Activity mirrors the first fitted rows of the Downloads Priority queue, read-only',async({page})=>{
+ await page.setViewportSize({width:1440,height:900});
+ const capturedUrls=[];
+ // The server's queue order: an older queued transfer it ranks first, then a
+ // newer download, then settled history -- never re-sorted in the browser.
+ const items=[3,1,2].map((id,i)=>({
+  id,name:`Item ${id}`,status:i===1?'downloading':i===2?'completed':'queued',progress:i===2?100:10,size_bytes:1024,created_at:`2026-09-0${id}T17:00:00Z`,queue_member:i<2,
+  current_source_identity:{kind:'link'},current_provider_id:'alldebrid',active_provider_id:null,active_provider_name:null,active_provider_basis:'ambiguous',provider_provenance_status:'known'
+ }));
+ // List reads wait until the initial placeholder has been read.
+ let release;const released=new Promise(resolve=>{release=resolve;});
+ await page.route('**/api/torrents*',async route=>{capturedUrls.push(route.request().url());await released;return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items,total:items.length})});});
+ await page.goto('/');
+ await expect(page.locator('#dash-activity-count')).toHaveText('Loading downloads…');
+ release();
+ await expect(page.locator('#dash-tbody tr[data-torrent-id]')).toHaveCount(3);
+ // The Dashboard's reads: every list read but Downloads' paged ones and the
+ // input-required scan (ui-auth-required.js).
+ const isDashboardRead=u=>u.pathname==='/api/torrents'&&!u.searchParams.has('offset')&&u.searchParams.get('status')!=='input_required';
+ const dashboardReads=capturedUrls.map(u=>new URL(u)).filter(isDashboardRead);
+ expect(dashboardReads.length).toBeGreaterThan(0);
+ for(const url of dashboardReads){
+  expect(url.searchParams.get('order')).toBe('queue');
+  expect(url.searchParams.has('status')||url.searchParams.has('search')).toBe(false);
+ }
+ // The first N of the whole queue, N being the Dashboard's own fitted row count.
+ await expect.poll(async()=>Number(capturedUrls.map(u=>new URL(u)).filter(isDashboardRead).at(-1).searchParams.get('limit'))).toBe(await page.evaluate(()=>_dashboardRecentFitLimit));
+ expect(await page.locator('#dash-tbody tr[data-torrent-id]').evaluateAll(rows=>rows.map(r=>Number(r.dataset.torrentId)))).toEqual([3,1,2]);
+ // Read-only for priority: no grip, no drag cell, no queue menu.
+ await expect(page.locator('#dash-tbody .dp-queue-grip, #dash-tbody [data-queue-drag]')).toHaveCount(0);
+ await page.locator('#dash-tbody tr[data-torrent-id="1"] td').nth(3).click({button:'right'});
+ await expect(page.locator('.dp-row-menu')).toHaveCount(0);
+ // The card heading is Download Activity; its count line says how many rows it shows.
+ await expect(page.locator('#dash-activity-card .card-title .dp-card-heading-copy > span').first()).toHaveText('Download Activity');
+ await expect(page.locator('#dash-activity-count')).toHaveText('3 downloads shown');
+ await page.unroute('**/api/torrents*');
+ for(const [rows,text] of [[items.slice(0,1),'1 download shown'],[[],'No downloads to show']]){
+  await page.route('**/api/torrents*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:rows,total:rows.length})}));
+  await page.evaluate(()=>loadRecent());
+  await expect(page.locator('#dash-activity-count')).toHaveText(text);
+  await page.unroute('**/api/torrents*');
+ }
+});
+
+const DASH_WIDE_WIDTHS=[1390,1440,1560,1600,1920,2200];
+// The Dashboard Recent owner replaces #dash-tbody after every read (its startup refresh, its own fit
+// re-check, resize/SSE/polling refreshes), so rows injected for a geometry probe can be swept away by
+// a late render. Refreshes are coalesced and run one fetch+render at a time: once the owner's next
+// read is parked at the network boundary every earlier render has finished and none can run until the
+// returned release() is called, so the probe measures a DOM no render can replace.
+async function parkDashboardRecent(page){
+ let markParked,open;const parked=new Promise(resolve=>{markParked=resolve;}),gate=new Promise(resolve=>{open=resolve;});
+ const isRecentRead=url=>url.pathname==='/api/torrents'&&url.searchParams.get('order')==='queue'&&!url.searchParams.has('offset');
+ const hold=async route=>{markParked();await gate;await route.continue().catch(()=>{});};
+ await page.route(isRecentRead,hold);
+ await page.evaluate(()=>{loadRecent().catch(()=>{});});
+ await parked;
+ return async()=>{open();await page.unroute(isRecentRead,hold).catch(()=>{});};
+}
+const DASH_ROW_HTML='<tr data-torrent-id="1" data-status="downloading"><td>Name</td><td>Status</td><td>Progress</td><td>1MB</td><td>today</td><td><div class="actions"><button class="btn btn-blue btn-sm">Pause</button></div></td></tr>';
+
+// 1.0.14: Add sits inside Quick Add's field (operator decision), so it left the
+// shared action centerline; Recover All and the row actions keep it.
+test('Dashboard shares one action centerline across Recover All and the row action button; Add sits inside Quick Add\'s field at its right, centred',async({page})=>{
+ for(const theme of ['dark','light']){
+  for(const width of DASH_WIDE_WIDTHS){
+   await page.setViewportSize({width,height:900});
+   await ready(page);
+   const release=await parkDashboardRecent(page);
+   if(theme==='light')await page.evaluate(()=>document.body.classList.add('light'));
+   await page.evaluate(html=>{document.getElementById('dash-tbody').innerHTML=html;},DASH_ROW_HTML);
+   const centers=await page.evaluate(()=>{
+    const centerOf=el=>{const r=el.getBoundingClientRect();return (r.left+r.right)/2;};
+    return {
+     recover:centerOf(document.getElementById('btn-recover-all')),
+     action:centerOf(document.querySelector('#dash-tbody .actions .btn')),
+     add:(()=>{const a=document.getElementById('btn-add-transfer').getBoundingClientRect(),f=document.querySelector('#view-dashboard .direct-link-entry').getBoundingClientRect(),
+       t=document.getElementById('q-transfer-input').getBoundingClientRect();
+       return {right:f.right-a.right,middle:Math.abs((a.top+a.bottom)/2-(f.top+f.bottom)/2),inside:a.left>=f.left&&a.top>=f.top&&a.bottom<=f.bottom,textEnds:t.right<=a.left};})(),
+    };
+   });
+   await release();
+   expect(Math.abs(centers.recover-centers.action)).toBeLessThanOrEqual(1);
+   expect(centers.add.inside).toBe(true);
+   expect(centers.add.textEnds).toBe(true);
+   expect(Math.abs(centers.add.right-11)).toBeLessThanOrEqual(0.5);
+   expect(centers.add.middle).toBeLessThanOrEqual(0.5);
+  }
+ }
+});
+
+test('Dashboard Recent Activity table/rows reach the card\'s full right content edge without moving any column',async({page})=>{
+ for(const theme of ['dark','light']){
+  for(const width of DASH_WIDE_WIDTHS){
+   await page.setViewportSize({width,height:900});
+   await ready(page);
+   const release=await parkDashboardRecent(page);
+   if(theme==='light')await page.evaluate(()=>document.body.classList.add('light'));
+   await page.evaluate(html=>{document.getElementById('dash-tbody').innerHTML=html;},DASH_ROW_HTML);
+   const geometry=await page.evaluate(()=>{
+    const rect=el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right};};
+    const wrap=document.querySelector('.dash-activity-table-wrap');
+    const table=document.querySelector('.dp-dashboard-activity .t-table');
+    const theadRow=document.querySelector('.dp-dashboard-activity .t-table thead tr');
+    const tbodyRow=document.querySelector('#dash-tbody tr');
+    const nameCell=tbodyRow.children[0];
+    const actionCell=tbodyRow.children[5];
+    const track=parseFloat(getComputedStyle(document.getElementById('view-dashboard')).getPropertyValue('--dp-dashboard-action-track'));
+    const inset=parseFloat(getComputedStyle(document.getElementById('view-dashboard')).getPropertyValue('--dp-dashboard-action-inset'));
+    return {
+     wrap:rect(wrap),table:rect(table),theadRow:rect(theadRow),tbodyRow:rect(tbodyRow),
+     nameCell:rect(nameCell),actionCell:rect(actionCell),track,inset,
+    };
+   });
+   await release();
+   // The dead strip this test guards against: table/row painting must reach
+   // the wrapper's own right content edge, not stop `inset` short of it.
+   expect(Math.abs(geometry.table.right-geometry.wrap.right)).toBeLessThanOrEqual(1);
+   expect(Math.abs(geometry.theadRow.right-geometry.wrap.right)).toBeLessThanOrEqual(1);
+   expect(Math.abs(geometry.tbodyRow.right-geometry.wrap.right)).toBeLessThanOrEqual(1);
+   // Name still starts flush with the wrapper's own left edge (unmoved).
+   expect(Math.abs(geometry.nameCell.left-geometry.wrap.left)).toBeLessThanOrEqual(1);
+   // The Action cell -- not a compensating layer -- is the one column
+   // whose own right edge legitimately extends into the recovered inset,
+   // and its width equals the shared track plus that inset, relationally.
+   expect(Math.abs(geometry.actionCell.right-geometry.wrap.right)).toBeLessThanOrEqual(1);
+   expect(Math.abs((geometry.actionCell.right-geometry.actionCell.left)-(geometry.track+geometry.inset))).toBeLessThanOrEqual(1);
+  }
+ }
+});
+
+// Recent Activity's fixed tracks are the table's own, not the Dashboard's six-
+// or three-card composition: below 1390px (the tablet, to 780px) they hold too,
+// still with no wrapper inset, the table reaching the card's right edge.
+test('Below the 1390px desktop boundary, Recent Activity keeps its fixed tracks and no wrapper inset',async({page})=>{
+ for(const width of [1389,1200]){
+  await page.setViewportSize({width,height:900});
+  await ready(page);
+  await page.evaluate(html=>{document.getElementById('dash-tbody').innerHTML=html;},DASH_ROW_HTML);
+  const info=await page.evaluate(()=>{
+   const table=document.querySelector('.dp-dashboard-activity .t-table');
+   const wrap=document.querySelector('.dash-activity-table-wrap');
+   return {
+    tableLayout:getComputedStyle(table).tableLayout,
+    wrapPaddingRight:getComputedStyle(wrap).paddingRight,
+    wrapRight:wrap.getBoundingClientRect().right,
+    tableRight:table.getBoundingClientRect().right,
+   };
+  });
+  expect(info.tableLayout).toBe('fixed');
+  expect(parseFloat(info.wrapPaddingRight)).toBe(0);
+  expect(Math.abs(info.tableRight-info.wrapRight)).toBeLessThanOrEqual(1);
+ }
+});
+
+test('Download speed custom cap reads Set Custom and still applies on Enter and click',async({page})=>{
+ await page.setViewportSize({width:1440,height:900});
+ const bodies=[];
+ // DP 1.0.12 canonical architecture correction: the neutral runtime-limit
+ // surface, not the aria2-specific route, is the write authority for live
+ // bandwidth (specification section 9.6) -- see app.js `_setDownloadSpeedCap`.
+ await page.route('**/api/execution/runtime-limits',route=>{
+  if(route.request().method()!=='PATCH')return route.continue();
+  bodies.push(route.request().postDataJSON());
+  return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,configured:{max_download_bytes_per_second:route.request().postDataJSON().max_download_bytes_per_second},effective:{max_download_bytes_per_second:route.request().postDataJSON().max_download_bytes_per_second},last_apply_error:null})});
+ });
+ await ready(page);
+ await page.evaluate(()=>{document.getElementById('runtime-cap-menu').hidden=false;});
+ const button=page.locator('.runtime-cap-custom button');
+ await expect(button).toHaveText('Set Custom');
+ const input=page.locator('#runtime-cap-custom-mbps');
+ await input.fill('7');
+ await input.press('Enter');
+ await expect.poll(()=>bodies.length).toBe(1);
+ expect(bodies[0].max_download_bytes_per_second).toBe(Math.round(7*1048576));
+ // A successful apply closes the menu (existing behavior) -- reopen it.
+ await page.evaluate(()=>{document.getElementById('runtime-cap-menu').hidden=false;});
+ await input.fill('12');
+ await button.click();
+ await expect.poll(()=>bodies.length).toBe(2);
+ expect(bodies[1].max_download_bytes_per_second).toBe(Math.round(12*1048576));
+ // Presets still apply immediately.
+ await page.evaluate(()=>{document.getElementById('runtime-cap-menu').hidden=false;});
+ await page.locator('.runtime-cap-options button', {hasText:'1 MB/s'}).click();
+ await expect.poll(()=>bodies.length).toBe(3);
+ expect(bodies[2].max_download_bytes_per_second).toBe(1048576);
+});
+
+test('Downloads Provider Inventory icon and provider badge share canonical alignment on the Name second line',async({page})=>{
+ await page.setViewportSize({width:1600,height:900});
+ const common={status:'completed',presentation_status:'completed',progress:100,size_bytes:1048576,created_at:'2026-09-08 12:00:00',current_source_identity:{kind:'link'},current_provider_id:'alldebrid',current_provider_name:'AllDebrid',delivering_provider_id:'alldebrid',delivering_provider_name:'AllDebrid',active_provider_id:'alldebrid',active_provider_name:'AllDebrid',provider_provenance_status:'recorded'};
+ const items=[
+  {...common,id:71,name:'Direct',hash:'direct:71',source:'direct_link'},
+  {...common,id:72,name:'Inventory',hash:'inventory:72',source:'alldebrid_existing'},
+  {...common,id:73,name:'General HTTP',hash:'direct:73',source:'direct_link',current_provider_id:'general_http',current_provider_name:'HTTP & HTTPS',delivering_provider_id:'general_http',delivering_provider_name:'HTTP & HTTPS',active_provider_id:'general_http',active_provider_name:'HTTP & HTTPS'}
+ ];
+ await page.route('**/api/torrents*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items,total:3,page:1,page_size:3})}));
+ await ready(page);await page.evaluate(async()=>{nav(document.querySelector('[data-view="torrents"]'));await loadTorrents();});
+ // 1.0.14: the provider identity is the Name column's second line; the source caption ("Direct link",
+ // "Provider inventory") no longer repeats in the list -- Details says it (details-submitted-as.spec.js).
+ const lines=page.locator('#t-tbody .dp-downloads-name-cell .dp-transfer-provider-meta');await expect(lines).toHaveCount(3);
+ await expect(page.locator('#t-tbody .dp-transfer-source-label')).toHaveCount(0);
+ const geometry=await lines.evaluateAll(nodes=>nodes.map(line=>{const cell=line.closest('.dp-downloads-name-cell'),title=cell.querySelector('.t-name'),slot=line.querySelector('.dp-source-icon-slot'),chip=line.querySelector('.dp-provider-chip'),icon=slot||chip.querySelector('.dp-provider-glyph');const box=node=>{const r=node.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,width:r.width,height:r.height,centerY:r.top+r.height/2,scrollWidth:node.scrollWidth,clientWidth:node.clientWidth};};const pad=Number.parseFloat(getComputedStyle(cell).paddingRight)||0;return{cell:{...box(cell),right:box(cell).right-pad},title:box(title),line:box(line),icon:box(icon),chip:box(chip),glyphInside:!slot};}));
+ // A protocol identity (General HTTP) carries its glyph inside the badge, so the badge leads the line.
+ expect(geometry.map(row=>row.glyphInside)).toEqual([false,false,true]);
+ for(const row of geometry){expect(Math.abs(row.line.left-row.title.left)).toBeLessThanOrEqual(0.75);expect(Math.abs((row.glyphInside?row.chip:row.icon).left-row.line.left)).toBeLessThanOrEqual(0.75);expect(Math.abs(row.icon.centerY-row.chip.centerY)).toBeLessThanOrEqual(0.75);expect(row.chip.right).toBeLessThanOrEqual(row.cell.right+0.5);expect(row.chip.scrollWidth).toBeLessThanOrEqual(row.chip.clientWidth);}
+ expect(Math.abs(geometry[0].line.left-geometry[1].line.left)).toBeLessThanOrEqual(0.75);
+ expect(Math.abs(geometry[0].icon.left-geometry[1].icon.left)).toBeLessThanOrEqual(0.75);
+ expect(Math.abs(geometry[0].chip.left-geometry[1].chip.left)).toBeLessThanOrEqual(0.75);
+ expect(Math.abs(geometry[0].icon.left-geometry[2].chip.left)).toBeLessThanOrEqual(0.75);
+});
+
+test('Dashboard common-source group launcher renders only for 2+ common hosts, in [source][provider][network N] order',async({page})=>{
+ await page.setViewportSize({width:1600,height:900});
+ const base={status:'completed',progress:100,size_bytes:1048576,created_at:'2026-09-08 17:00:00',current_provider_id:'alldebrid',current_provider_name:'AllDebrid',delivering_provider_id:'alldebrid',delivering_provider_name:'AllDebrid',active_provider_id:'alldebrid',active_provider_name:'AllDebrid',provider_provenance_status:'known'};
+ const items=[
+  {...base,id:1,name:'One common host',current_source_identity:{kind:'host',host:'rapidgator.net'},common_candidate_count:1},
+  {...base,id:2,name:'Two common hosts',current_source_identity:{kind:'host',host:'rapidgator.net'},common_candidate_count:3},
+ ];
+ await page.route('**/api/torrents*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items,total:items.length})}));
+ await ready(page);
+ await expect(page.locator('#dash-tbody tr[data-torrent-id]')).toHaveCount(2);
+ await expect(page.locator('#dash-tbody tr[data-torrent-id="1"] .dp-candidate-chip')).toHaveCount(0);
+ const launcher=page.locator('#dash-tbody tr[data-torrent-id="2"] .dp-group-candidate-launcher');
+ await expect(launcher).toHaveCount(1);
+ // The row's drawn controls, in order (the main part of its summary, 1cc4f2e1); the size it
+ // closes with (shown there only in a narrow table) is a value after them, not one of them.
+ const order=await page.locator('#dash-tbody tr[data-torrent-id="2"] .dp-transfer-provider-meta').evaluate(meta=>{const main=meta.querySelector(':scope > .dp-transfer-meta-main');return [...[...main.children].filter(node=>node.getClientRects().length),...[...meta.children].filter(node=>node!==main)].map(node=>node.className.split(' ')[0]);});
+ expect(order.filter(name=>name!=='dp-recent-size')).toEqual(['dp-source-icon-slot','dp-provider-chip','dp-candidate-chip']);
+ expect(order.at(-1)).toBe('dp-recent-size');
+ await expect(launcher.locator('svg[data-dp-lucide="network"]')).toHaveCount(1);
+ await expect(launcher.locator('.dp-candidate-chip-count')).toHaveText('3');
+ // DP 1.0.12 Defect 1: the dense list launcher is glyph+count only now: the
+ // word "Candidates" moved to the Details Files-header labeled variant
+ // (see group-candidates.spec.js Case A/B). Descriptive text remains in the
+ // accessible name/title instead.
+ await expect(launcher).not.toContainText('Candidates');
+ await expect(launcher).toHaveAttribute('aria-label',/sources are common to every file/);
+ await expect(launcher).toHaveJSProperty('tagName','BUTTON');
+ await expect(launcher).toHaveAttribute('aria-haspopup','dialog');
+ await expect(launcher).toHaveAttribute('aria-expanded','false');
+ await expect(launcher).toHaveAttribute('data-dp-transfer-id','2');
+ // Light theme keeps the launcher legible.
+ await page.locator('#theme-toggle').click();
+ expect(await page.evaluate(()=>document.body.classList.contains('light'))).toBe(true);
+ await expect(launcher).toBeVisible();
+ const lightBorder=await launcher.evaluate(node=>getComputedStyle(node).borderTopWidth);
+ expect(parseFloat(lightBorder)).toBeGreaterThan(0);
+});
+
+test('Downloads common-source group launcher joins the Name second line for 2+ common hosts only, in [source][provider][network N] order',async({page})=>{
+ await page.setViewportSize({width:1600,height:900});
+ const common={status:'completed',progress:100,size_bytes:1048576,created_at:'2026-09-08 12:00:00',current_source_identity:{kind:'host',host:'rapidgator.net'},current_provider_id:'alldebrid',current_provider_name:'AllDebrid',delivering_provider_id:'alldebrid',delivering_provider_name:'AllDebrid',active_provider_id:'alldebrid',active_provider_name:'AllDebrid',provider_provenance_status:'recorded',source:'direct_link'};
+ const items=[
+  {...common,id:81,name:'One common',hash:'direct:81',common_candidate_count:1},
+  {...common,id:82,name:'Two common',hash:'direct:82',common_candidate_count:4},
+ ];
+ await page.route('**/api/torrents*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items,total:2,page:1,page_size:2})}));
+ await ready(page);await page.evaluate(async()=>{nav(document.querySelector('[data-view="torrents"]'));await loadTorrents();});
+ await expect(page.locator('#t-tbody .dp-downloads-name-cell .dp-transfer-provider-meta')).toHaveCount(2);
+ const singleCells=await page.locator('#t-tbody tr[data-torrent-id="81"] > td').count();
+ const multiCells=await page.locator('#t-tbody tr[data-torrent-id="82"] > td').count();
+ expect(multiCells).toBe(singleCells);
+ await expect(page.locator('#t-tbody tr[data-torrent-id="81"] .dp-candidate-chip')).toHaveCount(0);
+ const line=page.locator('#t-tbody tr[data-torrent-id="82"] .dp-downloads-name-cell .dp-transfer-provider-meta');
+ const launcher=line.locator('.dp-group-candidate-launcher');
+ await expect(launcher).toHaveCount(1);
+ // The row's drawn controls, in order (the main part of its summary, 1cc4f2e1); the size it closes with
+ // (shown there only in a narrow table) is a value after them.
+ const order=await line.evaluate(node=>{const main=node.querySelector(':scope > .dp-transfer-meta-main');
+  return [...[...main.children].filter(child=>child.getClientRects().length),...[...node.children].filter(child=>child!==main)]
+   .map(child=>child.className.split(' ')[0]);});
+ expect(order.filter(name=>name!=='dp-downloads-size')).toEqual(['dp-source-icon-slot','dp-provider-chip','dp-candidate-chip']);
+ expect(order.at(-1)).toBe('dp-downloads-size');
+ await expect(page.locator('#t-tbody tr[data-torrent-id="82"] .dp-transfer-source-label')).toHaveCount(0);
+ await expect(launcher.locator('.dp-candidate-chip-count')).toHaveText('4');
+ await expect(launcher).toHaveJSProperty('tagName','BUTTON');
+ const geometry=await page.locator('#t-tbody tr[data-torrent-id="82"]').evaluate(row=>{
+  const cell=row.querySelector('.dp-downloads-name-cell');
+  const chip=row.querySelector('.dp-candidate-chip');
+  const chipRect=chip.getBoundingClientRect(),cellRect=cell.getBoundingClientRect();
+  return {withinCell:chipRect.right<=cellRect.right+0.5,noClip:chip.scrollWidth<=chip.clientWidth,rowHeight:row.getBoundingClientRect().height};
+ });
+ expect(geometry.withinCell).toBe(true);
+ expect(geometry.noClip).toBe(true);
+});
+
+test('Details candidate switch remains available after comprehensive presentation refresh',async({page})=>{
+ const candidate=(id,source,active)=>({candidate_id:id,source_label:source,provider_id:'alldebrid',relationship:'Original',dispositions:active?['Active']:[],is_selected:active,is_active:active,is_delivering:false,switch_eligible:!active});
+ const detail={id:990,name:'Candidate review fixture',status:'downloading',progress:42,size_bytes:1024,source:'direct_link',label:'',hash:'',created_at:'2026-09-06T10:00:00Z',current_provider_id:'alldebrid',current_provider_name:'AllDebrid',active_provider_id:'alldebrid',active_provider_name:'AllDebrid',route_attempts:[],execution_attempts:[],executors:['aria2'],source_outcomes:[],events:[],files:[{id:502,filename:'fixture.rar',size_bytes:1024,status:'downloading',blocked:false,block_reason:null,candidate_count:2,acquisition_candidates:[candidate('a','rapidgator.net',true),candidate('b','megaup.net',false)]}]};
+ // Every detail read is stamped with a monotonically increasing revision that the owner renders into
+ // the file row, so the test synchronizes on the presentation boundary itself (the owner re-rendering
+ // its rows from a fresh read) instead of on how many reads the live app happened to issue. Once
+ // armed, refresh reads are parked on a test-owned gate rather than delayed by wall-clock time.
+ let revision=0,gate=null,parked=null;
+ await page.route(url=>url.pathname==='/api/torrents/990',async route=>{
+  const stamp=++revision;
+  if(gate){parked.resolve();await gate.promise;}
+  await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({...detail,files:[{...detail.files[0],filename:`fixture-r${stamp}.rar`}]})});
+ });
+ const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return{promise,resolve};};
+ const renderedRevision=()=>page.locator('tr[data-dp-artifact-id="502"] .dp-detail-filename-copy').textContent().then(text=>Number((/^fixture-r(\d+)\.rar$/.exec(text.trim())||[])[1]||0));
+ await ready(page);await page.evaluate(()=>showDetail(990));await page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure').click();
+ // The open source panel and its Switch action must survive a comprehensive list refresh: the owner
+ // re-reads the transfer and re-renders its own rows.
+ const panel=page.locator('tr[data-dp-candidate-owner="502"]');await expect(panel).toBeVisible();await expect(panel.locator('.dp-detail-candidate-switch')).toHaveCount(1);
+ const before=await renderedRevision();expect(before).toBeGreaterThanOrEqual(1);
+ gate=deferred();parked=deferred();
+ await page.evaluate(()=>document.dispatchEvent(new CustomEvent('downloadpulse:downloads-rendered')));
+ // The owner's refresh read is now in flight: the panel must stay open and actionable meanwhile.
+ await parked.promise;
+ await expect(panel).toBeVisible();await expect(panel.locator('.dp-detail-candidate-switch')).toHaveCount(1);
+ gate.resolve();gate=null;
+ // Release, then wait for the owner to re-render its rows from a read newer than the one rendered before.
+ await expect.poll(renderedRevision).toBeGreaterThan(before);
+ await expect(panel).toBeVisible();await expect(panel.locator('.dp-detail-candidate-switch')).toHaveCount(1);await expect(panel.locator('.dp-detail-candidate-switch')).toHaveText('Switch to this source');
+ await expect(page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure')).toHaveAttribute('aria-expanded','true');
+});

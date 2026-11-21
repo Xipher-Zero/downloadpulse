@@ -1,0 +1,207 @@
+"""Neutral recovery/materialization primitives shared by every engine
+composition (DP 1.0.12 canonical lifecycle/recovery/completion rework,
+CANON-001 closure).
+
+This layer owns no recovery or control *decision* authority: pause, resume,
+bulk pause/resume, retry (operator retry and terminal-transfer reacquisition
+alike), refresh, candidate-refresh scheduling, and recovery/candidate
+activation each have exactly one implementation in the production
+hierarchy -- ``transfers.convergence_engine.TransferEngine`` -- and no lower
+class, including this one and ``_engine_base.TransferEngine`` below it,
+defines any of those names at all. There is nothing to delegate to, refuse,
+or fall back on: a composition that never layers
+``convergence_engine.TransferEngine`` on top (e.g. a test harness) simply
+lacks those operations, by design, not by an inherited stub.
+
+What remains here are facts and mechanics every composition needs regardless
+of which recovery-decision owner sits above it, none of which independently
+decide or persist a recovery/lifecycle transition: collection affinity,
+cohort-locked materialization, recovery-context assembly,
+and next-alternate-candidate traversal. Completion is deliberately absent:
+what a SUCCEEDED observation proves about the payload -- including which
+compatible size is materially real -- has exactly one owner
+(``_engine_base._execution_result`` over ``transfers.filesystem`` and
+``transfers.size_evidence``), never a layer above it.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from transfers._engine_base import TransferEngine as _QualifiedTransferEngine, _EvidenceAuth
+from transfers import provider_choice
+from transfers.applicability import ApplicabilityUnresolved
+from transfers.cohorts import converge_collection_ownership, coordinate_collection, own_routes_to_prove
+from transfers.mirrors import EvidenceContext
+from transfers.models import Artifact, ExecutionSubject
+from transfers.policy import RecoveryContext
+
+
+class TransferEngine(_QualifiedTransferEngine):
+    """Qualified lifecycle plus progress-aware universal recovery behavior."""
+
+    def _collection_affinity_lock(self, transfer_id: int) -> asyncio.Lock:
+        return self._collection_affinity_locks.setdefault(transfer_id, asyncio.Lock())
+
+    async def _ensure_collection_affinity(self, transfer_id: int) -> bool:
+        transfer = await self.repository.get(transfer_id)
+        if transfer is None or transfer.source != "direct_link":
+            return False
+        async with self._collection_affinity_lock(transfer_id):
+            transfer = await self.repository.get(transfer_id)
+            if transfer is None or transfer.source != "direct_link":
+                return False
+            records = await self.repository.requests(transfer_id)
+            roots = tuple(record for record in records if record.parent_id is None)
+            if len(roots) <= 1:
+                return False
+            if await self.repository.collection_route_authority(transfer_id):
+                return False
+            for record in records:
+                if await self.repository.bound_route_provider(record.id):
+                    return False
+            try:
+                authority = self.registry.collection_route_authority(tuple(record.request for record in roots))
+            except ApplicabilityUnresolved:
+                return True
+            if authority:
+                await self.repository.establish_collection_route_authority(transfer_id)
+            return False
+
+    async def _prepare_collection_affinity(self) -> set[int]:
+        blocked = set()
+        for transfer in await self.repository.active():
+            if transfer.source == "direct_link" and await self._ensure_collection_affinity(transfer.id):
+                blocked.add(transfer.id)
+        return blocked
+
+    async def _process_request(self, record):
+        if record.transfer_id in getattr(self, "_collection_affinity_blocked", set()):
+            return
+        if await self._ensure_collection_affinity(record.transfer_id):
+            return
+        return await super()._process_request(record)
+
+    def _candidate_provider_enabled(self, candidate) -> bool:
+        if candidate is None or not candidate.provider_id:
+            return True
+        provider = self.registry.providers.get(candidate.provider_id)
+        return bool(provider and provider.descriptor.enabled)
+
+    async def _materialize(self, record, candidates):
+        # One evidence context per materialization decision: its
+        # authentication boundary, the cohort decision and the canonical
+        # attach/allocate step that follows read the same acquisitions.
+        evidence = EvidenceContext()
+        # A settled contributor (its only decision is reconsidering an
+        # unverified association) holds no lineage input any more and can ask
+        # nobody: its sources are re-proven only with access a live lineage
+        # already proved (a proof lease), never by a question.
+        settled = not await self._live(record.transfer_id)
+        # A requirement of this request's own candidates is matched by the
+        # one authentication-input owner before anyone is asked.
+        evidence.bind(_EvidenceAuth(self, record.transfer_id, await self._lineage(record.transfer_id, record.id),
+                                    () if settled else candidates))
+        carried = self._evidence_carried.pop(record.id, None)
+        if carried is not None:
+            evidence.seed(carried[1])
+        if not settled and await self._authentication_boundary(
+                record, await own_routes_to_prove(self, record, candidates), evidence):
+            # This request waits on its own operator question: nothing of it
+            # is decided, and no other source's decision was waited for.
+            await self._hand_off_proven(record, evidence)
+            return
+        lock = self._cohort_locks.setdefault(record.transfer_id, asyncio.Lock())
+        async with lock:
+            try:
+                # ``record`` is the caller's snapshot, taken before this lock:
+                # a sibling's decision holding it may have settled this
+                # request meanwhile (a cohort attaches its siblings). The
+                # decision is made from durable truth -- settled work gets no
+                # evidence acquisition, no lineage material, no mutation.
+                if not any(item.id == record.id and item.state == "materializing"
+                           for item in await self.repository.requests(record.transfer_id)):
+                    return
+                before = await self._candidate_signature(record.transfer_id)
+                # A switched root of a multi-source transfer lands in its
+                # replaced candidates' place; nothing else is decided for it.
+                if (not await self._land_root_replacement(record, candidates)
+                        and not await coordinate_collection(self, record, candidates, evidence)):
+                    await super()._materialize(record, candidates, evidence=evidence)
+                    artifact = next((item for item in await self.repository.artifacts(record.transfer_id)
+                                     if item.request_id == record.id), None)
+                    if artifact is not None and len(artifact.candidates) >= 2:
+                        for candidate in artifact.candidates:
+                            await self.canonical.origin_for(artifact, candidate)
+            finally:
+                await self._hand_off_proven(record, evidence)
+            # Whatever this decision attached or allocated may have completed
+            # the evidence that this transfer and another are one collection.
+            await converge_collection_ownership(self, record.transfer_id)
+            # A provider's copy that landed here may fulfil an operator's
+            # pending provider choice: decided now, outside the cohort lock.
+            await provider_choice.reconcile(self, (record.transfer_id,))
+            # The decision is committed: a changed candidate set is published
+            # now, never held until unrelated resolutions of the pass finish.
+            if await self._candidate_signature(record.transfer_id) != before:
+                self._candidates_committed(record.transfer_id)
+
+    async def _next_alternate_index(self, artifact: Artifact) -> int | None:
+        """First eligible, not-yet-attempted candidate in index order (DP 1.0.12
+        recovery leveling, Section 12).
+
+        Traversal is no longer defined by ``selected + 1`` -- the currently
+        selected index says nothing about which candidates were already tried
+        (an operator may have jumped directly to a high index). The durable
+        ``candidate_attempt_history`` (transfers.repository.TransferRepository
+        .record_candidate_attempt) is the actual attempt record; a lower-index
+        candidate that was never activated remains eligible regardless of how
+        far the selection has moved past it.
+        """
+        attempted = frozenset(
+            str(item) for item in
+            (await self.repository.recovery_context(artifact.id)).get("candidate_attempt_history") or ()
+        )
+        for index, candidate in enumerate(artifact.candidates):
+            if index == artifact.selected or str(candidate.id) in attempted:
+                continue
+            if not self._candidate_provider_enabled(candidate):
+                continue
+            if not self.registry.claimants(ExecutionSubject.of(candidate)):
+                continue
+            if await self.canonical.origin_for(artifact, candidate) is None:
+                continue
+            # A source in a provider quota scope under hold is not chosen now
+            # (it stays untried: once the hold requalifies it is eligible).
+            if await self._quota_held_until(artifact, candidate) is not None:
+                continue
+            return index
+        return None
+
+    async def _recovery_context(self, artifact: Artifact, *, can_refresh: bool,
+                                has_alternate: bool) -> RecoveryContext:
+        stored = await self.repository.recovery_context(artifact.id)
+        candidate = artifact.candidates[artifact.selected] if artifact.candidates else None
+        provider_ready = self._candidate_provider_enabled(candidate)
+        executor_ready = bool(candidate is None or self.registry.claimants(ExecutionSubject.of(candidate)))
+        return RecoveryContext(
+            execution_attempts=int(stored.get("execution_attempts") or 0),
+            consecutive_no_progress_failures=int(stored.get("consecutive_no_progress_failures") or 0),
+            failures_since_meaningful_progress=int(stored.get("failures_since_meaningful_progress") or 0),
+            same_signature_failures=int(stored.get("same_signature_failures") or 0),
+            candidate_refreshes=int(stored.get("candidate_refreshes") or 0),
+            candidate_switches=int(stored.get("candidate_switches") or 0),
+            recovery_epoch=int(stored.get("recovery_epoch") or 0),
+            can_refresh=can_refresh,
+            has_alternate=has_alternate,
+            provider_ready=provider_ready,
+            executor_ready=executor_ready,
+            storage_ready=bool(self.dispatch_permitted),
+            quota_held_until=await self._quota_held_until(artifact, candidate),
+        )
+
+    async def _quota_held_until(self, artifact: Artifact, candidate) -> float | None:
+        """Until when a provider quota hold keeps ``artifact`` from asking
+        through ``candidate`` (``None``: it may ask now)."""
+        if candidate is None:
+            return None
+        return await self.repository.quota_hold_until(self._quota_keys(candidate), artifact.id, self.clock())

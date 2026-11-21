@@ -1,0 +1,425 @@
+/* DownloadPulse v1.0.11 Activity Log page contract.
+ *
+ * Activity Log is a full-height operational page built from the same proven
+ * composition used by Downloads: shared card -> header -> search/filter band
+ * -> bounded transparent data viewport -> page-specific rows. The page owns
+ * only its content geometry and event-row semantics; reusable card material,
+ * controls, palette and shell depth remain shared concerns.
+ */
+
+#view-events > .dp-activity-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 0 !important;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+#view-events > .dp-activity-card > .card-header {
+  flex: 0 0 auto;
+  min-height: 70px;
+}
+
+#view-events .dp-activity-card-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+#view-events .dp-activity-title-icon {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  object-fit: contain;
+}
+
+#view-events .dp-activity-heading-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+#view-events .dp-activity-heading {
+  color: var(--dp-text-primary);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+#view-events .dp-activity-subtitle {
+  color: var(--dp-text-muted);
+  font-size: 10.5px;
+  line-height: 1.25;
+  font-weight: 400;
+}
+
+#view-events .dp-activity-refresh {
+  margin-left: auto;
+}
+
+/* The header's right-hand controls: the Auto Refresh island, then Refresh.
+   STRETCH, so the island's outer height is whatever Refresh's is (the shared
+   utility-control recipe sets it), never a number restated here. */
+#view-events .dp-activity-header-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* The Auto Refresh island: the canonical Settings island material (divider
+   border, 12px radius) around the label and the shared Settings switch. */
+#view-events .dp-activity-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+#view-events .dp-activity-live-label {
+  color: var(--dp-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#view-events .dp-activity-live input:focus-visible + .ttrack {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* On, but the live stream is not connected: the switch says so rather than
+   implying updates are arriving. */
+#view-events .dp-activity-live[data-state="unavailable"] input:checked + .ttrack {
+  background: var(--dp-state-caution);
+}
+
+/* Handheld (below 780px): the header is one row at every width -- the
+   artwork, the title over the hint, then Auto Refresh and Refresh -- never two.
+   Where it is short, fitHeader (ui-activity-log-runtime.js) gives way in one
+   order: a shorter wording of the title and the hint (drawn in place of their
+   own text, which stays their text; the hint none at all), then Refresh as its
+   glyph alone (its name and tooltip stay), then Auto Refresh out of the row (on
+   while it is). From 780px none of this applies. */
+@media (max-width: 779px) {
+  #view-events > .dp-activity-card > .card-header {
+    flex-wrap: nowrap;
+  }
+
+  #view-events .dp-activity-card-title {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  #view-events .dp-activity-header-actions {
+    flex: 0 0 auto;
+  }
+
+  #view-events :is(.dp-activity-heading, .dp-activity-subtitle) {
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  #view-events .dp-activity-heading[data-dp-copy],
+  #view-events .dp-activity-subtitle[data-dp-copy] {
+    font-size: 0;
+  }
+
+  #view-events .dp-activity-heading[data-dp-copy]::before {
+    content: attr(data-dp-copy) / "";
+    font-size: 16px;
+    letter-spacing: -.01em;
+  }
+
+  #view-events .dp-activity-subtitle[data-dp-copy]::before {
+    content: attr(data-dp-copy) / "";
+    font-size: 10.5px;
+  }
+
+  #view-events .dp-activity-subtitle[data-dp-copy=""] {
+    display: none;
+  }
+
+  #view-events > .dp-activity-card > .card-header[data-dp-fit~="quiet"] .dp-activity-live {
+    display: none;
+  }
+
+  #view-events > .dp-activity-card > .card-header[data-dp-fit~="icon"] .dp-activity-refresh > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+#view-events .dp-activity-refresh .dp-utility-icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* ── Search / filter band ─────────────────────────────────────────────── */
+/* Mirror the accepted Downloads search-band composition around the shared
+   field controls. This is structural page chrome, not the list-body material. */
+#view-events .dp-activity-search-band {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  padding: 13px 16px 14px !important;
+  border-bottom: 1px solid var(--dp-divider);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--dp-accent-purple) 5.5%, transparent),
+    transparent 76%);
+}
+
+body.light #view-events .dp-activity-search-band {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--dp-accent-purple) 4.5%, transparent),
+    transparent 78%);
+}
+
+/* One row at every width: Search takes the room, the filter control sits at
+   the far right (ui-activity-log-controls.css). */
+#view-events .dp-activity-search-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── Event viewport ───────────────────────────────────────────────────── */
+#view-events .dp-activity-list {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  background: transparent;
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+}
+
+/* Main-page events receive Activity-specific classes at the presentation
+   boundary. Transfer Details keeps the legacy .event-item implementation and
+   is therefore insulated from this page contract. */
+#view-events .dp-activity-row,
+#view-events .dp-activity-placeholder-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 12px;
+  min-width: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--dp-table-row-border);
+  background: transparent;
+  font-size: 12px;
+  transition: background-color .12s ease;
+}
+
+#view-events .dp-activity-row:hover {
+  background: var(--dp-table-row-hover);
+}
+
+#view-events .dp-activity-row:last-child {
+  border-bottom: 0;
+}
+
+#view-events .dp-activity-level {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  flex: 0 0 8px;
+}
+
+#view-events .dp-activity-copy {
+  min-width: 0;
+}
+
+#view-events .dp-activity-message {
+  color: var(--dp-text-primary);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+#view-events .dp-activity-transfer {
+  margin-top: 2px;
+  color: var(--dp-text-muted);
+  font-size: 10.5px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+#view-events .dp-activity-time {
+  color: var(--dp-text-muted);
+  font-family: var(--dp-font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#view-events .dp-activity-list > .empty {
+  background: transparent;
+}
+
+/* Optional safe diagnostic detail: disclosed on demand, never in the row. */
+#view-events .dp-activity-detail {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--dp-text-muted);
+}
+
+#view-events .dp-activity-detail > summary {
+  width: max-content;
+  cursor: pointer;
+}
+
+#view-events .dp-activity-detail > summary:focus-visible {
+  outline: 2px solid var(--dp-focus-ring, var(--accent));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+#view-events .dp-activity-detail-text {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Page navigation through the journal: the shared DP pager centred in the
+   footer, "Show newest events" (a new investigation, not a page) to its left
+   and the page count, when known, to its right. */
+#view-events .dp-activity-pagination {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--dp-table-row-border);
+}
+
+#view-events .dp-activity-newest {
+  grid-column: 1;
+  justify-self: start;
+}
+
+#view-events .dp-activity-page-btns {
+  grid-column: 2;
+}
+
+#view-events .dp-activity-page-info {
+  grid-column: 3;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+#view-events .dp-activity-pagination[hidden],
+#view-events .dp-activity-newest[hidden] {
+  display: none;
+}
+
+@media (max-width: 779px) {
+  #view-events .dp-activity-pagination {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  #view-events :is(.dp-activity-newest, .dp-activity-page-btns, .dp-activity-page-info) {
+    grid-column: 1;
+    justify-self: center;
+  }
+}
+
+/* ── Full-height workspace ────────────────────────────────────────────── */
+/* One workspace at every width, as Statistics: the card fills the content box
+   the shell gives the page (#content: from 780px its desktop gutters, below
+   it the 10px inset under the header and above the dock), its header, search
+   and pagination stay and the event list scrolls its configured page inside
+   it; #content itself does not. The global header changes at 900px on its
+   own; the workspace does not change with it. */
+#content:has(#view-events.active) {
+  overflow-y: hidden;
+}
+
+#view-events:is(.active, [data-dp-motion-outgoing]) {
+  display: flex !important;
+  flex-direction: column;
+  height: 100% !important;
+  min-height: 0;
+  overflow: visible;
+}
+
+#view-events:is(.active, [data-dp-motion-outgoing]) > .dp-activity-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Canonical user-facing Activity Log naming retained from the accepted review.
+   Internal events identifiers remain unchanged. */
+.nav-item[data-view="events"] .nav-label {
+  font-size: 0 !important;
+}
+.nav-item[data-view="events"] .nav-label::after {
+  content: 'Activity Log';
+  font-size: 13px;
+  color: inherit;
+}
+/* The desktop page title; below 780px the handheld header draws its own
+   (ui-shell-mobile.css). */
+@media (min-width: 780px) {
+  .dp-page-heading[data-page="activity_log"] #page-title {
+    font-size: 0 !important;
+  }
+  .dp-page-heading[data-page="activity_log"] #page-title::before {
+    content: 'Activity Log';
+    font-size: var(--dp-shell-title-size);
+    line-height: 1.04;
+    font-weight: 700;
+    letter-spacing: -.03em;
+    color: inherit;
+  }
+}
+.dp-page-heading[data-page="activity_log"] #page-subtitle {
+  font-size: 0 !important;
+}
+.dp-page-heading[data-page="activity_log"] #page-subtitle::before {
+  content: 'Transfer events, decisions, and alerts.';
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: inherit;
+}
+
+@media (max-width: 779px) {
+  .dp-page-heading[data-page="activity_log"] #page-subtitle::before {
+    font-size: 11.5px;
+  }
+  .etime { font-size: 10px; }
+}
+
+/* ── Event row material (DP 1.0.12 canonical flattening: migrated from the
+   retired ui-legacy-foundation.css) ─────────────────────────────────────── */
+.event-item { display: flex; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; align-items: flex-start; }
+.event-item:last-child { border-bottom: none; }
+.elevel { width: 8px; height: 8px; border-radius: 50%; margin-top: 3px; flex-shrink: 0; }
+.elevel.info  { background: var(--blue); }
+.elevel.warn  { background: var(--yellow); }
+.elevel.error { background: var(--red); }
+.emsg { flex: 1; }
+.ename { font-size: 10px; color: var(--text2); margin-top: 1px; }
+.etime { font-family: var(--mono); font-size: 10px; color: var(--text3); white-space: nowrap; }

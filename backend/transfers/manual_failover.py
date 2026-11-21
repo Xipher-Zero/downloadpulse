@@ -1,0 +1,499 @@
+"""Provider-neutral operator-triggered failover to one exact canonical candidate.
+
+The actual activation mutation (writer retirement, partial-file/resume policy,
+and the durable commit) is owned entirely by
+``transfers.candidate_activation.activate_candidate`` -- the SAME operation
+automatic Phase-3 recovery's ``TRY_ALTERNATE_CANDIDATE`` decision uses (DP
+1.0.12 recovery leveling, Section 10). This module owns only what is
+genuinely specific to an operator naming an exact candidate: resolving the
+requested candidate id, the pre-activation expiry-refresh step, claim
+acquisition/fencing (Section 11, via
+``transfers.convergence_engine.TransferEngine.activate_candidate_command``),
+UI-facing transition provenance, and the truthful post-commit acknowledgement
+contract (Section 26).
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import replace
+
+from transfers.candidate_activation import resolve_candidate_index
+from transfers.contracts import CandidateRefresh
+from transfers.errors import (
+    Category,
+    Domain,
+    NormalizedError,
+    Origin,
+    Retryability,
+    Stage,
+    TransferError,
+    unknown_failure,
+)
+from transfers.models import ResolutionResult, ResourceState
+
+
+# Canonical candidate-switch lifecycle-eligibility owner (DP 1.0.12 recovery
+# leveling, Section 31 corrective pass). ``switch_eligible`` -- and its SQL
+# form ``switch_eligible_sql`` -- is the ONE answer to "may this file's
+# candidate be switched in its lifecycle state": the command's own
+# precondition below and every presentation projection
+# (``transfers.repository._candidate_presentation``,
+# ``transfers.presentation_repository``, ``api.operational_downloads``) call
+# it rather than defining their own. There is no second literal anywhere in
+# the codebase; a presentation projection that merely re-declared an
+# equal-valued rule would still be a second authority free to drift the next
+# time this one changes -- delegation, not coincidental equality, is what
+# keeps them actually in step. See
+# ``tests/test_manual_candidate_failover.py::
+# test_switch_eligible_lifecycle_states_delegate_to_the_canonical_owner``.
+SWITCH_ELIGIBLE_LIFECYCLE_STATES = frozenset({
+    "pending", "processing", "ready", "queued", "downloading", "paused",
+    "refresh_pending", "error",
+})
+# A ``recovery_wait`` the operator may switch out of, by its quiescence
+# reason. Waiting out a timed retry of the route that failed
+# (``retry_backoff``), or a provider quota hold on the selected source's scope
+# (``provider_quota``): the wait belongs to that route or scope, not to the
+# file, and no recovery claim is held while it lasts, so the operator may
+# choose another eligible route now, through the ordinary activation
+# admission (the exclusive claim, one writer, discard confirmation, pause). A
+# quota hold stays with its scope: a switch onto a source under it parks
+# again. Every other ``recovery_wait`` -- storage, executor or provider
+# unavailable, a provider disabled, input required, a materialization hold --
+# stays refused.
+SWITCH_ELIGIBLE_WAIT = ("recovery_wait", frozenset({"retry_backoff", "provider_quota"}))
+
+
+def switch_eligible(state, quiescence_reason=None) -> bool:
+    """Whether a file in lifecycle ``state`` (quiesced for
+    ``quiescence_reason``, its recovery state's) may switch candidates."""
+    state = str(state or "").strip().lower()
+    waiting, reasons = SWITCH_ELIGIBLE_WAIT
+    return state in SWITCH_ELIGIBLE_LIFECYCLE_STATES or (
+        state == waiting and str(quiescence_reason or "").strip().lower() in reasons)
+
+
+def switch_eligible_sql(status: str, quiescence_reason: str) -> str:
+    """``switch_eligible`` as one SQL boolean over the two column expressions
+    (never NULL)."""
+    state = f"LOWER(TRIM(COALESCE({status}, '')))"
+    states = ", ".join(f"'{item}'" for item in sorted(SWITCH_ELIGIBLE_LIFECYCLE_STATES))
+    waiting, reasons = SWITCH_ELIGIBLE_WAIT
+    reasons = ", ".join(f"'{item}'" for item in sorted(reasons))
+    return (f"({state} IN ({states}) OR ({state} = '{waiting}' "
+            f"AND LOWER(TRIM(COALESCE({quiescence_reason}, ''))) IN ({reasons})))")
+
+
+def _error(
+    category: Category,
+    stage: Stage,
+    *,
+    domain: Domain = Domain.LIFECYCLE,
+    retryability: Retryability = Retryability.NEVER,
+    integration_id: str = "",
+) -> TransferError:
+    return TransferError(NormalizedError(
+        domain,
+        category,
+        stage,
+        retryability=retryability,
+        origin=Origin.CORE,
+        operator_action_required=True,
+        integration_id=integration_id,
+    ))
+
+
+def _index_for(artifact, candidate_id: str) -> int | None:
+    wanted = str(candidate_id or "").strip()
+    return next(
+        (index for index, item in enumerate(artifact.candidates) if str(item.id) == wanted),
+        None,
+    )
+
+
+async def _bound_provider(engine, artifact, candidate):
+    """Resolve the candidate's persisted route owner without reopening competition."""
+    origin = await engine.canonical.origin_for(artifact, candidate)
+    if origin is None:
+        raise _error(Category.OWNERSHIP_CONFLICT, Stage.CANDIDATE_PREPARATION)
+    provider = engine.registry.provider_for_bound_route(
+        candidate.provider_id,
+        origin.request.request,
+    )
+    return origin, provider
+
+
+async def _refresh_exact(engine, artifact, index: int):
+    """Refresh only the source explicitly named by the operator."""
+    candidate = artifact.candidates[index]
+    origin, provider = await _bound_provider(engine, artifact, candidate)
+    if not isinstance(provider, CandidateRefresh):
+        raise _error(
+            Category.CANDIDATE_EXPIRED,
+            Stage.CANDIDATE_PREPARATION,
+            domain=Domain.RESOLUTION,
+            retryability=Retryability.AFTER_RERESOLUTION,
+            integration_id=candidate.provider_id,
+        )
+
+    attempt = None
+    try:
+        attempt = await engine.repository.begin_refresh(
+            origin.request,
+            provider.descriptor.id,
+        )
+        bound = replace(candidate, refresh_request=origin.request.request)
+        result = engine._authoritative_provider_result(
+            provider.descriptor.id,
+            await provider.refresh(bound),
+            request_kind=origin.request.request.kind,
+            lan_host=await engine._consented_lan_host(origin.request),
+        )
+        live = await engine.repository.resolution(attempt, result)
+        if not live and origin.request.transfer_id == artifact.transfer_id:
+            raise _error(Category.OWNERSHIP_CONFLICT, Stage.CANDIDATE_PREPARATION)
+        if result.error:
+            raise TransferError(result.error)
+        if not result.candidates:
+            raise _error(
+                Category.NO_TRANSFER_CANDIDATE,
+                Stage.CANDIDATE_PREPARATION,
+                domain=Domain.RESOLUTION,
+            )
+        if any(
+            item.expires_at is not None and item.expires_at <= engine.clock()
+            for item in result.candidates
+        ):
+            raise _error(
+                Category.CANDIDATE_EXPIRED,
+                Stage.CANDIDATE_PREPARATION,
+                domain=Domain.RESOLUTION,
+                retryability=Retryability.AFTER_RERESOLUTION,
+            )
+        if not await engine.canonical.refresh_candidate(
+            artifact,
+            origin,
+            candidate,
+            result.candidates,
+        ):
+            raise _error(Category.OWNERSHIP_CONFLICT, Stage.CANDIDATE_PREPARATION)
+    except TransferError:
+        raise
+    except Exception as exc:
+        error = unknown_failure(
+            exc,
+            integration_id=provider.descriptor.id,
+            domain=Domain.PROVIDER,
+            stage=Stage.CANDIDATE_PREPARATION,
+        )
+        if attempt is not None:
+            await engine.repository.resolution(
+                attempt,
+                ResolutionResult(ResourceState.UNKNOWN, error=error),
+            )
+        raise TransferError(error) from exc
+
+    current = await engine._current_artifact(artifact.transfer_id, artifact.id)
+    if current is None:
+        raise _error(Category.OWNERSHIP_CONFLICT, Stage.CANDIDATE_PREPARATION)
+
+    # Candidate refresh may replace the ID, or coalesce the refreshed route into
+    # an already-canonical equivalent source. Preserve affinity to the requested
+    # source rather than falling back to an unrelated candidate at the old index.
+    for replacement in result.candidates:
+        resolved = resolve_candidate_index(current, replacement)
+        if resolved is not None:
+            return current, resolved
+
+    raise _error(Category.OWNERSHIP_CONFLICT, Stage.CANDIDATE_PREPARATION)
+
+
+async def _record_failure(
+    engine,
+    *,
+    transfer_id: int,
+    artifact,
+    requested_candidate_id: str,
+    selected_candidate=None,
+    previous_candidate=None,
+    error: NormalizedError,
+) -> None:
+    if artifact is None:
+        return
+    await engine.repository.record_manual_candidate_failover(
+        transfer_id=int(transfer_id),
+        artifact_id=int(artifact.id),
+        filename=str(artifact.name or "artifact"),
+        requested_candidate_id=str(requested_candidate_id or ""),
+        previous_candidate=previous_candidate,
+        selected_candidate=selected_candidate,
+        source_host="",
+        outcome="failure",
+        execution_transition="unchanged",
+        error=error,
+    )
+
+
+# Section 26: an activation reason that reached a durable commit must never be
+# reported back to the caller as a plain failure -- only these reasons can
+# ever precede a commit attempt at all; every one of them means nothing was
+# written.
+_NOT_COMMITTED_ERROR = {
+    "invalid_target": lambda: _error(Category.RESOURCE_STATE_CONFLICT, Stage.CANDIDATE_PREPARATION),
+    "size_mismatch": lambda: _error(Category.SIZE_MISMATCH, Stage.CANDIDATE_PREPARATION, domain=Domain.INTEGRITY),
+    "candidate_route_unbound": lambda: _error(Category.OWNERSHIP_CONFLICT, Stage.CANDIDATE_PREPARATION),
+    "candidate_provider_unavailable": lambda: _error(
+        Category.PROVIDER_UNAVAILABLE, Stage.CANDIDATE_PREPARATION, domain=Domain.PROVIDER,
+        retryability=Retryability.BACKOFF,
+    ),
+    "old_executor_unavailable": lambda: _error(Category.EXECUTOR_UNAVAILABLE, Stage.RECONCILIATION, domain=Domain.EXECUTOR),
+    "execution_changed_concurrently": lambda: _error(Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION),
+    "writer_already_succeeded": lambda: _error(Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION),
+    "writer_retirement_uncertain": lambda: _error(Category.RECONCILIATION_FAILED, Stage.RECONCILIATION, domain=Domain.RECONCILIATION),
+    "artifact_disappeared": lambda: _error(Category.RESOURCE_NOT_FOUND, Stage.RECONCILIATION, domain=Domain.REQUEST),
+    "candidate_no_longer_present": lambda: _error(Category.OWNERSHIP_CONFLICT, Stage.RECONCILIATION),
+    "commit_conflict": lambda: _error(Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION),
+    "not_found": lambda: _error(Category.RESOURCE_NOT_FOUND, Stage.CANDIDATE_PREPARATION, domain=Domain.REQUEST),
+}
+
+
+class DiscardConfirmationRequired(Exception):
+    """The requested source cannot reuse part of the artifact's existing
+    DownloadPulse-valid material (a capability limitation of the executor that
+    would write it: ``unusable_bytes``) and would rewrite it: switching would
+    discard ``discarded_bytes``. Nothing was changed; the operator must
+    confirm before the rollback. ``abandoned_bytes`` is the current writer's
+    unverified private reconstruction a switch ends -- never DP material.
+
+    ``changed`` marks a confirmed request whose consequence is no longer the
+    one the operator confirmed (see ``_confirmation_outdated``)."""
+
+    def __init__(self, discarded_bytes: int, retained_bytes: int, material_generation: int | None = None,
+                 *, changed: bool = False, unusable_bytes: int | None = None, abandoned_bytes: int = 0):
+        super().__init__("switching source discards downloaded progress")
+        self.discarded_bytes = int(discarded_bytes)
+        self.retained_bytes = int(retained_bytes)
+        self.material_generation = material_generation
+        self.changed = bool(changed)
+        self.unusable_bytes = int(discarded_bytes if unusable_bytes is None else unusable_bytes)
+        self.abandoned_bytes = int(abandoned_bytes)
+
+
+async def _quiescence(engine, artifact) -> str | None:
+    """Why ``artifact`` is quiesced, when its lifecycle state alone does not
+    answer ``switch_eligible`` (a ``recovery_wait``); else ``None``."""
+    if str(artifact.state or "").strip().lower() != SWITCH_ELIGIBLE_WAIT[0]:
+        return None
+    return (await engine.repository.recovery_context(artifact.id)).get("quiescence_reason")
+
+
+def _switch_index(artifact, wanted: str, quiescence_reason: str | None = None) -> int:
+    """The index of the exact requested candidate, when it may be switched to
+    now; the one eligibility check shared by the switch and its preview."""
+    index = _index_for(artifact, wanted)
+    if index is None:
+        raise _error(Category.SOURCE_NOT_FOUND, Stage.CANDIDATE_PREPARATION, domain=Domain.REQUEST)
+    if not switch_eligible(artifact.state, quiescence_reason) or len(artifact.candidates) < 2:
+        raise _error(Category.RESOURCE_STATE_CONFLICT, Stage.CANDIDATE_PREPARATION)
+    if index == artifact.selected:
+        raise _error(Category.RESOURCE_STATE_CONFLICT, Stage.CANDIDATE_PREPARATION)
+    return index
+
+
+async def _switch_subject(engine, transfer_id: int, artifact_id: int, candidate_id: str):
+    wanted = str(candidate_id or "").strip()
+    if not wanted:
+        raise _error(
+            Category.INVALID_REQUEST,
+            Stage.CANDIDATE_PREPARATION,
+            domain=Domain.REQUEST,
+        )
+    transfer = await engine.repository.get(int(transfer_id))
+    if transfer is None:
+        raise _error(Category.RESOURCE_NOT_FOUND, Stage.CANDIDATE_PREPARATION, domain=Domain.REQUEST)
+    artifact = await engine._current_artifact(int(transfer_id), int(artifact_id))
+    if artifact is None:
+        raise _error(Category.RESOURCE_NOT_FOUND, Stage.CANDIDATE_PREPARATION, domain=Domain.REQUEST)
+    return wanted, artifact
+
+
+def _confirmation_outdated(plan, confirmation: Mapping) -> bool:
+    """A confirmed discard applies only to the consequence the operator saw.
+
+    It is outdated when the material it was computed against no longer means
+    the same thing (another material generation), or when the switch would
+    now keep less than the operator was told it keeps. Within one generation
+    valid material only grows, so any further discard is material written
+    after the confirmation; no material the operator was told survives is
+    ever lost unconfirmed. A confirmation is not a lease: nothing is held."""
+    generation = confirmation.get("material_generation")
+    retained = confirmation.get("retained_bytes")
+    if generation is None or retained is None:
+        return True
+    return int(generation) != plan.material_generation or plan.retained_bytes < int(retained)
+
+
+async def preview_candidate_switch(engine, transfer_id: int, artifact_id: int, candidate_id: str) -> dict:
+    """What switching this artifact to the exact requested candidate would keep
+    and discard now -- the same eligibility check and the same continuation
+    planner the switch itself uses, read-only (nothing is refreshed, recorded,
+    reserved or promised; the switch revalidates when it runs)."""
+    wanted, artifact = await _switch_subject(engine, transfer_id, artifact_id, candidate_id)
+    index = _switch_index(artifact, wanted, await _quiescence(engine, artifact))
+    plan = await engine.preview_continuation(artifact, artifact.candidates[index])
+    return {
+        "transfer_id": int(transfer_id),
+        "artifact_id": int(artifact_id),
+        "candidate_id": wanted,
+        "filename": artifact.name,
+        # Verified material kept, verified material this source cannot reuse,
+        # what of that is actually rewritten, and the current writer's
+        # unverified private reconstruction a switch abandons.
+        "retained_bytes": plan.retained_bytes if plan is not None else 0,
+        "unusable_bytes": plan.unusable_bytes if plan is not None else 0,
+        "discarded_bytes": plan.discarded_bytes if plan is not None else 0,
+        "abandoned_bytes": await engine.repository.private_reconstruction_bytes(artifact.id),
+        "material_generation": plan.material_generation if plan is not None else None,
+    }
+
+
+async def manual_candidate_failover(
+    engine,
+    transfer_id: int,
+    artifact_id: int,
+    candidate_id: str,
+    *,
+    discard_confirmed: bool = False,
+    discard_confirmation: Mapping | None = None,
+    expected_demand=None,
+) -> dict:
+    """Make one existing candidate authoritative without creating a new artifact.
+
+    A switch whose continuation plan would discard existing valid material
+    (the new source/executor cannot continue from it) requires the operator's
+    explicit confirmation first; the amount is reported, never guessed. A
+    confirmation that carries the consequence it confirmed
+    (``discard_confirmation``) is honored only while it is still current."""
+    wanted, artifact = await _switch_subject(engine, transfer_id, artifact_id, candidate_id)
+
+    old_candidate = None
+    candidate = None
+    claim_result = None
+    try:
+        index = _switch_index(artifact, wanted, await _quiescence(engine, artifact))
+
+        old_candidate = artifact.candidates[artifact.selected]
+        candidate = artifact.candidates[index]
+        if candidate.expires_at is not None and candidate.expires_at <= engine.clock():
+            artifact, index = await _refresh_exact(engine, artifact, index)
+            candidate = artifact.candidates[index]
+
+        if not discard_confirmed or discard_confirmation is not None:
+            preview = await engine.preview_continuation(artifact, candidate)
+            if preview is not None and preview.discarded_bytes and (
+                    not discard_confirmed or _confirmation_outdated(preview, discard_confirmation)):
+                raise DiscardConfirmationRequired(
+                    preview.discarded_bytes, preview.retained_bytes, preview.material_generation,
+                    changed=discard_confirmed, unusable_bytes=preview.unusable_bytes,
+                    abandoned_bytes=await engine.repository.private_reconstruction_bytes(artifact.id))
+        # Without a confirmed discard the switch keeps everything the preview
+        # promised or nothing changes: material the writer committed since the
+        # preview that the new plan would discard refuses the switch, and the
+        # operator is shown that consequence to confirm instead.
+        claim_result = await engine.activate_candidate_command(int(transfer_id), int(artifact_id), index,
+                                                              permit_discard=bool(discard_confirmed),
+                                                              expected_demand=expected_demand)
+        if claim_result is not None and claim_result.reason == "material_discard_refused":
+            fallback = await engine.preview_continuation(artifact, candidate)
+            if fallback is not None and fallback.discarded_bytes:
+                raise DiscardConfirmationRequired(fallback.discarded_bytes, fallback.retained_bytes,
+                                                  fallback.material_generation, changed=True,
+                                                  unusable_bytes=fallback.unusable_bytes)
+        if claim_result is None:
+            # A concurrent AUTO_RETRY/USER_RETRY/RESUME/scheduler recovery
+            # currently owns this artifact's claim (Section 11). Nothing was
+            # attempted; this is an ordinary, retryable "busy" failure, not a
+            # committed-then-reported-as-failed outcome.
+            raise _error(
+                Category.RESOURCE_STATE_CONFLICT,
+                Stage.RECONCILIATION,
+                retryability=Retryability.IMMEDIATE,
+            )
+        if not claim_result.committed:
+            build_error = _NOT_COMMITTED_ERROR.get(claim_result.reason)
+            raise (build_error() if build_error else _error(Category.RESOURCE_STATE_CONFLICT, Stage.RECONCILIATION))
+    except TransferError as exc:
+        await _record_failure(
+            engine, transfer_id=transfer_id, artifact=artifact, requested_candidate_id=wanted,
+            selected_candidate=(claim_result.new_candidate if claim_result else None) or candidate,
+            previous_candidate=(claim_result.old_candidate if claim_result else None) or old_candidate,
+            error=exc.error,
+        )
+        raise
+
+    # ACTIVATION_COMMITTED (Section 26): from here on, the switch itself is
+    # durably true. Every remaining step -- refetching current state for
+    # presentation, writing durable success provenance, and re-aggregating
+    # the parent -- is a best-effort reconciliation concern. None of them may
+    # retroactively turn this into a reported failure: that would fabricate
+    # rollback of an already-retired writer and invite an unsafe duplicate
+    # retry of a switch that genuinely succeeded.
+    activated_candidate = claim_result.new_candidate
+    source = activated_candidate.source_identity
+    host = (
+        str(source.key).lower().removeprefix("www.").rstrip(".")
+        if source is not None and str(source.scope) == "host"
+        else "source"
+    )
+    result = {
+        "ok": True,
+        "transfer_id": int(transfer_id),
+        "artifact_id": int(artifact_id),
+        "filename": artifact.name,
+        "candidate_id": str(activated_candidate.id),
+        "source_host": host,
+        "provider_id": activated_candidate.provider_id,
+    }
+    # The canonical activation provenance write (transfers.candidate_activation
+    # .activate_candidate's own record_candidate_activation call) already
+    # happened before this function ever saw claim_result -- Section 26
+    # applies to it the identical way; claim_result.provenance_recorded is
+    # its own truthful "did that succeed" flag, surfaced here rather than
+    # silently dropped.
+    reconciliation_pending = not claim_result.provenance_recorded
+
+    try:
+        current = await engine._current_artifact(int(transfer_id), int(artifact_id))
+        if current is not None:
+            result["filename"] = current.name
+    except Exception:
+        reconciliation_pending = True
+
+    try:
+        await engine.repository.record_manual_candidate_failover(
+            transfer_id=int(transfer_id),
+            artifact_id=int(artifact_id),
+            filename=result["filename"],
+            requested_candidate_id=wanted,
+            previous_candidate=claim_result.old_candidate,
+            selected_candidate=activated_candidate,
+            source_host=host,
+            outcome="success",
+            execution_transition=(
+                "pending_source_transition" if claim_result.retirement == "desired_source"
+                else "retired_and_redispatch" if claim_result.retirement != "not_needed"
+                else "queued_for_selected_candidate"
+            ),
+            error=None,
+        )
+    except Exception:
+        reconciliation_pending = True
+
+    try:
+        await engine._aggregate(int(transfer_id))
+    except Exception:
+        reconciliation_pending = True
+
+    if reconciliation_pending:
+        result["reconciliation_pending"] = True
+    return result

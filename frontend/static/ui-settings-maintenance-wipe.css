@@ -1,0 +1,439 @@
+/* DownloadPulse Data & Maintenance cards.
+
+   Geometry only. Every control on this page is a canonical Settings primitive
+   -- the inline Title-over-Hint field, the embedded field action, the compact
+   tuning cell and its group, the canonical disclosure, the shared toggle row,
+   the right-aligned card-header rail -- and this sheet states only where this
+   page puts them. */
+/* The three headers are the hinted Settings card header (ui-settings-page.css,
+   fitHeaderHints); only the hint's type is stated here. */
+#view-settings .dp-settings-event-logging-header-copy,
+#view-settings .dp-settings-database-wipe-header-copy,
+#view-settings .dp-settings-backups-header-copy {
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ── The Backups & Retention header rail ─────────────────────────────────
+   List Backups, Run Backup and Enable, in that order, in the ONE canonical
+   operational rail (`.dp-settings-card-header-controls`, ui-settings-page.css).
+   Both actions sit in that rail's own neutral action slot and this sheet
+   states nothing about either; only the Enable control's placement, which is
+   this card's, is declared here. */
+#view-settings .dp-settings-backups-header-toggle {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  width: auto;
+  margin: 0 !important;
+}
+
+#view-settings .dp-settings-backups-header-toggle .toggle {
+  flex: 0 0 auto;
+}
+
+#view-settings .dp-settings-run-backup-success {
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  color: var(--green);
+  border: 1px solid color-mix(in srgb, var(--green) 25%, transparent);
+}
+
+#view-settings .dp-settings-run-backup-success:hover {
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+}
+
+/* ── The Backup Folder island ────────────────────────────────────────────
+   The one setting this card is actually about, as the same bordered, centred
+   island Extraction uses for its behaviour group: a deliberate share of the
+   card body rather than a band stretched across it. Its width is declared as a
+   FRACTION of the card body, so it is the same island whether the disclosure
+   beneath it is open or closed -- that disclosure is a sibling block in the
+   flow and can neither resize nor rebalance this. */
+#view-settings .dp-settings-event-logging-island,
+#view-settings .dp-settings-backup-folder-island {
+  box-sizing: border-box;
+  width: 70%;
+  max-width: 100%;
+  min-width: 0;
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px var(--dp-island-padding-inline, 22px) 17px;
+}
+
+/* Event Logging's island holds two compact field groups side by side -- the
+   page-size selector and the Recorded Events reading -- centred against each
+   other: the same island at half the card body, never narrower than both
+   groups need beside full-size controls. */
+#view-settings .dp-settings-event-logging-island {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 40px;
+  width: 50%;
+  min-width: min(100%, 720px);
+}
+
+#view-settings .dp-settings-event-logging-island > .dp-settings-event-logging-field {
+  flex: 1 1 300px;
+  min-width: 0;
+}
+
+/* Wrapped, it is a stacked Settings island (fitIslands marks it; the shared
+   stacked rule puts one setting per row, each at its own width, centred): the
+   outline then hugs the stack rather than keeping the side-by-side share and
+   minimum it no longer uses, at every width. */
+#view-settings .dp-settings-event-logging-island[data-island='stacked'] {
+  width: max-content;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-event-logging-island[data-island='stacked'] > .dp-settings-event-logging-field {
+  flex: 0 1 auto;
+}
+
+/* The reading takes the selector's footprint, not a free-text field's, and
+   shows its count centred as the selector beside it shows its value. */
+#view-settings .dp-settings-event-logging-recorded .input {
+  width: 120px;
+  text-align: center;
+}
+
+/* Title over hint on the left, field on the right, the descriptive block
+   centred against the control -- the shared inline-field grammar. The field
+   takes the room the island has left over, and Browse is INSIDE it (the shared
+   embedded-action primitive), so path text ends where the button begins. */
+#view-settings .dp-settings-event-logging-field,
+#view-settings .dp-settings-backup-folder-field {
+  margin: 0;
+  gap: 26px;
+}
+
+#view-settings .dp-settings-event-logging-field > .dp-settings-inline-field-info,
+#view-settings .dp-settings-backup-folder-field > .dp-settings-inline-field-info {
+  flex: 0 1 auto;
+  max-width: 340px;
+}
+
+#view-settings .dp-settings-backup-folder-field > .dp-settings-inline-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The selector keeps its own size; the title and hint take what is left. */
+#view-settings .dp-settings-event-logging-field > .dp-settings-inline-field-control {
+  flex: 0 0 auto;
+}
+
+/* Additional Backup & Retention Settings renders the five policy numbers as
+   compact tuning cells in the canonical collection, exactly as Downloads ->
+   Disk Space & Recovery renders its own. That collection and the canonical
+   disclosure own all of it, so nothing about either is stated here. */
+
+/* ── Database Reset Controls ─────────────────────────────────────────────*/
+#view-settings .dp-settings-database-wipe-card .dp-settings-caution {
+  text-align: center;
+}
+
+/* A deliberate blank row between the warning and the controls it governs.
+   Layout only: it carries no content and is hidden from assistive tech. */
+#view-settings .dp-settings-database-reset-spacer {
+  height: 26px;
+}
+
+/* The two safeguards and the destructive action are ONE bounded, centred
+   island in the same visual family as the Backup Folder island above and the
+   Extraction behaviour group -- a content-driven cluster, not three controls
+   pushed to opposite edges of the card. */
+#view-settings .dp-settings-database-wipe-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 18px 40px;
+  width: max-content;
+  max-width: min(100%, 980px);
+  margin-inline: auto;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px var(--dp-island-padding-inline, 22px) 17px;
+}
+
+#view-settings .dp-settings-database-wipe-row > .dp-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 0 1 auto;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+#view-settings .dp-settings-database-wipe-row .toggle-info {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  max-width: 300px;
+}
+
+#view-settings .dp-settings-database-wipe-row .toggle-info .tl,
+#view-settings .dp-settings-database-wipe-row .toggle-info .td {
+  display: block;
+}
+
+#view-settings .dp-settings-database-wipe-row .toggle {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+#view-settings .dp-settings-database-wipe-action {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+#view-settings .dp-settings-database-wipe-action .btn {
+  width: auto;
+  white-space: nowrap;
+}
+
+/* ── The Backups manager dialog ──────────────────────────────────────────
+   Inside the ONE canonical dialog shell (ui-settings-modal.js), which owns
+   the header close control, the footer actions and settlement. Only the
+   restore-point table, its single-checkmark selection and its bound live
+   here; its state owner is ui-settings-backup-manager.js. */
+.dp-backup-manager-dialog {
+  width: min(720px, 100%);
+}
+
+/* The action group sits on the dialog's own centreline. */
+.dp-backup-manager-dialog > .dp-modal-footer {
+  justify-content: center;
+}
+
+.dp-backup-table-wrap {
+  max-height: min(48vh, 400px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: var(--dp-radius-md, 8px);
+}
+
+.dp-backup-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--dp-text-secondary);
+  font-size: 12.5px;
+}
+
+.dp-backup-table th {
+  position: sticky;
+  top: 0;
+  padding: 8px 10px;
+  background: var(--dp-surface-3);
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.dp-backup-table td {
+  height: 42px;
+  padding: 0 10px;
+  border-top: 1px solid var(--dp-divider);
+  white-space: nowrap;
+}
+
+.dp-backup-row {
+  cursor: pointer;
+}
+
+.dp-backup-row.is-selected {
+  background: color-mix(in srgb, var(--dp-accent-purple) 9%, transparent);
+  color: var(--dp-text-primary);
+}
+
+.dp-backup-select {
+  width: 34px;
+}
+
+/* The single-checkmark selection idiom: the same checkbox material the file
+   selection rows use. */
+.dp-backup-check {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--dp-accent-purple);
+  cursor: pointer;
+}
+
+.dp-backup-when,
+.dp-backup-size {
+  font-variant-numeric: tabular-nums;
+}
+
+.dp-backup-row-action {
+  width: 96px;
+  text-align: right;
+}
+
+.dp-backup-empty {
+  padding: 14px;
+}
+
+.dp-backup-selection {
+  min-height: 36px;
+  color: var(--dp-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dp-backup-id {
+  color: var(--dp-text-muted);
+  font-family: var(--dp-font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* A narrow inventory: the whole row (the date in full and Contents) needs
+   about 480px of the dialog body. Narrower, Contents leaves the table -- still
+   each checkbox's description, and shown in the selected backup's details --
+   and the date shortens to "9/28/26 10:35 PM", whose parts may stack; the full
+   date stays the cell's text. Selection, Size and Remove are kept. */
+.dp-backup-manager-body {
+  container: dp-backup-inventory / inline-size;
+}
+
+.dp-backup-when-short,
+.dp-backup-selected-contents {
+  display: none;
+}
+
+@container dp-backup-inventory (width < 520px) {
+  .dp-backup-table th,
+  .dp-backup-table td {
+    padding-inline: 6px;
+  }
+
+  .dp-backup-table .dp-backup-contents {
+    display: none;
+  }
+
+  .dp-backup-table .dp-backup-when {
+    position: relative;
+    white-space: normal;
+  }
+
+  .dp-backup-when-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .dp-backup-when-short {
+    display: inline;
+  }
+
+  .dp-backup-when-short > span {
+    white-space: nowrap;
+  }
+
+  .dp-backup-row-action {
+    width: auto;
+  }
+
+  .dp-backup-selected-contents {
+    display: block;
+  }
+}
+
+.dp-backup-restore-copy {
+  display: grid;
+  gap: 12px;
+}
+
+.dp-backup-restore-target {
+  color: var(--dp-text-primary);
+  font-weight: 600;
+}
+
+.dp-backup-restore-steps {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+@media (max-width: 1180px) {
+  #view-settings .dp-settings-backup-folder-island {
+    width: 82%;
+  }
+
+  #view-settings .dp-settings-database-wipe-row {
+    gap: 16px 28px;
+  }
+}
+
+
+
+@media (max-width: 779px) {
+  /* One control per line; each keeps its own title + control. (Event
+     Logging's and Database Reset's are Settings islands: their handheld steps
+     are the shared ones, ui-settings-page.css.) */
+  #view-settings .dp-settings-backup-folder-island {
+    width: auto;
+    padding: 14px 16px 15px;
+  }
+
+  #view-settings .dp-settings-backup-folder-field {
+    gap: 12px;
+  }
+
+  /* Lent Help (fitHeaderSteps): on Backup Folder's title row, its right edge
+     on the folder field's; while the island holds it, the field starts lower
+     so the chip keeps a title's clearance above it (8px). */
+  #view-settings .dp-settings-backup-folder-island.dp-settings-help-slot > .dp-settings-help-chip {
+    top: 8px;
+    right: 16px;
+  }
+
+  #view-settings .dp-settings-backup-folder-island:has(> .dp-settings-help-chip) > .dp-settings-backup-folder-field {
+    row-gap: 15px;
+  }
+
+  /* Backup Folder's and Allow Database Reset's hints leave the layout; each
+     title says its hint as a tooltip (promoteHints), still the control's
+     neighbour to assistive technology. */
+  #view-settings .dp-settings-backup-folder-field > .dp-settings-inline-field-info > .form-hint,
+  #view-settings .dp-settings-database-wipe-toggle > .toggle-info > .td {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Database Reset's island: its toggle beside its action while the room
+     holds both on one row; stacked (fitIslands), the toggle's title centred
+     above the toggle and the action centred beneath them. */
+  #view-settings .dp-settings-database-wipe-row[data-island='stacked'] > .dp-settings-toggle {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  #view-settings .dp-settings-database-wipe-row[data-island='stacked'] .toggle-info {
+    align-items: center;
+    text-align: center;
+  }
+}

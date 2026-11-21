@@ -1,0 +1,165 @@
+"""Dedicated universal file-selection API (specification sections 35-40).
+
+Kept out of the large generic route file. The browser-visible responses carry
+only the neutral Section 38 facts the selector needs: manifest / entry ids,
+sanitized names and paths, expected sizes, decision + mutability state, the
+persisted deadlines, the initial-availability fact, and ``server_now``.
+
+Internal provenance never crosses this boundary. The durable read model keeps
+``selection_id`` / ``provider_resource_id`` / ``request_id`` for core use, but
+this layer projects a fixed public whitelist, so a new internal field cannot
+leak. The browser identifies the mutable selection state by transfer context
+(the URL) plus the canonical ``manifest_id``; Confirm and Dismiss use
+``manifest_id`` as the stale-generation authority. A re-resolution onto a new
+provider resource produces a fresh generation and the offers / read model
+surface only that current one.
+"""
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
+
+from application.dependencies import get_application
+from application.service import ApplicationService
+from auth.permissions import require_destruction
+from transfers import file_selection as fs
+from core.localization import DisplayError, refusal
+
+router = APIRouter()
+
+_MAX_ENTRY_ID = 128
+
+# The only keys allowed to cross the HTTP/browser boundary.
+_PUBLIC_SELECTION_FIELDS = (
+    "eligible", "mutable", "manifest_id", "decision", "decision_reason",
+    "file_count", "total_size_bytes", "entries", "selected_entry_ids",
+    "auto_offer", "auto_offer_until", "decision_deadline", "initially_available",
+    "server_now", "file_selection_affordance",
+    # A collection of independent members: only an explicit choice; the
+    # bounded snapshot complete, the source's truncation stated separately.
+    "explicit_only", "source_truncated", "source_total",
+)
+_PUBLIC_OFFER_FIELDS = (
+    "transfer_id", "manifest_id", "file_count", "decision_deadline", "auto_offer_until",
+)
+# Each public entry exposes only these neutral fields (entry_id is a
+# core-generated UUIDv5, not a provider or execution identifier).
+_PUBLIC_ENTRY_FIELDS = ("entry_id", "name", "relative_path", "size_bytes")
+
+
+def _public_selection_view(view: dict) -> dict:
+    projected = {key: view[key] for key in _PUBLIC_SELECTION_FIELDS if key in view}
+    projected["entries"] = [
+        {key: entry[key] for key in _PUBLIC_ENTRY_FIELDS if key in entry}
+        for entry in view.get("entries", [])
+    ]
+    return projected
+
+
+def _public_offer(offer: dict) -> dict:
+    return {key: offer[key] for key in _PUBLIC_OFFER_FIELDS if key in offer}
+
+
+class ConfirmRequest(BaseModel):
+    manifest_id: str = Field(min_length=1, max_length=_MAX_ENTRY_ID)
+    entry_ids: list[Annotated[str, Field(min_length=1, max_length=_MAX_ENTRY_ID)]] = Field(
+        min_length=1, max_length=fs.MAX_SELECTION_ENTRIES,
+    )
+
+
+class DismissRequest(BaseModel):
+    manifest_id: str = Field(min_length=1, max_length=_MAX_ENTRY_ID)
+
+
+def _raise_for(result: "fs.SelectionCommandResult") -> None:
+    """Map a neutral command outcome to the specification's transport codes."""
+    if result.outcome == fs.SelectionOutcome.NOT_FOUND:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+    if result.outcome == fs.SelectionOutcome.CONFLICT:
+        raise refusal(409, result.detail or "Selection is no longer mutable", code=None if result.detail else "selection.not_mutable")
+    if result.outcome == fs.SelectionOutcome.INVALID:
+        raise refusal(422, result.detail or "Invalid file selection", code=None if result.detail else "selection.invalid")
+
+
+@router.get("/file-selections/offers")
+async def list_file_selection_offers(
+    application: ApplicationService = Depends(get_application),
+):
+    """Currently auto-presentable multi-file offers, for cold-load / reconnect
+    recovery. Bounded to live pending generations; no deadline is restarted."""
+    offers = await application.file_selection_offers()
+    return {"offers": [_public_offer(offer) for offer in offers]}
+
+
+@router.get("/torrents/{transfer_id}/file-selection")
+async def get_file_selection(
+    transfer_id: int,
+    application: ApplicationService = Depends(get_application),
+):
+    """Safe idempotent read model. The browser queries this on every Details
+    open, so a transfer with no file-selection generation — the common case,
+    and an unknown transfer id alike — is reported as ``{"eligible": false}``
+    with 200 rather than 404. The response is identical for both, so transfer
+    existence is not disclosed. Confirm and Dismiss keep their 404 for a
+    missing transfer, where "not found" is a real mutation error.
+    """
+    try:
+        view = await application.file_selection(transfer_id)
+    except KeyError:
+        return _ineligible_view()
+    if view is None:
+        return _ineligible_view()
+    return _public_selection_view(view)
+
+
+def _ineligible_view() -> dict:
+    """The one canonical affordance owner also classifies the no-generation
+    case, so the browser never has to reconstruct 'no generation means no
+    affordance' from `eligible` -- it only ever consumes the field."""
+    return {"eligible": False, "file_selection_affordance": fs.file_selection_affordance(None, None, None, 0, awaiting_manifest=False)}
+
+
+@router.post("/torrents/{transfer_id}/file-selection/confirm")
+async def confirm_file_selection(
+    transfer_id: int,
+    body: ConfirmRequest,
+    request: Request,
+    application: ApplicationService = Depends(get_application),
+):
+    # Choosing files can leave out files another account's request needs: the
+    # destructive acts' one ownership rule, re-checked when the choice commits.
+    expected = await require_destruction(request, application.repository, transfer_id)
+    try:
+        result = await application.confirm_file_selection(
+            transfer_id, body.manifest_id, body.entry_ids, expected_demand=expected,
+        )
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
+    _raise_for(result)
+    return {
+        "ok": True,
+        "decision": result.decision,
+        "manifest_id": result.manifest_id,
+        "detail": result.detail,
+    }
+
+
+@router.post("/torrents/{transfer_id}/file-selection/dismiss")
+async def dismiss_file_selection(
+    transfer_id: int,
+    body: DismissRequest,
+    application: ApplicationService = Depends(get_application),
+):
+    try:
+        result = await application.dismiss_file_selection(transfer_id, body.manifest_id)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
+    _raise_for(result)
+    return {
+        "ok": True,
+        "decision": result.decision,
+        "manifest_id": result.manifest_id,
+        "detail": result.detail,
+    }

@@ -1,0 +1,219 @@
+"""Explicit aria2 administration boundary, separate from transfer policy."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+
+from executors.aria2.executor import _JOB_TUNING_SECONDS, TuningOutcome
+from executors.aria2.runtime import build_aria2_global_options
+
+# How long one pass applying saved tuning to existing jobs may run when its
+# caller sets no deadline (``Aria2Administration.converge_job_tuning``); the
+# Settings request sets its own (``api.routes._JOB_TUNING_REQUEST_SECONDS``).
+_TUNING_PASS_SECONDS = 40.0
+
+logger = logging.getLogger("alldebrid.aria2")
+
+
+class Aria2Administration:
+    """aria2's own administration surface and managed-daemon lifecycle,
+    registered through the generic integration seam (``lifecycle`` /
+    ``administration`` of the aria2 executor). It holds no DownloadPulse global
+    policy and is never used by neutral runtime-limit operations."""
+
+    def __init__(self, executor, repository, commands, runtime):
+        self.executor = executor
+        self.repository = repository
+        self.application = commands
+        self.runtime = runtime
+        self._last_housekeeping = 0.0
+        self._last_rotation = 0.0
+
+    @property
+    def client(self):
+        return self.executor.client
+
+    async def get_global_stat(self):
+        return await self.client.get_global_stat()
+
+    async def get_active(self):
+        return await self.client.get_active()
+
+    async def get_all(self, *args, **kwargs):
+        return await self.client.get_all(*args, **kwargs)
+
+    async def _owned(self):
+        attempts = [attempt for attempt in await self.repository.executions()
+                    if attempt.handle.executor_id == self.executor.descriptor.id
+                    and attempt.handle.correlation.get("binding") == self.executor.binding]
+        # Every candidate is authorized by the core's own decision, read for
+        # all of them at once rather than one query per historical attempt.
+        authorized = await self.repository.authorize_executions([attempt.handle for attempt in attempts], "observe")
+        return {self.executor._handle_gid(attempt.handle): attempt
+                for attempt, allowed in zip(attempts, authorized, strict=True) if allowed}
+
+    async def filter_owned(self, downloads):
+        owned = await self._owned()
+        result = []
+        for download in downloads:
+            attempt = owned.get(download.gid)
+            if attempt:
+                try:
+                    self.executor._observation(attempt.handle, download)
+                except Exception:
+                    continue
+                result.append(download)
+        return result
+
+    async def control(self, gid, action):
+        attempt = (await self._owned()).get(str(gid))
+        if attempt is None:
+            raise PermissionError("Execution is not owned by this application")
+        # Translate the native UI identity once. Durable pause/resume and
+        # cancellation intent remain commands of the universal owner.
+        if action == "pause":
+            return await self.application.pause(attempt.transfer_id)
+        if action == "resume":
+            return await self.application.resume(attempt.transfer_id)
+        if action == "remove":
+            return await self.application.cancel_artifact(attempt.transfer_id, attempt.artifact_id)
+        raise ValueError("Unsupported execution action")
+
+    def rpc_metrics(self):
+        return self.client.rpc_metrics()
+
+    async def get_global_options(self):
+        return await self.client.get_global_options()
+
+    async def change_global_options(self, options):
+        return await self.client.change_global_options(options)
+
+    async def memory_diagnostics(self):
+        cfg = self.executor.configuration
+        return await self.client.get_memory_diagnostics(waiting_limit=cfg.waiting_window, stopped_limit=cfg.stopped_window)
+
+    async def test(self):
+        return {**await self.client.test(), "diagnostics": await self.memory_diagnostics()}
+
+    async def converge_job_tuning(self, *, deadline: float | None = None) -> dict:
+        """Give every existing DP-owned job the per-download tuning just saved
+        (Settings -> Network Sources), in place, one job at a time, ending by
+        ``deadline`` (event-loop time; ``_TUNING_PASS_SECONDS`` from now when
+        not given).
+
+        The jobs are selected from the core's own execution truth at this
+        moment -- live executions of non-terminal transfers, this daemon's
+        binding, authorized as CURRENT by the one canonical predicate -- never
+        from the daemon's own list, so no unrelated or stale job is ever
+        touched; each is authorized again at its own change
+        (``Aria2Executor.apply_tuning``). Each job is given the values current
+        when it is reached, under the daemon's tuning lock; a pass that sees a
+        newer one waiting stops and leaves its remaining jobs to it
+        (``superseded``), so the newest Save wins and waits at most for one
+        job (``_JOB_TUNING_SECONDS``). Every wait -- for the lock and for each
+        job -- ends at ``deadline``: jobs not reached by then are
+        ``not_reached``, a change sent but not answered is ``uncertain``.
+
+        Selecting the jobs is bounded by the same deadline. When the lock or
+        the selection is not had in time -- or the selection fails -- no job
+        is touched, the lock is released at once, and the answer is
+        ``{"selection": "unavailable"}`` with no counts: which jobs exist is
+        then unknown, not zero.
+
+        Otherwise returns ``selection: "complete"`` and the count of each
+        observed outcome; ``selected`` counts the jobs that were, or would have
+        been, considered."""
+        executor = self.executor
+        tuning = executor.tuning
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _TUNING_PASS_SECONDS if deadline is None else deadline
+        tuning.revision += 1
+        revision = tuning.revision
+        outcomes = {outcome.value: 0 for outcome in TuningOutcome}
+        unavailable = {"selection": "unavailable"}
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return unavailable
+        try:
+            await asyncio.wait_for(tuning.lock.acquire(), remaining)
+        except TimeoutError:
+            return unavailable
+        try:
+            try:
+                attempts, current = await asyncio.wait_for(self._tuning_candidates(), max(0.0, deadline - loop.time()))
+            except TimeoutError:
+                return unavailable
+            except Exception as exc:
+                logger.warning("aria2 tuning could not select existing jobs: %s", type(exc).__name__)
+                return unavailable
+            for attempt, allowed in zip(attempts, current, strict=True):
+                if not allowed:
+                    outcome = TuningOutcome.NOT_OWNED
+                elif loop.time() >= deadline:
+                    outcome = TuningOutcome.NOT_REACHED
+                elif tuning.revision != revision:
+                    outcome = TuningOutcome.SUPERSEDED
+                else:
+                    outcome = await executor.apply_tuning(
+                        attempt.handle, deadline=min(deadline, loop.time() + _JOB_TUNING_SECONDS))
+                outcomes[outcome.value] += 1
+        finally:
+            tuning.lock.release()
+        selected = sum(count for name, count in outcomes.items()
+                       if name not in {TuningOutcome.NOT_LIVE.value, TuningOutcome.NOT_OWNED.value})
+        return {"selection": "complete", "selected": selected, **outcomes}
+
+    async def _tuning_candidates(self):
+        """This daemon's live executions and, for each, whether the core
+        authorizes it as the CURRENT one (``converge_job_tuning``)."""
+        executor = self.executor
+        attempts = [attempt for attempt in await self.repository.live_executions()
+                    if attempt.handle.executor_id == executor.descriptor.id
+                    and attempt.handle.correlation.get("binding") == executor.binding]
+        return attempts, await self.repository.authorize_executions([attempt.handle for attempt in attempts], "pause")
+
+    async def apply_memory_tuning(self):
+        options = build_aria2_global_options(self.runtime.options, include_safety=True, live=True)
+        await self.client.change_global_options(options)
+        return {"ok": True, "applied": options}
+
+    async def housekeeping(self):
+        await self.apply_memory_tuning()
+        return {"ok": True, "reason": "Execution result history retained", "diagnostics": await self.memory_diagnostics()}
+
+    async def start(self):
+        await self.runtime.ensure_started()
+
+    async def stop(self):
+        await self.runtime.stop()
+
+    async def maintain(self):
+        runtime = self.runtime
+        aria2 = runtime.options
+        if not runtime.process_running:
+            # A daemon that should be running and is not is recovered through
+            # the existing managed start (``Aria2Runtime.recover``: never one an
+            # operator stopped, never sooner than its backoff). Without a
+            # daemon there is nothing to maintain: the executor's health
+            # already reports it unavailable, so maintenance does not fail.
+            await runtime.recover()
+            if not runtime.process_running:
+                return
+        now = time.time()
+        housekeeping_interval = max(0, aria2.purge_interval_minutes) * 60
+        if housekeeping_interval and now - self._last_housekeeping >= housekeeping_interval:
+            await self.housekeeping()
+            self._last_housekeeping = now
+        if now - self._last_rotation >= 900:
+            await runtime.ensure_log_rotation()
+            self._last_rotation = now
+        interval = max(0, aria2.restart_interval_hours) * 3600
+        if interval and runtime._started_at > 0 and now - runtime._started_at >= interval:
+            # Windowed waiting/stopped lists cannot prove daemon idleness.
+            stat = await self.client.get_global_stat()
+            if stat["active"] or stat["waiting"]:
+                return
+            downloads = await self.client.get_all()
+            if not any(item.status in {"active", "waiting"} for item in downloads):
+                await runtime.restart()

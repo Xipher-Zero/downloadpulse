@@ -1,0 +1,164 @@
+"""Production integration composition. Concrete imports terminate here."""
+from dataclasses import replace
+from pathlib import Path
+
+from application.consolidation_events import ConsolidationEvents
+from application.service import ApplicationService
+from core.config import get_settings, apply_settings
+from integrations.catalog import definitions, register
+from integrations.configuration import normalize_settings
+from services.downloader_egress_guard import downloader_egress_guard
+from integrations.definition import (
+    AdministeredIntegration, ConfigurableIntegration, IntegrationEnvironment, ManagedIntegration,
+    lifecycle_components,
+)
+from integrations.runtime_state import ProviderRuntimeStateStore
+from transfers.convergence_engine import TransferEngine
+from transfers.policy import TransferPolicy
+from transfers.registry import IntegrationRegistry
+from transfers.recovery_repository import TransferRepository
+from transfers.staged_input import StagedInputStore
+from transfers.storage import DiskCapacity, register_storage_health
+from external.browser_cookies import browser_cookies
+
+
+def integration_surfaces(registry) -> tuple[tuple, dict, dict]:
+    """Generic discovery of integration-owned lifecycle components,
+    administration surfaces and configuration appliers -- the one seam through
+    which an integration participates in the application lifecycle. No
+    integration is named here; adding one needs no composition change.
+
+    Appliers are grouped by the canonical settings namespace each one declares,
+    so a configuration mutation can drive exactly the implementations that own
+    that namespace.
+    """
+    implementations = (*registry.providers.values(), *registry.executors.values())
+    # An integration may own several lifecycle components (for example its
+    # host inventory and its account truth); each is driven independently.
+    lifecycle = tuple(component for item in implementations if isinstance(item, ManagedIntegration)
+                      for component in lifecycle_components(item))
+    admins = {item.descriptor.id: item.administration for item in implementations
+              if isinstance(item, AdministeredIntegration)}
+    appliers: dict[str, list] = {}
+    for item in implementations:
+        surface = item.administration if isinstance(item, AdministeredIntegration) else item
+        if isinstance(surface, ConfigurableIntegration):
+            appliers.setdefault(str(surface.configuration_namespace), []).append(surface)
+    return lifecycle, admins, appliers
+
+
+def configure(application):
+    settings = normalize_settings(get_settings(), definitions)
+    apply_settings(settings)
+    application.definitions = definitions
+    registry = IntegrationRegistry()
+    register(registry, settings, IntegrationEnvironment(application.repository, settings.download_folder,
+                                                        commands=application,
+                                                        staged_input=application.staged_input,
+                                                        session_cookies=browser_cookies,
+                                                        preferred_subtitle_language=(
+                                                            settings.preferred_subtitle_language)))
+    application.engine.registry = registry
+    application.engine.root = settings.download_folder
+    policy = settings.transfer_policy
+
+    def contain_local_resource_failure(error):
+        """Bridge neutral local-resource failures into canonical storage health."""
+        fault = application._record_download_storage_fault(error)
+        if fault is None:
+            return False
+        application.engine.dispatch_permitted = False
+        return True
+
+    # The connection boundary reads the operator's Local Network Connections
+    # policy live at every CONNECT; this is its one configuration point.
+    downloader_egress_guard.configure_private_lan(policy.private_lan_connections)
+    application.engine.configure_policy(replace(application.engine.policy,
+        max_attempts=policy.execution_retry_count + 1,
+        retry_delay=policy.execution_retry_delay_seconds,
+        max_active_executions=policy.max_concurrent_executions,
+        resolution_max_attempts=policy.resolution_retry_count + 1,
+        resolution_retry_delay=policy.resolution_retry_delay_minutes * 60,
+        resolution_concurrency=policy.resolution_concurrency,
+        cleanup_after_completion=True,
+        stalled_after_seconds=policy.stalled_timeout_hours * 3600,
+        resource_poll_interval=policy.provider_poll_interval_seconds,
+        material_checkpoint_interval=policy.material_checkpoint_interval_seconds,
+        graceful_stop_timeout=policy.graceful_stop_timeout_seconds,
+        private_lan_connections=policy.private_lan_connections,
+        skip_private_lan_confirmation=policy.skip_private_lan_confirmation,
+        local_resource_failure_handler=contain_local_resource_failure))
+    from db import database
+    capacity = getattr(application, "capacity", None)
+    if isinstance(capacity, DiskCapacity):
+        capacity.configure(settings.download_folder, settings.min_free_disk_gb,
+            settings.disk_guard_resume_hysteresis_gb, application_path=database.DB_PATH)
+    else:
+        capacity = DiskCapacity(settings.download_folder, settings.min_free_disk_gb,
+            settings.disk_guard_resume_hysteresis_gb, application_path=database.DB_PATH)
+        application.capacity = capacity
+    register_storage_health(capacity)
+    initial_health = capacity.check()
+    application.engine.dispatch_permitted = capacity.application_storage_permitted and not initial_health["active"]
+    application.execution_poll_interval = policy.execution_poll_interval_seconds
+    from postprocessors.archive.processor import ArchivePostProcessor
+    application.engine.postprocessors = (ArchivePostProcessor(),) if settings.extract_enabled else ()
+    from transfers.runtime_limits import ExecutionRuntimeLimits
+    # The canonical global runtime limit is injected into its one core owner;
+    # executors receive only the ceiling that owner assigns them.
+    limits = settings.execution_runtime_limits or ExecutionRuntimeLimits()
+    application.engine.configure_runtime_limits(limits.max_download_bytes_per_second)
+    integration_lifecycle, admins, appliers = integration_surfaces(registry)
+    application.admins = admins
+    application.configuration_appliers = appliers
+    runtime_state = getattr(application, "runtime_state", None)
+    if runtime_state is None:
+        runtime_state = ProviderRuntimeStateStore()
+        application.runtime_state = runtime_state
+
+    from providers.alldebrid.host_runtime import AllDebridHostMaintenance
+    from integrations.runtime_state import ScopedRuntimeStateStore, credential_scope
+    alldebrid_options = settings.integrations["alldebrid"].options
+    host_scope = credential_scope("alldebrid", alldebrid_options.get("api_key", ""))
+    previous_scope = getattr(application, "alldebrid_host_scope", None)
+    host_maintenance = getattr(application, "alldebrid_host_maintenance", None)
+    initial_host_binding = host_maintenance is None or previous_scope != host_scope
+    if initial_host_binding:
+        host_maintenance = AllDebridHostMaintenance(
+            ScopedRuntimeStateStore(runtime_state, host_scope)
+        )
+        application.alldebrid_host_maintenance = host_maintenance
+        application.alldebrid_host_scope = host_scope
+    host_maintenance.bind(registry.providers.get("alldebrid"), initial=initial_host_binding,
+        notify=application.notify_applicability_changed)
+
+    application.lifecycle = (runtime_state, host_maintenance, *integration_lifecycle)
+    from application.observability import Observability
+    application.observability = Observability(application.repository, application.consolidation_events)
+
+
+def staged_input_root(settings) -> str:
+    """Where durable submitted input lives: beside the database, not the
+    download folder. It is application state, never operator-visible material."""
+    from db.database import DB_PATH
+    return str(Path(DB_PATH).parent / "staged-input")
+
+
+def compose():
+    settings = get_settings()
+    repository = TransferRepository()
+    engine = TransferEngine(repository, IntegrationRegistry(), download_root=settings.download_folder, policy=TransferPolicy())
+    consolidation_events = ConsolidationEvents(repository)
+    # The canonical owner announces a committed attachment through an injected
+    # callback; nothing wraps or proxies it.
+    engine.canonical.on_attached = consolidation_events.stage
+    from integrations.usenet.nzb import read as read_nzb
+    service = ApplicationService(engine, configure=configure,
+                                 staged_input=StagedInputStore(staged_input_root(settings)),
+                                 nzb_reader=read_nzb)
+    service.consolidation_events = consolidation_events
+    configure(service)
+    return service
+
+
+application = compose()

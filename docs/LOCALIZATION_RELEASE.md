@@ -1,0 +1,259 @@
+# Localization: operating guide, readiness matrix and release decisions
+
+This is the standalone guide for working on DownloadPulse's interface languages, and the record of what
+the localization work proved and did not prove. The reference for the pieces themselves (runtime,
+catalogs, metadata, validator rules, census, glossary and the language-choice contract) is
+[`LOCALIZATION.md`](LOCALIZATION.md); this file does not repeat it.
+
+**Status.**
+- **All 18 targets are `supported`**: the product owner activated them together on 2026-11-11, once the
+  language choice had landed. English stays `canonical`; `en-XA` and `ar-XB` stay test-only `pseudo`.
+- All 18 catalogs are complete: **3669 of 3669** messages each, current against the English and
+  reviewed; the strict check of every supported locale (`validate.mjs --release`) passes on the
+  repository's own manifest.
+- **The language choice** (`LOCALIZATION.md` §5) -- each account's own in My Account and the installation
+  default in Users & Access → Deployment & Language -- offers English and the 18 targets: 19 languages.
+- Every translation and review is **AI-made**. No human or native-speaker review has taken place.
+
+## 1. Product rules that govern localization
+
+These are the product owner's decisions (2026-11-11) and bind every later change:
+
+1. **Localization is best effort. Text fits the existing interface; the interface is never changed to
+   fit a language.** No CSS, markup, typography, geometry, breakpoint or application-JavaScript change is
+   made to accommodate a translation. A translation that does not fit is shortened in the catalog, never
+   the interface widened.
+2. **Complete translations and correct meaning are still required.** A language is never advertised with
+   missing, stale or unreviewed messages.
+3. **Recognizable, unambiguous abbreviations** are allowed where no natural complete word fits (fr
+   «Téléch.», uk «Завант.»). A word that narrows the meaning (for example "downloaded" for a page that also
+   lists queued downloads) is not.
+4. **Language-specific typography and mixed-direction rendering limits may be accepted and documented**
+   without a corrective implementation. Arabic plain-text bidi (section 6, A1) is accepted on that basis.
+5. **Stored values, technical literals and copied text are never altered** for display: no bidi control
+   characters in catalogs, values or copied content.
+6. **An accepted limitation is never described as qualified or defect-free.**
+
+## 2. Working on languages
+
+### Adding or changing English text (every feature change)
+
+1. Add or change the message in `frontend/static/i18n/en.json`, with its metadata in
+   `frontend/i18n/en.meta.json`: category, translator context, owner and criticality. Give a geometry
+   note where the space is tight.
+2. Give `/i18n/en.js` in `frontend/static/index.html` a new `?v=`.
+3. Run `node .github/localization/validate.mjs`. Hard errors must be fixed before merging.
+4. No target translation is needed in the same change. A new or changed English message makes that key
+   **debt** in every target. Until it is translated again, the page shows English **for that key alone**,
+   and the validator lists it as a warning.
+
+### Translating, or catching up after English changed
+
+1. Run `node .github/localization/validate.mjs --json` and read each locale's `missingKeys` and
+   `staleKeys`. Take `criticalMissingKeys` and `criticalStaleKeys` first.
+2. Translate from the English and its translator context. Use the locale's termbase
+   (`frontend/i18n/terms/<tag>.json`) for every concept it names, and keep every protected name and
+   literal exactly (`terms/en.json` `protected`).
+3. Record `sources[key]` in the catalog: the sha256[:16] of the English the translation was made from.
+4. Record the review in the locale's ledger (`frontend/i18n/review/<tag>.json`). Each entry holds
+   `source` and `translation` (the hashes of what was reviewed) and `provenance` (`ai-review` or
+   `human-review`).
+   - A **critical-warning** key also needs a back-translation made without seeing the English
+     (`ai-back-translation` or `human-back-translation`, with its text), compared with the English by
+     someone else.
+   - A rendering intentionally identical to English needs an `identical` reason.
+   - A human step names its reviewer and evidence.
+5. Run `node .github/localization/validate.mjs --complete=<tag>`. It must exit 0: zero debt, a term for
+   every concept, and no unreviewed text or open finding.
+6. **If a page or control name changes, everything that names it follows.** That means:
+   - the nav label (`shell.nav.*`) and page title (`shell.page.*.title`);
+   - the termbase term;
+   - every Help bold path whose segment names that control (the validator's label-identity check fails
+     otherwise);
+   - Help prose that refers to the page by name. Generic uses of the same word stay as they are.
+
+   A word can name two different controls; for example the fr and uk Downloads page and the Downloads
+   tab inside Settings. Rename only the one that changed.
+7. **Fit check at 320 px.** The phone dock label has about 62 px at 10 px type, and the header title
+   about 81 px after the header's yields. Measure a changed page name in the running interface (as
+   `localization-foundation.spec.js` L24b/L24c do) before staging it.
+
+### Adding a new language
+
+1. Add the tag to `frontend/static/i18n/manifest.json` as `planned`, with its `native` name and `dir`.
+2. Write its termbase, a catalog with every key, and a review ledger, as above.
+3. Add it to `targets` in `backend/tests/test_localization_catalogs.py`, so CI requires it to stay
+   complete.
+4. Qualify it with `--complete=<tag>`, the locale probe (`DP_LOCALE=<tag> npx playwright test
+   localization-locale.spec.js`) and a 320 px fit check.
+5. Making it `supported` (offered to accounts) is a separate, explicit product decision (section 7).
+
+### Diagnosing debt or a broken catalog
+
+| What you see | Where to look | What it means |
+|---|---|---|
+| Some words are English in an otherwise translated page | `DPI18n.debt()` in the browser; the validator's `missingKeys` and `staleKeys` | Those keys are missing or stale; each falls back to English alone |
+| The whole page stays English and says so once in diagnostics | Server log line `Locale catalog <tag> is unreadable and is not delivered`; `/i18n/<tag>.js` returns 404 | The catalog file is missing or not valid JSON. The interface stays English, and a `supported` locale whose catalog is unreadable is no longer admitted |
+| `--complete` / `--release` / the CI catalog test fail | The validator's `ERROR` lines, which name the locale and key | Missing, stale, unreviewed or un-back-translated keys, an open finding, or a broken message |
+
+## 3. Validation and CI
+
+**Local:** `node .github/localization/validate.mjs [--json] [--complete=<tag>] [--release]`. The hard
+errors, debt warnings and review checks are listed in `LOCALIZATION.md` §4.
+
+**In CI.** The required **Tests** workflow runs
+`backend/tests/test_localization_catalogs.py` in its contract layer. The workflow fails a layer if any
+test is skipped, and this module is skipped only when Node is missing.
+- **Hard errors fail CI.** `test_the_repository_catalogs_validate_and_report_their_translation_debt`
+  asserts that the validator exits 0, that **all 18 targets** have a catalog, termbase and ledger, are
+  `supported`, have zero missing, stale, unreviewed and un-back-translated keys and no open finding, that
+  each passes `--complete=<tag>`, and that `--release` (every supported locale) passes.
+- **Supported catalogs therefore cannot silently lose completeness:** the CI test checks all 18 against
+  the repository's own manifest, whose status census (English canonical, 18 supported, 2 pseudo) another
+  test of the module pins.
+- **Other tests in the module** cover each class of broken message, the census of first-party literals
+  outside the catalog, the shell's keys, the sign-in page, the pseudo locales and the catalog asset's
+  versioning.
+- **Proved on 2026-11-11:** run locally, the test passes on the repository and **fails** on a copy with
+  one French message removed. The failure names the key («fr shell.nav.settings: a source hash without
+  its translation»).
+
+## 4. Runtime behaviour: delivery, fallback and failure
+
+| Behaviour | How it works | Evidence |
+|---|---|---|
+| What an account downloads | `ui-theme-bootstrap.js` states the account's language before first paint. The page loads `/i18n/en.js` (always: English is every key's fallback) and, for another language, `/i18n/<tag>.js?v=<content hash>` | `backend/api/auth_routes.py` `_locale`, `locale_catalog_script` |
+| Cost on the wire (measured 2026-11-11, uncompressed) | `en.js` 370 KB; a target 363 KB (zh-Hans) to 763 KB (hi). One account's first load is 0.73–1.13 MB. Gzip would be about 92 KB plus 94–126 KB | One-off measurement, 2026-11-11, at 3467 English messages |
+| Repeat loads | `Cache-Control: no-cache, must-revalidate` with a content `ETag`: a revalidation answers **304**, so the bytes are paid once per catalog version | Same |
+| A message missing or stale in a catalog | The server withholds a stale translation (made from older English). The interface shows English for that key alone and counts it as debt | `test_account_locale.py` (`…withheld_alone…`); browser L07b |
+| A missing, corrupt or invalid catalog | Not delivered (404, logged). The page stays English and says so once; a `supported` locale with an unreadable catalog is not admitted | `test_account_locale.py` (unreadable / malformed cases); L07b |
+| A catalog fetch that fails or never arrives | The page stays English, says so once in diagnostics, and the saved choice stands | L07b |
+| Localized start-up in test mode | `DOWNLOADPULSE_I18N_TEST_LOCALES=1` admits the pseudo locales (`en-XA`, `ar-XB`). The stored locale is applied at first paint (`lang`, `dir`) | L02, L03; LP07 (§6, D1) |
+
+**Pseudo locales** (`en-XA` accented and about 40% longer, `ar-XB` right-to-left) exist only with
+`DOWNLOADPULSE_I18N_TEST_LOCALES=1`. They are the supported way to exercise localization without
+activating a language.
+
+## 5. Boundaries that a language never changes
+
+A language changes words only. These are verified by existing tests:
+
+| Boundary | Evidence |
+|---|---|
+| Easy presentation keeps Advanced-only items omitted in every language | L08a |
+| Roles: every human role owns its language; Integration, anonymous and crossed sessions own none. A language choice changes the language only, never a role's controls | `test_account_locale.py` (`…every_human_role_owns_one…`, `…changes_the_language_only`) |
+| Deployment: the open default Admin owns the language in Server and Standalone | `test_account_locale.py` (`…across_deployment_types`) |
+| Admission: production admits English and `supported` targets only. A `planned`, unknown or foreign value is refused with **422** and changes nothing; a stored tag that is no longer admitted reads as English and stays stored | `test_account_locale.py` (`…never_a_planned_one`, `…refused_and_changes_nothing`, `…reads_as_english_and_stays_stored`); live probe 2026-11-11: `PUT /api/account/locale {"locale":"de"}` returned 422 `appearance.locale_unknown` |
+| A preference that cannot be read in time is never shown as the saved choice: the page is English and says nothing about the choice | `test_account_locale.py` (`…an_unanswered_read_as_unknown`) |
+
+**The language choice's own failure handling** (a refused or failed save keeps the list open, says so,
+and leaves the language as it was; a second press while saving sends nothing; Cancel and Back save
+nothing) is proven on the release image's own manifest by `language-preferences.spec.js` (LP03, LP04).
+The isolated qualification of the same lifecycle with real catalogs is D2/D3 in §6.
+
+## 6. Release-decision ledger
+
+### Verified release requirements
+
+| # | Requirement | Evidence |
+|---|---|---|
+| V1 | All 18 catalogs are complete and current: 3669/3669 messages, 0 missing, 0 stale, 0 extra | `validate.mjs --release` and `--json`; the catalog test (§3) |
+| V2 | Every message is reviewed for the current English and current text. All 258 critical keys are back-translated and compared in every language | Same (0 unreviewed, 0 without a back-translation, ×18) |
+| V3 | Every termbase covers all 31 concepts; 0 open findings; every rendering identical to English has a recorded reason | Same |
+| V4 | The release check refuses missing, stale and un-back-translated critical text, with per-key diagnostics | Isolated copy with all 18 `supported` (2026-11-11): passes unchanged; refuses each of three broken copies |
+| V5 | No 320 px truncation of page titles (5 pages) or dock labels in any of the 19 languages (Chromium, host fonts) | 19-language fit census (2026-11-11); L24b, L24c |
+| V6 | Dialogs at 320–1440 px (geometry, accessible name and description, focus trap and restoration) in ar, ja and de | Dialog qualification (108/108 checks) |
+| V7 | Right-to-left layout and navigator, and isolation of technical literals in rich text | L03, L03b, L03c |
+| V8 | Fallback, failure and admission behaviour (§4, §5) | Existing tests, re-run 2026-11-11: `test_account_locale.py` 26 passed; L03, L07b, L08a passed |
+
+### Corrected release blockers
+
+| # | Blocker | Correction |
+|---|---|---|
+| C1 | 320 px dock and title truncation in fr, de, es, pt-BR, uk and it | Text only: fr Aperçu and Téléch.; de Optionen; es and pt-BR Ajustes; uk Параметри and Завант.; it Opzioni |
+| C2 | Help and on-screen text still named renamed pages by their old name (fr «Tableau de bord»; Settings page references in de, es, pt-BR, uk, it) | Text only: 162 messages (fr 9, de 33, es 35, pt-BR 35, uk 16, it 34). Each was classified as a page reference against the English and independently reviewed; 9 corrections were confirmed; all 25 critical messages were back-translated blind and found equivalent. Generic uses of the word ("settings" values, card names) are unchanged |
+| C3 | Open dialogs kept the old language on a language change | Fixed: an open dialog re-says its words in place (`LOCALIZATION.md` §1, Owners) |
+| C4 | Right-to-left section navigation and literal isolation | Fixed; L03, L03b, L03c (V7) |
+| C5 | Japanese and Arabic dock and title cut; Japanese and Korean in-word line breaks | Fixed; L24b, L24c (V5); accepted limits A3, A4 |
+
+### Known limitations accepted by the product owner
+
+| # | Limitation | Basis |
+|---|---|---|
+| A1 | **Arabic plain-text bidi.** Values inserted into plain-text messages (toasts, tooltips, attributes) are not direction-isolated, so punctuation next to a left-to-right value can display out of place. Rich text is isolated (V7). Stored and copied values are unaffected | Localization Support Policy Amendment, 2026-11-11 |
+| A2 | A toast already on screen keeps its language after a language change; new messages use the new language | Product owner decision |
+| A3 | Japanese `word-break: auto-phrase` is Chromium-only; other engines keep `line-break: strict` | Same |
+| A4 | Japanese and Arabic dock and title fits have zero margin in Chromium with Noto fonts; other fonts and devices are not verified | Same |
+| A5 | Screen-reader output is not qualified; accessible names and roles are verified from the DOM only | Same |
+| A6 | zh-Hant uses Taiwan terminology; Hong Kong usage is out of scope | Same |
+| A7 | German «Passwort entfernen» for Clear Password | Same |
+| A8 | fr «Téléch.» and uk «Завант.» are abbreviations wherever the Downloads page is named in the sidebar, header and Help paths; Help prose keeps the full word as its expansion | Product owner decision |
+| A9 | All translation and review is AI-only, with no human or native-speaker review | Recorded in every ledger |
+
+### Unresolved blockers
+
+| # | Blocker | Owner and consequence |
+|---|---|---|
+| U1 | **Catalogs are served uncompressed** (§4): 0.73–1.13 MB on an account's first load, against about 0.2 MB with gzip | Changing it is an application change, not a localization one, and needs its own decision. Options: accept it (paid once per version; often compressed by a reverse proxy), or authorize response compression separately |
+| U2 | **125 Help spans name a control that has no exact catalog key** (14 are the Help manual's own tab names), plus 1 deliberately generic «Clear». The label-identity check cannot verify these; only per-message review covers them | Recorded per span in `frontend/i18n/en.labels.json`. Accept as review-only, or map them to keys in a later English-source change |
+
+### Activation-dependent requirements
+
+They were first proved on an isolated fixture (a scratch copy of the static files marking the targets
+`supported`), then on the **activated repository manifest itself**
+(2026-11-11, local instance, desktop Chromium, host fonts; `language-preferences.spec.js` LP01–LP07, which
+runs in CI's Browser Runtime on the image's own manifest). None was a gate to the activation: the product
+owner decided the activation without one.
+
+| # | Requirement | State |
+|---|---|---|
+| D1 | First paint with a real translated catalog (veil until it arrives, no English flash) | **Verified on the activated manifest (Chromium):** a cold load of an account saved as Arabic at 320 px is `lang="ar" dir="rtl"` and veiled at `DOMContentLoaded`, then Arabic, the veil lifted (LP07) |
+| D2 | The production language choice: picker, persistence and switching lifecycle (`LOCALIZATION.md` §5) | **Verified on the activated manifest (Chromium)** at 1440 and 320 px: both lists offer exactly the 19 languages by flag and native name, Arabic right to left (LP01, LP04, LP07); German chosen and cleared in My Account with the draft kept (LP06); the default with Cancel and Apply, the inheriting Admin following it, an explicit English not (LP04) |
+| D3 | A failed save through that picker | **Verified** (LP03, LP04): the list or dialog stays open, says so, and the language and stored state are unchanged |
+| D4 | Real-device and real-font fits (iOS, Android, Safari, Firefox) | **Accepted as untested** by the product owner. Only desktop Chromium with host fonts was measured (including the 19-language census of the new surfaces at 320, 375 and 779 px). Not a pass |
+
+## 7. Activation and rollback
+
+- **The 18 targets were activated together on 2026-11-11** (`planned` → `supported` in
+  `frontend/static/i18n/manifest.json`, nothing else), by the product owner's decision.
+  `validate.mjs --release` passes on that manifest. D1–D3 were verified on it; D4 is
+  an accepted untested environment, not a condition of the activation.
+- **A language added later** is activated the same way: its manifest status becomes `supported` once
+  `--release` exits 0 with that manifest, and this ledger is updated.
+- **Rollback** means setting the status back to `planned`. Accounts that chose the language read it as
+  English, and their stored choice is kept, so re-activating restores it. Removing or corrupting a catalog
+  has the same effect: the language is withdrawn, never half-shown.
+- **Every release** recomputes §6 on its tagged candidate. Zero debt is required
+  for every advertised language, and any withdrawal of a language is an explicit, owner-approved
+  decision.
+
+## 8. Per-language matrix
+
+Every target: 3669/3669 messages, current and reviewed; 258/258 critical keys back-translated; termbase
+31/31; `--complete` passes; no 320 px page-title or dock truncation (Chromium); status **`supported`**
+(activated 2026-11-11); AI-only review (A9). D1–D3 verified on the activated manifest; D4 not tested
+(accepted).
+
+| Language | Script and direction | Notes beyond the common state | State |
+|---|---|---|---|
+| de German | Latin, LTR | Settings page «Optionen»; A7 | Supported; accepted limits A9; D4 not tested |
+| fr French | Latin, LTR | «Aperçu» and «Téléch.» (A8) | Supported; accepted limits A8, A9; D4 not tested |
+| es Spanish | Latin, LTR | Settings page «Ajustes» | Supported; accepted limits A9; D4 not tested |
+| it Italian | Latin, LTR | Settings page «Opzioni» | Supported; accepted limits A9; D4 not tested |
+| pt-BR Portuguese (Brazil) | Latin, LTR | Settings page «Ajustes» | Supported; accepted limits A9; D4 not tested |
+| pt-PT Portuguese (Portugal) | Latin, LTR | Independent of pt-BR | Supported; accepted limits A9; D4 not tested |
+| nl Dutch | Latin, LTR | — | Supported; accepted limits A9; D4 not tested |
+| pl Polish | Latin, LTR | few/many plurals | Supported; accepted limits A9; D4 not tested |
+| ru Russian | Cyrillic, LTR | few/many plurals | Supported; accepted limits A9; D4 not tested |
+| uk Ukrainian | Cyrillic, LTR | «Параметри» and «Завант.» (A8); few/many plurals | Supported; accepted limits A8, A9; D4 not tested |
+| tr Turkish | Latin, LTR | Dotted and dotless i kept distinct | Supported; accepted limits A9; D4 not tested |
+| id Indonesian | Latin, LTR | — | Supported; accepted limits A9; D4 not tested |
+| hi Hindi | Devanagari, LTR | Largest catalog (763 KB uncompressed, U1) | Supported; accepted limits A9; D4 not tested |
+| ja Japanese | CJK, LTR | A3 and A4 (zero-margin fits) | Supported; accepted limits A3, A4, A9; D4 not tested |
+| ko Korean | Hangul, LTR | `keep-all` word breaking | Supported; accepted limits A9; D4 not tested |
+| zh-Hans Chinese (Simplified) | CJK, LTR | Mainland usage | Supported; accepted limits A9; D4 not tested |
+| zh-Hant Chinese (Traditional) | CJK, LTR | Taiwan usage (A6) | Supported; accepted limits A6, A9; D4 not tested |
+| ar Arabic | Arabic, **RTL** | A1 (plain-text bidi) and A4 (zero-margin dock) | Supported; accepted limits A1, A4, A9; D4 not tested |
+
+**Activated is not certified.** The 18 are offered to accounts; no language is declared release-qualified
+or native-reviewed. D4 is untested, and every translation is AI-only.

@@ -1,0 +1,120 @@
+"""Static guards for the neutral Provider Status presentation contract."""
+from pathlib import Path
+
+
+ROOT = Path(__file__).parents[2]
+STATUS = (ROOT / "frontend" / "static" / "ui-provider-status.js").read_text()
+ACCOUNT = (ROOT / "frontend" / "static" / "ui-premium-account-status.js").read_text()
+# The provider card (structure, status, collapse control) belongs to the Settings owner.
+CARDS = (ROOT / "frontend" / "static" / "ui-settings-page.js").read_text()
+APP = (ROOT / "frontend" / "static" / "app.js").read_text()
+INDEX = (ROOT / "frontend" / "static" / "index.html").read_text()
+ALLDEBRID_DEF = (ROOT / "backend" / "providers" / "alldebrid" / "definition.py").read_text()
+GENERAL_DEF = (ROOT / "backend" / "providers" / "general_http" / "definition.py").read_text()
+
+
+def test_provider_status_owner_is_provider_neutral():
+    lower = STATUS.lower()
+    assert "alldebrid.com" not in lower
+    assert "candidate.id === 'alldebrid'" not in lower
+    assert "entry.id === 'alldebrid'" not in lower
+    assert 'data-provider-id="alldebrid"' not in lower
+    assert "integration.kind === 'provider'" in STATUS
+    assert "integration.enabled !== false" in STATUS
+    assert "presentation?.status_name" in STATUS
+    assert "presentation.status_endpoint" in STATUS
+    assert "presentation.static_status" in STATUS
+    assert "window.DPI18n.t('provider_status.none_enabled')" in STATUS
+
+
+def test_operational_health_is_derived_from_member_observations_not_enablement():
+    assert "configured ? 'healthy'" not in STATUS
+    assert "enabled ? 'healthy'" not in STATUS
+    assert "enabled.every(entry => entry.state === 'healthy')" in STATUS
+    assert "enabled.some(entry => ['unhealthy', 'auth_required'].includes(entry.state))" in STATUS
+    assert "enabled.length !== entries.length" in STATUS
+    assert "await api('GET', candidate.endpoint)" in STATUS
+    assert "candidate.staticStatus" in STATUS
+
+
+def test_provider_specific_account_detail_is_isolated_from_neutral_owner():
+    # DP 1.0.13: the one premium-account owner reads the NEUTRAL account truth
+    # every account-backed provider's status surface publishes, so neither it
+    # nor the neutral status owner names a provider or a native account field
+    # -- a future premium provider needs neither file changed.
+    assert "status?.account" in ACCOUNT and "service_class !== 'premium'" in ACCOUNT
+    assert "Premium until" not in STATUS and "until" in ACCOUNT
+    for provider_specific in ("alldebrid", "realdebrid", "torbox"):
+        assert provider_specific not in ACCOUNT.casefold(), provider_specific
+    for native_field in ("isPremium", "status?.premiumUntil", "status?.expiration", "premium_expires_at",
+                         "plan_name", "account_type"):
+        assert native_field not in ACCOUNT, native_field
+    for provider_specific in ("alldebrid", "realdebrid", "torbox", "premiumUntil", "expiration", "premium-row"):
+        assert provider_specific not in STATUS.casefold() if provider_specific.islower() else provider_specific not in STATUS, provider_specific
+    assert not (ROOT / "frontend" / "static" / "ui-alldebrid-account-status.js").exists()
+
+
+def test_presentation_identity_and_direct_source_group_are_provider_owned():
+    assert 'status_name="AllDebrid"' in ALLDEBRID_DEF
+    assert 'status_endpoint="/integration-status/alldebrid"' in ALLDEBRID_DEF
+    assert 'status_name="HTTP(S)"' in GENERAL_DEF
+    assert 'status_group="direct_sources"' in GENERAL_DEF
+    assert 'status_group_label="Network Sources"' in GENERAL_DEF
+    assert 'static_status="healthy"' in GENERAL_DEF
+
+
+def test_premium_card_owner_uses_persisted_configured_metadata_and_independent_disclosure():
+    assert "entry.configured" in CARDS
+    assert "data-integration-enabled" in CARDS
+    # DP 1.0.13 work item C: ONE canonical disclosure component, shared with
+    # the executor-tuning cards and placed immediately after the title.
+    assert "dp-settings-disclosure" in CARDS
+    assert "settingsDisclosure(" in CARDS
+    # DP 1.0.13 Services final corrective pass: the header reports
+    # the three CONFIGURATION states and never repeats what the Enable toggle
+    # beside it already says. ``Verified`` is durable canonical truth about the
+    # current saved configuration, not a local memory of a Test.
+    assert "Unconfigured" in CARDS
+    assert "Configured" in CARDS
+    assert "Verified" in CARDS
+    assert "Configuration required" not in CARDS
+    assert "Provider configured" not in CARDS
+    assert "function providerDirty(card)" in CARDS
+    assert "controlSignature(" in CARDS
+
+
+def test_application_shell_explicitly_loads_the_single_provider_owners():
+    # DP 1.0.12 canonical flattening (Gate 9 round 3 fix-forward): the styling
+    # owner is loaded through style.css's @import graph, not a second
+    # top-level <link>; index.html only carries the JS runtimes directly.
+    style = (ROOT / "frontend" / "static" / "style.css").read_text()
+    assert 'id="provider-status-list"' in INDEX
+    assert INDEX.count('id="provider-status-list"') == 1
+    assert '/ui-provider-status.js?v=5' in INDEX
+    assert '/ui-premium-account-status.js?v=1' in INDEX
+    assert 'ui-alldebrid-account-status' not in INDEX
+    assert 'ui-provider-cards' not in INDEX
+    assert not (ROOT / "frontend" / "static" / "ui-provider-cards.js").exists()
+    assert "ui-provider-state.css" not in INDEX
+    assert "@import url('/ui-provider-state.css" in style
+
+
+def test_legacy_alldebrid_provider_status_owner_is_removed():
+    for symbol in (
+        'allDebridStatusGeneration',
+        'invalidateAllDebridStatus',
+        'renderAllDebridStatus',
+        'loadAllDebridStatus',
+        '_updatePremiumLabel',
+    ):
+        assert symbol not in APP
+    assert "setDot('api'" not in APP
+    assert 'AllDebrid: checking' not in INDEX
+    assert 'id="dot-api"' not in INDEX
+    assert 'href="https://alldebrid.com"' not in INDEX
+    assert 'loadAllDebridStatus' not in STATUS
+    assert 'invalidateAllDebridStatus' not in STATUS
+    # Provider Status is sidebar-global: navigation changes no provider fact
+    # and never discards the observation in flight.
+    assert 'invalidateProviderStatus' not in APP
+    assert 'await refreshProviderStatus();' in APP

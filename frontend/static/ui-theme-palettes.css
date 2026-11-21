@@ -1,0 +1,797 @@
+/* DownloadPulse alternative palettes.
+ *
+ * DownloadPulse Dark and Light are the native palettes (design-tokens.css,
+ * ui-language-tokens.css) and are never restated here: with neither selected
+ * the body carries no data-dp-palette and every token keeps its original
+ * value. An alternative palette is chosen per mode (ui-theme-bootstrap.js)
+ * and only ever recolours decorative tokens: surfaces, text, borders and the
+ * interaction accent. Semantic state colours (--dp-state-*), progress state,
+ * provider and protocol identities (--dp-identity-*) and --dp-accent-cyan
+ * (Statistics' Network series) are never declared here. The decorative
+ * artwork -- the sidebar's signal field and the title's waveform -- takes the
+ * palette's accents (the derived blocks below), keeping its own shapes,
+ * opacities and per-mode emphasis.
+ *
+ * Each palette states its core tokens once, on the body that carries it and
+ * on its own swatch in the theme picker, so the swatch shows the applied
+ * values. The derived blocks below then rebuild every material, chrome and
+ * legacy alias from that core: tokens declared on :root or body.light with
+ * var() resolve where they are declared, so they are redeclared on the body.
+ *
+ * Values are taken from each project's published palette; a value marked
+ * "adapted" is a neighbouring tone chosen where the upstream palette has no
+ * equivalent role (a third surface, a muted text that stays readable) or
+ * where its value would read below 4.5:1 in that role on the palette's own
+ * surfaces. Only colour values are used; no theme file, artwork or font is
+ * copied. Sources and licences: docs/DEPENDENCY_LICENSES.md.
+ *
+ * The catalog (which palettes exist, their order and labels) is
+ * services/account_appearance.py CATALOG; a block here exists for exactly
+ * each alternative it lists.
+ */
+
+/* ── Dark palettes ─────────────────────────────────────────────────────── */
+
+/* Catppuccin Mocha (catppuccin/palette: crust, mantle, base, surface0-2,
+   overlay0/2, subtext1, text, mauve, lavender, blue, sapphire). */
+body[data-dp-palette="catppuccin-mocha"],
+.dp-theme-swatch[data-dp-palette="catppuccin-mocha"] {
+  /* Data panels (adapted): the native dark panels' luminance in Mocha's base hue, so
+     locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #111120;
+  --dp-panel-end: #0b0b16;
+  --dp-bg-app: #11111b;
+  --dp-bg-app-alt: #181825;
+  --dp-bg-sidebar: #181825;
+  --dp-surface-1: #1e1e2e;
+  --dp-surface-2: #262637; /* adapted: between base and surface0 */
+  --dp-surface-3: #313244;
+  --dp-surface-input: #181825;
+  --dp-surface-overlay: rgba(30, 30, 46, .97);
+  --dp-text-primary: #cdd6f4;
+  --dp-text-secondary: #bac2de;
+  --dp-text-muted: #9399b2;
+  --dp-text-disabled: #6c7086;
+  --dp-border-subtle: #262637;
+  --dp-border-default: #313244;
+  --dp-border-strong: #45475a;
+  --dp-border-nested: #45475a;
+  --dp-divider: rgba(147, 153, 178, .16);
+  --dp-accent-purple: #cba6f7;
+  --dp-accent-purple-bright: #cba6f7;
+  --dp-accent-blue: #89b4fa;
+  --dp-accent-blue-bright: #74c7ec;
+  --dp-accent-rgb: 203, 166, 247;
+  --dp-accent-contrast: #11111b;
+}
+
+/* Dracula (draculatheme.com: background, current line, foreground, comment,
+   purple, pink, cyan; the darker UI backgrounds of the official editor
+   themes). */
+body[data-dp-palette="dracula"],
+.dp-theme-swatch[data-dp-palette="dracula"] {
+  /* Data panels (adapted): the native dark panels' luminance in Dracula's background hue, so
+     locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #121319;
+  --dp-panel-end: #0d0e12;
+  --dp-bg-app: #191a21;
+  --dp-bg-app-alt: #21222c;
+  --dp-bg-sidebar: #21222c;
+  --dp-surface-1: #282a36;
+  --dp-surface-2: #2f3141; /* adapted */
+  --dp-surface-3: #44475a;
+  --dp-surface-input: #21222c;
+  --dp-surface-overlay: rgba(40, 42, 54, .97);
+  --dp-text-primary: #f8f8f2;
+  --dp-text-secondary: #d9dae6; /* adapted */
+  --dp-text-muted: #9aa3cc; /* adapted: a readable comment tone */
+  --dp-text-disabled: #6272a4;
+  --dp-border-subtle: #2f3141;
+  --dp-border-default: #44475a;
+  --dp-border-strong: #6272a4;
+  --dp-border-nested: #6272a4;
+  --dp-divider: rgba(98, 114, 164, .24);
+  --dp-accent-purple: #bd93f9;
+  --dp-accent-purple-bright: #bd93f9;
+  --dp-accent-blue: #ff79c6;
+  --dp-accent-blue-bright: #ff79c6;
+  --dp-accent-rgb: 189, 147, 249;
+  --dp-accent-contrast: #191a21;
+}
+
+/* Gruvbox Dark (morhetz/gruvbox: bg0_h, bg0, bg0_s, bg1-2, fg0-4, bright
+   purple and blue; the yellow, orange and green accents are left to the
+   semantic state colours). */
+body[data-dp-palette="gruvbox-dark"],
+.dp-theme-swatch[data-dp-palette="gruvbox-dark"] {
+  /* Data panels (adapted): the native dark panels' luminance in bg0_h's hue, so
+     locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #151413;
+  --dp-panel-end: #0f0e0d;
+  --dp-bg-app: #1d2021;
+  --dp-bg-app-alt: #1d2021;
+  --dp-bg-sidebar: #1d2021;
+  --dp-surface-1: #282828;
+  --dp-surface-2: #32302f;
+  --dp-surface-3: #3c3836;
+  --dp-surface-input: #1d2021;
+  --dp-surface-overlay: rgba(40, 40, 40, .97);
+  --dp-text-primary: #ebdbb2;
+  --dp-text-secondary: #d5c4a1;
+  --dp-text-muted: #a89984;
+  --dp-text-disabled: #7c6f64;
+  --dp-border-subtle: #32302f;
+  --dp-border-default: #3c3836;
+  --dp-border-strong: #504945;
+  --dp-border-nested: #504945;
+  --dp-divider: rgba(168, 153, 132, .16);
+  --dp-accent-purple: #d3869b;
+  --dp-accent-purple-bright: #d3869b;
+  --dp-accent-blue: #83a598;
+  --dp-accent-blue-bright: #83a598;
+  --dp-accent-rgb: 211, 134, 155;
+  --dp-accent-contrast: #1d2021;
+}
+
+/* Everforest Dark (sainnhe/everforest autoload/everforest.vim, dark "medium" (bg_dim, bg0-bg5, fg, grey0-2, green, aqua, blue)). */
+body[data-dp-palette="everforest-dark"],
+.dp-theme-swatch[data-dp-palette="everforest-dark"] {
+  /* Data panels (adapted): the native dark panels' lightness in the hue of bg1,
+     so locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #0b1419;
+  --dp-panel-end: #050e12;
+  --dp-bg-app: #232a2e;
+  --dp-bg-app-alt: #2d353b;
+  --dp-bg-sidebar: #2d353b;
+  --dp-surface-1: #2d353b;
+  --dp-surface-2: #343f44;
+  --dp-surface-3: #3d484d;
+  --dp-surface-input: #232a2e;
+  --dp-surface-overlay: rgba(45, 53, 59, .97);
+  --dp-text-primary: #d3c6aa;
+  --dp-text-secondary: #b9b49c; /* adapted: between fg and grey2, a warm secondary */
+  --dp-text-muted: #a3aea6; /* adapted: grey2 lifted to read as body text on the canvas */
+  --dp-text-disabled: #7a8478;
+  --dp-border-subtle: #343f44;
+  --dp-border-default: #475258;
+  --dp-border-strong: #56635f;
+  --dp-border-nested: #56635f;
+  --dp-divider: rgba(157, 169, 160, .16);
+  --dp-accent-purple: #a7c080;
+  --dp-accent-purple-bright: #a7c080;
+  --dp-accent-blue: #83c092;
+  --dp-accent-blue-bright: #7fbbb3;
+  --dp-accent-rgb: 167, 192, 128;
+  --dp-accent-contrast: #232a2e;
+}
+
+/* Rosé Pine (rose-pine/rose-pine-palette palette.json "main" (base, surface, overlay, muted, subtle, text, rose, iris, gold)). */
+body[data-dp-palette="rose-pine"],
+.dp-theme-swatch[data-dp-palette="rose-pine"] {
+  /* Data panels (adapted): the native dark panels' lightness in the hue of overlay,
+     so locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #130f24;
+  --dp-panel-end: #0c081d;
+  --dp-bg-app: #13111c; /* adapted: below base for the canvas, in base's hue */
+  --dp-bg-app-alt: #191724;
+  --dp-bg-sidebar: #191724;
+  --dp-surface-1: #1f1d2e;
+  --dp-surface-2: #26233a;
+  --dp-surface-3: #2f2b46; /* adapted: overlay lifted for a third surface */
+  --dp-surface-input: #191724;
+  --dp-surface-overlay: rgba(31, 29, 46, .97);
+  --dp-text-primary: #e0def4;
+  --dp-text-secondary: #b3afcc; /* adapted: between text and subtle */
+  --dp-text-muted: #908caa;
+  --dp-text-disabled: #6e6a86;
+  --dp-border-subtle: #26233a;
+  --dp-border-default: #363250; /* adapted: overlay lifted for a visible edge */
+  --dp-border-strong: #6e6a86;
+  --dp-border-nested: #6e6a86;
+  --dp-divider: rgba(144, 140, 170, .14);
+  --dp-accent-purple: #ebbcba;
+  --dp-accent-purple-bright: #ebbcba;
+  --dp-accent-blue: #c4a7e7;
+  --dp-accent-blue-bright: #f6c177;
+  --dp-accent-rgb: 235, 188, 186;
+  --dp-accent-contrast: #191724;
+}
+
+/* Kanagawa Wave (rebelot/kanagawa.nvim colors.lua + themes.lua "wave" (sumiInk0-6, waveBlue1-2, fujiWhite, oldWhite, crystalBlue, waveAqua2, carpYellow)). */
+body[data-dp-palette="kanagawa-wave"],
+.dp-theme-swatch[data-dp-palette="kanagawa-wave"] {
+  /* Data panels (adapted): the native dark panels' lightness in the hue of waveBlue1,
+     so locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #051327;
+  --dp-panel-end: #020c20;
+  --dp-bg-app: #16161d;
+  --dp-bg-app-alt: #1f1f28;
+  --dp-bg-sidebar: #1a1a22;
+  --dp-surface-1: #1f1f28;
+  --dp-surface-2: #2a2a37;
+  --dp-surface-3: #223249;
+  --dp-surface-input: #181820;
+  --dp-surface-overlay: rgba(31, 31, 40, .97);
+  --dp-text-primary: #dcd7ba;
+  --dp-text-secondary: #c8c093;
+  --dp-text-muted: #9a9888; /* adapted: fujiGray lifted to read as body text */
+  --dp-text-disabled: #727169;
+  --dp-border-subtle: #2a2a37;
+  --dp-border-default: #363646;
+  --dp-border-strong: #2d4f67;
+  --dp-border-nested: #2d4f67;
+  --dp-divider: rgba(200, 192, 147, .12);
+  --dp-accent-purple: #7e9cd8;
+  --dp-accent-purple-bright: #7fb4ca;
+  --dp-accent-blue: #7aa89f;
+  --dp-accent-blue-bright: #e6c384;
+  --dp-accent-rgb: 126, 156, 216;
+  --dp-accent-contrast: #16161d;
+}
+
+/* Ayu Mirage (ayu-theme/ayu-colors themes/mirage.yaml (surface sunk/base/lift, ui.panel, editor.fg, ui.fg, accent tint, indigo, teal)). */
+body[data-dp-palette="ayu-mirage"],
+.dp-theme-swatch[data-dp-palette="ayu-mirage"] {
+  /* Data panels (adapted): the native dark panels' lightness in the hue of ui.panel,
+     so locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #0d131e;
+  --dp-panel-end: #070c17;
+  --dp-bg-app: #181c26;
+  --dp-bg-app-alt: #1f2430;
+  --dp-bg-sidebar: #1f2430;
+  --dp-surface-1: #242936;
+  --dp-surface-2: #282e3b;
+  --dp-surface-3: #323a4a; /* adapted: panel lifted for a third surface */
+  --dp-surface-input: #1c212c;
+  --dp-surface-overlay: rgba(36, 41, 54, .97);
+  --dp-text-primary: #cccac2;
+  --dp-text-secondary: #a9adb6; /* adapted: between editor.fg and ui.fg */
+  --dp-text-muted: #8f99ab; /* adapted: ui.fg lifted to read as body text */
+  --dp-text-disabled: #707a8c;
+  --dp-border-subtle: #282e3b;
+  --dp-border-default: #343c4c; /* adapted: a visible edge between panel and gray */
+  --dp-border-strong: #4a5466;
+  --dp-border-nested: #4a5466;
+  --dp-divider: rgba(112, 122, 140, .22);
+  --dp-accent-purple: #ffcc66;
+  --dp-accent-purple-bright: #ffcc66;
+  --dp-accent-blue: #5ccfe6;
+  --dp-accent-blue-bright: #95e6cb;
+  --dp-accent-rgb: 255, 204, 102;
+  --dp-accent-contrast: #1f2430;
+}
+
+/* SynthWave '84 (robb0wen/synthwave-vscode themes/synthwave-color-theme.json (editor, sideBar, activityBar, input, button backgrounds; pink, cyan, yellow, comment)). */
+body[data-dp-palette="synthwave-84"],
+.dp-theme-swatch[data-dp-palette="synthwave-84"] {
+  /* Data panels (adapted): the native dark panels' lightness in the hue of its violet surface,
+     so locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #150d26;
+  --dp-panel-end: #0f071f;
+  --dp-bg-app: #171520;
+  --dp-bg-app-alt: #241b2f;
+  --dp-bg-sidebar: #241b2f;
+  --dp-surface-1: #262335;
+  --dp-surface-2: #2a2139;
+  --dp-surface-3: #34294f; /* adapted: between input and button for a third surface */
+  --dp-surface-input: #2a2139;
+  --dp-surface-overlay: rgba(38, 35, 53, .97);
+  --dp-text-primary: #ffffff;
+  --dp-text-secondary: #d6cdf0; /* adapted: the foreground tinted toward the theme's violet */
+  --dp-text-muted: #a3a8d6; /* adapted: the comment tone lifted to read as body text */
+  --dp-text-disabled: #848bbd;
+  --dp-border-subtle: #2a2139;
+  --dp-border-default: #3d3260; /* adapted: a visible violet edge */
+  --dp-border-strong: #614d85;
+  --dp-border-nested: #614d85;
+  --dp-divider: rgba(132, 139, 189, .22);
+  --dp-accent-purple: #ff7edb;
+  --dp-accent-purple-bright: #ff7edb;
+  --dp-accent-blue: #36f9f6;
+  --dp-accent-blue-bright: #36f9f6;
+  --dp-accent-rgb: 255, 126, 219;
+  --dp-accent-contrast: #171520;
+}
+
+/* Oxocarbon Dark (nyoom-engineering/oxocarbon.nvim lua/oxocarbon/init.lua dark (base00-06, base09 #78a9ff, base10 #ee5396, base12 #ff7eb6, base15 #82cfff); cross-checked with base16-oxocarbon-dark). */
+body[data-dp-palette="oxocarbon-dark"],
+.dp-theme-swatch[data-dp-palette="oxocarbon-dark"] {
+  /* Data panels (adapted): the native dark panels' lightness in the hue of base00,
+     so locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #131313;
+  --dp-panel-end: #0c0c0c;
+  --dp-bg-app: #161616;
+  --dp-bg-app-alt: #161616;
+  --dp-bg-sidebar: #1c1c1c; /* adapted: between base00 and base01: the sidebar stands off the canvas */
+  --dp-surface-1: #262626;
+  --dp-surface-2: #2e2e2e; /* adapted: between base01 and base02 */
+  --dp-surface-3: #393939;
+  --dp-surface-input: #161616;
+  --dp-surface-overlay: rgba(38, 38, 38, .97);
+  --dp-text-primary: #f2f4f8;
+  --dp-text-secondary: #dde1e6;
+  --dp-text-muted: #a2a9b0; /* adapted: IBM Carbon gray 40, between base03 and base04 */
+  --dp-text-disabled: #6f6f6f;
+  --dp-border-subtle: #262626;
+  --dp-border-default: #393939;
+  --dp-border-strong: #525252;
+  --dp-border-nested: #525252;
+  --dp-divider: rgba(221, 225, 230, .10);
+  --dp-accent-purple: #78a9ff;
+  --dp-accent-purple-bright: #82cfff;
+  --dp-accent-blue: #ff7eb6;
+  --dp-accent-blue-bright: #ee5396;
+  --dp-accent-rgb: 120, 169, 255;
+  --dp-accent-contrast: #161616;
+}
+
+/* ── Light palettes ────────────────────────────────────────────────────── */
+
+/* Catppuccin Latte (catppuccin/palette). */
+body[data-dp-palette="catppuccin-latte"],
+.dp-theme-swatch[data-dp-palette="catppuccin-latte"] {
+  /* Data panels (adapted): the native light panels' luminance in Latte's base hue, so
+     locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #ffffff;
+  --dp-panel-end: #f7f8fb;
+  --dp-bg-app: #e6e9ef;
+  --dp-bg-app-alt: #eff1f5;
+  --dp-bg-sidebar: #e6e9ef;
+  --dp-surface-1: #eff1f5;
+  --dp-surface-2: #f5f6f9; /* adapted: base lifted for raised rows */
+  --dp-surface-3: #dce0e8;
+  --dp-surface-input: #f5f6f9;
+  --dp-surface-overlay: rgba(239, 241, 245, .98);
+  --dp-text-primary: #4c4f69;
+  --dp-text-secondary: #5c5f77;
+  --dp-text-muted: #6c6f85;
+  --dp-text-disabled: #9ca0b0;
+  --dp-border-subtle: #dce0e8;
+  --dp-border-default: #ccd0da;
+  --dp-border-strong: #bcc0cc;
+  --dp-border-nested: #bcc0cc;
+  --dp-divider: rgba(108, 111, 133, .14);
+  --dp-accent-purple: #8839ef;
+  --dp-accent-purple-bright: #8839ef;
+  --dp-accent-blue: #1e66f5;
+  --dp-accent-blue-bright: #209fb5;
+  --dp-accent-rgb: 136, 57, 239;
+  --dp-accent-contrast: #eff1f5;
+}
+
+/* Nord Light: Nord has no official light theme; this is Nord's Snow Storm
+   for surfaces, Polar Night for text and Frost for the accent. */
+body[data-dp-palette="nord-light"],
+.dp-theme-swatch[data-dp-palette="nord-light"] {
+  /* Data panels (adapted): the native light panels' luminance in Snow Storm's hue, so
+     locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #ffffff;
+  --dp-panel-end: #f6f8fb;
+  --dp-bg-app: #e5e9f0;
+  --dp-bg-app-alt: #eceff4;
+  --dp-bg-sidebar: #e5e9f0;
+  --dp-surface-1: #eceff4;
+  --dp-surface-2: #f2f4f8; /* adapted */
+  --dp-surface-3: #d8dee9;
+  --dp-surface-input: #f2f4f8;
+  --dp-surface-overlay: rgba(236, 239, 244, .98);
+  --dp-text-primary: #2e3440;
+  --dp-text-secondary: #3b4252;
+  --dp-text-muted: #4c566a;
+  --dp-text-disabled: #8691a6; /* adapted */
+  --dp-border-subtle: #d8dee9;
+  --dp-border-default: #c9d1dd; /* adapted */
+  --dp-border-strong: #aeb9ca; /* adapted */
+  --dp-border-nested: #aeb9ca;
+  --dp-divider: rgba(76, 86, 106, .14);
+  --dp-accent-purple: #5e81ac;
+  --dp-accent-purple-bright: #5e81ac;
+  --dp-accent-blue: #81a1c1;
+  --dp-accent-blue-bright: #88c0d0;
+  --dp-accent-rgb: 94, 129, 172;
+  --dp-accent-contrast: #eceff4;
+}
+
+/* Gruvbox Light (morhetz/gruvbox: bg0_h, bg0, bg0_s, bg1-3, fg0-4, faded
+   purple and blue). */
+body[data-dp-palette="gruvbox-light"],
+.dp-theme-swatch[data-dp-palette="gruvbox-light"] {
+  /* Data panels (adapted): the native light panels' luminance in bg0's hue, so
+     locked state and identity colours keep their native contrast. */
+  --dp-panel-start: #ffffff;
+  --dp-panel-end: #fcf9ee;
+  --dp-bg-app: #f2e5bc;
+  --dp-bg-app-alt: #f9f5d7;
+  --dp-bg-sidebar: #f2e5bc;
+  --dp-surface-1: #fbf1c7;
+  --dp-surface-2: #f9f5d7;
+  --dp-surface-3: #ebdbb2;
+  --dp-surface-input: #f9f5d7;
+  --dp-surface-overlay: rgba(251, 241, 199, .98);
+  --dp-text-primary: #3c3836;
+  --dp-text-secondary: #504945;
+  --dp-text-muted: #665c54;
+  --dp-text-disabled: #a89984;
+  --dp-border-subtle: #ebdbb2;
+  --dp-border-default: #d5c4a1;
+  --dp-border-strong: #bdae93;
+  --dp-border-nested: #bdae93;
+  --dp-divider: rgba(102, 92, 84, .16);
+  --dp-accent-purple: #8f3f71;
+  --dp-accent-purple-bright: #8f3f71;
+  --dp-accent-blue: #076678;
+  --dp-accent-blue-bright: #076678;
+  --dp-accent-rgb: 143, 63, 113;
+  --dp-accent-contrast: #fbf1c7;
+}
+
+/* Rosé Pine Dawn (rose-pine/rose-pine-palette palette.json "dawn" (base, surface, overlay, muted, subtle, text, love, pine, rose)). */
+body[data-dp-palette="rose-pine-dawn"],
+.dp-theme-swatch[data-dp-palette="rose-pine-dawn"] {
+  /* Data panels: Rosé Pine Dawn's raised surface over its base,
+     so locked state colours keep their native contrast. */
+  --dp-panel-start: #fffaf3;
+  --dp-panel-end: #faf4ed;
+  --dp-bg-app: #f2e9e1;
+  --dp-bg-app-alt: #faf4ed;
+  --dp-bg-sidebar: #f2e9e1;
+  --dp-surface-1: #faf4ed;
+  --dp-surface-2: #fffaf3;
+  --dp-surface-3: #e9ddd3; /* adapted: overlay deepened for a third surface */
+  --dp-surface-input: #fffaf3;
+  --dp-surface-overlay: rgba(250, 244, 237, .98);
+  --dp-text-primary: #464261;
+  --dp-text-secondary: #5d5880; /* adapted: between text and subtle */
+  --dp-text-muted: #66617f; /* adapted: subtle deepened to read as body text on the canvas */
+  --dp-text-disabled: #9893a5;
+  --dp-border-subtle: #ebe0d6; /* adapted: overlay deepened */
+  --dp-border-default: #dfd5cd; /* adapted: a rosy edge */
+  --dp-border-strong: #cecacd;
+  --dp-border-nested: #cecacd;
+  --dp-divider: rgba(121, 117, 147, .16);
+  --dp-accent-purple: #a3546b; /* adapted: love deepened so a label on it reads */
+  --dp-accent-purple-bright: #97495f; /* adapted: love deepened for text on the canvas */
+  --dp-accent-blue: #286983;
+  --dp-accent-blue-bright: #286983;
+  --dp-accent-rgb: 163, 84, 107;
+  --dp-accent-contrast: #fffaf3;
+}
+
+/* Everforest Light (sainnhe/everforest autoload/everforest.vim, light "medium" (bg_dim, bg0-bg5, fg, grey0-2, green, aqua, blue)). */
+body[data-dp-palette="everforest-light"],
+.dp-theme-swatch[data-dp-palette="everforest-light"] {
+  /* Data panels: Everforest Light's raised surface over its base,
+     so locked state colours keep their native contrast. */
+  --dp-panel-start: #fffbef;
+  --dp-panel-end: #fdf6e3;
+  --dp-bg-app: #efebd4;
+  --dp-bg-app-alt: #fdf6e3;
+  --dp-bg-sidebar: #f4f0d9;
+  --dp-surface-1: #fdf6e3;
+  --dp-surface-2: #fffbef; /* adapted: the "hard" bg0, raised rows */
+  --dp-surface-3: #e6e2cc;
+  --dp-surface-input: #fffbef;
+  --dp-surface-overlay: rgba(253, 246, 227, .98);
+  --dp-text-primary: #4f5b62; /* adapted: fg deepened: fg reads 5.0:1 on the canvas */
+  --dp-text-secondary: #5c6a72; /* adapted: fg */
+  --dp-text-muted: #5f6c60; /* adapted: grey2 deepened to read as body text */
+  --dp-text-disabled: #a6b0a0;
+  --dp-border-subtle: #e6e2cc;
+  --dp-border-default: #e0dcc7;
+  --dp-border-strong: #bdc3af;
+  --dp-border-nested: #bdc3af;
+  --dp-divider: rgba(130, 145, 129, .18);
+  --dp-accent-purple: #8da101;
+  --dp-accent-purple-bright: #556d00; /* adapted: green deepened for text */
+  --dp-accent-blue: #35a77c;
+  --dp-accent-blue-bright: #3a94c5;
+  --dp-accent-rgb: 141, 161, 1;
+  --dp-accent-contrast: #1e2326; /* adapted: Everforest's darkest ink: a label on the light green */
+}
+
+/* Ayu Light (ayu-theme/ayu-colors themes/light.yaml (surface sunk/base/lift/over, ui.panel, editor.fg, ui.fg, accent tint, blue)). */
+body[data-dp-palette="ayu-light"],
+.dp-theme-swatch[data-dp-palette="ayu-light"] {
+  /* Data panels: Ayu Light's raised surface over its base,
+     so locked state colours keep their native contrast. */
+  --dp-panel-start: #ffffff;
+  --dp-panel-end: #fcfcfc;
+  --dp-bg-app: #ebeef0;
+  --dp-bg-app-alt: #f8f9fa;
+  --dp-bg-sidebar: #f8f9fa;
+  --dp-surface-1: #fcfcfc;
+  --dp-surface-2: #ffffff;
+  --dp-surface-3: #e4e8eb; /* adapted: sunk deepened for a third surface */
+  --dp-surface-input: #ffffff;
+  --dp-surface-overlay: rgba(252, 252, 252, .98);
+  --dp-text-primary: #5c6166;
+  --dp-text-secondary: #5c6166; /* adapted: editor.fg */
+  --dp-text-muted: #5f6a75; /* adapted: ui.fg deepened to read as body text */
+  --dp-text-disabled: #adaeb1;
+  --dp-border-subtle: #ebeef0;
+  --dp-border-default: #dde2e6; /* adapted: a visible cool edge */
+  --dp-border-strong: #c5ccd3; /* adapted: ui.line made opaque */
+  --dp-border-nested: #c5ccd3; /* adapted: ui.line made opaque */
+  --dp-divider: rgba(107, 125, 143, .14);
+  --dp-accent-purple: #f29718;
+  --dp-accent-purple-bright: #9a5600; /* adapted: the accent darkened for text */
+  --dp-accent-blue: #22a4e6;
+  --dp-accent-blue-bright: #0e7bbd; /* adapted: blue deepened for text */
+  --dp-accent-rgb: 242, 151, 24;
+  --dp-accent-contrast: #1f2430; /* adapted: Ayu's own ink (the Mirage base): the upstream accent.on reads only 3.2:1 on the orange */
+}
+
+/* Flexoki Light (kepano/flexoki README (paper, base-50..950, black; orange-600, blue-600; light theme roles bg, bg-2, ui, ui-2, ui-3, tx-3, tx-2, tx)). */
+body[data-dp-palette="flexoki-light"],
+.dp-theme-swatch[data-dp-palette="flexoki-light"] {
+  /* Data panels: Flexoki Light's raised surface over its base,
+     so locked state colours keep their native contrast. */
+  --dp-panel-start: #fffef8;
+  --dp-panel-end: #fffcf0;
+  --dp-bg-app: #f2f0e5;
+  --dp-bg-app-alt: #fffcf0;
+  --dp-bg-sidebar: #f2f0e5;
+  --dp-surface-1: #fffcf0;
+  --dp-surface-2: #fffef8; /* adapted: paper lifted for raised rows */
+  --dp-surface-3: #e6e4d9;
+  --dp-surface-input: #fffcf0;
+  --dp-surface-overlay: rgba(255, 252, 240, .98);
+  --dp-text-primary: #100f0f;
+  --dp-text-secondary: #403e3c;
+  --dp-text-muted: #66655f; /* adapted: tx-2 deepened a step to read on bg-2 */
+  --dp-text-disabled: #b7b5ac;
+  --dp-border-subtle: #e6e4d9;
+  --dp-border-default: #dad8ce;
+  --dp-border-strong: #cecdc3;
+  --dp-border-nested: #cecdc3;
+  --dp-divider: rgba(111, 110, 105, .16);
+  --dp-accent-purple: #bc5215;
+  --dp-accent-purple-bright: #9d4310; /* adapted: orange-700, for text on bg-2 */
+  --dp-accent-blue: #205ea6;
+  --dp-accent-blue-bright: #205ea6;
+  --dp-accent-rgb: 188, 82, 21;
+  --dp-accent-contrast: #fffcf0;
+}
+
+/* Oxocarbon Light (nyoom-engineering/oxocarbon.nvim lua/oxocarbon/init.lua light accents (base09 #ee5396, base11 #0f62fe, base12 #673AB7, base08 #ff7eb6) with the IBM Carbon grays of base16-oxocarbon-light (f2f4f8, dde1e6, 161616-525252)). */
+body[data-dp-palette="oxocarbon-light"],
+.dp-theme-swatch[data-dp-palette="oxocarbon-light"] {
+  /* Data panels: Oxocarbon Light's raised surface over its base,
+     so locked state colours keep their native contrast. */
+  --dp-panel-start: #ffffff;
+  --dp-panel-end: #f2f4f8;
+  --dp-bg-app: #dde1e6;
+  --dp-bg-app-alt: #f2f4f8;
+  --dp-bg-sidebar: #dde1e6;
+  --dp-surface-1: #f2f4f8;
+  --dp-surface-2: #ffffff;
+  --dp-surface-3: #c1c7cd; /* adapted: IBM Carbon gray 30 */
+  --dp-surface-input: #ffffff;
+  --dp-surface-overlay: rgba(242, 244, 248, .98);
+  --dp-text-primary: #161616;
+  --dp-text-secondary: #393939;
+  --dp-text-muted: #525252;
+  --dp-text-disabled: #8d8d8d; /* adapted: IBM Carbon gray 50 */
+  --dp-border-subtle: #c1c7cd; /* adapted: IBM Carbon gray 30 */
+  --dp-border-default: #a2a9b0; /* adapted: IBM Carbon gray 40 */
+  --dp-border-strong: #878d96; /* adapted: IBM Carbon gray 50 */
+  --dp-border-nested: #878d96; /* adapted: IBM Carbon gray 50 */
+  --dp-divider: rgba(82, 82, 82, .16);
+  --dp-accent-purple: #0f62fe;
+  --dp-accent-purple-bright: #0043ce; /* adapted: IBM Carbon blue 70, for text on the silver canvas */
+  --dp-accent-blue: #ee5396;
+  --dp-accent-blue-bright: #d02670; /* adapted: base09 deepened (IBM magenta 60) for text */
+  --dp-accent-rgb: 15, 98, 254;
+  --dp-accent-contrast: #ffffff;
+}
+
+/* Bluloco Light (uloco/theme-bluloco-light themes/bluloco-light-color-theme.json + colors.json light (editor, sideBar, activityBar, input, borders; tag blue, number magenta, constant violet)). */
+body[data-dp-palette="bluloco-light"],
+.dp-theme-swatch[data-dp-palette="bluloco-light"] {
+  /* Data panels: Bluloco Light's raised surface over its base,
+     so locked state colours keep their native contrast. */
+  --dp-panel-start: #ffffff;
+  --dp-panel-end: #f9f9f9;
+  --dp-bg-app: #e8e8e8;
+  --dp-bg-app-alt: #f9f9f9;
+  --dp-bg-sidebar: #f1f1f1;
+  --dp-surface-1: #f9f9f9;
+  --dp-surface-2: #ffffff;
+  --dp-surface-3: #eeeeee;
+  --dp-surface-input: #ffffff;
+  --dp-surface-overlay: rgba(249, 249, 249, .98);
+  --dp-text-primary: #383a42;
+  --dp-text-secondary: #4f525c; /* adapted: between fg and comment */
+  --dp-text-muted: #5f626c; /* adapted: comment deepened to read as body text */
+  --dp-text-disabled: #a0a1a7;
+  --dp-border-subtle: #e8e8e8;
+  --dp-border-default: #d5d7d8;
+  --dp-border-strong: #c2c4c7;
+  --dp-border-nested: #c2c4c7;
+  --dp-divider: rgba(160, 161, 167, .24);
+  --dp-accent-purple: #275fe4;
+  --dp-accent-purple-bright: #1f53cf; /* adapted: tag blue deepened for text on the canvas */
+  --dp-accent-blue: #ce33c0;
+  --dp-accent-blue-bright: #b0279f; /* adapted: number magenta deepened for text */
+  --dp-accent-rgb: 39, 95, 228;
+  --dp-accent-contrast: #ffffff;
+}
+
+/* ── Derived from the core, for every alternative palette ──────────────── */
+body[data-dp-palette] {
+  --dp-nav-hover: color-mix(in srgb, var(--dp-accent-purple) 8%, transparent);
+  --dp-nav-active: linear-gradient(90deg, color-mix(in srgb, var(--dp-accent-purple) 25%, transparent), color-mix(in srgb, var(--dp-accent-blue) 9%, transparent));
+  --dp-nav-active-rail: var(--dp-accent-purple-bright);
+  --dp-nav-active-text: var(--dp-accent-purple-bright);
+  --dp-focus-ring: 0 0 0 3px color-mix(in srgb, var(--dp-accent-purple) 30%, transparent);
+  --dp-selection-bg: color-mix(in srgb, var(--dp-accent-purple) 18%, transparent);
+  --dp-gradient-primary: linear-gradient(100deg, var(--dp-accent-purple) 0%, var(--dp-accent-blue) 100%);
+  --dp-gradient-primary-hover: linear-gradient(100deg, var(--dp-accent-purple-bright) 0%, var(--dp-accent-blue-bright) 100%);
+  --dp-gradient-brand: linear-gradient(90deg, var(--dp-accent-purple) 0%, var(--dp-accent-blue) 100%);
+  --dp-gradient-page: linear-gradient(180deg, var(--dp-bg-app-alt) 0%, var(--dp-bg-app) 100%);
+  --dp-glow-accent: 0 0 22px color-mix(in srgb, var(--dp-accent-purple) 18%, transparent);
+  --dp-progress-track: var(--dp-surface-3);
+
+  --bg: var(--dp-bg-app);
+  --bg2: var(--dp-bg-app-alt);
+  --surface: var(--dp-surface-1);
+  --surface2: var(--dp-surface-2);
+  --surface3: var(--dp-surface-3);
+  --border: var(--dp-border-default);
+  --border2: var(--dp-border-strong);
+  --accent: var(--dp-accent-purple-bright);
+  --accent2: var(--dp-accent-blue-bright);
+  --accent-rgb: var(--dp-accent-rgb);
+  --accent-contrast: var(--dp-accent-contrast);
+  --primary-gradient: var(--dp-gradient-primary);
+  --primary-gradient-hover: var(--dp-gradient-primary-hover);
+  --focus-ring: color-mix(in srgb, var(--dp-accent-purple) 30%, transparent);
+  --text: var(--dp-text-primary);
+  --text2: var(--dp-text-secondary);
+  --text3: var(--dp-text-muted);
+  --nav-hover: var(--dp-nav-hover);
+  --nav-active: color-mix(in srgb, var(--dp-accent-purple) 18%, transparent);
+  --panel-a: var(--dp-surface-2);
+  --panel-b: var(--dp-bg-app);
+  --panel-glow: color-mix(in srgb, var(--dp-accent-purple) 18%, transparent);
+  --shadow-soft: var(--dp-shadow-card);
+  --status-total: var(--dp-accent-purple-bright);
+  --status-downloaded: var(--dp-accent-blue-bright);
+  --purple: var(--dp-accent-purple-bright);
+
+  --dp-panel-surface: linear-gradient(180deg, var(--dp-panel-start), var(--dp-panel-end));
+  --dp-panel-surface-tall: linear-gradient(180deg, var(--dp-panel-start) 0%, var(--dp-panel-end) 320px, var(--dp-panel-end) 100%);
+  --dp-panel-frame: var(--dp-border-default);
+  --dp-panel-header-border: var(--dp-border-subtle);
+  --dp-panel-header-surface: linear-gradient(90deg, color-mix(in srgb, var(--dp-accent-purple) 16%, transparent) 0%, color-mix(in srgb, var(--dp-accent-purple) 8%, transparent) 24%, color-mix(in srgb, var(--dp-accent-purple) 3%, transparent) 48%, transparent 76%);
+  --dp-field-surface: var(--dp-surface-input);
+  --dp-field-border: var(--dp-border-default);
+  --dp-field-text: var(--dp-text-primary);
+  --dp-table-head-surface: linear-gradient(var(--dp-surface-2) 0 0);
+  --dp-table-head-border: var(--dp-border-default);
+  --dp-table-row-border: var(--dp-border-subtle);
+  --dp-table-row-hover: color-mix(in srgb, var(--dp-accent-purple) 5%, transparent);
+  --dp-table-head-text: var(--dp-text-muted);
+  --dp-segment-surface: var(--dp-surface-1);
+  --dp-segment-border: var(--dp-border-default);
+  --dp-segment-divider: var(--dp-border-subtle);
+  --dp-segment-text: var(--dp-text-secondary);
+  --dp-segment-hover: color-mix(in srgb, var(--dp-accent-purple) 8%, transparent);
+  --dp-segment-hover-text: var(--dp-text-primary);
+  --dp-segment-active-border: var(--dp-accent-purple-bright);
+  --dp-segment-active-shadow: 0 0 0 1px var(--dp-segment-active-border);
+  --dp-primary-surface: linear-gradient(145deg, var(--dp-accent-purple-bright) 0%, var(--dp-accent-purple) 100%);
+  --dp-primary-border: var(--dp-accent-purple-bright);
+  --dp-secondary-surface: linear-gradient(145deg, var(--dp-surface-2), var(--dp-surface-1));
+  --dp-secondary-border: var(--dp-border-default);
+  --dp-secondary-text: var(--dp-text-secondary);
+
+  --dp-chrome-canvas: radial-gradient(920px 540px at 36% 4%, color-mix(in srgb, var(--dp-accent-purple) 6%, transparent), transparent 68%), var(--dp-bg-app);
+  --dp-chrome-sidebar-surface: linear-gradient(180deg, var(--dp-bg-sidebar) 0%, var(--dp-bg-app) 100%);
+  --dp-chrome-sidebar-edge: var(--dp-border-subtle);
+  --dp-chrome-logo-band: linear-gradient(90deg, color-mix(in srgb, var(--dp-accent-purple) 24%, transparent) 0%, transparent 84%) bottom / 100% 1px no-repeat, var(--dp-bg-sidebar);
+  --dp-chrome-brand-name: var(--dp-text-primary);
+  --dp-chrome-brand-text: var(--dp-accent-purple-bright);
+  --dp-chrome-brand-glow: 0 0 11px color-mix(in srgb, var(--dp-accent-purple) 25%, transparent);
+  --dp-chrome-nav-heading: var(--dp-text-muted);
+  --dp-chrome-nav-text: var(--dp-text-secondary);
+  --dp-chrome-nav-text-hover: var(--dp-text-primary);
+  --dp-chrome-nav-text-active: var(--dp-text-primary);
+  --dp-chrome-nav-hover-surface: linear-gradient(90deg, color-mix(in srgb, var(--dp-accent-purple) 13%, transparent) 0%, color-mix(in srgb, var(--dp-accent-purple) 4%, transparent) 60%, transparent 100%);
+  --dp-chrome-nav-active-surface: linear-gradient(90deg, color-mix(in srgb, var(--dp-accent-purple) 34%, transparent) 0%, color-mix(in srgb, var(--dp-accent-purple) 18%, transparent) 45%, color-mix(in srgb, var(--dp-accent-purple) 4%, transparent) 90%, transparent 100%);
+  --dp-chrome-nav-active-edge: inset 0 1px color-mix(in srgb, var(--dp-accent-purple) 14%, transparent), inset 0 -1px color-mix(in srgb, var(--dp-accent-purple) 10%, transparent);
+  --dp-chrome-nav-rail: linear-gradient(180deg, var(--dp-accent-purple-bright) 0%, var(--dp-accent-purple) 100%);
+  --dp-chrome-nav-rail-glow: 0 0 6px color-mix(in srgb, var(--dp-accent-purple-bright) 70%, transparent), 0 0 12px color-mix(in srgb, var(--dp-accent-purple) 35%, transparent);
+  --dp-chrome-nav-bloom: radial-gradient(ellipse 100% 68% at 98% 50%, color-mix(in srgb, var(--dp-accent-purple) 38%, transparent) 0%, color-mix(in srgb, var(--dp-accent-purple) 11%, transparent) 46%, transparent 80%);
+  --dp-chrome-nav-icon-active: var(--dp-accent-purple-bright);
+  --dp-chrome-nav-icon-glow: drop-shadow(0 0 4px color-mix(in srgb, var(--dp-accent-purple) 40%, transparent));
+  --dp-chrome-count-surface: color-mix(in srgb, var(--dp-accent-purple) 22%, transparent);
+  --dp-chrome-count-edge: color-mix(in srgb, var(--dp-accent-purple-bright) 70%, transparent);
+  --dp-chrome-count-text: var(--dp-text-primary);
+  --dp-chrome-count-shadow: none;
+  --dp-chrome-sidebar-panel: color-mix(in srgb, var(--dp-panel-start) 92%, transparent);
+  --dp-chrome-sidebar-panel-edge: var(--dp-border-default);
+  --dp-chrome-sidebar-text: var(--dp-text-secondary);
+  --dp-chrome-sidebar-divider: var(--dp-border-subtle);
+  --dp-chrome-handle-surface: var(--dp-surface-2);
+  --dp-chrome-handle-edge: var(--dp-border-default);
+  --dp-chrome-handle-text: var(--dp-text-secondary);
+  --dp-chrome-handle-text-hover: var(--dp-text-primary);
+  --dp-chrome-handle-surface-hover: var(--dp-surface-3);
+  --dp-chrome-version-text: var(--dp-text-muted);
+  --dp-chrome-version-glow: none;
+  --dp-chrome-title: var(--dp-text-primary);
+  --dp-chrome-subtitle: var(--dp-text-secondary);
+  --dp-chrome-topbar-surface: color-mix(in srgb, var(--dp-surface-1) 86%, transparent);
+  --dp-chrome-control-text: var(--dp-text-secondary);
+  --dp-chrome-control-edge: var(--dp-border-default);
+  --dp-chrome-badge-surface: linear-gradient(145deg, var(--dp-surface-2), var(--dp-surface-1));
+  --dp-chrome-toggle-surface: linear-gradient(145deg, var(--dp-surface-2), var(--dp-surface-1));
+  --dp-chrome-badge-shadow: var(--dp-shadow-control);
+  --dp-chrome-toggle-shadow: var(--dp-shadow-control);
+  --dp-chrome-utility-surface: color-mix(in srgb, var(--dp-accent-purple) 4%, transparent);
+  --dp-chrome-utility-edge: color-mix(in srgb, var(--dp-accent-purple-bright) 55%, transparent);
+  --dp-chrome-utility-text: var(--dp-accent-purple-bright);
+  --dp-chrome-utility-surface-hover: color-mix(in srgb, var(--dp-accent-purple) 9%, transparent);
+  --dp-chrome-utility-edge-hover: color-mix(in srgb, var(--dp-accent-purple-bright) 75%, transparent);
+  --dp-chrome-utility-glow: none;
+  --dp-chrome-kpi-value: var(--dp-text-primary);
+  --dp-chrome-kpi-label: var(--dp-text-secondary);
+  --dp-chrome-card-title: var(--dp-text-primary);
+  --dp-chrome-card-subtitle: var(--dp-text-muted);
+  --dp-chrome-card-divider: var(--dp-border-subtle);
+  --dp-chrome-card-shadow: var(--dp-panel-shadow);
+  --dp-chrome-table-head-text: var(--dp-text-muted);
+  --dp-chrome-table-head-plain: var(--dp-surface-2);
+  --dp-chrome-table-text: var(--dp-text-secondary);
+  --dp-chrome-table-row-edge: var(--dp-border-subtle);
+  --dp-chrome-table-row-hover: color-mix(in srgb, var(--dp-accent-purple) 5%, transparent);
+  --dp-chrome-table-ambient: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--dp-panel-end) 34%, transparent) 100%);
+  --dp-chrome-progress-track: var(--dp-surface-3);
+  --dp-chrome-input-surface: var(--dp-surface-input);
+  --dp-chrome-notice-region: var(--dp-surface-2);
+  /* The signal field's purple and blue tones are the accents; a deep tone is
+     its accent 12% darker in OKLab, as the artwork's own deep tones are
+     10.6% (purple) and 12.4% (blue) below their base in OKLab lightness. The
+     title waveform runs the bright accents, through their mix. */
+  --dp-chrome-signal-purple: var(--dp-accent-purple);
+  --dp-chrome-signal-purple-bright: var(--dp-accent-purple-bright);
+  --dp-chrome-signal-purple-deep: color-mix(in oklab, var(--dp-accent-purple), #000 12%);
+  --dp-chrome-signal-blue: var(--dp-accent-blue);
+  --dp-chrome-signal-blue-bright: var(--dp-accent-blue-bright);
+  --dp-chrome-signal-blue-deep: color-mix(in oklab, var(--dp-accent-blue), #000 12%);
+  --dp-chrome-pulse-start: var(--dp-accent-purple-bright);
+  --dp-chrome-pulse-mid: color-mix(in srgb, var(--dp-accent-purple-bright), var(--dp-accent-blue-bright));
+  --dp-chrome-pulse-end: var(--dp-accent-blue-bright);
+}
+
+/* Depth differs by mode: a dark palette darkens, a light one tints. */
+body:not(.light)[data-dp-palette] {
+  --dp-shadow-card: 0 12px 30px rgba(0, 0, 0, .28);
+  --dp-shadow-raised: 0 18px 46px rgba(0, 0, 0, .40);
+  --dp-shadow-control: 0 5px 16px rgba(0, 0, 0, .24);
+  --dp-panel-shadow: inset 0 1px rgba(255, 255, 255, .024), -6px 8px 14px -8px rgba(0, 0, 0, .66), 0 5px 11px -8px rgba(0, 0, 0, .46);
+  --dp-primary-shadow: 0 6px 12px -9px rgba(0, 0, 0, .5);
+  --dp-secondary-shadow: 0 5px 10px -8px rgba(0, 0, 0, .3);
+  --dp-segment-shadow: none;
+  --dp-segment-active-surface: linear-gradient(135deg, var(--dp-accent-purple) 0%, color-mix(in srgb, var(--dp-accent-purple) 82%, #000) 100%);
+  --dp-segment-active-text: var(--dp-accent-contrast);
+  --dp-chrome-sidebar-panel-shadow: 0 10px 28px rgba(0, 0, 0, .25);
+  --dp-chrome-scrim: color-mix(in srgb, var(--dp-bg-app) 74%, transparent);
+  --dp-chrome-signal-filter: saturate(1.10) drop-shadow(0 0 10px color-mix(in srgb, var(--dp-chrome-signal-purple-deep) 12%, transparent));
+}
+
+body.light[data-dp-palette] {
+  --dp-shadow-card: 0 6px 18px color-mix(in srgb, var(--dp-text-primary) 8%, transparent);
+  --dp-shadow-raised: 0 14px 34px color-mix(in srgb, var(--dp-text-primary) 13%, transparent);
+  --dp-shadow-control: 0 3px 10px color-mix(in srgb, var(--dp-text-primary) 8%, transparent);
+  --dp-panel-shadow: inset 0 1px rgba(255, 255, 255, .5), -6px 8px 14px -8px color-mix(in srgb, var(--dp-text-primary) 30%, transparent), 0 5px 11px -8px color-mix(in srgb, var(--dp-text-primary) 20%, transparent);
+  --dp-primary-shadow: 0 6px 12px -9px color-mix(in srgb, var(--dp-accent-purple) 45%, transparent);
+  --dp-secondary-shadow: 0 5px 10px -8px color-mix(in srgb, var(--dp-text-primary) 18%, transparent);
+  --dp-segment-shadow: none;
+  --dp-segment-active-surface: color-mix(in srgb, var(--dp-accent-purple) 16%, var(--dp-surface-1));
+  --dp-segment-active-text: var(--dp-accent-purple);
+  --dp-chrome-sidebar-panel-shadow: var(--dp-shadow-raised);
+  --dp-chrome-scrim: color-mix(in srgb, var(--dp-text-primary) 28%, transparent);
+  --dp-chrome-signal-filter: saturate(.92) drop-shadow(0 0 8px color-mix(in srgb, var(--dp-chrome-signal-purple-deep) 5.5%, transparent));
+}

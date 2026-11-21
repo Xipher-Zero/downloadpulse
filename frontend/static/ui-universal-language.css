@@ -1,0 +1,667 @@
+/* DownloadPulse v1.0.11 universal component language.
+ *
+ * Dashboard is the visual reference implementation. This layer owns the
+ * application defaults for reusable materials and is intentionally loaded
+ * BEFORE page-specific CSS. A page may override geometry or behavior when its
+ * workflow requires it, but it must not copy/redefine the base material merely
+ * to look consistent.
+ *
+ * The dp-* selectors are canonical. Legacy class aliases are temporary bridge
+ * selectors so existing static/runtime markup inherits the same defaults while
+ * it is migrated incrementally.
+ */
+
+/* ── Standard raised panels/cards ─────────────────────────────────────── */
+/* Shell roots are structural canvases, never raised content. Keep them outside
+   the migration-era card aliases so an accidental legacy class cannot turn the
+   application viewport into a card or acquire the universal painted frame. */
+:is(.dp-card, .card, .scard, .list-card):not(#sidebar):not(#main):not(#topbar):not(#content) {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius-lg);
+  background: var(--dp-panel-surface);
+  box-shadow: var(--dp-panel-shadow);
+}
+
+/* Dashboard-derived painted frame: defined top edge, side edges dissolving
+   toward the bottom, no painted lower edge. Shell roots are excluded for the
+   same ownership reason as the base card material above. */
+:is(.dp-card, .card, .scard, .list-card):not(#sidebar):not(#main):not(#topbar):not(#content)::after {
+  content: '';
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border: 1px solid var(--dp-panel-frame);
+  border-bottom: 0;
+  border-radius: inherit;
+  -webkit-mask-image: linear-gradient(180deg,
+    #000 0%,
+    #000 42%,
+    rgba(0,0,0,.94) 53%,
+    rgba(0,0,0,.80) 65%,
+    rgba(0,0,0,.61) 76%,
+    rgba(0,0,0,.39) 85%,
+    rgba(0,0,0,.18) 93%,
+    transparent 98%);
+  mask-image: linear-gradient(180deg,
+    #000 0%,
+    #000 42%,
+    rgba(0,0,0,.94) 53%,
+    rgba(0,0,0,.80) 65%,
+    rgba(0,0,0,.61) 76%,
+    rgba(0,0,0,.39) 85%,
+    rgba(0,0,0,.18) 93%,
+    transparent 98%);
+  pointer-events: none;
+}
+
+:is(
+  .dp-card__header,
+  .card > .card-header,
+  .scard > .scard-header,
+  .list-card > .card-header
+) {
+  position: relative;
+  z-index: 1;
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 17px;
+  border-bottom: 1px solid var(--dp-panel-header-border);
+  background: var(--dp-panel-header-surface);
+  background-clip: padding-box;
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  text-transform: none;
+}
+
+:is(.card, .list-card) > .card-header .card-title,
+.dp-card__title {
+  color: var(--dp-text-primary);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+:is(.dp-card__body, .card-body, .scard-body, .list-card .card-body) {
+  padding: var(--dp-card-padding);
+}
+
+/* ── KPI / metric cards ───────────────────────────────────────────────── */
+/* The semantic color is local --c when supplied, otherwise DP purple. */
+:is(.dp-metric-card, .metric-card, .stat-card, .dash-hero-stat, .dash-kpi) {
+  --dp-metric-color: var(--c, var(--dp-accent-purple-bright));
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--dp-radius-lg);
+  background:
+    radial-gradient(ellipse 105% 88% at 1% -8%,
+      color-mix(in srgb, var(--dp-metric-color) 19%, transparent) 0%,
+      color-mix(in srgb, var(--dp-metric-color) 13%, transparent) 24%,
+      color-mix(in srgb, var(--dp-metric-color) 7%, transparent) 46%,
+      color-mix(in srgb, var(--dp-metric-color) 2.5%, transparent) 64%,
+      transparent 76%),
+    linear-gradient(155deg, var(--dp-surface-2), var(--dp-surface-1));
+  box-shadow: var(--dp-panel-shadow);
+  transform: none;
+}
+
+body.light :is(.dp-metric-card, .metric-card, .stat-card, .dash-hero-stat, .dash-kpi) {
+  background:
+    radial-gradient(ellipse 105% 88% at 1% -8%,
+      color-mix(in srgb, var(--dp-metric-color) 15%, transparent) 0%,
+      color-mix(in srgb, var(--dp-metric-color) 10%, transparent) 25%,
+      color-mix(in srgb, var(--dp-metric-color) 5.5%, transparent) 48%,
+      color-mix(in srgb, var(--dp-metric-color) 2%, transparent) 65%,
+      transparent 77%),
+    linear-gradient(180deg, var(--dp-surface-1), var(--dp-surface-2));
+}
+
+/* Semantic top/left source used by Dashboard hero cards and reusable metrics. */
+:is(.dp-metric-card, .metric-card, .stat-card, .dash-hero-stat, .dash-kpi)::before {
+  display: block;
+  content: '';
+  position: absolute;
+  z-index: 6;
+  left: -1px;
+  top: -1px;
+  width: calc(100% - 13px);
+  height: 10px;
+  border: 0;
+  border-top: 3px solid var(--dp-metric-color);
+  border-left: 1.5px solid color-mix(in srgb, var(--dp-metric-color) 72%, transparent);
+  border-top-left-radius: 12px;
+  background: transparent;
+  box-shadow: 0 -1px 8px color-mix(in srgb, var(--dp-metric-color) 24%, transparent);
+  -webkit-mask-image: linear-gradient(90deg,
+    #000 0%,
+    #000 74%,
+    rgba(0,0,0,.94) 81%,
+    rgba(0,0,0,.78) 87%,
+    rgba(0,0,0,.57) 92%,
+    rgba(0,0,0,.31) 96.5%,
+    transparent 100%);
+  mask-image: linear-gradient(90deg,
+    #000 0%,
+    #000 74%,
+    rgba(0,0,0,.94) 81%,
+    rgba(0,0,0,.78) 87%,
+    rgba(0,0,0,.57) 92%,
+    rgba(0,0,0,.31) 96.5%,
+    transparent 100%);
+  pointer-events: none;
+}
+
+:is(.dp-metric-card, .metric-card, .stat-card, .dash-hero-stat, .dash-kpi)::after {
+  content: '';
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--dp-metric-color) 28%, var(--dp-panel-frame));
+  border-bottom: 0;
+  border-radius: inherit;
+  -webkit-mask-image: linear-gradient(180deg,
+    #000 0%, #000 42%, rgba(0,0,0,.94) 53%, rgba(0,0,0,.80) 65%,
+    rgba(0,0,0,.61) 76%, rgba(0,0,0,.39) 85%, rgba(0,0,0,.18) 93%, transparent 98%);
+  mask-image: linear-gradient(180deg,
+    #000 0%, #000 42%, rgba(0,0,0,.94) 53%, rgba(0,0,0,.80) 65%,
+    rgba(0,0,0,.61) 76%, rgba(0,0,0,.39) 85%, rgba(0,0,0,.18) 93%, transparent 98%);
+  pointer-events: none;
+}
+
+:is(.metric-value, .stat-value) {
+  color: var(--dp-metric-color, var(--dp-text-primary));
+  font-variant-numeric: tabular-nums;
+}
+
+:is(.metric-label, .stat-label) {
+  color: var(--dp-text-secondary);
+}
+
+:is(.metric-sub, .stat-sub) {
+  color: var(--dp-text-muted);
+}
+
+:is(.dp-metric-card, .metric-card, .stat-card)[data-c="orange"] { --c: var(--status-total); }
+:is(.dp-metric-card, .metric-card, .stat-card)[data-c="green"] { --c: var(--dp-state-success); }
+:is(.dp-metric-card, .metric-card, .stat-card)[data-c="blue"] { --c: var(--dp-state-active); }
+:is(.dp-metric-card, .metric-card, .stat-card)[data-c="yellow"] { --c: var(--dp-state-caution); }
+:is(.dp-metric-card, .metric-card, .stat-card)[data-c="red"] { --c: var(--dp-state-error); }
+:is(.dp-metric-card, .metric-card, .stat-card)[data-c="purple"] { --c: var(--dp-accent-purple-bright); }
+
+/* ── Fields / search / selects ───────────────────────────────────────── */
+/* ``.dp-action-field`` is a field that holds a trailing action -- Copy,
+   Browse -- INSIDE its own border. It is a FIELD, so it takes its material
+   from this same rule rather than restating it; only its arrangement differs,
+   and that is declared below. */
+:is(.dp-field, .input, .dp-action-field),
+select.input,
+textarea.input {
+  width: 100%;
+  min-height: var(--dp-input-height);
+  padding: 9px 12px;
+  border: 1px solid var(--dp-field-border);
+  border-radius: var(--dp-radius-sm);
+  background: var(--dp-field-surface);
+  color: var(--dp-field-text);
+  font-family: var(--dp-font-sans);
+  font-size: var(--dp-type-body-sm-size);
+  line-height: 1.35;
+  outline: none;
+  box-shadow: inset 0 1px rgba(255,255,255,.018);
+  transition: border-color .14s ease, box-shadow .14s ease, background-color .14s ease;
+}
+
+/* The light resting inset adds no specificity of its own (:where), so the
+   focus ring below and a compound field's bare control still win over it. */
+:where(body.light) :is(.dp-field, .input, .dp-action-field),
+:where(body.light) select.input,
+:where(body.light) textarea.input {
+  box-shadow: inset 0 1px rgba(255,255,255,.85);
+}
+
+:is(.dp-field, .input, .dp-action-field):hover {
+  border-color: var(--dp-border-strong);
+}
+/* The compound field has no focus of its own -- the control inside it does --
+   so it mirrors that control's focused material and nothing else. */
+:is(.dp-field, .input):focus,
+.dp-action-field:focus-within {
+  border-color: color-mix(in srgb, var(--dp-accent-purple-bright) 72%, var(--dp-border-strong));
+  box-shadow: var(--dp-focus-ring);
+  background: var(--dp-field-surface);
+}
+
+/* The action is the control's SIBLING inside one field border, never
+   something floating over it: text physically ends where the action begins,
+   so nothing here has to guess how wide the action is -- a width the font
+   decides and a stylesheet cannot know. */
+.dp-action-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-block: 0;
+  padding-inline: 0 4px;
+}
+
+/* Inside it the control is drawn bare, so the pair reads as one field while
+   the control keeps its own focus, caret, selection and horizontal scroll. */
+.dp-action-field > :is(.input, .dp-field) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.dp-action-field > :is(.input, .dp-field):focus {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.dp-action-field > .btn {
+  flex: 0 0 auto;
+}
+:is(.dp-field, .input)::placeholder {
+  color: var(--dp-text-muted);
+  opacity: .78;
+}
+textarea.input { resize: vertical; }
+
+:is(.form-label, .dp-field-label) {
+  color: var(--dp-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+:is(.form-hint, .dp-field-help) {
+  color: var(--dp-text-muted);
+  font-size: 11px;
+}
+
+/* ── Tabs / segmented controls ───────────────────────────────────────── */
+:is(.dp-tabs, .filter-tabs, .stabs) {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-height: var(--dp-tab-height);
+  padding: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--dp-segment-border);
+  border-radius: 9px;
+  background: var(--dp-segment-surface);
+  box-shadow: var(--dp-segment-shadow);
+  scrollbar-width: none;
+}
+:is(.dp-tabs, .filter-tabs, .stabs)::-webkit-scrollbar { display: none; }
+
+:is(.dp-tab, .ftab, .stab) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 13px;
+  border: 0;
+  border-right: 1px solid var(--dp-segment-divider);
+  border-radius: 0;
+  background: transparent;
+  color: var(--dp-segment-text);
+  font-family: var(--dp-font-sans);
+  font-size: 11.5px;
+  line-height: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: none;
+  transform: none;
+  transition: color .14s ease, background .14s ease, box-shadow .14s ease;
+}
+:is(.dp-tab, .ftab, .stab):last-child { border-right: 0; }
+:is(.dp-tab, .ftab, .stab):hover:not(.active):not(.is-active):not([aria-selected="true"]) {
+  background: var(--dp-segment-hover);
+  color: var(--dp-segment-hover-text);
+}
+:is(.dp-tab, .ftab, .stab).active,
+:is(.dp-tab, .ftab, .stab).is-active,
+:is(.dp-tab, .ftab, .stab)[aria-selected="true"] {
+  position: relative;
+  z-index: 1;
+  border-radius: 6px;
+  background: var(--dp-segment-active-surface);
+  color: var(--dp-segment-active-text);
+  box-shadow: var(--dp-segment-active-shadow);
+}
+/* DP 1.0.12 canonical flattening: .ftab's own active border tint, migrated
+   from the retired ui-legacy-foundation.css -- the modern segment material
+   above does not redefine border-color for this variant. */
+.ftab.active { border-color: rgba(var(--accent-rgb), .32); }
+
+/* ── Buttons / action controls ───────────────────────────────────────── */
+:is(.dp-btn, .btn) {
+  min-height: var(--dp-control-height-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid var(--dp-secondary-border);
+  border-radius: var(--dp-radius-sm);
+  background: var(--dp-secondary-surface);
+  color: var(--dp-secondary-text);
+  font-family: var(--dp-font-sans);
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--dp-secondary-shadow);
+  transition: filter .14s ease, border-color .14s ease, color .14s ease, box-shadow .14s ease, transform .06s ease;
+}
+
+:is(.dp-btn--primary, .btn-primary) {
+  border-color: var(--dp-primary-border);
+  background: var(--dp-primary-surface);
+  color: var(--dp-accent-contrast);
+  text-shadow: 0 1px 2px rgba(41,20,71,.34);
+  box-shadow: var(--dp-primary-shadow);
+}
+:is(.dp-btn--primary, .btn-primary):hover:not(:disabled) {
+  filter: brightness(1.04);
+  transform: translateY(-1px);
+}
+
+:is(.dp-btn--secondary, .dp-btn--ghost, .btn-ghost):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--dp-accent-purple-bright) 28%, var(--dp-secondary-border));
+  color: var(--dp-text-primary);
+  filter: brightness(1.035);
+}
+
+:is(.btn-blue) {
+  border-color: color-mix(in srgb, var(--dp-state-active) 38%, var(--dp-secondary-border));
+  color: color-mix(in srgb, var(--dp-state-active) 78%, var(--dp-text-primary));
+}
+:is(.btn-danger, .dp-btn--danger) {
+  border-color: color-mix(in srgb, var(--dp-state-error) 34%, transparent);
+  background: var(--dp-state-error-bg);
+  color: var(--dp-state-error);
+  box-shadow: none;
+}
+:is(.btn-success, .dp-btn--success) {
+  border-color: color-mix(in srgb, var(--dp-state-success) 34%, transparent);
+  background: var(--dp-state-success-bg);
+  color: var(--dp-state-success);
+  box-shadow: none;
+}
+:is(.btn-warn, .dp-btn--caution) {
+  border-color: color-mix(in srgb, var(--dp-state-caution) 34%, transparent);
+  background: var(--dp-state-caution-bg);
+  color: var(--dp-state-caution);
+  box-shadow: none;
+}
+:is(.dp-btn--accent) {
+  border-color: color-mix(in srgb, var(--dp-accent-purple-bright) 34%, transparent);
+  background: color-mix(in srgb, var(--dp-accent-purple-bright) 11%, transparent);
+  color: var(--dp-accent-purple-bright);
+  box-shadow: none;
+}
+:is(.btn-sm, .dp-btn--sm) {
+  min-height: var(--dp-control-height-sm);
+  padding-inline: 10px;
+  font-size: 12px;
+}
+:is(.dp-btn, .btn):disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+/* A destructive control with nothing to destroy.
+   It keeps its place and its meaning -- this is where a stored credential is
+   erased -- while saying plainly that there is nothing stored yet. Ghosting it
+   is what lets every credential surface keep the action in the same slot at
+   all times: removing or hiding it instead makes the row reflow each time a
+   secret is saved or cleared, and makes the operator hunt for a control that
+   moved. Declared once, so the four credential surfaces cannot each invent
+   their own disabled red. */
+:is(.btn-danger, .dp-btn--danger):disabled {
+  border-color: color-mix(in srgb, var(--dp-state-error) 18%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--dp-state-error) 52%, var(--dp-text-muted));
+  opacity: .55;
+}
+:is(.dp-btn, .btn):focus-visible {
+  outline: none;
+  box-shadow: var(--dp-focus-ring);
+}
+:is(.dp-btn, .btn):not(:disabled):active { transform: translateY(1px) scale(.985); }
+
+/* Canonical icon/pagination controls use the same neutral material. */
+:is(.dp-icon-btn, .dp-page-btn) {
+  border-color: var(--dp-secondary-border);
+  background: var(--dp-secondary-surface);
+  color: var(--dp-secondary-text);
+  box-shadow: var(--dp-secondary-shadow);
+}
+.dp-page-btn[aria-current="page"] {
+  border-color: var(--dp-segment-active-border);
+  background: var(--dp-segment-active-surface);
+  color: var(--dp-segment-active-text);
+  box-shadow: var(--dp-segment-active-shadow);
+}
+
+/* ── Operational tables ──────────────────────────────────────────────── */
+:is(.dp-table, .t-table) {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-sans);
+  font-size: 13px;
+}
+:is(.dp-table, .t-table) thead th {
+  height: var(--dp-table-head-height);
+  padding: 0 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--dp-table-head-border);
+  background: var(--dp-table-head-surface);
+  color: var(--dp-table-head-text);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .055em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+:is(.dp-table, .t-table) tbody tr {
+  border-bottom: 1px solid var(--dp-table-row-border);
+  background: transparent;
+  transition: background-color .12s ease;
+}
+:is(.dp-table, .t-table) tbody tr:last-child { border-bottom: 0; }
+:is(.dp-table, .t-table) tbody tr:hover { background: var(--dp-table-row-hover); }
+:is(.dp-table, .t-table) td {
+  padding: 8px 14px;
+  vertical-align: middle;
+}
+
+/* ── Status badges (6px rounded rectangles) + compact progress ───────── */
+.badge {
+  --dp-badge-color: var(--dp-text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--dp-badge-color) 22%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dp-badge-color) 9%, transparent);
+  color: var(--dp-badge-color);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 650;
+  white-space: nowrap;
+}
+:is(.badge-completed) { --dp-badge-color: var(--dp-state-success); }
+:is(.badge-downloading, .badge-uploading) { --dp-badge-color: var(--dp-state-active); }
+:is(.badge-processing, .badge-extracting) { --dp-badge-color: var(--dp-state-processing); }
+:is(.badge-partial) { --dp-badge-color: var(--dp-state-caution); }
+:is(.badge-error) { --dp-badge-color: var(--dp-state-error); }
+:is(.badge-paused) { --dp-badge-color: var(--dp-state-paused); }
+:is(.badge-ready, .badge-queued, .badge-pending) { --dp-badge-color: var(--dp-state-ready); }
+
+.prog {
+  height: 3.5px;
+  min-width: 70px;
+  overflow: hidden;
+  border-radius: var(--dp-radius-pill);
+  background: var(--dp-progress-track);
+}
+.prog-fill {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--dp-progress-active);
+  transition: width .28s ease;
+}
+.prog-fill.done { background: var(--dp-progress-complete); }
+/* Active with no primary percentage (unknown total, or nothing verified yet):
+   the hatching moves, so running work never reads as a stalled bar. */
+.prog-fill.is-indeterminate { animation: dp-prog-indeterminate 1s linear infinite; }
+@keyframes dp-prog-indeterminate { to { background-position: 16px 0; } }
+.prog-pct {
+  display: block;
+  margin-top: 3px;
+  color: var(--dp-text-secondary);
+  font-family: var(--dp-font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+/* In-flight execution activity beside DP-valid progress -- never completion:
+   its own thinner, hatched lane under the verified bar, never part of it. */
+.prog-lane {
+  position: relative;
+  height: 3px;
+  margin-top: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--dp-progress-processing) 16%, transparent);
+}
+.prog-lane-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: repeating-linear-gradient(90deg, var(--dp-progress-processing) 0 6px,
+    color-mix(in srgb, var(--dp-progress-processing) 45%, transparent) 6px 9px);
+  transition: width .28s ease;
+}
+.prog-activity {
+  display: block;
+  margin-top: 1px;
+  color: var(--dp-text-muted);
+  font-family: var(--dp-font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Generic empty states ─────────────────────────────────────────────── */
+.empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--dp-text-muted);
+  font-size: 13px;
+}
+.empty-icon { font-size: 32px; margin-bottom: 10px; }
+
+/* DP 1.0.12 canonical flattening: residual button/field states that had no
+   coverage in the :is() groups above, migrated from the retired
+   ui-legacy-foundation.css rather than left as a second copy of the base
+   material. */
+.btn[aria-busy="true"] { cursor: progress; }
+.btn-warn:hover { background: rgba(234,179,8,.2); border-color: rgba(234,179,8,.5); }
+.btn-danger:hover { background: rgba(239,68,68,.22); }
+.btn-blue:hover { background: rgba(59,130,246,.25); }
+.btn-success:hover { background: color-mix(in srgb, var(--dp-state-success) 22%, transparent); }
+.dp-btn--accent:hover { background: color-mix(in srgb, var(--dp-accent-purple-bright) 22%, transparent); }
+body.light :disabled { opacity: .55; }
+body.light :is(.dp-field, .input)::placeholder,
+body.light select.input::placeholder,
+body.light textarea.input::placeholder { color: var(--text2); opacity: .7; }
+
+/* Light mode: raised surfaces stay white while controls use a neutral inset. */
+body.light .card,
+body.light .list-card,
+body.light .scard,
+body.light .dash-hero-stat,
+body.light .dash-kpi-strip {
+  background: linear-gradient(180deg, #ffffff, #fbfcfe);
+  box-shadow: var(--shadow-soft);
+}
+/* Controls' light surface, at rest and focused, adds no specificity of its
+   own either (:where), so the control inside a .dp-action-field stays bare
+   and the field's one surface shows through it. */
+:where(body.light) :is(.dp-field, .input),
+:where(body.light) :is(.dp-field, .input):focus,
+:where(body.light) select.input,
+:where(body.light) textarea.input { background: var(--dp-chrome-input-surface); }
+body.light .runtime-cap-options button,
+body.light .runtime-cap-custom input { background: var(--dp-chrome-input-surface); }
+body.light thead th { background: var(--dp-chrome-table-head-plain); }
+
+/* Base (non-.t-table) table element defaults, migrated from the retired
+   ui-legacy-foundation.css. */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  padding: 9px 16px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface2);
+}
+tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; cursor: default; }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--nav-hover); }
+td { padding: 11px 16px; vertical-align: middle; }
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.dp-btn, .btn, .dp-tab, .ftab, .stab, .prog-fill) {
+    transition: none;
+  }
+  .prog-fill.is-indeterminate { animation: none; }
+  :is(.dp-btn, .btn):not(:disabled):active {
+    transform: none;
+  }
+}
+
+/* DP 1.0.12 canonical flattening: !important mobile card-sizing overrides
+   that are the sole source of mobile-responsive card geometry (the material
+   bridge above has no mobile treatment of its own), migrated from the
+   retired ui-legacy-foundation.css. */
+@media (max-width: 779px) {
+  .card { border-radius: 8px !important; }
+  /* The gap between a page's stacked cards; not below a Settings card the
+     setup wizard mounts alone in its dialog body (DPSettingsPage.mountProvider),
+     whose space above and below is the body's own padding. */
+  .card:not(.dp-setup-provider-surface .card) { margin-bottom: 10px !important; }
+  .card-header { padding: 8px 12px !important; }
+  .card-body   { padding: 8px 12px !important; }
+  .scard-body  { padding: 10px !important; gap: 8px !important; }
+}

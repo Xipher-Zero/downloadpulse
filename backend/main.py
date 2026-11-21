@@ -1,0 +1,641 @@
+import asyncio
+import logging
+import os
+import re
+import sqlite3
+import sys
+import uuid
+
+
+def _system_trust() -> bool:
+    """The installed desktop application (Windows, macOS) verifies every TLS
+    certificate with the operating system's own trust (``truststore``): Windows'
+    verifier fetches a root it has not cached yet as Windows itself does, where
+    Python's own reading of the store sees only the roots already cached (an
+    update check to GitHub refused on a fresh Windows, 2026-11-16). Injected
+    before any connection is made. A server -- and Linux, whose OpenSSL already
+    reads the system's store -- is unchanged; so is an installation without it."""
+    from core.config import desktop_installation
+    if not desktop_installation() or sys.platform not in {"win32", "darwin"}:
+        return False
+    try:
+        import truststore
+    except ImportError:
+        return False
+    truststore.inject_into_ssl()
+    return True
+
+
+SYSTEM_TRUST = _system_trust()
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import Depends, FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from api.account_routes import router as account_router
+from api.auth_config_routes import router as auth_config_router
+from api.auth_routes import router as auth_router
+from api.routes import router
+from api.executor_work import router as executor_work_router
+from api.arr_qbittorrent import router as arr_qbittorrent_router
+from api.arr_sabnzbd import router as arr_sabnzbd_router
+from api.external_routes import router as external_router
+from api.browser_routes import router as browser_router
+from api.file_selection_routes import router as file_selection_router
+from api.operational_downloads import router as operational_downloads_router
+from api.settings_validation_routes import router as settings_validation_router
+from api.setup_routes import router as setup_router
+from api.storage_health_routes import router as storage_health_router
+from auth.middleware import enforce_authentication, enforce_general_web_security
+from auth.permissions import authorize_request
+from auth.policy import (
+    interactive_auth_enabled,
+    oidc_auth_enabled,
+    password_auth_enabled,
+)
+from auth.sessions import CSRF_HEADER, session_store
+from core.branding import APP_METADATA_TITLE, APP_NAME, APP_SHORT_NAME
+from core.config import get_settings as _get_log_settings
+from core.logging_utils import configure_logging, log_startup_banner, sanitize_log_value
+from transfers.staged_input import MAX_STAGED_INPUT_BYTES
+from external.arr import UPLOAD_CEILINGS, adapter_of
+from external.arr import available as adapter_available
+from core.version import read_version
+from core.localization import DisplayError, display_error_body
+from db.database import DatabaseMaintenanceActive, DatabaseSealed
+from application.dependencies import get_application
+from application.lifetime import (
+    prepare_settings_and_migrate as _prepare_startup_settings_and_migrate,
+    start_application, stop_application,
+)
+from services.maintenance_gate import ApplicationMaintenanceActive, ApplicationMaintenanceBusy, ApplicationSealed
+from transfers.errors import TransferError
+from transfers._repository_base import DemandChanged
+from transfers.storage import normalize_sqlite_storage_exception
+
+_log_cfg = _get_log_settings()
+configure_logging(
+    getattr(_log_cfg, "log_level", "INFO"),
+    bool(getattr(_log_cfg, "log_pretty", False)),
+    getattr(_log_cfg, "log_format", "plain"),
+)
+logger = logging.getLogger("downloadpulse.main")
+
+# persistence initialization on startup
+
+
+def _quiet_closed_connections(loop, context: dict) -> None:
+    """Windows' Proactor event loop reports a peer that reset or aborted a
+    connection DownloadPulse was already closing (WinError 10054/10053, a browser
+    or client simply going away) as an unhandled error with a traceback. That
+    is the connection ending, nothing more: it is dropped, and every other
+    loop error reaches the default handler unchanged."""
+    if isinstance(context.get("exception"), (ConnectionResetError, ConnectionAbortedError)) \
+            and "_call_connection_lost" in str(context.get("message", "")) + repr(context.get("handle", "")):
+        return
+    loop.default_exception_handler(context)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # The installed desktop application answers its supervisor on two private
+    # pipes the supervisor alone holds, verified before anything starts.
+    from core.config import desktop_installation
+    if os.name == "nt":
+        asyncio.get_running_loop().set_exception_handler(_quiet_closed_connections)
+    desktop_channel = None
+    if desktop_installation():
+        from application import desktop_control
+        desktop_channel = desktop_control.open_channel()
+    # v1.0.12 migration owns database classification and the legacy backup
+    # boundary. No current initializer may touch a predecessor database first.
+    # Sanitized settings are authoritative before this ownership-sensitive step.
+    # A restore whose restored state never finished starting is reversed
+    # first, so startup always begins from one complete state.
+    from services.backup import recover_interrupted_restore
+    if recover_interrupted_restore():
+        from core.config import apply_settings, load_settings
+        apply_settings(load_settings())
+    cfg = await _prepare_startup_settings_and_migrate()
+
+    password_enabled = password_auth_enabled(cfg)
+    oidc_enabled = oidc_auth_enabled(cfg)
+    interactive_enabled = interactive_auth_enabled(cfg)
+    auth_mechanisms = []
+    if password_enabled:
+        auth_mechanisms.append("password")
+    if oidc_enabled:
+        auth_mechanisms.append("oidc")
+    # The installed desktop application's backend serves its own window on a
+    # private loopback port (external applications use Local Port, logged by
+    # its listener); a server's is its container's.
+    from application.desktop_listener import internal_port
+    desktop_port = internal_port() if desktop_installation() else None
+    log_startup_banner(
+        logger,
+        version=read_version(),
+        mode="Desktop application" if desktop_installation() else "Docker / Unraid",
+        database="SQLite",
+        download_client="aria2",
+        web_ui=(f"http://127.0.0.1:{desktop_port} (the application window)" if desktop_port
+                else f"http://0.0.0.0:{getattr(cfg, 'port', 8095)}"),
+        auth=("+".join(auth_mechanisms) if auth_mechanisms else "disabled"),
+    )
+    if not interactive_enabled:
+        logger.warning("Interactive authentication is disabled; DownloadPulse is intentionally operating in open mode")
+    from auth.accounts import usable_admin_present
+    if not await usable_admin_present(cfg):
+        logger.error(
+            "No active Admin account can sign in with the enabled authentication methods. To recover, stop "
+            "DownloadPulse and either set auth_username and a plaintext auth_password in config.json (installed on "
+            "the default Admin account at start) or set auth_password_enabled and auth_oidc_enabled to false"
+        )
+    if oidc_enabled:
+        from auth.oidc import oidc_auth_ready
+        if not oidc_auth_ready(cfg):
+            logger.error("OpenID Connect is enabled but its local configuration is incomplete; OIDC is unavailable and protected access remains fail-closed unless another configured mechanism is usable")
+
+    from application.composition import application as default_application
+    application = getattr(app.state, "application", default_application)
+    app.state.application = application
+    await start_application(application)
+    session_store.start_cleanup()
+    if desktop_channel is not None:
+        desktop_control.serve(application, asyncio.get_running_loop(), desktop_channel)
+        # Local Port: the external clients' address, beside the window's own.
+        from api.routes import _configured_local_port
+        from application.desktop_listener import internal_port, listener
+        target = internal_port()
+        if target is None:
+            logger.error("the desktop supervisor gave no internal port: Local Port is not listening")
+        else:
+            await listener.start(_configured_local_port(), target)
+    try:
+        yield
+    finally:
+        logger.info("Shutting down %s...", APP_NAME)
+        try:
+            if desktop_channel is not None:
+                from application.desktop_listener import listener
+                await listener.stop()
+            await session_store.stop_cleanup()
+        finally:
+            # A restore replaces the application object: stop the live one.
+            await stop_application(app.state.application)
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+# The staged-input upload path, and the one ceiling that governs it. Both come
+# from their canonical owners rather than being restated as constants here.
+STAGED_UPLOAD_PATH = "/api/usenet/add-file"
+# Add Backup: a saved backup package. Anything Save Backup produced must be
+# admissible again, so this path has no body ceiling of its own; the backup
+# owner writes it to private staging and bounds it by the storage it lands on.
+BACKUP_PACKAGE_PATH = "/api/admin/backups"
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(self, app: ASGIApp, max_bytes: int):
+        self.app = app
+        self.max_bytes = max(1, int(max_bytes))
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or str(scope.get("method") or "").upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
+            await self.app(scope, receive, send)
+            return
+        # Pre-authentication parsers must have tighter ceilings than torrent/form
+        # application requests. Auth settings are intentionally bounded because
+        # the transition state machine reads their body before route validation.
+        path = str(scope.get("path") or "")
+        if scope.get("path") == "/login":
+            limit = min(self.max_bytes, 64 * 1024)
+        elif path == STAGED_UPLOAD_PATH:
+            # The staged-input upload seam. Its body is never buffered by the
+            # application -- it is written through to durable storage as it
+            # arrives -- so the general ceiling, which exists to bound parsed
+            # request bodies, would only forbid legitimate large input. The
+            # real ceiling belongs to the staged-input owner and is enforced
+            # while writing.
+            limit = MAX_STAGED_INPUT_BYTES
+        elif path == BACKUP_PACKAGE_PATH:
+            await self.app(scope, receive, send)
+            return
+        elif path in UPLOAD_CEILINGS:
+            # An external client's one uploaded file. As for the staged
+            # upload, the ceiling belongs to the owner of that input (the
+            # native external upload ceiling of its kind, plus framing).
+            limit = UPLOAD_CEILINGS[path]
+        elif path in {
+            "/api/settings",
+            "/api/settings/validate-alldebrid",
+            "/api/settings/validate-debridlink",
+            "/api/settings/validate-premiumize",
+            "/api/settings/validate-discord",
+            "/api/auth/config",
+            "/api/auth/oidc/verify-config",
+        }:
+            limit = min(self.max_bytes, 1024 * 1024)
+        else:
+            limit = self.max_bytes
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        raw_length = headers.get(b"content-length", b"")
+        try:
+            # A download-client dialect that is not exposed must not be told
+            # apart by its own upload ceiling: its request goes on to the
+            # authentication boundary's Not Found, its body unread.
+            if raw_length and int(raw_length) > limit and (
+                    (adapter := adapter_of(path)) is None or await adapter_available(adapter)):
+                response = Response(content="Request body too large", status_code=413)
+                await response(scope, receive, send)
+                return
+        except ValueError:
+            pass
+        seen = 0
+        async def limited_receive() -> Message:
+            nonlocal seen
+            message = await receive()
+            if message.get("type") == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > limit:
+                    raise _RequestBodyTooLarge
+            return message
+        try:
+            await self.app(scope, limited_receive, send)
+        except _RequestBodyTooLarge:
+            response = Response(content="Request body too large", status_code=413)
+            await response(scope, receive, send)
+
+
+try:
+    _MAX_REQUEST_BODY_BYTES = max(1024 * 1024, min(100 * 1024 * 1024, int(os.getenv("DOWNLOADPULSE_MAX_REQUEST_BYTES", str(20 * 1024 * 1024)))))
+except ValueError:
+    _MAX_REQUEST_BODY_BYTES = 20 * 1024 * 1024
+
+
+app = FastAPI(
+    title=APP_METADATA_TITLE,
+    description=(
+        "Self-hosted DownloadPulse runtime built around the Universal Transfer Core for "
+        "direct links, magnets, torrent, NZB and Metalink files, and media pages. Its "
+        "acquisition providers are AllDebrid, Real-Debrid, TorBox, Debrid-Link and Premiumize; "
+        "General HTTP(S), FTP/SFTP, SCP, rsync and WebDAV sources; Metalink; Usenet; and Media "
+        "Downloads. Transfers execute through aria2, rsync, the bundled Usenet acquisition "
+        "service, or the Media Downloads executor.\n\n"
+        "## API structure\n\n"
+        "| Prefix | Description |\n"
+        "|--------|-------------|\n"
+        f"| `/api/` | Native {APP_SHORT_NAME} REST API |\n\n"
+        "Interactive docs: `/docs` (Swagger UI) · `/redoc` (ReDoc) · `/openapi.json`"
+    ),
+    version=read_version(),
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    lifespan=lifespan,
+    # The one authorization policy, applied to every routed action.
+    dependencies=[Depends(authorize_request)],
+)
+
+
+@app.exception_handler(TransferError)
+async def transfer_error_handler(_request: Request, exc: TransferError):
+    status_code = int(getattr(exc, "status_code", 409))
+    return JSONResponse(status_code=status_code, content={"detail": exc.error.message, "error": exc.error.as_dict()})
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def sqlite_operational_error_handler(_request: Request, exc: sqlite3.OperationalError):
+    """Normalize only recognized SQLite storage faults; never expose raw disk diagnostics."""
+    fault = normalize_sqlite_storage_exception(exc)
+    if fault is not None:
+        return JSONResponse(
+            status_code=fault.status_code,
+            content={"detail": fault.error.message, "error": fault.error.as_dict()},
+        )
+    logger.error("Unhandled SQLite operational error")
+    return JSONResponse(status_code=500, content={"detail": "Database operation failed", "code": "storage.database_failed",
+                                                  "params": {}})
+
+
+_MUTATING_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_DATABASE_WIPE_PATH = "/api/admin/database/wipe"
+_BACKUP_RESTORE_PATH = "/api/admin/backups/restore"
+# These routes own a stronger maintenance admission inside the endpoint. Wrapping
+# it in application_operation() here would put the outer request and downstream
+# endpoint in different Starlette tasks and make maintenance wait on its own request.
+#
+# DP 1.0.12 canonical architecture correction, Workstream C (specification
+# sections 2.6, 9.6): /api/aria2/global-options previously belonged here too,
+# but a live bandwidth/concurrency mutation is not an application-wide
+# invariant -- it now uses the SAME ordinary application_operation() admission
+# as every other mutation route (self-entered, exactly like
+# ApplicationService.submit()/pause()/etc. already do for their own routes),
+# so it no longer needs -- or wants -- this exclusion.
+_SELF_MAINTAINED_MUTATION_PATHS = {
+    "/api/settings",
+}
+# The integration-connection surfaces -- the scoped configuration mutation and
+# the connection flows that save or forget a connection through it -- reach the
+# one canonical scoped mutation (``mutate_integration_configuration``), which
+# owns its admission: exclusive while it replaces a connection. The same rule
+# applies to them, by shape, for every integration.
+_SELF_MAINTAINED_MUTATION_PATTERN = re.compile(r"/api/integrations/[^/]+/(?:configuration|authorization/poll|disconnect)")
+# A desktop save (api/routes.py, "Desktop saves") writes a file the interface
+# could equally download -- the trace, a backup package -- where the person's
+# Save dialog says: no application state changes, as for the download it
+# mirrors, and the dialog may stay open a while, which must not hold
+# maintenance back. Not an application operation.
+_EXPORT_SAVE_PATTERN = re.compile(r"/api/(?:torrents/\d+/trace|admin/backups/[^/]+/package)/save")
+_AUTH_MUTATION_PATHS = {
+    "/login",
+    "/api/auth/logout",
+    "/api/auth/oidc/verify-config",
+}
+
+
+@app.middleware("http")
+async def application_mutation_admission_middleware(request: Request, call_next):
+    """Serialize mutations and reject DB-backed work when application storage is unsafe."""
+    if (
+        request.method.upper() in _MUTATING_HTTP_METHODS
+        and request.url.path != _DATABASE_WIPE_PATH
+        and request.url.path != _BACKUP_RESTORE_PATH
+        and request.url.path not in _SELF_MAINTAINED_MUTATION_PATHS
+        and not _SELF_MAINTAINED_MUTATION_PATTERN.fullmatch(request.url.path)
+        and not _EXPORT_SAVE_PATTERN.fullmatch(request.url.path)
+        and request.url.path not in _AUTH_MUTATION_PATHS
+    ):
+        try:
+            async with get_application(request).application_operation():
+                return await call_next(request)
+        except TransferError as exc:
+            status_code = getattr(exc, "status_code", None)
+            if status_code in {503, 507}:
+                return JSONResponse(
+                    status_code=status_code,
+                    content={"detail": exc.error.message, "error": exc.error.as_dict()},
+                )
+            raise
+        except ApplicationSealed:
+            return Response(content=_RESTORE_UNRESOLVED, status_code=503)
+        except ApplicationMaintenanceActive:
+            return Response(
+                content="Application maintenance in progress",
+                status_code=503,
+                headers={"Retry-After": "2"},
+            )
+    return await call_next(request)
+
+
+@app.exception_handler(DemandChanged)
+async def demand_changed_handler(_request: Request, _exc: DemandChanged):
+    """A destructive act refused at commit: another account's demand arrived
+    after it was authorized. Nothing was changed."""
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "Another account now needs this transfer; nothing was changed",
+                 "code": "transfer.demand_changed", "params": {}},
+    )
+
+
+@app.exception_handler(DisplayError)
+async def display_error_handler(_request: Request, exc: DisplayError):
+    """An error the interface shows: the status, headers and English ``detail``
+    API clients always received, plus its stable ``code`` and ``params``
+    (``core.localization``) so the interface can show it in its language."""
+    return JSONResponse(status_code=exc.status_code, content=display_error_body(exc), headers=exc.headers)
+
+
+@app.exception_handler(PermissionError)
+async def permission_error_handler(_request: Request, _exc: PermissionError):
+    """Do not turn service-layer authorization failures into HTTP 500 responses."""
+    return Response(content="Forbidden", status_code=403)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(_request: Request, exc: RequestValidationError):
+    """Return useful validation locations without reflecting submitted secrets.
+
+    Pydantic validation errors include the invalid ``input`` by default. That is
+    unsafe for password/client-secret fields because a rejected credential could
+    otherwise be copied into browser, proxy, or diagnostic logs as response
+    content. Keep only stable structural metadata and a generic message.
+    """
+    from api.routes import _validation_refusal
+
+    detail = []
+    for error in exc.errors():
+        # The rule each value broke, worded from the schema's own bounds --
+        # never from the submitted input.
+        refusal = _validation_refusal(error)
+        detail.append(
+            {
+                "type": str(error.get("type") or "validation_error"),
+                "loc": list(error.get("loc") or ()),
+                "msg": refusal["message"],
+                **({"requirement": refusal["requirement"]} if "requirement" in refusal else {}),
+                # The rule's code and bounds (WS3e), never the refused value.
+                "code": refusal["code"],
+                "params": refusal["params"],
+            }
+        )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": detail},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+_RESTORE_UNRESOLVED = ("A restore could neither finish nor be undone. DownloadPulse has stopped using its stored state; "
+                       "restart it to put the previous state back.")
+
+
+@app.exception_handler(DatabaseSealed)
+@app.exception_handler(ApplicationSealed)
+async def sealed_storage_handler(_request: Request, _exc: Exception):
+    """After an unresolved restore: refused until restart, never retried."""
+    return Response(content=_RESTORE_UNRESOLVED, status_code=503)
+
+
+@app.exception_handler(DatabaseMaintenanceActive)
+async def database_maintenance_handler(_request: Request, _exc: DatabaseMaintenanceActive):
+    """Fail closed rather than queue stale request work behind a destructive wipe."""
+    return Response(
+        content="Database maintenance in progress",
+        status_code=503,
+        headers={"Retry-After": "2"},
+    )
+
+
+@app.exception_handler(ApplicationMaintenanceBusy)
+async def application_maintenance_busy_handler(_request: Request, exc: ApplicationMaintenanceBusy):
+    """Maintenance was asked for but not entered: earlier work is still running.
+    Nothing was changed; the same request can be repeated once it finishes."""
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "Other work is still running, so nothing was changed. Try again when it has finished.",
+                 "code": "maintenance.busy", "params": {}, "waiting_operations": exc.waiting},
+        headers={"Retry-After": "5"},
+    )
+
+
+@app.exception_handler(ApplicationMaintenanceActive)
+async def application_maintenance_handler(_request: Request, _exc: ApplicationMaintenanceActive):
+    """Reject new mutation/execution work while destructive maintenance owns admission."""
+    return Response(
+        content="Application maintenance in progress",
+        status_code=503,
+        headers={"Retry-After": "2"},
+    )
+
+
+def configured_cors_origins(raw: str) -> list[str]:
+    """The explicit browser origins ``CORS_ORIGINS`` names (comma-separated).
+
+    CORS here always allows credentials, so an origin listed is trusted with
+    the signed-in session. ``*`` would make every web page such an origin
+    (Starlette reflects the requesting origin when credentials are allowed), so
+    it is refused, and DownloadPulse does not start with it: name each origin
+    that may call the API instead."""
+    origins = [origin.strip() for origin in str(raw or "").split(",") if origin.strip()]
+    if "*" in origins:
+        raise RuntimeError(
+            "CORS_ORIGINS=* is refused: DownloadPulse's CORS allows credentials, so a wildcard would let "
+            "every website use a signed-in session. List the exact origins (scheme://host[:port]) "
+            "that may call the API, or leave CORS_ORIGINS unset.")
+    return origins
+
+
+_cors_origins = configured_cors_origins(os.getenv("CORS_ORIGINS", ""))
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID", CSRF_HEADER],
+    )
+
+# ── Authentication / Browser Security ─────────────────────────────────────────
+# Authentication is an outer request boundary. Browser cross-site mutation
+# protection is general security and remains active even when authentication is
+# intentionally disabled.
+
+@app.middleware("http")
+async def authentication_boundary_middleware(request: Request, call_next):
+    try:
+        return await enforce_authentication(request, call_next)
+    except (DatabaseSealed, ApplicationSealed):
+        # Authenticating against the sealed database (a token, Basic, a
+        # session's account): this middleware is outside the exception handlers.
+        return Response(content=_RESTORE_UNRESOLVED, status_code=503)
+
+
+# Register the pure-ASGI body limiter after Authentication so Starlette places
+# it outside the authentication middleware. The auth transition guard reads
+# settings request bodies itself; no unbounded/chunked body may reach that read.
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=_MAX_REQUEST_BODY_BYTES)
+
+
+@app.middleware("http")
+async def general_web_security_middleware(request: Request, call_next):
+    return await enforce_general_web_security(
+        request,
+        call_next,
+        allowed_origins=_cors_origins,
+    )
+
+
+# ── Request-ID / Baseline Response Security Middleware ────────────────────────
+# Registered last so it is the outermost HTTP middleware. This guarantees that
+# responses produced directly by the body-limit, browser-security, or
+# authentication boundaries receive the same correlation and baseline security
+# headers as normal application responses.
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    req_id = str(request.headers.get("X-Request-ID") or "").strip()
+    if not req_id or len(req_id) > 128:
+        req_id = str(uuid.uuid4())
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = req_id
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    # Keep cross-origin referrer disclosure disabled while preserving the real
+    # Origin on same-origin HTML form POSTs used by the password login flow.
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+
+    # Frontend migration assets must never rely on manually bumped ?v= values as
+    # their only coherence boundary. Keep normal conditional caching (ETag /
+    # Last-Modified) but force browser revalidation of executable/presentation
+    # resources so a new container cannot silently run an older JS/CSS/HTML mix.
+    path = request.url.path
+    static_frontend = (
+        request.method.upper() in {"GET", "HEAD"}
+        and (path == "/" or path.endswith((".html", ".js", ".css", ".webmanifest")))
+    )
+    existing_cache = response.headers.get("Cache-Control", "")
+    if static_frontend and "no-store" not in existing_cache.lower():
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
+# Pending OIDC callback is registered first so verified proposed configuration
+# can become authoritative before the replacement application session is issued.
+app.include_router(auth_config_router)
+app.include_router(auth_router)
+app.include_router(settings_validation_router, prefix="/api")
+app.include_router(storage_health_router, prefix="/api")
+# operational_downloads owns the canonical GET /api/torrents and GET /api/events
+# collection routes (bounded projection + lifecycle/filter rules). It is included
+# before the generic router purely for readable ordering; each canonical route
+# now has exactly one declaring owner, so include order is not load-bearing.
+app.include_router(operational_downloads_router, prefix="/api")
+# Dedicated universal file-selection API (offers, per-transfer read model,
+# confirm, dismiss). Kept out of the generic route file.
+app.include_router(executor_work_router, prefix="/api")
+app.include_router(file_selection_router, prefix="/api")
+app.include_router(account_router, prefix="/api")
+app.include_router(setup_router, prefix="/api")
+app.include_router(external_router, prefix="/api")
+app.include_router(browser_router, prefix="/api")
+app.include_router(arr_sabnzbd_router, prefix="/api")
+app.include_router(arr_qbittorrent_router, prefix="/api")
+app.include_router(router, prefix="/api")
+
+# ── Static files ──────────────────────────────────────────────────────────────
+_here = Path(__file__).parent
+_candidates = []
+
+_env = os.getenv("STATIC_DIR", "").strip()
+if _env:
+    _candidates.append(Path(_env))
+
+_candidates.append(_here.parent / "frontend" / "static")
+_candidates.append(Path("/app/frontend/static"))
+_candidates.append(Path("/app/static"))
+
+
+def _is_valid(p: Path) -> bool:
+    return p.is_dir() and (p / "index.html").exists()
+
+
+_static = next((p for p in _candidates if _is_valid(p)), None)
+
+if _static is None:
+    tried = ", ".join(str(p) for p in _candidates)
+    raise RuntimeError(
+        f"Frontend index.html not found. Tried: [{tried}]. "
+        "Fix your Docker build or set STATIC_DIR."
+    )
+
+logger.info("Serving static files from: %s", sanitize_log_value(_static))
+app.mount("/", StaticFiles(directory=str(_static), html=True), name="static")

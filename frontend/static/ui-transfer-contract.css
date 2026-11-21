@@ -1,0 +1,478 @@
+/* DownloadPulse v1.0.11 shared transfer-row contract.
+ *
+ * This is the effective application default for reusable transfer status,
+ * row actions, progress geometry and progress text. It is intentionally loaded
+ * after the migration-era Dashboard calibration layers so temporary experiments
+ * cannot override the universal transfer language on Dashboard or Downloads.
+ */
+
+/* ── Status tags ─────────────────────────────────────────────────────── */
+/* Dashboard, Downloads and Details consume one rectangular semantic badge
+   contract. The inline glyph itself is supplied by the canonical Lucide runtime;
+   CSS owns only geometry/material/color and never injects symbol-font content. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-height: 25px !important;
+  padding: 0 9px !important;
+  border-radius: 6px !important;
+  font-size: 10.5px !important;
+  line-height: 1 !important;
+  font-weight: 600 !important;
+  --dp-op-hue: var(--dp-badge-color);
+  border-color: var(--dp-op-edge, color-mix(in srgb, var(--dp-badge-color) 22%, transparent)) !important;
+  background: var(--dp-op-badge-surface, color-mix(in srgb, var(--dp-badge-color) 9%, transparent)) !important;
+  color: var(--dp-op-ink, var(--dp-badge-color)) !important;
+}
+
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge .dp-status-icon {
+  width: 15px !important;
+  height: 15px !important;
+  min-width: 15px;
+  flex: 0 0 15px;
+  stroke-width: 2.15;
+}
+
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-downloading {
+  --dp-badge-color: var(--dp-state-success);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-uploading,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-queued,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-input_required {
+  --dp-badge-color: var(--dp-state-active);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-processing,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-extracting,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-imported {
+  --dp-badge-color: var(--dp-state-processing-badge);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-paused,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-ready,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-partial {
+  --dp-badge-color: var(--dp-state-caution);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-completed {
+  --dp-badge-color: var(--dp-state-success);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-error {
+  --dp-badge-color: var(--dp-state-error);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-pending {
+  --dp-badge-color: var(--dp-state-ready);
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-deleted {
+  --dp-badge-color: var(--dp-text-muted);
+}
+.badge-extracting { animation: pulse 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .badge-extracting { animation: none; }
+}
+
+/* Duplicate mirror explanations are operational notes, not failures. */
+#modal-body tr:has(.badge-duplicate) td:first-child > div[style*="color:var(--red)"] {
+  color: var(--text3) !important;
+}
+
+.t-name { font-weight: 600; max-width: clamp(140px, 30vw, 380px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-hash { font-family: var(--mono); font-size: 10px; color: var(--text2); margin-top: 2px; }
+.actions { display: flex; gap: 5px; align-items: center; }
+.sz { font-family: var(--mono); font-size: 11px; color: var(--text2); }
+@media (max-width: 779px) {
+  .t-hash { display: none; }
+  .actions { gap: 4px; flex-wrap: nowrap; }
+  .actions .btn { padding: 4px 6px !important; font-size: 10px !important; }
+  .t-table { font-size: 12px; width: 100%; }
+  /* Downloads and Download Activity own their own handheld columns
+     (ui-downloads-page.css, ui-dashboard.css); the exclusion adds no
+     specificity to these rules. */
+  .t-table:where(:not(#view-torrents *, #view-dashboard *)) th:nth-child(5), .t-table:where(:not(#view-torrents *, #view-dashboard *)) td:nth-child(5),
+  .t-table:where(:not(#view-torrents *, #view-dashboard *)) th:nth-child(6), .t-table:where(:not(#view-torrents *, #view-dashboard *)) td:nth-child(6) { display: none; }
+}
+
+/* ── Row action language ─────────────────────────────────────────────── */
+/* Active Items and Downloads use one fixed action-button footprint. 72×36 is
+   the existing Remove/Resume footprint; Retry/Pause and other row actions now
+   occupy the same box. Global/topbar controls are intentionally excluded. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .actions .btn {
+  width: 72px !important;
+  min-width: 72px !important;
+  min-height: 36px !important;
+  height: 36px !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+  font-size: 11.5px !important;
+  line-height: 1 !important;
+  font-weight: 600 !important;
+  white-space: nowrap;
+}
+
+/* A row action built with DPIcons.iconLabel carries its glyph and its label;
+   it shows the label, and the glyph only where its table sets the label aside
+   (a compact table's own geometry owner). */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .actions .dp-row-action-icon,
+:is(#t-tbody, .dp-downloads-styled-tbody) .dp-queue-consent .dp-row-action-icon {
+  display: none;
+}
+
+/* A compact table sets its controls' labels aside: each Status badge and row
+   action shows its glyph alone, in the same chip or button, the glyph where it
+   was; the label leaves the row but stays the control's name, and DP's
+   tooltip says it (a badge's whole status; an action's own tooltip). The
+   table decides when, by its own width: Recent Activity at 987px or narrower
+   (ui-dashboard.css narrows its tracks under the same condition), and
+   Downloads narrower than 1166px (ui-downloads-page.css, likewise). */
+@container dp-recent-activity (width <= 987px) {
+  #dash-tbody :is(.badge .dp-status-label, .actions [data-dp-icon-label]) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+  }
+  #dash-tbody :is(.badge, .actions .btn) {
+    position: relative;
+  }
+  #dash-tbody .actions .btn {
+    width: 36px !important;
+    min-width: 36px !important;
+    padding: 0 !important;
+    justify-content: center;
+  }
+  #dash-tbody .actions .dp-row-action-icon {
+    display: block;
+    width: 15px;
+    height: 15px;
+  }
+}
+@container dp-downloads-table (width < 1166px) {
+  :is(#t-tbody, .dp-downloads-styled-tbody) :is(.badge .dp-status-label, :is(.actions, .dp-queue-consent) [data-dp-icon-label]) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+  }
+  :is(#t-tbody, .dp-downloads-styled-tbody) :is(.badge, .actions .btn, .dp-queue-consent) {
+    position: relative;
+  }
+  :is(#t-tbody, .dp-downloads-styled-tbody) .actions .btn {
+    width: 36px !important;
+    min-width: 36px !important;
+    padding: 0 !important;
+    justify-content: center;
+  }
+  :is(#t-tbody, .dp-downloads-styled-tbody) :is(.actions, .dp-queue-consent) .dp-row-action-icon {
+    display: block;
+    width: 15px;
+    height: 15px;
+  }
+  /* Start Now beneath its badge: the badge chip's width. */
+  :is(#t-tbody, .dp-downloads-styled-tbody) .dp-queue-consent {
+    width: 35px;
+    padding-inline: 0;
+    justify-content: center;
+  }
+}
+
+/* Pause/Resume material is shared by both list implementations. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("]),
+#view-torrents .dp-downloads-bulk-action--pause {
+  background: linear-gradient(135deg,
+    rgba(125, 91, 30, .91) 0%,
+    rgba(90, 69, 31, .94) 52%,
+    rgba(57, 49, 39, .97) 100%) !important;
+  border-color: rgba(242, 189, 63, .64) !important;
+  color: #ffd35b !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.06), 0 5px 15px rgba(113, 79, 20, .15) !important;
+}
+body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("]),
+body.light #view-torrents .dp-downloads-bulk-action--pause {
+  --dp-op-hue: var(--dp-state-caution);
+  background: var(--dp-op-surface) !important;
+  border-color: var(--dp-op-edge) !important;
+  color: var(--dp-op-ink) !important;
+  text-shadow: none !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.55), var(--dp-op-glow) !important;
+}
+body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("]):hover,
+body.light #view-torrents .dp-downloads-bulk-action--pause:hover {
+  background: var(--dp-op-surface-hover) !important;
+  border-color: var(--dp-op-hue) !important;
+  color: var(--dp-op-ink) !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.6), var(--dp-op-glow-hover) !important;
+}
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="resumeT("], [onclick*="resumeTorrent("]),
+#view-torrents .dp-downloads-bulk-action--resume {
+  background: linear-gradient(135deg,
+    rgba(25, 117, 78, .84) 0%,
+    rgba(20, 86, 66, .91) 50%,
+    rgba(16, 54, 49, .95) 100%) !important;
+  border-color: rgba(73, 224, 145, .42) !important;
+  color: #9af0bf !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.05), 0 6px 18px rgba(16, 78, 53, .16) !important;
+}
+body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="resumeT("], [onclick*="resumeTorrent("]),
+body.light #view-torrents .dp-downloads-bulk-action--resume {
+  --dp-op-hue: var(--dp-state-success);
+  background: var(--dp-op-surface) !important;
+  border-color: var(--dp-op-edge) !important;
+  color: var(--dp-op-ink) !important;
+  text-shadow: none !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.55), var(--dp-op-glow) !important;
+}
+
+/* Retry is an information/recovery action. Match the translucent semantic
+   treatment used by the other secondary row actions instead of reading as a
+   filled primary control. Theme-aware state tokens keep the blue family intact. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="retryT("], [onclick*="retryTorrent("]),
+#view-torrents .dp-downloads-bulk-action--reset {
+  --dp-op-hue: var(--dp-state-active);
+  background: var(--dp-op-surface, var(--dp-state-active-bg)) !important;
+  border-color: var(--dp-op-edge, color-mix(in srgb, var(--dp-state-active) 34%, transparent)) !important;
+  color: var(--dp-op-ink, var(--dp-state-active)) !important;
+  box-shadow: var(--dp-op-glow, none) !important;
+}
+
+/* ── Progress geometry ─────────────────────────────────────────────── */
+/* The track and active fill are one component and therefore one thickness.
+   Seven pixels is the approved active-transfer weight; the unfilled track
+   must never fall back to the old hairline geometry. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .prog,
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) .prog-fill {
+  height: var(--dp-row-progress-fill, 7px) !important;
+  border-radius: var(--dp-row-progress-radius, 999px) !important;
+}
+
+/* ── Progress percentage ─────────────────────────────────────────────── */
+/* Preserve the original compact mono datum and add emphasis only through
+   weight. Semantic color belongs to the bar/status, not the percentage. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) tr[data-status] .prog-pct {
+  display: block !important;
+  margin-top: 3px !important;
+  font-family: var(--dp-font-mono) !important;
+  font-size: 10px !important;
+  line-height: normal !important;
+  font-weight: 700 !important;
+  letter-spacing: normal !important;
+  color: var(--dp-text-secondary) !important;
+  text-shadow: none !important;
+}
+
+/* Roadmap Item 10: durable provider provenance presentation. The accent is
+   the one per-badge datum: the named provider's identity colour, when it has
+   one, changes it and nothing else. */
+.dp-provider-chip {
+  /* --dp-provider-identity: the named provider's identity colour
+     (providerBadgeIdentity -> design-tokens.css); without one, the shared accent. */
+  --dp-provider-accent: var(--dp-provider-identity, var(--dp-accent-purple-bright, var(--accent)));
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 20px;
+  padding: 2px 8px;
+  --dp-op-hue: var(--dp-provider-accent);
+  border: 1px solid var(--dp-op-edge, color-mix(in srgb, var(--dp-provider-accent) 34%, var(--dp-divider, var(--border))));
+  border-radius: 6px;
+  background: var(--dp-op-surface, color-mix(in srgb, var(--dp-provider-accent) 9%, transparent));
+  box-shadow: var(--dp-op-glow, none);
+  color: var(--dp-op-ink, var(--dp-identity-ink));
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Identity ink: the identity colour as label and glyph draw it -- the same
+   hue and chroma, with only its OKLCH lightness bounded for the surface: at
+   least 0.62 on dark, at most 0.48 on light. Each reads at >= 4.5:1 on its
+   badge face; an identity already inside the bound is drawn as itself. The
+   identity hex stays the badge's border and face tint. */
+.dp-provider-chip,
+.dp-source-magnet {
+  --dp-identity-ink: oklch(from var(--dp-provider-accent) max(l, 0.62) c h);
+}
+:is(body.light, [data-theme="light"], .theme-light) :is(.dp-provider-chip, .dp-source-magnet) {
+  --dp-identity-ink: oklch(from var(--dp-provider-accent) min(l, 0.48) c h);
+}
+/* A protocol identity badge's glyph: inside the badge, left of its label,
+   drawn in the label's ink. Only a protocol identity has one
+   (PROTOCOL_GLYPHS); a premium badge is text. */
+.dp-provider-glyph {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  background-color: currentColor;
+  -webkit-mask: var(--dp-provider-glyph) center / contain no-repeat;
+  mask: var(--dp-provider-glyph) center / contain no-repeat;
+}
+.dp-provider-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dp-provider-chip[data-provider-state="pending"],
+.dp-provider-chip[data-provider-state="unknown"] {
+  border-color: var(--dp-divider, var(--border));
+  background: color-mix(in srgb, var(--dp-text-muted, var(--text3)) 7%, transparent);
+  color: var(--dp-text-muted, var(--text3));
+}
+/* ── Multi-source candidate chip (shared passive/base contract) ─────────
+   One visual family for the passive Dashboard/Downloads indicator and the
+   interactive Details disclosure. This owner holds the common material and
+   geometry; surface files add only bounded layout differences. Muted
+   slate / blue-gray, deliberately subordinate to the purple provider badge:
+   no glow, no purple styling, never the word "Candidates" on the passive form. */
+.dp-candidate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  min-height: 20px;
+  padding: 2px 6px 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--dp-state-ready, var(--text3)) 40%, var(--dp-divider, var(--border)));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--dp-state-ready, var(--text3)) 12%, transparent);
+  color: var(--dp-text-secondary, var(--text2));
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.dp-candidate-chip svg,
+.dp-candidate-chip .lucide {
+  width: 12px;
+  height: 12px;
+  min-width: 12px;
+  flex: 0 0 12px;
+  stroke-width: 2;
+}
+.dp-candidate-chip .dp-candidate-chip-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.dp-transfer-provider-meta { display:flex; align-items:center; gap:6px; min-width:0; margin-top:4px; }
+.dp-detail-original-resource .dv { overflow-wrap:anywhere; word-break:break-word; }
+/* The compact value; the complete safe URL is its tooltip (ui-tooltip.js). */
+.dp-detail-resource { border-radius:var(--dp-radius-xs); cursor:default; }
+.dp-detail-resource:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+/* Usenet Server(s) (dpUsenetServersCell, app.js): names from the transfer's
+   own execution evidence; prose that wraps, and an unknown state in the
+   muted text of every other absent fact. */
+.dp-detail-usenet-servers > .dv { min-width:0; overflow-wrap:anywhere; word-break:normal; }
+.dp-detail-usenet-server.is-unknown { color:var(--dp-text-muted, var(--text3)); }
+.dp-detail-route-body { padding:10px 14px 12px; }
+/* Requested By (dpRequestedByMarkup, app.js): who asked for the work, one row
+   per requester, as a field of the metadata grid; the rest of its entries open
+   beneath the first from Details' disclosure chevron (the Error field's). */
+/* Names and dates are prose, not a hash: they wrap at spaces, and break inside
+   a word only when one word alone is wider than the column. */
+.dp-detail-requested-by > .dv { min-width:0; display:grid; justify-items:start; gap:6px; word-break:normal; }
+.dp-detail-requesters { list-style:none; margin:0; padding:0; display:grid; gap:6px; min-width:0; }
+.dp-detail-requester { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 12px; min-width:0; }
+.dp-detail-requester-name { color:var(--dp-text-secondary, var(--text2)); font-size:12px; font-weight:650; overflow-wrap:anywhere; }
+.dp-detail-requester-ref, .dp-detail-requester-facts, .dp-detail-requesters-empty { color:var(--dp-text-muted, var(--text3)); font-size:10.5px; font-weight:500; }
+.dp-detail-requester-facts { min-width:0; overflow-wrap:anywhere; }
+.dp-detail-requesters-more { min-width:0; }
+.dp-detail-requesters-more > summary { color:var(--dp-text-muted, var(--text3)); font-size:10.5px; font-weight:600; }
+.dp-detail-requesters-more > .dp-detail-requesters { margin-top:6px; }
+.dp-detail-requester.is-withdrawn .dp-detail-requester-name { color:var(--dp-text-muted, var(--text3)); font-weight:600; }
+/* The five route columns are declared ONCE, on the list, and every row spans
+   them as a subgrid. A row that sized its own trailing `auto` tracks gave each
+   row a different provenance right edge -- the gap between provenance and
+   status stayed constant while the column itself wandered with the width of
+   the status label beside it. Sharing the tracks is what makes the provenance
+   column one column, without reserving a width guessed from sample text. */
+.dp-detail-route-list {
+  --dp-route-column-gap: 10px;
+  --dp-route-provenance-gap: 22px;
+  display:grid; grid-template-columns:28px minmax(70px,auto) minmax(0,1fr) auto auto;
+  gap:7px; column-gap: var(--dp-route-column-gap);
+}
+.dp-detail-route-row {
+  /* The URL/identity column keeps every flexible pixel; provenance and status
+     stay content-sized, so no fixed column is reserved to fake alignment.
+     --dp-route-provenance-gap is the ONE explicit constant separating the
+     provenance from the route status: it is a fixed distance, so no status
+     label length can close it or push the provenance around. */
+  grid-column:1/-1;
+  display:grid; grid-template-columns:subgrid; align-items:center;
+  column-gap: var(--dp-route-column-gap); row-gap: 0; min-width:0;
+  padding:7px 9px; border:1px solid var(--dp-divider, var(--border)); border-radius:8px;
+  background:color-mix(in srgb, var(--dp-text-primary, var(--text)) 2%, transparent);
+}
+.dp-detail-route-order { color:var(--dp-text-muted, var(--text3)); font-size:10px; text-align:center; }
+.dp-detail-route-provider { min-width:0; overflow-wrap:anywhere; color:var(--dp-text-primary, var(--text)); font-size:11px; font-weight:650; }
+.dp-detail-route-identity {
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--dp-text-muted, var(--text3)); font-size:10px;
+}
+.dp-detail-route-outcome {
+  color:var(--dp-text-muted, var(--text3)); font-size:10px; font-weight:650; text-align:right; white-space:nowrap;
+  margin-inline-start: calc(var(--dp-route-provenance-gap) - var(--dp-route-column-gap));
+}
+.dp-detail-route-outcome[data-route-outcome="completed"], .dp-detail-route-outcome[data-route-outcome="succeeded"] { color:var(--dp-state-success, var(--green)); }
+.dp-detail-route-outcome[data-route-outcome="failed"] { color:var(--dp-state-error, var(--red)); }
+.dp-detail-route-outcome[data-route-outcome="cancelled"], .dp-detail-route-outcome[data-route-outcome="unverified"] { color:var(--dp-state-caution, var(--yellow)); }
+/* Column 4 of "# | Provider | URL | Origin | Status". Origin sits between the
+   URL and the route outcome, so it reads as provenance rather than as part of
+   the status; the gap keeps the two from visually merging. */
+.dp-detail-route-relation {
+  color:var(--dp-text-muted, var(--text3)); font-size:10px; white-space:nowrap;
+  text-align: right; justify-self: end;
+}
+.dp-detail-route-relation:empty { display:none; }
+/* An unverified contributed source's status with its Retry: one grid item in
+   the status column, so the row keeps its five tracks. */
+.dp-detail-route-outcome-cell {
+  display:inline-flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0;
+  margin-inline-start: calc(var(--dp-route-provenance-gap) - var(--dp-route-column-gap));
+}
+.dp-detail-route-outcome-cell > .dp-detail-route-outcome { margin-inline-start: 0; }
+.dp-detail-route-empty { color:var(--dp-text-muted, var(--text3)); font-size:11px; line-height:1.45; }
+/* Details' ERROR as a disclosure (dpRenderErrorDisclosure, app.js): the
+   message keeps its colour and size, a small chevron after it; the facts open
+   inline beneath it in the Advanced section's label/value material, wrapping
+   however long a code or reason is. */
+.dp-detail-error-disclosure > summary, .dp-detail-requesters-more > summary { display:inline-flex; align-items:center; gap:6px; cursor:pointer; list-style:none; border-radius:4px; }
+.dp-detail-error-disclosure > summary::-webkit-details-marker, .dp-detail-requesters-more > summary::-webkit-details-marker { display:none; }
+.dp-detail-error-disclosure > summary::after, .dp-detail-requesters-more > summary::after { content:""; width:6px; height:6px; margin-top:-3px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.75; transition:transform .15s ease; }
+.dp-detail-error-disclosure[open] > summary::after, .dp-detail-requesters-more[open] > summary::after { margin-top:3px; transform:rotate(-135deg); }
+.dp-detail-error-disclosure > summary:focus-visible, .dp-detail-requesters-more > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.dp-detail-error-disclosure > dl { display:grid; grid-template-columns:minmax(110px,max-content) minmax(0,1fr); gap:4px 12px; margin:8px 0 2px; font-size:10px; }
+.dp-detail-error-disclosure dt { color:var(--dp-text-muted, var(--text3)); }
+.dp-detail-error-disclosure dd { margin:0; min-width:0; overflow-wrap:anywhere; unicode-bidi:isolate; color:var(--dp-text-secondary, var(--text2)); font-weight:600; }
+/* Details' REASON row (app.js dpErrorReasonMarkup): the reason, then what it means and the real schedule. */
+.dp-detail-error-reason > .dv { min-width:0; display:grid; gap:3px; word-break:normal; }
+.dp-detail-error-reason-text { font-weight:650; color:var(--dp-text-primary, var(--text)); }
+.dp-detail-error-reason-explanation, .dp-detail-error-reason-schedule { font-size:11px; color:var(--dp-text-secondary, var(--text2)); overflow-wrap:break-word; }
+@media (prefers-reduced-motion: reduce) { .dp-detail-error-disclosure > summary::after, .dp-detail-requesters-more > summary::after { transition:none; } }
+.dp-detail-advanced { margin-top:10px; border-top:1px solid var(--dp-divider, var(--border)); }
+.dp-detail-advanced > summary { padding:10px 2px 6px; color:var(--dp-text-muted, var(--text3)); font-size:11px; font-weight:650; cursor:pointer; }
+.dp-detail-advanced-grid { display:grid; gap:6px; padding:4px 2px 10px; }
+.dp-detail-advanced-grid > div { display:grid; grid-template-columns:minmax(150px,.45fr) minmax(0,1fr); gap:12px; font-size:10px; }
+.dp-detail-advanced-grid span { color:var(--dp-text-muted, var(--text3)); }
+.dp-detail-advanced-grid strong { min-width:0; overflow-wrap:anywhere; color:var(--dp-text-secondary, var(--text2)); font-weight:600; }
+@media (max-width:779px) {
+  /* Stacked: the row leaves the shared tracks and owns its own two columns. */
+  .dp-detail-route-list { display:block; }
+  .dp-detail-route-row { grid-template-columns:24px minmax(0,1fr); }
+  .dp-detail-route-identity, .dp-detail-route-outcome, .dp-detail-route-relation {
+    grid-column:2; text-align:left; justify-self:start; white-space:normal; overflow-wrap:anywhere;
+  }
+  /* Stacked: the rows sit under one another, so the horizontal separation the
+     desktop row declares has nothing to separate. */
+  .dp-detail-route-outcome { margin-inline-start: 0; }
+  .dp-detail-route-outcome-cell { grid-column:2; justify-content:flex-start; flex-wrap:wrap; margin-inline-start: 0; }
+  .dp-detail-advanced-grid > div { grid-template-columns:1fr; gap:2px; }
+  .dp-detail-error-disclosure > dl { grid-template-columns:1fr; gap:2px; }
+  .dp-detail-error-disclosure dd + dt { margin-top:4px; }
+}

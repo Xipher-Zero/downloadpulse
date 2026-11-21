@@ -1,0 +1,487 @@
+import asyncio
+import random
+import time
+import logging
+from core.branding import REPOSITORY_API_URL
+from core.config import get_settings
+from core.logging_utils import sanitize_exception
+from core.performance import async_timer
+from core.version import is_version_newer, normalize_version_tag
+from services.notification_service import NotificationService, reporting_participates
+from transfers.runtime_telemetry import THROUGHPUT_SAMPLE_SECONDS
+from services.maintenance_gate import ApplicationMaintenanceActive
+
+application = None
+
+logger = logging.getLogger("downloadpulse.scheduler")
+_tasks = []
+
+
+async def _jitter_sleep(base_seconds: float, jitter_fraction: float = 0.25) -> None:
+    """Sleep for base_seconds ± jitter_fraction*base_seconds.
+
+    Spreads startup spikes across the configured interval so all loops
+    don't fire simultaneously on container start, reducing burst API load.
+    Minimum sleep: 1 second.
+    """
+    jitter = base_seconds * jitter_fraction * (2 * random.random() - 1)
+    await asyncio.sleep(max(1.0, base_seconds + jitter))
+
+
+def _coerce_int_setting(value, default: int) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _has_reporting_webhook(cfg) -> bool:
+    """Return True when reporting has an effective destination.
+
+    The dedicated-webhook -> primary-Discord fallback is not re-derived here:
+    it belongs to the one notification-boundary owner, so admission and
+    delivery can never disagree about where a report would go.
+    """
+    from services.notification_service import reporting_destination
+
+    return bool(reporting_destination(cfg))
+
+
+def _stats_report_window_hours(cfg) -> int:
+    """Return the configured report window in hours for webhook reporting.
+
+    Bounded by the one notification-boundary owner, so a scheduled report and an
+    operator-triggered one always summarise the same period.
+    """
+    from services.notification_service import report_window_hours
+
+    return report_window_hours(cfg)
+
+
+def _application_storage_ready() -> bool:
+    """Read only in-memory health; never open SQLite to decide whether to open SQLite."""
+    if application is None:
+        return True
+    check = getattr(application, "application_storage_permitted", None)
+    return True if check is None else bool(check())
+
+
+async def sync_status_loop():
+    await application.integrations_started()
+    while True:
+        application.resolution_wakeup.clear()
+        if _application_storage_ready():
+            try:
+                async with async_timer("scheduler.provider_poll"):
+                    await application.resolve_pending()
+            except Exception as exc:
+                logger.error("Resolution cycle failed: %s", sanitize_exception(exc))
+        # A persisted readiness deadline the last cycle held is a wake of this
+        # same cadence; the poll interval stays the upper bound.
+        wait = max(1, application.engine.policy.resource_poll_interval)
+        deadline = application.engine.resolution_deadline
+        if deadline is not None:
+            wait = min(wait, max(0.05, deadline - application.engine.clock()))
+        await _wait_for_work(application.resolution_wakeup, wait)
+
+
+async def _wait_for_work(event, timeout):
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except TimeoutError:
+        pass
+
+
+async def _reconcile_inventory() -> None:
+    try:
+        async with async_timer("scheduler.provider_inventory"):
+            result = await application.reconcile_inventory()
+        if result.get("imported") or result.get("updated"):
+            logger.info(
+                "Provider inventory: %d imported, %d reconciled from %d item(s)",
+                int(result.get("imported") or 0),
+                int(result.get("updated") or 0),
+                int(result.get("snapshot_count") or 0),
+            )
+    except Exception as e:
+        logger.error("Provider inventory sync failed: %s", sanitize_exception(e))
+
+
+async def full_sync_loop():
+    """Observe registered provider inventories without inferring absent ownership.
+
+    The first observation, once integrations have started, is the startup
+    inventory reconciliation; the configured cadence follows it."""
+    await application.integrations_started()
+    if _application_storage_ready():
+        await _reconcile_inventory()
+    cfg = get_settings()
+    interval = max(1, _coerce_int_setting(getattr(cfg, "full_sync_interval_minutes", 5), 5))
+    await _jitter_sleep(interval * 60)  # spread startup across the full interval
+    while True:
+        cfg = get_settings()
+        interval = max(0, _coerce_int_setting(getattr(cfg, "full_sync_interval_minutes", 5), 5))
+        if interval <= 0:
+            await asyncio.sleep(60)
+            continue
+        if not _application_storage_ready():
+            await asyncio.sleep(max(10, interval * 60))
+            continue
+        await _reconcile_inventory()
+        await asyncio.sleep(interval * 60)
+
+
+async def sync_download_clients_loop():
+    await application.integrations_started()
+    while True:
+        application.execution_wakeup.clear()
+        if _application_storage_ready():
+            try:
+                async with async_timer("scheduler.download_client_sync"):
+                    await application.reconcile_executions()
+            except Exception as e:
+                logger.error("Download client sync error: %s", sanitize_exception(e))
+        await _wait_for_work(application.execution_wakeup, max(1, application.execution_poll_interval))
+
+
+async def throughput_sampling_loop():
+    """Observe live writers -- their activity and the one core throughput
+    fact -- at presentation cadence.
+
+    The reconcile cycle keeps its own pace; neither the operator-facing speed
+    nor a writer's running state waits for it
+    (``ApplicationService.observe_live_executions``)."""
+    while True:
+        started = time.monotonic()
+        if _application_storage_ready():
+            try:
+                await application.observe_live_executions()
+            except ApplicationMaintenanceActive:
+                pass                                   # maintenance owns the database meanwhile
+            except Exception as e:
+                logger.error("Throughput sampling error: %s", sanitize_exception(e))
+        await asyncio.sleep(max(0.05, THROUGHPUT_SAMPLE_SECONDS - (time.monotonic() - started)))
+
+
+async def postprocessing_loop():
+    while True:
+        if _application_storage_ready():
+            try:
+                await application.process_postprocessors()
+            except Exception as exc:
+                logger.error("Post-processing cycle failed: %s", sanitize_exception(exc))
+        await asyncio.sleep(2)
+
+
+# How often the backup loop re-evaluates: the bound on how late a due
+# scheduled backup, a changed interval or changed retention takes effect.
+BACKUP_EVALUATION_SECONDS = 300
+
+
+async def backup_loop():
+    """The scheduled backup and retention. Whether a backup is due is decided
+    by the backup owner from its durable record of the last successful
+    scheduled backup, never by this loop's start: a restart is not a backup."""
+    await asyncio.sleep(60)  # readiness, not a due time
+    while True:
+        if _application_storage_ready():
+            try:
+                from services.backup import run_scheduled_backup
+                await run_scheduled_backup()
+            except Exception as e:
+                logger.error("Backup error: %s", sanitize_exception(e))
+        await asyncio.sleep(BACKUP_EVALUATION_SECONDS)
+
+
+async def integration_maintenance_loop():
+    """Run maintenance once integrations have started, then on neutral change
+    signals or cadence."""
+    await application.integrations_started()
+    while True:
+        application.integration_wakeup.clear()
+        if _application_storage_ready():
+            try:
+                await application.maintain_integrations()
+            except Exception as exc:
+                logger.error("Integration maintenance failed: %s", sanitize_exception(exc))
+        await _wait_for_work(application.integration_wakeup, 60)
+
+
+async def application_events_loop():
+    while True:
+        if _application_storage_ready():
+            try:
+                await application.deliver_events()
+            except Exception as exc:
+                logger.warning("Event delivery failed: %s", sanitize_exception(exc))
+        await asyncio.sleep(2)
+
+
+# How often external-client state is maintained (``external.service``):
+# accepted reservations completed from the demand ledger, standing client
+# pauses re-adjudicated against current demand, unsettled jobs refreshed.
+EXTERNAL_MAINTENANCE_SECONDS = 15
+
+
+async def external_maintenance_loop():
+    from external.service import ExternalClients
+
+    await application.integrations_started()
+    while True:
+        if _application_storage_ready():
+            try:
+                await ExternalClients(application).maintain()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.warning("External client maintenance failed: %s", sanitize_exception(exc))
+        await asyncio.sleep(EXTERNAL_MAINTENANCE_SECONDS)
+
+
+async def update_check_loop() -> None:
+    """Check GitHub for new releases every N hours and send a Discord webhook if enabled."""
+    await asyncio.sleep(300)  # 5 min initial delay
+    _last_notified: str = ""
+    while True:
+        # Keep a valid backoff even if settings retrieval itself fails.
+        interval_h = 12
+        try:
+            cfg = get_settings()
+            interval_h = max(0, _coerce_int_setting(
+                getattr(cfg, "update_check_interval_hours", 12), 12
+            ))
+            if interval_h <= 0:
+                await asyncio.sleep(3600)
+                continue
+
+            from core.version import read_version
+            import aiohttp as _aiohttp
+
+            current = read_version()
+            timeout = _aiohttp.ClientTimeout(total=10)
+            async with _aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    f"{REPOSITORY_API_URL}/releases/latest",
+                    headers={"Accept": "application/vnd.github.v3+json"},
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"GitHub API returned {resp.status}")
+                    rel = await resp.json()
+
+            latest = normalize_version_tag(rel.get("tag_name") or "")
+
+            if latest and is_version_newer(latest, current) and latest != _last_notified:
+                logger.info("Update available: %s → %s", current, latest)
+                await NotificationService().client().send_update(
+                    current_version=current,
+                    latest_version=latest,
+                    release_url=rel.get("html_url", ""),
+                    release_notes=(rel.get("body") or "").strip(),
+                )
+                _last_notified = latest
+
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning("update_check_loop error: %s", sanitize_exception(exc))
+
+        await asyncio.sleep(max(3600, interval_h * 3600))
+
+
+async def event_index_loop() -> None:
+    """Keep the event journal's derived search index caught up.
+
+    The journal row itself is committed with the transition it records; only
+    its search index is maintained here, in bounded idempotent batches behind
+    a durable watermark (``db.event_journal.catch_up``). A pass that fails
+    leaves the watermark where it was and is simply repeated; nothing waits on
+    it, and a search reports any rows it does not yet cover."""
+    from db import event_journal
+
+    await asyncio.sleep(15)  # let startup settle; startup never waits on indexing
+    verified_at = None
+    while True:
+        if _application_storage_ready():
+            try:
+                # The index's own structural check, once at start and daily:
+                # a corrupt index is dropped and rebuilt below, never trusted.
+                if verified_at is None or time.monotonic() - verified_at >= 86400:
+                    await event_journal.verify_index()
+                    verified_at = time.monotonic()
+                while await event_journal.catch_up() >= event_journal.INDEX_BATCH:
+                    await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.warning("event_index_loop error: %s", sanitize_exception(exc))
+        await asyncio.sleep(30)
+
+
+async def staged_input_reclaim_loop() -> None:
+    """Reclaim durable submitted input that no live transfer still references.
+
+    The one cleanup owner for staged input. It runs periodically rather than on
+    each terminal transition because a callback per terminal path can be
+    forgotten, and because the path that most needs covering -- a crash between
+    staging an upload and the transfer that owns it becoming durable -- has no
+    callback at all. Survivors are derived from the durable rows, so nothing
+    still needed is ever reclaimed.
+    """
+    await asyncio.sleep(300)  # let startup settle before the first sweep
+    while True:
+        if _application_storage_ready():
+            try:
+                reclaimed = await application.reclaim_staged_input()
+                if reclaimed:
+                    logger.info("staged_input_reclaim_loop: reclaimed %d staged input(s)",
+                                reclaimed)
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.warning("staged_input_reclaim_loop error: %s", sanitize_exception(exc))
+        await asyncio.sleep(3600)
+
+
+async def disk_guard_loop():
+    """Periodically refresh both storage domains, including hard faults at threshold zero."""
+    await asyncio.sleep(10)  # brief startup delay
+    while True:
+        cfg = get_settings()
+        interval = max(10, int(getattr(cfg, "disk_guard_interval_seconds", 60) or 60))
+        try:
+            await application.check_resources()
+        except Exception as e:
+            # The canonical owner normally converts probe failures into state.
+            # This remains a last-resort debug breadcrumb rather than a poll-spam
+            # error path.
+            logger.debug("disk_guard check error: %s", sanitize_exception(e))
+        await asyncio.sleep(interval)
+
+
+def scheduler_running() -> bool:
+    return any(not task.done() for task in _tasks)
+
+
+async def start_scheduler(service=None):
+    global application
+    if service is not None:
+        application = service
+    if application is None:
+        from application.composition import application as default_application
+        application = default_application
+    if scheduler_running():
+        logger.debug("Scheduler already running")
+        return
+    _tasks.clear()
+    _tasks.append(asyncio.create_task(sync_status_loop()))
+    _tasks.append(asyncio.create_task(full_sync_loop()))
+    _tasks.append(asyncio.create_task(sync_download_clients_loop()))
+    _tasks.append(asyncio.create_task(throughput_sampling_loop()))
+    _tasks.append(asyncio.create_task(postprocessing_loop()))
+    _tasks.append(asyncio.create_task(integration_maintenance_loop()))
+    _tasks.append(asyncio.create_task(application_events_loop()))
+    _tasks.append(asyncio.create_task(external_maintenance_loop()))
+    _tasks.append(asyncio.create_task(backup_loop()))
+    _tasks.append(asyncio.create_task(stats_snapshot_loop()))
+    _tasks.append(asyncio.create_task(stats_report_loop()))
+    _tasks.append(asyncio.create_task(personal_stats_report_loop()))
+    _tasks.append(asyncio.create_task(update_check_loop()))
+    _tasks.append(asyncio.create_task(event_index_loop()))
+    _tasks.append(asyncio.create_task(staged_input_reclaim_loop()))
+    _tasks.append(asyncio.create_task(disk_guard_loop()))
+    logger.info("Scheduler started")
+
+
+async def stop_scheduler():
+    tasks = list(_tasks)
+    _tasks.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        waiter = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            # Finish draining cancelled scheduler tasks before propagating caller
+            # cancellation; the wipe route can then safely restart the scheduler.
+            await waiter
+            raise
+
+
+async def stats_snapshot_loop():
+    """Periodically takes a stats snapshot."""
+    await asyncio.sleep(120)  # initial delay
+    while True:
+        cfg = get_settings()
+        interval_min = max(0, _coerce_int_setting(getattr(cfg, "stats_snapshot_interval_minutes", 60), 60))
+        if interval_min <= 0:
+            await asyncio.sleep(300)
+            continue
+        await asyncio.sleep(interval_min * 60)
+        if not _application_storage_ready():
+            continue
+        try:
+            from services.stats import take_stats_snapshot
+            await take_stats_snapshot()
+        except Exception as e:
+            logger.error("Stats snapshot error: %s", sanitize_exception(e))
+
+
+async def stats_report_loop():
+    """Periodically sends a reporting webhook for the configured time window."""
+    await asyncio.sleep(180)
+    while True:
+        cfg = get_settings()
+        interval_h = max(0, _coerce_int_setting(getattr(cfg, "stats_report_interval_hours", 0), 0))
+        window_h = _stats_report_window_hours(cfg)
+        # Three separate facts, all of which must hold for a SCHEDULED report:
+        # the section takes part at all, it has an automatic cadence, and it has
+        # somewhere to send. None of them is derived from another.
+        if not reporting_participates(cfg) or interval_h <= 0 or not _has_reporting_webhook(cfg):
+            await asyncio.sleep(300)
+            continue
+        await asyncio.sleep(max(300, interval_h * 3600))
+        if not _application_storage_ready():
+            continue
+        try:
+            from services.stats import send_stats_report
+            await send_stats_report(hours=window_h, triggered_by="schedule")
+        except Exception as e:
+            logger.error("Stats report error: %s", sanitize_exception(e))
+
+
+async def personal_stats_report_loop():
+    """Every User's own scheduled report, from ONE loop.
+
+    Each account keeps its own cadence, window and destination
+    (``services.account_notifications.due_reports``): this pass only finds the
+    reports that are due -- a bounded number per pass, oldest first -- and
+    sends each, owner-scoped, through the one report generator and transport.
+    No task or timer exists per account, and the global schedule above is
+    untouched."""
+    await asyncio.sleep(180)
+    while True:
+        await asyncio.sleep(300)
+        if not _application_storage_ready():
+            continue
+        try:
+            from auth.accounts import owned_account_ids
+            from services import account_notifications
+            from services.notification_service import report_window_hours, reporting_destination
+            from services.stats import send_stats_report
+
+            for account_id, settings in await account_notifications.due_reports():
+                # The cadence restarts whatever the outcome: a dead webhook is
+                # retried at the next interval, never in a tight loop.
+                await account_notifications.mark_reported(account_id)
+                try:
+                    await send_stats_report(
+                        hours=report_window_hours(settings), triggered_by="schedule",
+                        owner_ids=await owned_account_ids(account_id),
+                        sender=account_notifications.sender(settings, reporting_destination(settings)))
+                except Exception as e:
+                    logger.error("Personal stats report error: %s", sanitize_exception(e))
+        except Exception as e:
+            logger.error("Personal stats report pass error: %s", sanitize_exception(e))

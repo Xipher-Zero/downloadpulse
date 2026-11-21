@@ -1,0 +1,120 @@
+"""TorBox in Settings and Provider Status: registrations of existing owners.
+
+Static contracts over the served sources. The TorBox card is the Real-Debrid
+card's structure through the one account-connection owner; its premium facts
+are interpreted by the one premium-account owner; Provider Status discovers it
+from metadata alone.
+"""
+from __future__ import annotations
+
+import re
+
+from i18n_node import english, says
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "frontend" / "static"
+SETTINGS_JS = (STATIC / "ui-settings-page.js").read_text(encoding="utf-8")
+PREMIUM_JS = (STATIC / "ui-premium-account-status.js").read_text(encoding="utf-8")
+STATUS_JS = (STATIC / "ui-provider-status.js").read_text(encoding="utf-8")
+PAGE_CSS = (STATIC / "ui-settings-page.css").read_text(encoding="utf-8")
+CHROME_CSS = (STATIC / "ui-settings-chrome.css").read_text(encoding="utf-8")
+
+
+def card(identity: str) -> str:
+    start = SETTINGS_JS.index(f"providerCard('{identity}',")
+    return SETTINGS_JS[start:SETTINGS_JS.index("});", start)]
+
+
+def test_the_supplied_icon_is_the_only_torbox_mark():
+    assert (STATIC / "icons" / "providers" / "torbox.svg").is_file()
+    assert set(re.findall(r"/icons/providers/torbox[^\"' )]*", SETTINGS_JS)) == {"/icons/providers/torbox.svg"}
+    assert sorted(path.name for path in (STATIC / "icons" / "providers").glob("torbox*")) == ["torbox.svg"]
+    assert ".dp-settings-provider-chip--torbox" in CHROME_CSS
+
+
+def test_the_card_is_the_real_debrid_structure_through_one_connection_owner():
+    torbox, realdebrid = card("torbox"), card("realdebrid")
+    for text in (torbox, realdebrid):
+        assert 'class="dp-settings-account-connection"' in text
+        assert "${providerAdditional(tuningCells(" in text           # the one Additional Settings emitter
+        assert "headerAction: providerTestAction(" in text
+        assert "PROVIDER_STATUS_SPACER" not in text and "dp-settings-group-separator" not in text
+    assert "deviceConnectionMarkup('torbox')" in torbox
+    assert "deviceConnectionMarkup('realdebrid')" in realdebrid
+    # One island grammar, no provider-named copy of it.
+    assert "dp-settings-realdebrid-" not in SETTINGS_JS + PAGE_CSS
+    assert "dp-settings-torbox-" not in SETTINGS_JS + PAGE_CSS
+    assert SETTINGS_JS.count("function deviceConnectionMarkup(") == 1
+
+
+def test_the_connection_language_is_account_oriented_and_shared():
+    owner = SETTINGS_JS[SETTINGS_JS.index("const DEVICE_ACCOUNTS"):SETTINGS_JS.index("function renderDeviceConnection")]
+    assert "torbox: {" in owner and "name: 'TorBox'" in owner
+    # 1.0.14: the words are the catalog's; the owner names their keys.
+    for key, phrase in (("settings.account.heading", "Account Connection"), ("settings.account.connect", "Connect {provider}"),
+                        ("settings.account.connected_as", "Connected as {who}"), ("settings.account.disconnect", "Disconnect")):
+        assert f"'{key}'" in owner and english(key) == phrase, key
+    for forbidden in ("API token", "api_token\"", "Bearer"):
+        assert forbidden not in owner
+
+
+def test_use_torbox_before_usenet_is_one_precise_interactive_persisted_toggle():
+    torbox = card("torbox")
+    assert "tuningToggle('torbox_use_before_usenet', say('settings.provider.before_usenet', {provider: 'TorBox'})," in torbox
+    assert "say('settings.provider.before_usenet_hint', {provider: 'TorBox'})" in torbox
+    assert english("settings.provider.before_usenet_hint").replace("{provider}", "TorBox") == (
+        "Try TorBox first when resolving NZB downloads. Your configured Usenet service remains available as a fallback.")
+    assert "torbox_use_before_usenet: {scope: 'integration:torbox', option: 'use_before_usenet', commit: 'immediate'}" \
+        in SETTINGS_JS
+    # F: never disabled for a plan; the canonical mutation refuses and the
+    # generic immediate path rolls back and toasts the requirement.
+    assert "option_availability" not in torbox and "disabled:" not in torbox and "usenet_enabled" not in SETTINGS_JS
+    assert "'torbox'" in SETTINGS_JS[SETTINGS_JS.index("const INTEGRATION_SCOPES"):][:200]
+
+
+def test_prepare_backup_torrents_is_one_precise_persisted_toggle_off_by_default():
+    torbox = card("torbox")
+    assert "tuningToggle('torbox_prepare_backup_torrents', say('settings.provider.prepare_backup')," in torbox
+    assert english("settings.provider.prepare_backup") == "Prepare Backup Torrents"
+    assert says(torbox, "Also add torrents to TorBox as backup sources while another provider delivers them. "
+                        "Uses TorBox create limits and active slots.")
+    assert "torBoxOf(s).prepare_backup_torrents === true" in torbox        # absent reads as off
+    assert ("torbox_prepare_backup_torrents: {scope: 'integration:torbox', option: 'prepare_backup_torrents', "
+            "commit: 'immediate'}") in SETTINGS_JS
+    # The one control lives in TorBox's own Additional Settings, nowhere else.
+    # TorBox's control: its mapping key, its toggle key and its value read -- once each.
+    assert SETTINGS_JS.count("torbox_prepare_backup_torrents") == 2
+    assert SETTINGS_JS.count("torBoxOf(s).prepare_backup_torrents") == 1
+    for jargon in ("standby", "speculative", "prewarm"):
+        assert jargon not in torbox.casefold()
+
+
+def test_maximum_active_torrents_is_empty_unless_the_operator_sets_a_ceiling():
+    torbox = card("torbox")
+    assert "input('torbox_max_active_torrents', say('settings.provider.max_active'), torBoxOf(s).max_active_torrents ?? ''," \
+        in torbox
+    assert english("settings.provider.max_active") == "Maximum Active Torrents"
+    assert "placeholder: say('settings.provider.max_placeholder')" in torbox and "min: 1, max: 10" in torbox
+    assert english("settings.provider.max_placeholder") == "Max"
+    # Empty commits null -- following the plan -- so rendering never stores a value.
+    assert ("torbox_max_active_torrents: {scope: 'integration:torbox', option: 'max_active_torrents', blank: null}"
+            in SETTINGS_JS)
+    for jargon in ("standby", "speculative", "reclaim"):
+        assert jargon not in torbox.casefold()
+
+
+def test_one_premium_owner_interprets_torbox_and_words_it_once():
+    # The one premium owner reads TorBox's account exactly as every other's:
+    # from the neutral account truth, never a TorBox-keyed interpreter.
+    assert "torbox" not in PREMIUM_JS.casefold()
+    assert PREMIUM_JS.count("function premiumAccount(") == 1 and "status?.account" in PREMIUM_JS
+    assert PREMIUM_JS.count("function describe(") == 1
+    # The card states the shared owner's wording and tier, never its own.
+    expiry = SETTINGS_JS[SETTINGS_JS.index("function accountExpiry("):SETTINGS_JS.index("function accountIsland(")]
+    assert "owner.describe(premium.until, premium.tier)" in expiry
+    assert "86400000" not in SETTINGS_JS and "days remaining" not in SETTINGS_JS
+
+
+def test_provider_status_discovers_torbox_from_metadata_alone():
+    assert "torbox" not in STATUS_JS.casefold()

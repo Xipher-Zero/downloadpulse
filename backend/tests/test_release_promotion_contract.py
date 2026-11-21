@@ -1,0 +1,179 @@
+"""Exact-SHA release promotion and browser dependency reproducibility contracts."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = ROOT / ".github" / "workflows"
+BROWSER = ROOT / "frontend" / "browser"
+
+
+def _workflow(name: str) -> str:
+    return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def test_browser_dependency_graph_is_lockfile_reproducible() -> None:
+    package = json.loads((BROWSER / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((BROWSER / "package-lock.json").read_text(encoding="utf-8"))
+
+    assert package["devDependencies"]["@playwright/test"] == "1.62.1"
+    assert lock["lockfileVersion"] == 3
+    assert lock["packages"][""]["devDependencies"] == package["devDependencies"]
+    assert lock["packages"]["node_modules/@playwright/test"]["version"] == "1.62.1"
+    assert lock["packages"]["node_modules/playwright"]["version"] == "1.62.1"
+    assert lock["packages"]["node_modules/playwright-core"]["version"] == "1.62.1"
+
+    workflow = _workflow("browser-runtime.yml")
+    assert "npm ci --ignore-scripts" in workflow
+    assert "npm install --ignore-scripts" not in workflow
+    assert "npm audit --audit-level=high" in workflow
+
+
+def test_image_only_publishes_immutable_sha_tags() -> None:
+    workflow = _workflow("image.yml")
+
+    assert "type=raw,value=sha-${{ github.sha }}" in workflow
+    assert "format=short" not in workflow
+    assert "type=raw,value=latest" not in workflow
+    assert "type=ref,event=tag" not in workflow
+    assert "Immutable publication must generate exactly one tag" in workflow
+    assert "Publication tag must be exactly" in workflow
+
+
+def test_image_publishes_and_verifies_canonical_index_annotations() -> None:
+    workflow = _workflow("image.yml")
+
+    expected = (
+        "index:org.opencontainers.image.title=DownloadPulse: Universal Transfer Manager",
+        "index:org.opencontainers.image.description=Universal transfer orchestration for debrid services and Usenet plus direct network and media sources with managed download engines",
+        "index:org.opencontainers.image.version=${{ steps.version.outputs.version }}",
+        "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}",
+        "index:org.opencontainers.image.revision=${{ github.sha }}",
+        "index:org.opencontainers.image.licenses=GPL-2.0-or-later",
+    )
+    for annotation in expected:
+        assert annotation in workflow
+
+    assert "annotations: ${{ steps.meta.outputs.annotations }}" not in workflow
+    assert "GENERATED_ANNOTATIONS:" not in workflow
+    assert "Published OCI index title mismatch" in workflow
+    assert "Published OCI index description mismatch" in workflow
+    assert "Published OCI index version mismatch" in workflow
+    assert "Published OCI index revision mismatch" in workflow
+    assert "Published OCI index source mismatch" in workflow
+    assert "Published OCI index license mismatch" in workflow
+
+
+def test_security_qualification_consumes_exact_published_platform_digests() -> None:
+    workflow = _workflow("container-security.yml")
+
+    assert 'source_ref="${IMAGE_NAME}:sha-${GITHUB_SHA}"' in workflow
+    assert "GITHUB_SHA:0:7" not in workflow
+    assert 'index_revision" != "$GITHUB_SHA"' in workflow
+    assert "docker build --pull" not in workflow
+    assert "docker build " not in workflow
+    assert "docker/build-push-action" not in workflow
+    assert 'platform.architecture == "amd64"' in workflow
+    assert 'platform.architecture == "arm64"' in workflow
+    assert 'arch: [amd64, arm64]' in workflow
+    assert "${{ env.IMAGE_NAME }}@${{ env.CHILD_DIGEST }}" in workflow
+    assert "Block fixable high or critical vulnerabilities on exact child" in workflow
+    assert "actions/attest@" in workflow
+    assert "subject-digest: ${{ needs.identity.outputs.manifest_digest }}" in workflow
+    assert "container-security/v1" in workflow
+
+
+def test_runtime_qualification_consumes_exact_children_without_rebuild() -> None:
+    workflow = _workflow("candidate-runtime-qualification.yml")
+
+    assert 'source_ref="${IMAGE_NAME}:sha-${GITHUB_SHA}"' in workflow
+    assert "GITHUB_SHA:0:7" not in workflow
+    assert 'index_revision" != "$GITHUB_SHA"' in workflow
+    assert "docker build " not in workflow
+    assert "docker/build-push-action" not in workflow
+    assert 'platform.architecture == "amd64"' in workflow
+    assert 'platform.architecture == "arm64"' in workflow
+    assert 'arch: [amd64, arm64]' in workflow
+    assert "docker/setup-qemu-action@" in workflow
+    assert 'docker pull --platform "linux/${{ matrix.arch }}" "$image"' in workflow
+    assert '--platform "linux/${{ matrix.arch }}"' in workflow
+    assert 'uid" = "99"' in workflow
+    assert 'gid" = "100"' in workflow
+    assert "actions/attest@" in workflow
+    assert "subject-digest: ${{ needs.identity.outputs.manifest_digest }}" in workflow
+    assert "candidate-runtime/v1" in workflow
+
+
+def test_mutable_promotion_requires_exact_sha_workflows_and_signed_digest_evidence() -> None:
+    workflow = _workflow("release-promotion.yml")
+
+    for required in (
+        '"Tests"',
+        '"Browser Runtime"',
+        '"CodeQL"',
+        '"Container Security"',
+        '"Candidate Runtime Qualification"',
+        '"Image"',
+    ):
+        assert required in workflow
+
+    assert "head_sha=${CANDIDATE_SHA}" in workflow
+    assert ".head_sha == $sha" in workflow
+    assert '.status == "completed"' in workflow
+    assert '.conclusion == "success"' in workflow
+    assert 'source_tag=sha-${candidate_sha}' in workflow
+    assert "candidate_sha:0:7" not in workflow
+    assert 'platform.architecture == "amd64"' in workflow
+    assert 'platform.architecture == "arm64"' in workflow
+    assert 'image_revision" != "$CANDIDATE_SHA"' in workflow
+    assert "gh attestation verify" in workflow
+    assert "container-security/v1" in workflow
+    assert "candidate-runtime/v1" in workflow
+    assert '$p.manifest_digest == $manifest' in workflow
+    assert '$p.platforms["linux/amd64"].digest == $amd64' in workflow
+    assert '$p.platforms["linux/arm64"].digest == $arm64' in workflow
+    assert "QUALIFIED_DIGEST == PROMOTED_SOURCE_DIGEST" in workflow
+    assert 'docker buildx imagetools create --tag "$target_ref" "$source_ref"' in workflow
+    assert 'target_digest" != "$SOURCE_DIGEST"' in workflow
+    assert "docker build " not in workflow
+    assert "docker/build-push-action" not in workflow
+
+
+def test_release_tag_pushes_run_every_independent_qualifier() -> None:
+    for name in (
+        "tests.yml",
+        "browser-runtime.yml",
+        "codeql.yml",
+        "container-security.yml",
+        "candidate-runtime-qualification.yml",
+        "image.yml",
+    ):
+        workflow = _workflow(name)
+        assert "- 'v*'" in workflow, name
+        assert "- 'internal-v*'" in workflow, name
+
+
+def test_release_promotion_is_the_only_release_tag_owner() -> None:
+    # Release tags (latest, v*, internal-v*) are Release Promotion's alone. The
+    # one other mutable tag of the application image, the 1.0.14-testing
+    # development alias, is Testing Alias's (test_testing_alias_contract); the
+    # package workflows tag only their own downloadpulse-aria2/-ffmpeg images.
+    writers = {path.name for path in WORKFLOWS.glob("*.yml")
+               if "imagetools create" in path.read_text(encoding="utf-8")}
+    assert writers == {"release-promotion.yml", "testing-alias.yml", "aria2-package.yml", "ffmpeg-package.yml"}
+    for name in ("aria2-package.yml", "ffmpeg-package.yml"):
+        assert f"IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse-{name.split('-')[0]}" in _workflow(name)
+    promotion = _workflow("release-promotion.yml")
+    assert 'target_tag="latest"' in promotion
+    assert 'target_tag="$GITHUB_REF_NAME"' in promotion
+    assert "dry_run=\"false\"" in promotion
+    assert "No mutable image tag was changed." in promotion
+
+    for path in WORKFLOWS.glob("*.yml"):
+        if path.name == "release-promotion.yml":
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "type=raw,value=latest" not in text, path.name

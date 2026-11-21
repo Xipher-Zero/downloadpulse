@@ -1,0 +1,486 @@
+"""Configuration metadata shared by modular integration definitions."""
+import hashlib
+import hmac
+import json
+import secrets
+from dataclasses import dataclass, replace
+from typing import Callable, Literal, Optional, Protocol, runtime_checkable
+
+from pydantic import BaseModel, Field
+
+from transfers.models import DiscoveryDepth
+
+# THE operator Directory Depth vocabulary, for every source whose provider
+# lets the operator choose how far below a submitted folder its files are
+# collected: the folder itself, one to three levels of subfolders, or all of
+# them -- each exactly one neutral discovery depth. A provider owns its own
+# setting and default; the values and their meaning are declared once, here.
+DirectoryDepthSetting = Literal["current", "1", "2", "3", "all"]
+DIRECTORY_DEPTHS = {
+    "current": DiscoveryDepth.CURRENT,
+    "1": DiscoveryDepth.of(1),
+    "2": DiscoveryDepth.of(2),
+    "3": DiscoveryDepth.of(3),
+    "all": DiscoveryDepth.UNLIMITED,
+}
+
+
+class IntegrationSettings(BaseModel):
+    enabled: bool = True
+    priority: int = 0
+    options: dict = Field(default_factory=dict, repr=False)
+    clear_secrets: list[str] = Field(default_factory=list, exclude=True)
+    # Durable verification evidence: ``{subject id: fingerprint}``, one entry
+    # per independently testable unit of this namespace whose CURRENT SAVED
+    # verification-relevant configuration a successful Test has covered.
+    #
+    # It lives here, with the canonical configuration it describes, because
+    # that is the only place it can stay true: a reload must not lose it, and a
+    # configuration change must not leave it standing. Current truth is
+    # DERIVED -- does a stored fingerprint still describe what is saved? --
+    # rather than a second flag somebody has to remember to clear.
+    #
+    # It is internal. ``public_integrations`` publishes only the derived
+    # ``verified`` fact; a fingerprint is never served, logged or displayed.
+    verification: dict[str, str] = Field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class VerificationSubject:
+    """One independently testable unit of an integration's configuration.
+
+    ``material`` is EXACTLY what that integration's Test exercises -- no more,
+    so unrelated tuning cannot revoke a proof, and no less, so a proof cannot
+    survive a change to something it actually depended on. Only the integration
+    whose Test it is can say what that material is.
+
+    ``required`` is participation: a unit that cannot take part (a disabled
+    news server) keeps its evidence but never blocks the aggregate answer.
+    """
+    id: str
+    material: dict
+    required: bool = True
+
+
+# The process-local key the transient Test -> Save proof is minted under.
+#
+# The existing UI can test a credential before it is saved, so a successful
+# Test of a draft has to be carryable into the Save that promotes it. What the
+# browser carries is an opaque HMAC of the fingerprint the SERVER computed for
+# what the SERVER actually tested; the server then re-derives the fingerprint
+# from the configuration it has just saved and accepts the proof only for that.
+# A browser can therefore never assert that something is verified, only present
+# evidence that the server itself produced.
+#
+# Deliberately not persisted and deliberately not shared: a proof is a
+# short-lived carrier, never durable truth. Durable truth is the fingerprint.
+_PROOF_KEY = secrets.token_bytes(32)
+
+# How many times a Test of a given material has FAILED, which is what makes a
+# proof supersedable rather than eternal.
+#
+# A proof says "this server tested this material and it worked". The newest
+# truth about a material wins, so a failure has to invalidate every proof
+# minted for it beforehand -- otherwise:
+#
+#     successful Test A  -> proof P
+#     failed Test A      -> durable evidence retired
+#     Save A carrying P  -> P still validates -> Verified restored
+#
+# and a configuration the server has just proven broken could advertise itself
+# as verified. Binding the proof to the material's current failure count makes
+# every earlier proof stop validating the moment that count moves, and a proof
+# minted by the NEXT successful Test validates again.
+#
+# Keyed by fingerprint, so superseding one material never disturbs another.
+# It grows only on failure, which is operator-driven and rare, and it is
+# process-local for the same reason the key is: a proof is never durable truth.
+_PROOF_EPOCHS: dict[str, int] = {}
+
+
+def verification_fingerprint(material) -> str:
+    """A deterministic, order-independent digest of verification material.
+
+    Never reversible to the credential it covers, never published, and never
+    compared against anything but another fingerprint of the same shape.
+    """
+    payload = json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def verification_proof(fingerprint: str) -> str:
+    """The opaque token a successful Test hands back for what it tested.
+
+    Bound to the material AND to how many times that material has since been
+    proven broken, so a proof cannot outlive a later contradicting failure.
+    """
+    fingerprint = str(fingerprint)
+    carrier = f"{fingerprint}:{_PROOF_EPOCHS.get(fingerprint, 0)}"
+    return hmac.new(_PROOF_KEY, carrier.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def supersede_verification_proofs(fingerprint: str) -> None:
+    """Retire every proof minted for this material before now.
+
+    Called when a Test of the material FAILS -- whether or not that material is
+    the saved configuration, because a proof is evidence about material, not
+    about whichever namespace happens to hold it.
+    """
+    fingerprint = str(fingerprint)
+    _PROOF_EPOCHS[fingerprint] = _PROOF_EPOCHS.get(fingerprint, 0) + 1
+
+
+def verification_proves(proof, fingerprint: str) -> bool:
+    """Whether ``proof`` is this server's own CURRENT attestation of ``fingerprint``."""
+    return hmac.compare_digest(str(proof or ""), verification_proof(fingerprint))
+
+
+class IntegrationGroupSettings(BaseModel):
+    """One aggregate participation gate over a family of integrations.
+
+    A group is identified by the ``presentation.status_group`` its members
+    already declare, so nothing here holds a second list of who belongs to
+    what. The gate is a gate and not a bulk editor: it never appears in, and
+    never writes, a member's own ``integrations.<id>`` namespace.
+
+    Defaults to enabled, so a configuration written before groups existed
+    behaves exactly as it did.
+    """
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class IntegrationEnvironment:
+    repository: object
+    download_root: str
+    # Neutral application commands (pause/resume/cancel) an integration-owned
+    # administration surface may forward operator intent to.
+    commands: object = None
+    # The neutral durable-input owner (``transfers.staged_input``). An
+    # integration whose request class carries a large submitted payload borrows
+    # it to READ that payload; it owns no part of its lifecycle.
+    staged_input: object = None
+    # The operator's global Preferred Subtitle Language (``AppSettings
+    # .preferred_subtitle_language``): owned by the global Downloads settings,
+    # only ever READ by an integration that acquires subtitled media.
+    preferred_subtitle_language: str = "en"
+    # A connected browser's per-job video sign-in (``external.browser_cookies``):
+    # READ only, by the integration that runs yt-dlp, through ``current()`` (an
+    # extraction inside a resolution unit) and ``for_attempt(id)`` (an
+    # acquisition). None: no integration ever receives any.
+    session_cookies: object = None
+
+
+@runtime_checkable
+class IntegrationLifecycle(Protocol):
+    """A managed integration component driven by the application lifecycle."""
+
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    async def maintain(self) -> None: ...
+
+
+@runtime_checkable
+class AccountRefresh(Protocol):
+    """A lifecycle component that owns account truth and can fetch it on
+    explicit operator request (``integrations.account_entitlement``). Optional:
+    an integration without one has nothing to refresh."""
+
+    async def refresh_now(self) -> object: ...
+
+
+def lifecycle_components(implementation) -> tuple:
+    """Every lifecycle component one registered implementation owns."""
+    lifecycle = getattr(implementation, "lifecycle", None)
+    components = lifecycle if isinstance(lifecycle, tuple) else (lifecycle,)
+    return tuple(component for component in components if isinstance(component, IntegrationLifecycle))
+
+
+@runtime_checkable
+class ManagedIntegration(Protocol):
+    """An integration implementation that owns a lifecycle component (for
+    example a managed daemon), or a tuple of independent ones. Discovered
+    generically by composition."""
+
+    lifecycle: IntegrationLifecycle | tuple[IntegrationLifecycle, ...]
+
+
+@dataclass(frozen=True)
+class ConfigurationApplication:
+    """Outcome of applying canonical configuration to a native integration
+    service.
+
+    ``ok`` is proven truth, never optimism: a save whose native application did
+    not land must report ``False`` so the operator is not told the service is
+    configured when it is not.
+    """
+    ok: bool
+    detail: str = ""
+    failures: tuple[str, ...] = ()
+
+    def public(self) -> dict:
+        return {"applied": self.ok, "detail": self.detail, "failures": list(self.failures)}
+
+
+@runtime_checkable
+class ConfigurableIntegration(Protocol):
+    """An integration whose canonical configuration must be pushed to its own
+    out-of-core implementation before the integration is operational.
+
+    "Out-of-core" is about the transfer core, not about ownership: such a
+    service may be an operator-run endpoint or one DownloadPulse bundles, starts
+    and owns outright. The seam is identical either way, which is why nothing
+    here names a service or assumes who runs it.
+
+    Discovered generically by composition, exactly like the lifecycle and
+    administration seams: the canonical namespace an implementation applies is
+    named by the implementation itself, never by composition or the API.
+
+    The invariant is ONE-WAY AUTHORITY, not operator-only invocation:
+
+        DownloadPulse canonical desired state -> native integration service
+
+    and never the reverse. Service-side state is never imported back as
+    canonical configuration, and this is not a synchronization loop.
+
+    Application may be driven by EITHER an explicit canonical configuration
+    mutation OR lifecycle convergence after the native service starts or
+    restarts -- a service that came up with none of the canonical state must
+    be given it, or it would run on stale or empty configuration until an
+    operator happened to save again.
+    """
+
+    configuration_namespace: str
+
+    async def apply_configuration(self) -> ConfigurationApplication: ...
+
+
+@runtime_checkable
+class AdministeredIntegration(Protocol):
+    """An integration implementation exposing its own administration surface
+    for integration-specific API/UI endpoints. Never used by neutral core
+    runtime operations."""
+
+    administration: object
+
+
+@dataclass(frozen=True)
+class IntegrationPresentation:
+    """Safe, provider-owned presentation facts for neutral UI surfaces.
+
+    Operational state is never inferred from configured state. Providers either
+    expose a status endpoint or explicitly declare a local static state.
+    """
+
+    status_name: Optional[str] = None
+    premium: bool = False
+    status_endpoint: Optional[str] = None
+    static_status: Optional[str] = None
+    display_order: int = 100
+    status_group: Optional[str] = None
+    status_group_label: Optional[str] = None
+    # Which acquisition tier this integration belongs to, and the operator-facing
+    # heading for it. Neutral, integration-owned, and deliberately NOT derivable
+    # from ``premium``: a named premium account service and an aggregate premium
+    # acquisition family are both premium, and the status panel must still tell
+    # them apart. A renderer groups by these; it never names an integration.
+    # Tier ORDER is not declared here -- it falls out of ``display_order``, so
+    # there is exactly one ordering authority.
+    status_tier: Optional[str] = None
+    status_tier_label: Optional[str] = None
+    # An ACCOUNT-tiered integration's tier is not static: its status surface
+    # publishes the current account's neutral service class, and while that
+    # class is standard the integration presents under this tier instead (and
+    # is not premium). Absent means the tier above is the whole truth: an
+    # inherently static service class.
+    standard_status_tier: Optional[str] = None
+    standard_status_tier_label: Optional[str] = None
+    # How ONE transfer names and themes this integration on its provider badge
+    # when that differs from the integration's own name (a plural family name
+    # such as "Media Downloads" badges a single transfer as "Media Download"),
+    # and the badge's theme token. Absent: the badge is the integration's name
+    # in the shared neutral badge treatment, exactly as before.
+    transfer_label: Optional[str] = None
+    transfer_theme: Optional[str] = None
+    # The acquisition method this integration's deliveries count under in
+    # Statistics -> Transfer Methods: how material actually arrived, never how
+    # it was submitted. Integrations of one method share it (every debrid
+    # service is "Debrid"). Absent: the integration delivers no material of its
+    # own -- a descriptor such as Metalink only names sources that other
+    # integrations deliver -- and a delivery recorded against it is unattributed.
+    acquisition_method: Optional[str] = None
+    # Operator wording for this integration's own native error codes whose
+    # normalized category alone would not say what happened:
+    # ``(native code, reason, explanation)``. Details shows it beside the
+    # error; nothing else reads it, and it never changes how an error is
+    # classified or recovered.
+    error_reasons: tuple[tuple[str, str, str], ...] = ()
+
+    def error_reason(self, native_code: str | None) -> tuple[str, str] | None:
+        """``(reason, explanation)`` declared for ``native_code``, or ``None``."""
+        return next(((reason, explanation) for code, reason, explanation in self.error_reasons
+                     if code == native_code), None)
+
+    def public(self) -> dict:
+        return {
+            "status_name": self.status_name,
+            "premium": self.premium,
+            "status_endpoint": self.status_endpoint,
+            "static_status": self.static_status,
+            "display_order": self.display_order,
+            "status_group": self.status_group,
+            "status_group_label": self.status_group_label,
+            "status_tier": self.status_tier,
+            "status_tier_label": self.status_tier_label,
+            "standard_status_tier": self.standard_status_tier,
+            "standard_status_tier_label": self.standard_status_tier_label,
+            "transfer_label": self.transfer_label,
+            "transfer_theme": self.transfer_theme,
+        }
+
+
+@dataclass(frozen=True)
+class EntitlementOption:
+    """An option that may be ``True`` only while the connected account is
+    entitled to ``request_types``. Declared by the integration;
+    ``requirement`` is its own short reason (the plan or account it needs),
+    returned wherever turning it on is refused. The account owner's own truth
+    decides availability (``integrations.account_entitlement``)."""
+    option: str
+    request_types: frozenset[str]
+    requirement: str
+
+
+@dataclass(frozen=True)
+class IntegrationDefinition:
+    id: str
+    kind: str
+    name: str
+    options_model: type[BaseModel]
+    factory: Callable
+    secret_fields: frozenset[str] = frozenset()
+    # Pre-canonical flat configuration names -> option names. Migration INPUT
+    # only (``integrations.configuration.migrate_legacy_settings``).
+    legacy_fields: tuple[tuple[str, str], ...] = ()
+    # Optional integration-owned adjustment of option values that were taken
+    # from legacy input: ``(legacy_options, existing_options) -> legacy_options``.
+    legacy_upgrade: Optional[Callable[[dict, dict], dict]] = None
+    # ``(former option, option)`` pairs: an option of this integration's own
+    # canonical namespace that was renamed. Not legacy flat input -- the name
+    # evolved inside an already-canonical namespace -- so it is applied where
+    # every namespace is validated (``integrations.configuration
+    # .normalize_settings``): the former name's value moves to the new name
+    # unless the new name is already present, and is never written again.
+    renamed_options: tuple[tuple[str, str], ...] = ()
+    # Whether a persisted option this integration's schema refuses (a value an
+    # earlier version accepted) is reset to its schema default at load, with a
+    # diagnostic (``integrations.configuration.clamp_persisted_namespaces``),
+    # rather than failing the load. Opt-in: every other namespace keeps
+    # numeric clamping alone.
+    reset_invalid_options: bool = False
+    ownership_fields: frozenset[str] = frozenset()
+    required_options: frozenset[str] = frozenset()
+    # Whether this integration participates before an operator has ever said
+    # so. An integration that requires explicit opt-in declares ``False``; it
+    # applies only when neither persisted state nor the request sets ``enabled``.
+    default_enabled: bool = True
+    # What this integration's own Test actually proves, as the verification
+    # subjects of one saved namespace: ``(options model) -> (VerificationSubject, ...)``.
+    # Declared by the integration, because only it knows what its Test
+    # exercises; generic configuration code never branches on an integration.
+    # ``None`` means this integration has no verification concept at all.
+    verification_subjects: Optional[Callable[[BaseModel], tuple]] = None
+    # Every durable provider/executor identity this configuration owner covers.
+    # A paired integration registers more than one implementation, so its
+    # configuration owns more than one durable identity; leaving this empty
+    # means the integration owns exactly its own id.
+    durable_identities: frozenset[str] = frozenset()
+    presentation: IntegrationPresentation = IntegrationPresentation()
+    # Options an operator may turn on only while the connected account is
+    # entitled to what they offer: never canonical once account truth proves
+    # otherwise (``ApplicationService.validate_configuration`` refuses the
+    # change; ``converge_entitled_options`` turns a stale one off).
+    entitlement_options: tuple[EntitlementOption, ...] = ()
+
+    @property
+    def owned_identities(self) -> frozenset[str]:
+        """The identities configuration-ownership checks must fence against.
+
+        Work is durably recorded under a provider id OR an executor id, so a
+        paired integration whose executor carries a different identity would
+        otherwise have its live executions invisible to the fence.
+        """
+        return self.durable_identities or frozenset({self.id})
+
+    def build(self, settings: IntegrationSettings, environment: IntegrationEnvironment):
+        """Construct this integration's implementation(s) from one namespace.
+
+        A ``provider_executor`` integration is one product whose provider and
+        executor halves are governed by a SINGLE canonical enabled state --
+        there is no second boolean to keep synchronized. Its factory returns a
+        tuple and the same ``enabled``/``priority`` is applied to every half.
+        """
+        built = self.factory(self.options_model(**settings.options), environment)
+        implementations = built if isinstance(built, tuple) else (built,)
+        for implementation in implementations:
+            implementation.descriptor = replace(implementation.descriptor,
+                enabled=implementation.descriptor.enabled and settings.enabled, priority=settings.priority)
+        return built
+
+    def public_options(self, options: dict):
+        """Safe public projection of a namespace.
+
+        An options model that owns nested secrets (for example a collection of
+        credentialed servers) declares its own ``public()`` projection; models
+        without one keep the plain dump. Top-level ``secret_fields`` are then
+        redacted either way, so a secret can never reach a public surface.
+        """
+        model = self.options_model(**options)
+        projector = getattr(model, "public", None)
+        result = projector() if callable(projector) else model.model_dump()
+        for key in self.secret_fields:
+            result[key + "_configured"] = bool(result.get(key))
+            result[key] = ""
+        return result
+
+    def verification_fingerprints(self, options: dict) -> dict:
+        """``{subject id: (fingerprint, required)}`` for one saved namespace."""
+        if self.verification_subjects is None:
+            return {}
+        return {subject.id: (verification_fingerprint(subject.material), bool(subject.required))
+                for subject in self.verification_subjects(self.options_model(**options))}
+
+    def verified(self, options: dict, evidence) -> bool:
+        """Is the CURRENT SAVED configuration covered by successful evidence?
+
+        Every participating subject must be covered. Nothing participating
+        means there is nothing to have proven, which is Unconfigured -- never
+        Verified.
+        """
+        required = {subject: fingerprint for subject, (fingerprint, needed)
+                    in self.verification_fingerprints(options).items() if needed}
+        if not required:
+            return False
+        stored = evidence or {}
+        return all(stored.get(subject) == fingerprint for subject, fingerprint in required.items())
+
+    def configured(self, options: dict) -> bool:
+        """Return persisted configuration presence without exposing secret data.
+
+        An options model whose "configured" meaning is richer than "these
+        fields are non-empty" -- for example one that needs at least one usable
+        member of a collection -- declares its own ``configured()`` predicate.
+        """
+        model = self.options_model(**options)
+        predicate = getattr(model, "configured", None)
+        if callable(predicate):
+            return bool(predicate())
+        validated = model.model_dump()
+        for key in self.required_options:
+            value = validated.get(key)
+            if isinstance(value, str):
+                if not value.strip():
+                    return False
+            elif not value:
+                return False
+        return True

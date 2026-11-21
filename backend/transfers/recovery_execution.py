@@ -1,0 +1,70 @@
+"""Canonical recovery trigger/authority values used by every recovery entry point."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class RecoveryTrigger(StrEnum):
+    AUTO_RETRY = "auto_retry"
+    USER_RETRY = "user_retry"
+    RESUME = "resume"
+    STARTUP_RECONCILE = "startup_reconcile"
+    PROVIDER_RECOVERY = "provider_recovery"
+    EXECUTOR_RECOVERY = "executor_recovery"
+    # The first-class trigger an operator-requested candidate switch claims
+    # recovery under, so it is fenced by the SAME exclusive claim/generation
+    # system as every other trigger (transfers.recovery_repository
+    # .TransferRepository.claim_recovery is exclusive across all trigger
+    # types) instead of being an out-of-band mutation the recovery system
+    # knows nothing about.
+    USER_CANDIDATE_SWITCH = "user_candidate_switch"
+    # Collection ownership convergence (``convergence_engine.TransferEngine
+    # .converge_collection_member``) retires a later transfer's writer so the
+    # collection owner's artifact can become canonical. Claimed under the SAME
+    # exclusive fence as every other trigger; it resets nothing.
+    COLLECTION_CONVERGENCE = "collection_convergence"
+    # An operator's provider switch of ONE root of a multi-source transfer
+    # (``transfers.manual_route_switch``) holds this exclusive claim on each
+    # artifact whose selected candidate that root alone produced, while it
+    # retires their writers and commits the root's new route. It resets
+    # nothing: the artifact's own recovery history stays as it was.
+    USER_ROUTE_SWITCH = "user_route_switch"
+
+
+@dataclass(frozen=True)
+class TriggerAuthority:
+    reset_exhaustion: bool = False
+    reset_bounded_streaks: bool = False
+    unpause_intent: bool = False
+
+
+_AUTHORITY = {
+    RecoveryTrigger.AUTO_RETRY: TriggerAuthority(),
+    RecoveryTrigger.USER_RETRY: TriggerAuthority(reset_exhaustion=True, reset_bounded_streaks=True),
+    RecoveryTrigger.RESUME: TriggerAuthority(unpause_intent=True),
+    RecoveryTrigger.STARTUP_RECONCILE: TriggerAuthority(),
+    RecoveryTrigger.PROVIDER_RECOVERY: TriggerAuthority(),
+    RecoveryTrigger.EXECUTOR_RECOVERY: TriggerAuthority(),
+    # Same reset authority as USER_RETRY: an operator naming a new candidate
+    # is at least as strong a signal of intent to make fresh progress as a
+    # plain retry, and transition_recovery(candidate_switched=True) has
+    # always reset the bounded no-progress streaks on a successful switch.
+    RecoveryTrigger.USER_CANDIDATE_SWITCH: TriggerAuthority(reset_exhaustion=True, reset_bounded_streaks=True),
+    RecoveryTrigger.COLLECTION_CONVERGENCE: TriggerAuthority(),
+    RecoveryTrigger.USER_ROUTE_SWITCH: TriggerAuthority(),
+}
+
+
+def trigger_authority(trigger: RecoveryTrigger) -> TriggerAuthority:
+    return _AUTHORITY[RecoveryTrigger(trigger)]
+
+
+@dataclass(frozen=True)
+class RecoveryClaim:
+    artifact_id: int
+    token: str
+    generation: int
+    trigger: RecoveryTrigger
+    decision_id: str
+    target: str

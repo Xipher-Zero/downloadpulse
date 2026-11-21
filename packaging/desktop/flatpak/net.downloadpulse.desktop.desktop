@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DownloadPulse
+Comment=Self-hosted download and transfer manager
+Exec=downloadpulse
+Icon=net.downloadpulse.desktop
+Terminal=false
+Categories=Network;FileTransfer;
+StartupWMClass=downloadpulse-shell

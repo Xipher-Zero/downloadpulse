@@ -1,0 +1,95 @@
+/* DownloadPulse navigation and disclosure motion (ui-motion.js).
+ *
+ * One vocabulary. Navigation slides along the axis of the control that chose
+ * it -- across for a page or tab, up and down for the sidebar -- and the
+ * farther the destination, the longer and farther it travels: the next
+ * position, two or three, four and more (capped). Distance is said by the
+ * movement itself; the fade is slight. Only the surface being replaced
+ * moves, clipped to its own viewport (ui-motion.js animates its outgoing copy
+ * and its live content with these values); everything else stays still and
+ * live. */
+
+:root {
+  --dp-motion-adjacent: 280ms;
+  --dp-motion-short: 380ms;
+  --dp-motion-long: 450ms;
+  --dp-motion-expand: 250ms;
+  --dp-motion-collapse: 200ms;
+  /* Fullscreen modals fade in place (ui-modal-contract.css). */
+  --dp-modal-enter: 200ms;
+  --dp-modal-exit: 160ms;
+  --dp-motion-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* A surface sliding now (ui-motion.js marks it while it moves): each page or
+   tab viewport for its own pager or tabs, a compact navigator's window. Its
+   outgoing copy and its live content are what move; the travel is a share
+   of the surface's own viewport, the way ui-motion.js says it. */
+
+.dp-motion-surface {
+  --dp-motion-curve: var(--dp-motion-ease);
+}
+
+/* The next position: the two contents travel together, edge to edge. */
+.dp-motion-surface[data-dp-motion-step="adjacent"] {
+  --dp-motion-duration: var(--dp-motion-adjacent);
+  --dp-motion-travel: 100%;
+  --dp-motion-fade: 1;
+}
+
+/* Farther: a longer, farther travel, so the space crossed shows between them
+   -- capped, so the surface is never left empty. */
+.dp-motion-surface[data-dp-motion-step="short"] {
+  --dp-motion-duration: var(--dp-motion-short);
+  --dp-motion-travel: 120%;
+  --dp-motion-fade: 0.9;
+}
+
+.dp-motion-surface[data-dp-motion-step="long"] {
+  --dp-motion-duration: var(--dp-motion-long);
+  --dp-motion-travel: 140%;
+  --dp-motion-fade: 0.85;
+}
+
+/* A page turn's destination, drawn before its answer: the shape of its rows,
+   softly out of focus and quiet -- no text, nothing to read, nothing that
+   moves on its own. Each page owner lays the shapes out in its own row
+   structure; ui-motion.js resolve() crossfades them into the real page,
+   fading a still copy (.dp-motion-still) out where they stood. */
+[data-dp-placeholder] {
+  filter: blur(2.5px);
+  opacity: .75;
+  pointer-events: none;
+  user-select: none;
+}
+
+.dp-ph {
+  display: block;
+  height: 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.dp-ph--title { width: 62%; height: 10px; }
+.dp-ph--sub { width: 34%; height: 7px; margin-top: 7px; }
+.dp-ph--line { width: 70%; }
+.dp-ph--icon { display: inline-block; width: 16px; height: 16px; vertical-align: middle; }
+.dp-ph--chip { display: inline-block; width: 64px; height: 16px; margin-left: 6px; vertical-align: middle; }
+.dp-ph--badge { width: 74px; height: 20px; }
+.dp-ph--bar { width: 100%; height: 6px; }
+.dp-ph--number { width: 46px; }
+.dp-ph--button { width: 62px; height: 24px; border-radius: 6px; }
+.dp-ph--box { width: 14px; height: 14px; border-radius: 3px; }
+.dp-ph--dot { width: 8px; height: 8px; margin-top: 3px; }
+.dp-ph--time { width: 112px; }
+/* Not every row the same: three title lengths, in turn. */
+.dp-page-placeholder-row:nth-child(3n + 2) .dp-ph--title,
+.dp-page-placeholder-row:nth-child(3n + 2) .dp-ph--line { width: 48%; }
+.dp-page-placeholder-row:nth-child(3n) .dp-ph--title,
+.dp-page-placeholder-row:nth-child(3n) .dp-ph--line { width: 76%; }
+
+.dp-motion-still {
+  position: absolute;
+  z-index: 2;
+  margin: 0;
+  pointer-events: none;
+}

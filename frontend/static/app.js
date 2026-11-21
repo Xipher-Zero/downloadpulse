@@ -1,0 +1,4528 @@
+/* DownloadPulse — self-hosted multi-provider transfer manager. */
+
+const API = '/api';
+let settingsData = {};
+
+// settingsData is the cached GET /settings document. The scheduler's
+// concurrency and the download bandwidth cap are each read from their one
+// canonical namespace; no flat alias is read, mirrored or written.
+// Per-transfer pauses are counted by the backend (GET /stats by_status.paused);
+// this is only the last value read from there and is never adjusted locally.
+let pausedTransferCount = 0;
+// Global processing pause is operational state owned by the backend's durable
+// application state -- not a setting. This is a non-persisted projection of it,
+// assigned only from server responses (GET /stats and the pause/resume results)
+// and never written to, or read from, settingsData.
+let processingPaused = false;
+async function refreshProviderStatus() {
+  if (!window.DPProviderStatus?.refresh) return null;
+  return window.DPProviderStatus.refresh();
+}
+
+// The caller's authority, from its one owner (auth.js). Every control that a
+// role may lack is built only when this says so; the server decides anyway.
+function dpCan(capability) {
+  return !!(window.downloadPulseAuth && window.downloadPulseAuth.can(capability));
+}
+
+// The installation's display timezone, for every role (Admin's settings carry
+// the same value): the one owner every timestamp reads. A server names its
+// zone (its TZ, else UTC); a desktop application names none, and its time is
+// the computer's own, which this window knows.
+function dpDisplayTimezone() {
+  const zone = String((typeof settingsData !== 'undefined' && settingsData && settingsData.timezone)
+    || (window.downloadPulseAuth && window.downloadPulseAuth.authority.display_timezone) || '').trim();
+  if (zone) return zone;
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (_) { return 'UTC'; }
+}
+
+function renderTopbarActions() {
+  const el = document.getElementById('topbar-actions');
+  if (!el) return;
+
+  // Create these controls once. Replacing their DOM nodes during live refreshes
+  // can swallow pointer-up/click events when an SSE update lands mid-click.
+  // Each label is the button's icon label (a pending label replaces it, never
+  // the glyph); where the shell shows the glyph only (ui-shell-structural.css)
+  // the label stays the accessible name and the tooltip says it.
+  // Their words are set below on every render (and so on a language change);
+  // a button showing its pending label keeps it until its action settles.
+  if (el.dataset.initialized !== '1') {
+    const icon = (name) => window.DPIcons && typeof window.DPIcons.svg === 'function' ? window.DPIcons.svg(name) : '';
+    const label = '[data-dp-icon-label]';
+    el.innerHTML = `
+      <button id="btn-resume-all" class="btn btn-primary" data-tooltip-label="${label}" onclick="resumeProcessing()" style="display:none">${icon('play')}<span data-dp-icon-label="1"></span></button>
+      <button id="btn-resume-paused" class="btn btn-primary" data-tooltip-label="${label}" onclick="resumePausedDownloads()" style="display:none">${icon('play')}<span data-dp-icon-label="1"></span></button>
+      <button id="btn-pause-all" class="btn btn-ghost" data-tooltip-label="${label}" onclick="pauseProcessing()">${icon('pause')}<span data-dp-icon-label="1"></span></button>
+    `;
+    el.dataset.initialized = '1';
+  }
+  const word = (button, text) => {
+    if (!button) return;
+    button.dataset.defaultLabel = text;
+    button.dataset.tooltip = text;
+    if (button.dataset.pending === '1') return;
+    const copy = button.querySelector('span:last-child');
+    if (copy) copy.textContent = text;
+    else button.textContent = text;
+  };
+
+  const globallyPaused = processingPaused;
+  const selectivelyPaused = Math.max(0, Number(pausedTransferCount) || 0);
+  const pauseBtn = document.getElementById('btn-pause-all');
+  const resumeAllBtn = document.getElementById('btn-resume-all');
+  const resumePausedBtn = document.getElementById('btn-resume-paused');
+
+  if (pauseBtn) {
+    pauseBtn.style.display = globallyPaused ? 'none' : '';
+    word(pauseBtn, DPI18n.t('processing.pause_all'));
+  }
+
+  if (resumeAllBtn) {
+    resumeAllBtn.style.display = globallyPaused ? '' : 'none';
+    word(resumeAllBtn, DPI18n.t('processing.resume_all'));
+  }
+
+  // Resume Paused beside Pause All: the topbar's widest control state
+  // (ui-shell-structural.css reads it to fit the title's artwork beside them).
+  el.toggleAttribute('data-resume-paused', !globallyPaused && selectivelyPaused > 0);
+
+  if (resumePausedBtn) {
+    resumePausedBtn.style.display =
+      !globallyPaused && selectivelyPaused > 0 ? '' : 'none';
+
+    word(resumePausedBtn, DPI18n.t('processing.resume_paused_count', {count: selectivelyPaused}));
+  }
+
+  window.DPProcessingPresentation?.syncPauseUi?.();
+  updateRuntimeStatusBadge({});
+}
+
+// ── Nav ────────────────────────────────────────────────────────────────────
+/* A sidebar entry chosen by the operator (a click or its keyboard activation)
+ * moves the main view region up or down toward it, by its place among the
+ * entries this session actually shows; every other call -- start-up, a
+ * redirect, a reset, a test -- changes the view in place. Below 780px the
+ * entries are chosen from the dock (renderShellDock), so the region moves across,
+ * by their place in the dock's order. The view itself is changed by
+ * navigateTo(), the same commit either way, so the destination's entry work
+ * (loading, its first page or tab) is exactly as it was. The page heading
+ * moves with the region (DPMotion's companion): it keeps naming the page that
+ * is on screen until the region starts to move, and changes to the
+ * destination's (showPageHeading) halfway through the same travel. */
+function nav(el, event) {
+  if (!el) return;
+  const handheld = _shellHandheld.matches;
+  const entries = handheld ? _shellDockEntries
+    : [...document.querySelectorAll('#sidebar .nav-item[data-view]')].filter(item => item.getClientRects().length);
+  const from = entries.findIndex(item => item.classList.contains('active'));
+  const to = entries.indexOf(el);
+  const sameView = !!document.getElementById('view-' + el.dataset.view)?.classList.contains('active');
+  const chosen = event?.type === 'click' && from >= 0 && to >= 0 && !sameView;
+  const motion = window.DPMotion
+    ? window.DPMotion.slide({element: document.getElementById('content'), axis: handheld ? 'x' : 'y',
+                             direction: chosen ? Math.sign(to - from) : 0, distance: Math.abs(to - from),
+                             companion: {element: document.querySelector('#topbar .dp-page-heading'),
+                                         commit: () => showPageHeading(el)}},
+                            () => navigateTo(el, {heading: false}))
+    : (navigateTo(el), {settled: Promise.resolve()});
+  // Whatever measures the destination's layout may do so again once it is still.
+  motion.settled.then(() => document.dispatchEvent(new CustomEvent('downloadpulse:navigation-settled',
+    {detail: {view: document.querySelector('.view.active')?.id?.replace(/^view-/, '') || el.dataset.view}})));
+}
+
+/* `heading: false`: the page heading is not this commit's -- nav() hands it to
+ * the slide, which shows it as it moves (showPageHeading, exactly once). */
+function navigateTo(el, {heading = true} = {}) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  el.classList.add('active');
+  const v = el.dataset.view;
+  document.querySelectorAll('.view').forEach(x => x.classList.remove('active'));
+  const activeView = document.getElementById('view-' + v);
+  if (!activeView) { console.error('nav: view not found:', v); return; }
+  activeView.classList.add('active');
+  const content = document.getElementById('content');
+  if (content) {
+    content.classList.toggle('dashboard-active', v === 'dashboard');
+    content.classList.toggle('settings-active', v === 'settings');
+    content.scrollTop = 0;
+  }
+
+  const title = heading ? showPageHeading(el) : pageTitle(el);
+  document.dispatchEvent(new CustomEvent('downloadpulse:navigation', {detail:{view:v,title}}));
+  syncDashboardSparkPulses();
+  if (v === 'dashboard') { loadStats(); loadRecent(); }
+  // Every sidebar selection is a new entry: Downloads opens on page 1 (its
+  // search, filter and order are kept), Settings on Services, Help on Quick Start.
+  if (v === 'torrents')  { clearSelection(); goToTorrentPage(1); }
+  if (v === 'events')    window.DPActivityLog.load();
+  if (v === 'stats')     loadDetailedStats();
+  if (v === 'settings')  loadSettings();
+  if (v === 'help')      loadHelp();
+  syncShellDock();
+  setSidebarOverlay(false);
+}
+
+/* The page header's title and subtitle for a sidebar entry, in the page's
+ * language (ui-i18n.js). A sidebar entry may name the page it opens (a
+ * User's Settings slot opens their own Notifications). Returns the title. */
+const PAGE_KEYS = Object.freeze({dashboard: 'dashboard', torrents: 'downloads', events: 'activity_log',
+  stats: 'statistics', settings: 'settings', help: 'help'});
+function pageTitle(el) {
+  const page = PAGE_KEYS[el.dataset.view];
+  return el.dataset.title || (page ? DPI18n.t(`shell.page.${page}.title`) : el.dataset.view);
+}
+function showPageHeading(el) {
+  const v = el.dataset.view;
+  const page = PAGE_KEYS[v];
+  const title = pageTitle(el);
+  // The page the heading names, for the styling that follows it (and only it).
+  const block = document.querySelector('#topbar .dp-page-heading');
+  if (block) block.dataset.page = page || v;
+  const heading = document.getElementById('page-title');
+  // index.html's first-paint heading names a key; from here this owner says it.
+  heading.removeAttribute('data-i18n');
+  heading.textContent = title;
+  // The entry's short name, drawn in its place by the handheld header only
+  // (ui-shell-mobile.css); the heading's own text stays the whole name.
+  if (el.dataset.shortLabel) heading.dataset.short = el.dataset.shortLabel;
+  else delete heading.dataset.short;
+  fitShellHeader();
+  const subtitle = document.getElementById('page-subtitle');
+  if (subtitle) {
+    subtitle.removeAttribute('data-i18n');
+    subtitle.textContent = el.dataset.subtitle || (page ? DPI18n.t(`shell.page.${page}.subtitle`) : '');
+  }
+  return title;
+}
+
+/* The handheld shell's dock (below 780px; ui-shell-mobile.css): another
+ * presentation of the same sidebar entries, never a second router. Its
+ * entries are exactly the ones auth.js mounted for this session, in their
+ * data-dock order; up to five stand in the dock, and where there are more,
+ * the first four do and More (#shell-more) holds the rest. A dock button
+ * chooses its entry through nav(), so the page, its title and its entry work
+ * are the sidebar's, and the dock marks whichever entry navigateTo() made
+ * active. A change of authority reloads the page (auth.js); a change of the
+ * account's presentation places or withdraws sidebar entries in place, and
+ * the dock is built again from the entries the sidebar then holds. */
+const SHELL_HANDHELD_QUERY = '(max-width: 779px)';
+const _shellHandheld = window.matchMedia(SHELL_HANDHELD_QUERY);
+let _shellDockEntries = [];
+let _shellMoreEntries = [];
+const _shellDockButtons = new Map();
+
+function shellDockButton(entry, className) {
+  const name = (entry.dataset.title || entry.querySelector('.nav-label')?.textContent || '').trim();
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.dataset.view = entry.dataset.view;
+  const icon = entry.querySelector('.icon')?.cloneNode(true);
+  if (icon) button.append(icon);
+  const label = document.createElement('span');
+  label.className = 'dp-shell-label';
+  // A shorter display label (Stats) keeps the entry's whole name as the button's.
+  const shown = className === 'dp-shell-dock-item' ? entry.dataset.shortLabel || name : name;
+  label.textContent = shown;
+  button.append(label);
+  if (shown !== name) button.setAttribute('aria-label', name);
+  button.addEventListener('click', event => chooseShellEntry(entry, event));
+  _shellDockButtons.set(button, entry);
+  return button;
+}
+
+function renderShellDock() {
+  const dock = document.getElementById('shell-dock');
+  const list = document.getElementById('shell-more-list');
+  if (!dock || !list) return;
+  _shellDockEntries = [...document.querySelectorAll('#sidebar .nav-item[data-dock]')]
+    .sort((a, b) => Number(a.dataset.dock) - Number(b.dataset.dock));
+  _shellMoreEntries = _shellDockEntries.length > 5 ? _shellDockEntries.slice(4) : [];
+  _shellDockButtons.clear();
+  const overflow = _shellMoreEntries.length > 0;
+  const direct = overflow ? _shellDockEntries.slice(0, 4) : _shellDockEntries;
+  // The dock's signal field (index.html, <dp-signal-field>) stays its first
+  // child through every rebuild: one field, drawn once.
+  const field = dock.querySelector(':scope > dp-signal-field');
+  dock.replaceChildren(...(field ? [field] : []), ...direct.map(entry => {
+    const button = shellDockButton(entry, 'dp-shell-dock-item');
+    // The Downloads count is the sidebar's (#nb-active): showDownloadsBadge() writes both.
+    if (entry.querySelector('#nb-active')) {
+      const badge = document.createElement('span');
+      badge.className = 'dp-shell-dock-badge';
+      badge.dataset.dockBadge = '';
+      badge.hidden = true;
+      button.append(badge);
+    }
+    return button;
+  }));
+  list.replaceChildren(..._shellMoreEntries.map(entry => shellDockButton(entry, 'dp-shell-sheet-item')));
+  if (overflow) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'dp-shell-dock-item dp-shell-dock-more';
+    more.setAttribute('aria-haspopup', 'dialog');
+    more.setAttribute('aria-controls', 'shell-more');
+    more.setAttribute('aria-expanded', 'false');
+    more.addEventListener('click', () => DPShellSheet.toggle(document.getElementById('shell-more'), {opener: more}));
+    more.innerHTML = '<span class="icon" aria-hidden="true"><svg class="lucide dp-utility-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></span><span class="dp-shell-label"></span>';
+    more.querySelector('.dp-shell-label').textContent = DPI18n.t('shell.dock.more');
+    dock.append(more);
+  } else {
+    // Fewer than five pages: the free position stays empty and inert, so
+    // Dashboard keeps the middle of five.
+    for (let i = direct.length; i < 5; i += 1) {
+      const free = document.createElement('span');
+      free.className = 'dp-shell-dock-free';
+      free.setAttribute('aria-hidden', 'true');
+      dock.append(free);
+    }
+  }
+  syncShellDock();
+}
+
+// The dock follows the active entry: the button of that entry is the current
+// page, and More is marked while the active entry is one it holds.
+function syncShellDock() {
+  const active = _shellDockEntries.find(entry => entry.classList.contains('active')) || null;
+  _shellDockButtons.forEach((entry, button) => {
+    const current = entry === active;
+    button.classList.toggle('active', current);
+    if (current) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+  const more = document.querySelector('#shell-dock .dp-shell-dock-more');
+  if (more) {
+    const held = _shellMoreEntries.includes(active);
+    more.classList.toggle('active', held);
+    more.setAttribute('aria-label', held
+      ? DPI18n.t('shell.dock.more_current', {page: active.querySelector('.nav-label')?.textContent || ''})
+      : DPI18n.t('shell.dock.more'));
+  }
+}
+
+/* The handheld header's one row (ui-shell-mobile.css): its parts in the
+ * order they are kept, longest first -- the one-line speed, the cap's drawn
+ * value, the title's pulse artwork, an Admin's active/max. The row keeps the
+ * longest run of that order whose controls leave the rendered title (at its
+ * full 18px, with the artwork where kept) its room, and gives way the rest,
+ * named in #topbar[data-shell-yield]. Narrowing therefore takes active/max
+ * first, then the artwork, and no part returns at a narrower width. Measured
+ * again when the row's width, its title, its account control, its fonts or
+ * the reading's own figures change; from 780px nothing gives way. */
+const SHELL_HEADER_KEPT = ['speed', 'cap', 'art', 'occupancy'];
+const SHELL_TITLE_PX = 18;
+function fitShellHeader() {
+  const bar = document.getElementById('topbar');
+  const heading = bar?.querySelector('.dp-page-heading');
+  const title = document.getElementById('page-title');
+  if (!bar || !heading || !title) return;
+  if (!_shellHandheld.matches) { delete bar.dataset.shellYield; return; }
+  const shown = title.dataset.short ? getComputedStyle(title, '::before') : getComputedStyle(title);
+  const probe = document.createElement('span');
+  probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font-family:${shown.fontFamily};`
+    + `font-weight:${shown.fontWeight};font-size:${SHELL_TITLE_PX}px;letter-spacing:-.02em`;
+  probe.textContent = title.dataset.short || title.textContent;
+  document.body.appendChild(probe);
+  const text = probe.getBoundingClientRect().width;
+  probe.remove();
+  let kept = 0;
+  for (let count = SHELL_HEADER_KEPT.length; count >= 0; count -= 1) {
+    bar.dataset.shellYield = SHELL_HEADER_KEPT.slice(count).join(' ');
+    const room = heading.getBoundingClientRect().width;
+    const art = getComputedStyle(title, '::after');
+    const scale = SHELL_TITLE_PX / (parseFloat(getComputedStyle(title).fontSize) || parseFloat(shown.fontSize) || SHELL_TITLE_PX);
+    const need = text + (count > 2 ? (parseFloat(art.width) + parseFloat(art.marginLeft)) * scale : 0);
+    // A pixel to spare, so a fit the line would round away is not taken.
+    if (room >= need + 1) { kept = count; break; }
+  }
+  bar.dataset.shellYield = SHELL_HEADER_KEPT.slice(kept).join(' ');
+}
+let _shellHeaderFigures = '';
+if (window.ResizeObserver) {
+  const watch = new ResizeObserver(() => fitShellHeader());
+  ['topbar', 'topbar-account-mount'].forEach(id => { const node = document.getElementById(id); if (node) watch.observe(node); });
+}
+document.fonts?.ready.then(() => fitShellHeader());
+document.fonts?.addEventListener?.('loadingdone', () => fitShellHeader());
+_shellHandheld.addEventListener('change', () => fitShellHeader());
+
+// The Downloads count, the sidebar's one value, shown on both its entries.
+function showDownloadsBadge(count) {
+  const shown = count > 0;
+  const nb = document.getElementById('nb-active');
+  if (nb) { nb.textContent = count; nb.style.display = shown ? '' : 'none'; }
+  document.querySelectorAll('[data-dock-badge]').forEach(badge => { badge.textContent = count; badge.hidden = !shown; });
+}
+
+/* The shell's sheets and menus -- More, the account sheet, the theme picker
+ * and the speed-cap menu -- open and close through this one lifetime; each
+ * owner keeps its own content and actions. Closing, a sheet stays shown (a
+ * popover in the top layer, the cap menu unhidden) while data-dp-sheet-exit
+ * gives its panel and scrim their closed styles, so their own transitions
+ * carry the panel back to its bar; the sheet is hidden only when that
+ * panel's transform transition has finished. Nothing waits on a timer, and
+ * nothing relies on an engine keeping a dismissed popover drawn (Firefox
+ * never interpolates display). A close with nothing to run (reduced motion,
+ * the desktop menus) hides at once; a cancelled one (the panel's style
+ * replaced, the sheet leaving the document) hides at once too, unless the
+ * sheet was opened again meanwhile, which reverses it from where it is
+ * drawn. While closing, its panel takes no input and its scrim still takes
+ * presses, so none reaches the page. The popovers are manual: a browser's
+ * own dismissal of an auto popover cannot be delayed (its beforetoggle is
+ * not cancellable), so a press outside the sheet and its controls, and
+ * Escape, close it here. One sheet is drawn at a time: a sheet asked for
+ * while another is drawn waits (pending) until that one has finished its
+ * exit, and only the latest request is shown -- the outgoing sheet opened
+ * again, another sheet asked for, or the waiting one dismissed (its control
+ * again, a press outside it, Escape) each drop it. `control` carries
+ * aria-expanded from the moment the sheet is drawn; focus inside a closing
+ * sheet returns to `opener`; `shown` runs once the sheet is drawn. */
+const DPShellSheet = (() => {
+  const sheets = new Map();          // sheet -> {opener, control, panel, shown, abort, flight, pending}
+  const drawn = sheet => (sheet.popover ? sheet.matches(':popover-open') : !sheet.hidden);
+  // Open, or asked for and waiting for another sheet's exit.
+  const isOpen = sheet => {
+    const entry = sheet && sheets.get(sheet);
+    return !!entry && !entry.flight && (entry.pending || drawn(sheet));
+  };
+  function hide(sheet) {
+    if (!sheet.popover) sheet.hidden = true;
+    else if (sheet.matches(':popover-open')) try { sheet.hidePopover(); } catch (_) {}   // already gone from the document
+  }
+  // The end of a close: hidden (closed) or kept open (reversed).
+  function settle(sheet, entry, closed) {
+    const flight = entry.flight;
+    entry.flight = null;
+    delete sheet.dataset.dpSheetExit;
+    entry.panel.inert = false;
+    if (closed) {
+      sheets.delete(sheet);
+      hide(sheet);
+    } else {
+      listen(sheet, entry);
+      entry.control?.setAttribute('aria-expanded', 'true');
+    }
+    flight.resolve(closed);
+  }
+  // What the browser's light dismiss did for an auto popover.
+  function listen(sheet, entry) {
+    if (!sheet.popover) return;
+    const abort = entry.abort = new AbortController();
+    const own = node => node instanceof Node && [sheet, entry.opener, entry.control].some(part => part?.contains(node));
+    document.addEventListener('pointerdown', event => { if (!own(event.target)) close(sheet, {restoreFocus: false}); },
+      {capture: true, signal: abort.signal});
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') close(sheet); }, {signal: abort.signal});
+  }
+  // A waiting sheet that will not be shown after all.
+  function drop(sheet, entry) {
+    entry.abort?.abort();
+    sheets.delete(sheet);
+  }
+  function show(sheet, entry) {
+    entry.pending = false;
+    if (sheet.popover) sheet.showPopover();
+    else sheet.hidden = false;
+    entry.control?.setAttribute('aria-expanded', 'true');
+    entry.shown?.();
+  }
+  function open(sheet, {opener = null, control = opener, panel = sheet.firstElementChild, shown = null} = {}) {
+    const entry = sheets.get(sheet);
+    // The latest request wins: any other sheet still waiting is dropped.
+    sheets.forEach((other, node) => { if (node !== sheet && other.pending) drop(node, other); });
+    if (entry?.flight) { settle(sheet, entry, false); return; }
+    if (entry && (entry.pending || drawn(sheet))) return;
+    entry?.abort?.abort();                           // hidden by its own owner meanwhile (left the document)
+    const next = {opener, control, panel, shown, abort: null, flight: null, pending: true};
+    sheets.set(sheet, next);
+    listen(sheet, next);
+    // Whatever is drawn finishes its exit first; then this one, if still wanted.
+    const outgoing = [...sheets.keys()].filter(node => node !== sheet).map(node => close(node));
+    if (!outgoing.length) { show(sheet, next); return; }
+    Promise.all(outgoing).then(() => {
+      if (sheets.get(sheet) === next && next.pending && ![...sheets.keys()].some(node => node !== sheet)) show(sheet, next);
+    });
+  }
+  // Resolves true once the sheet is hidden, false if it was opened again first.
+  function close(sheet, {immediate = false, restoreFocus = true} = {}) {
+    const entry = sheet && sheets.get(sheet);
+    if (!entry) {
+      if (sheet && drawn(sheet)) hide(sheet);
+      return Promise.resolve(true);
+    }
+    if (entry.pending) {
+      drop(sheet, entry);
+      return Promise.resolve(true);
+    }
+    if (entry.flight) {
+      const {promise} = entry.flight;
+      if (immediate) settle(sheet, entry, true);
+      return promise;
+    }
+    entry.abort?.abort();
+    entry.control?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && sheet.contains(document.activeElement)) entry.opener?.focus({preventScroll: true});
+    let resolve;
+    const flight = entry.flight = {promise: new Promise(done => { resolve = done; }), resolve: closed => resolve(closed)};
+    entry.panel.inert = true;
+    sheet.dataset.dpSheetExit = '';
+    const exit = !immediate && drawn(sheet)
+      && entry.panel.getAnimations().find(motion => motion instanceof CSSTransition && motion.transitionProperty === 'transform');
+    const end = () => { if (entry.flight === flight) settle(sheet, entry, true); };
+    if (exit) exit.finished.then(end, end);
+    else end();
+    return flight.promise;
+  }
+  const toggle = (sheet, options) => (isOpen(sheet) ? close(sheet) : (open(sheet, options), Promise.resolve(false)));
+  return Object.freeze({open, close, toggle, isOpen, drawn});
+})();
+window.DPShellSheet = DPShellSheet;
+
+function closeShellMore(options) {
+  return DPShellSheet.close(document.getElementById('shell-more'), options);
+}
+
+/* A page chosen while More is drawn (from its list or the dock) opens once
+ * More has finished closing, so the page's own work never takes the frames
+ * of that exit: nav() runs once, for the latest choice, and not at all if
+ * More is opened again first. */
+let _shellChoice = null;
+function chooseShellEntry(entry, event) {
+  const more = document.getElementById('shell-more');
+  if (!more || !DPShellSheet.drawn(more)) {
+    nav(entry, event);
+    return;
+  }
+  const waiting = !!_shellChoice;
+  _shellChoice = {entry, event};
+  if (waiting) return;
+  closeShellMore().then(closed => {
+    const choice = _shellChoice;
+    _shellChoice = null;
+    if (closed && choice) nav(choice.entry, choice.event);
+  });
+}
+
+// More is a sheet over the page: its scrim (the popover's own box around the
+// panel) takes a press outside the panel and closes it, so the press never
+// reaches the page beneath, and focus returns to More; Tab leaves it closed,
+// focus back on More.
+document.getElementById('shell-more')?.addEventListener('click', event => {
+  if (event.target !== event.currentTarget) return;
+  closeShellMore();
+  document.querySelector('#shell-dock .dp-shell-dock-more')?.focus();
+});
+document.getElementById('shell-more')?.addEventListener('keydown', event => {
+  if (event.key === 'Tab') closeShellMore();
+});
+// Focus moves into the sheet without scrolling it: its panel is still below
+// the sheet's edge as it opens, and scrolling the sheet to it would show the
+// panel at once and then move it again.
+document.getElementById('shell-more')?.addEventListener('toggle', event => {
+  if (event.newState === 'open') event.currentTarget.querySelector('[aria-current="page"], .dp-shell-sheet-item')?.focus({preventScroll: true});
+});
+renderShellDock();
+/* The account's presentation changed (auth.js): the sidebar already holds
+ * exactly the entries it shows. A withdrawn page that was the current one
+ * gives way to Dashboard, and the dock is built again from the sidebar. */
+document.addEventListener('downloadpulse:presentation-changed', event => {
+  const withdrawn = event.detail?.withdrawn || [];
+  const current = withdrawn.some(node => node.classList.contains('active'));
+  withdrawn.forEach(node => { node.classList.remove('active'); node.removeAttribute('aria-current'); });
+  closeShellMore();
+  if (current) navigateTo(document.querySelector('#sidebar .nav-item[data-view="dashboard"]'));
+  renderShellDock();
+});
+/* The page's language changed (ui-i18n.js has rendered the markup that names
+ * its keys): the shell's own messages follow -- the active page's heading,
+ * the dock built from the sidebar's labels, and the sidebar handle -- with no
+ * navigation, so no page reloads its data. */
+document.addEventListener('downloadpulse:locale-changed', () => {
+  const active = document.querySelector('#sidebar .nav-item.active');
+  if (active) showPageHeading(active);
+  renderShellDock();
+  const handle = document.getElementById('sidebar-handle');
+  if (handle) {
+    const label = DPI18n.t(handle.getAttribute('aria-expanded') === 'true' ? 'shell.sidebar.collapse' : 'shell.sidebar.expand');
+    handle.setAttribute('aria-label', label);
+    handle.dataset.tooltip = label;
+  }
+});
+
+// ── API ────────────────────────────────────────────────────────────────────
+/* The per-transfer private-LAN confirmation, through the canonical dialog
+ * owner. Answers only for the submission that asked; it writes no setting. */
+async function confirmLocalNetwork(hosts) {
+  if (!window.DPSettingsModal || typeof window.DPSettingsModal.confirm !== 'function') return false;
+  const named = (Array.isArray(hosts) ? hosts : []).filter(Boolean).join(', ');
+  const messageKey = named ? 'submission.local_network.message_named' : 'submission.local_network.message';
+  return window.DPSettingsModal.confirm({
+    title: DPI18n.t('submission.local_network.title'),
+    message: DPI18n.t(messageKey, {hosts: named}),
+    confirmLabel: DPI18n.t('submission.local_network.allow'),
+    cancelLabel: DPI18n.t('common.cancel'),
+    keys: {title: 'submission.local_network.title', message: messageKey, messageValues: named ? {hosts: named} : null,
+           accept: 'submission.local_network.allow', cancel: 'common.cancel'},
+  });
+}
+
+/* One link names an item inside an enclosing collection: the operator says
+ * which to acquire, through the canonical dialog owner. The choices and their
+ * labels are the claimant's own (``acquisition_scope`` refusal) and carry equal,
+ * neutral weight. The dialog is blocking: the backdrop and Escape do nothing,
+ * and Cancel Transfer and X choose nothing -- this link is simply not added.
+ * Resolves to the chosen scope, or '' when cancelled. */
+async function chooseAcquisitionScope(link, choices) {
+  if (!window.DPSettingsModal || typeof window.DPSettingsModal.open !== 'function') return '';
+  const offered = (Array.isArray(choices) ? choices : [])
+    .filter(choice => choice && (choice.scope === 'item' || choice.scope === 'collection'));
+  if (offered.length !== 2) return '';
+  let chosen = '';
+  // The claimant's own labels where it gives them (its words); ours otherwise.
+  const fallback = {item: DPI18n.t('submission.scope.item'), collection: DPI18n.t('submission.scope.collection')};
+  const handle = window.DPSettingsModal.open({
+    title: DPI18n.t('submission.scope.title'),
+    keys: {title: 'submission.scope.title', cancel: 'submission.scope.cancel'},
+    dismiss: true,
+    blocking: true,
+    closeControl: true,
+    cancelLabel: DPI18n.t('submission.scope.cancel'),
+    cancelTone: 'danger',
+    actions: offered.map(choice => ({id: choice.scope, label: String(choice.label || fallback[choice.scope])})),
+    mount(body) {
+      const message = document.createElement('p');
+      message.className = 'dp-modal-message dp-modal-message--center';
+      message.dataset.i18n = 'submission.scope.message';
+      message.textContent = DPI18n.t('submission.scope.message');
+      const address = document.createElement('code');
+      address.className = 'dp-modal-message dp-modal-code';
+      address.dir = 'ltr';                     // the link reads as itself in a right-to-left page
+      address.textContent = String(link || '');
+      body.append(message, address);
+      return message;
+    },
+    onAction(id) {
+      chosen = String(id);
+      handle.close();
+    },
+  });
+  await handle.closed;
+  return chosen;
+}
+
+/* The application action "open this address outside DownloadPulse".
+ * DownloadPulse's own window is never navigated, framed or replaced: the address
+ * opens in the operator's own browser. It is one function so a desktop host
+ * that embeds DownloadPulse can hand the address to the operating system's
+ * default browser instead. Only an https address is ever opened. */
+function openExternalUrl(url) {
+  let target;
+  try {
+    target = new URL(String(url || ''));
+  } catch (_) {
+    return false;
+  }
+  if (target.protocol !== 'https:') return false;
+  window.open(target.href, '_blank', 'noopener,noreferrer');
+  return true;
+}
+
+/* A refusal in the reader's language (WS3e). The server names it by ``code``
+ * (a structured refusal by its ``message_code``, beside its machine ``code``),
+ * with ``params``; a transfer failure by its category. The catalog says
+ * ``error.<code>`` (``error.category.<category>``); a parameter that is itself
+ * a coded cause ({"$t", "$v"}) is said the same way. An absent, unknown or
+ * ``unclassified`` code says nothing here, and the caller keeps the server's
+ * English ``detail`` -- never a guess from its words. */
+function saidRefusal(data, first) {
+  const holder = first && typeof first === 'object' ? first : data;
+  const named = typeof holder?.message_code === 'string' ? holder.message_code
+    : typeof holder?.code === 'string' ? holder.code : '';
+  const values = value => (value && typeof value === 'object' && typeof value.$t === 'string'
+    ? (DPI18n.has(value.$t) ? DPI18n.t(value.$t, resolved(value.$v)) : '') : value);
+  const resolved = params => Object.fromEntries(Object.entries(params && typeof params === 'object' ? params : {})
+    .map(([name, value]) => [name, values(value)]));
+  if (named && named !== 'unclassified' && DPI18n.has(`error.${named}`)) {
+    const params = resolved(holder.params);
+    // A coded cause the catalog cannot say leaves the whole refusal to its English.
+    if (!Object.values(params).some(value => value === '')) return DPI18n.t(`error.${named}`, params);
+  }
+  // A transfer refusal: its category's own sentence (the English is the server's ``detail``).
+  const category = holder?.category || data?.error?.category;
+  return typeof category === 'string' && DPI18n.has(`error.category.${category}`) ? DPI18n.t(`error.category.${category}`) : '';
+}
+
+/* Desktop saves. The installed desktop application (window.downloadPulseDesktop,
+ * said by the server before the first paint) has no browser download flow: its
+ * window would put a download in the Downloads folder unasked. There, a file
+ * the interface offers is saved where the person's own Save dialog says --
+ * the file's save route (POST, beside its download route) asks the desktop
+ * supervisor, which shows the dialog -- and the person is told where it went,
+ * or that they cancelled; a refusal throws, as any api() call does. Elsewhere
+ * nothing here is used: the browser's own flow stays. The request waits for
+ * the file to be made, the supervisor's next look (a few seconds) and the
+ * person's own time in the dialog. */
+const DESKTOP_SAVE_TIMEOUT_MS = 660000;
+const DPDesktopSave = Object.freeze({
+  active: window.downloadPulseDesktop === true,
+  async save(path) {
+    const result = await api('POST', path, null, DESKTOP_SAVE_TIMEOUT_MS);
+    if (result && result.saved) toast(DPI18n.t('desktop.save.saved', {name: result.name}), 'success');
+    else toast(DPI18n.t('desktop.save.cancelled'), 'info');
+    return Boolean(result && result.saved);
+  },
+});
+window.DPDesktopSave = DPDesktopSave;
+
+/* Desktop frame. The installed desktop application's own window frame (the
+ * title bar on Windows; its background on macOS) takes the page's theme: the
+ * canvas and text colours the page is drawn in, dark or light. Said to the
+ * backend on load and on every theme change (PUT /desktop/frame); the desktop
+ * supervisor colours the frame with it. Only what changed is sent; a refused
+ * or failed send is said again with the next change. Nothing elsewhere. */
+(function desktopFrame() {
+  if (window.downloadPulseDesktop !== true) return;
+  const hex = value => {
+    const parts = String(value).match(/\d+(?:\.\d+)?/g);
+    return parts && parts.length >= 3
+      ? '#' + parts.slice(0, 3).map(part => Math.round(Number(part)).toString(16).padStart(2, '0')).join('') : null;
+  };
+  let said = '';
+  const say = () => requestAnimationFrame(() => {
+    const style = getComputedStyle(document.body);
+    const frame = {caption: hex(style.backgroundColor), text: hex(style.color),
+      dark: !document.body.classList.contains('light')};
+    if (!frame.caption || !frame.text) return;
+    const key = JSON.stringify(frame);
+    if (key === said) return;
+    said = key;
+    api('PUT', '/desktop/frame', frame).catch(() => { said = ''; });
+  });
+  document.addEventListener('downloadpulse:theme-changed', say);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', say, {once: true});
+  else say();
+})();
+
+async function api(method, path, body, timeoutMs, options) {
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  // A file sent as itself: the raw body, typed by the file.
+  const isFile = !isFormData && typeof Blob !== 'undefined' && body instanceof Blob;
+  const opts = {
+    method,
+    headers: isFormData ? {} : {'Content-Type': isFile ? (body.type || 'application/octet-stream') : 'application/json'}
+  };
+  if (body) opts.body = isFormData || isFile ? body : JSON.stringify(body);
+  const ms = timeoutMs || 8000; // default 8s; callers can pass longer for slow operations
+  const controller = new AbortController();
+  let timedOut = false;
+  const tid = setTimeout(() => { timedOut = true; controller.abort(); }, ms);
+  const externalSignal = options && options.signal;
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', abortFromExternal, {once:true});
+  }
+  opts.signal = controller.signal;
+  try {
+    const r = await window.downloadPulseAuth.fetch(API + path, opts);
+    clearTimeout(tid);
+    if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal);
+    const data = await r.json().catch(() => ({detail: r.statusText}));
+    if (!r.ok) {
+      // A structured refusal keeps its facts for the caller that asked.
+      const detail = data.detail;
+      // A request-body refusal is a list of refused values: the first one speaks.
+      const first = Array.isArray(detail) ? detail[0] : detail;
+      const english = (first && typeof first === 'object' ? first.message || first.msg : first) || r.statusText;
+      const said = saidRefusal(data, first);
+      const error = new Error(said || english);
+      error.detail = detail;
+      error.status = r.status;
+      // The refusal's identity, and whether its words are the catalog's or the server's English.
+      error.code = typeof data?.code === 'string' ? data.code : null;
+      error.params = data?.params && typeof data.params === 'object' ? data.params : {};
+      error.english = english;
+      error.localized = Boolean(said);
+      throw error;
+    }
+    return data;
+  } catch(e) {
+    clearTimeout(tid);
+    if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal);
+    if (e.name === 'AbortError' && timedOut) throw new Error(DPI18n.t('request.timed_out', {seconds: Math.round(ms/1000)}));
+    throw e;
+  }
+}
+
+// Shared row-navigation ownership boundary for Downloads and Dashboard Recent:
+// a click that originates from an interactive child control (a button, the
+// common-source group launcher, etc.) must perform only that control's own
+// action, never also trigger the row's own Details navigation. Fixes the
+// Dashboard Recent group-launcher click-ownership bug (DP 1.0.12) by giving
+// Recent the same interactive-descendant guard Downloads' row click already
+// used; do not stack additional stopPropagation() calls onto individual
+// controls instead of this one shared boundary.
+function dpIsInteractiveRowTarget(target) {
+  return !!(target && target.closest &&
+    target.closest('button,input,a,select,textarea,label,[role="button"],[data-dp-group-candidates-trigger]'));
+}
+window.dpIsInteractiveRowTarget = dpIsInteractiveRowTarget;
+
+// The one application context-menu policy (a trial, deliberately small): the
+// browser keeps its own menu wherever it does real work -- an editable text
+// field (Cut, Copy, Paste, spelling), a hyperlink (Open, Copy Link) or text the
+// operator selected where they right-clicked (Copy) -- and is otherwise
+// suppressed on DownloadPulse's own surfaces, where the owner of a surface may
+// offer its own through the one menu below: Downloads' unfinished rows
+// (DPDownloads.contextMenu), their selection checkboxes included, and Details'
+// Original Resource when Copy URL is allowed. No other module listens for
+// contextmenu.
+const DP_EDITABLE_FIELD = 'textarea,input:not([type="checkbox"],[type="radio"],[type="button"],[type="submit"],'
+  + '[type="reset"],[type="range"],[type="color"],[type="file"],[type="image"],[type="hidden"])';
+function dpKeepsNativeContextMenu(target) {
+  if (!(target instanceof Element)) return true;
+  if (target.closest(`${DP_EDITABLE_FIELD},a[href]`) || target.isContentEditable) return true;
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.toString().trim()) return false;
+  for (let index = 0; index < selection.rangeCount; index++) {
+    if (selection.getRangeAt(index).intersectsNode(target)) return true;
+  }
+  return false;
+}
+document.addEventListener('contextmenu', event => {
+  if (dpKeepsNativeContextMenu(event.target)) return;
+  event.preventDefault();
+  dpCloseContextMenu(false);
+  if (dpOriginalResourceMenu(event)) return;
+  window.DPDownloads?.contextMenu?.(event);
+});
+
+// The one application menu: one at a time, at the pointer, or at its anchor
+// when the keyboard opened it, always inside the viewport, and inside the
+// dialog that holds its anchor (above that dialog, below any over it) or else
+// above the page. Escape, Tab, a pointer outside it, scrolling, resizing,
+// navigation and closing Details close it; Escape, Tab and a chosen item
+// return focus through ``restore``.
+let dpContextMenu = null;
+function dpCloseContextMenu(restoreFocus) {
+  if (!dpContextMenu) return;
+  const {node, abort, restore} = dpContextMenu;
+  dpContextMenu = null;
+  abort.abort();
+  node.remove();
+  if (restoreFocus) restore?.();
+}
+function dpOpenContextMenu(event, anchor, {label, items, restore}) {
+  dpCloseContextMenu(false);
+  const node = document.createElement('div');
+  node.className = 'dp-row-menu';
+  node.setAttribute('role', 'menu');
+  node.setAttribute('aria-label', label);
+  const buttons = items.map(({text}) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.setAttribute('role', 'menuitem');
+    item.textContent = text;
+    node.appendChild(item);
+    return item;
+  });
+  (anchor.closest('#overlay') || document.body).appendChild(node);
+  const rect = anchor.getBoundingClientRect();
+  const atPointer = event.clientX >= rect.left && event.clientX <= rect.right
+    && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  const x = atPointer ? event.clientX : rect.left + 16;
+  const y = atPointer ? event.clientY : rect.bottom;
+  const size = node.getBoundingClientRect();
+  node.style.left = `${Math.max(4, Math.min(x, window.innerWidth - size.width - 4))}px`;
+  node.style.top = `${Math.max(4, Math.min(y, window.innerHeight - size.height - 4))}px`;
+  const abort = new AbortController();
+  const signal = abort.signal;
+  dpContextMenu = {node, abort, restore};
+  buttons.forEach((item, index) => item.addEventListener('click', () => {
+    dpCloseContextMenu(true);
+    items[index].run();
+  }, {signal}));
+  node.addEventListener('keydown', e => {
+    if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); dpCloseContextMenu(true); }
+  }, {signal});
+  document.addEventListener('pointerdown', e => { if (!node.contains(e.target)) dpCloseContextMenu(false); }, {signal, capture: true});
+  window.addEventListener('scroll', () => dpCloseContextMenu(false), {signal, capture: true});
+  window.addEventListener('resize', () => dpCloseContextMenu(false), {signal});
+  document.addEventListener('downloadpulse:navigation', () => dpCloseContextMenu(false), {signal});
+  document.addEventListener('downloadpulse:detail-closed', () => dpCloseContextMenu(false), {signal});
+  buttons[0].focus({preventScroll: true});
+  return true;
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function esc(s) {
+  // Escape HTML special chars to prevent XSS when inserting user-controlled
+  // content (torrent names, filenames, labels) into innerHTML.
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function escapeHtmlStrings(value) {
+  // Settings and other API payloads are plain data. Escape string leaves
+  // before interpolating those payloads into HTML templates; numbers and
+  // booleans retain their native types for control-flow and form logic.
+  if (Array.isArray(value)) return value.map(escapeHtmlStrings);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, escapeHtmlStrings(item)])
+    );
+  }
+  return typeof value === 'string' ? esc(value) : value;
+}
+
+// What the operator submitted, as two separate facts.
+//
+// `source` is the submission CHANNEL -- how the work was handed over. The
+// canonical request KIND is what was actually submitted, and it lives in the
+// durable root requests, which both the Details projection and the bounded
+// Downloads projection surface as `request_kinds`.
+//
+// Before NZB, an uploaded file was always a torrent, so the channel
+// `manual_file` could stand in for the kind. It cannot any more: reading the
+// channel alone reported a completed NZB transfer as a torrent file. Nothing
+// here consults provider identity -- a Usenet-resolved torrent is still a
+// torrent, and an AllDebrid-resolved posting is still an NZB.
+// (Catalog keys; the words are the catalog's.)
+const UPLOADED_FILE_LABELS = Object.freeze({
+  torrent: 'transfer.source.torrent_file',
+  torrent_file: 'transfer.source.torrent_file',
+  file: 'transfer.source.torrent_file',
+  nzb: 'transfer.source.nzb_file',
+  meta4: 'transfer.source.metalink_file',
+});
+
+function sourceLabel(source, requestKinds) {
+  const labels = {
+    direct_link: 'transfer.source.direct_link',
+    manual: 'transfer.source.magnet_link',
+    alldebrid_existing: 'transfer.source.provider_inventory',
+    import_existing: 'transfer.source.provider_inventory',
+    inventory: 'transfer.source.provider_inventory',
+  };
+  const key = String(source || '').trim();
+  if (key === 'manual_file') {
+    const kinds = Array.isArray(requestKinds) ? requestKinds : [];
+    // One unambiguous kind names itself; anything mixed or unrecognised falls
+    // back to the truthful channel, never to a guess.
+    if (kinds.length === 1 && UPLOADED_FILE_LABELS[kinds[0]]) return esc(DPI18n.t(UPLOADED_FILE_LABELS[kinds[0]]));
+    return esc(DPI18n.t('transfer.source.uploaded_file'));
+  }
+  if (key === 'api') return 'API';                 // the interface's name, not a word to translate
+  return labels[key] ? esc(DPI18n.t(labels[key])) : esc(key) || '—';
+}
+
+function transferProviderPresentation(t) {
+  // A torrent root's provider is its committed ROOT route (the backend's
+  // ``route_provider_id``, present only for one-root torrent transfers): a
+  // live route-state indicator, never an origin or a child file's provider.
+  if (t && Object.prototype.hasOwnProperty.call(t, 'route_provider_id')) {
+    return t.route_provider_id
+      ? {label: String(t.route_provider_name || t.route_provider_id), state: 'known', id: t.route_provider_id}
+      : {label: DPI18n.t('transfer.provider.pending'), state: 'pending'};
+  }
+  // Every other transfer names the backend's ACTIVE provider projection
+  // (``active_provider_id``): the provider executing its work, or the last
+  // one that did once nothing is live -- execution authority, never an
+  // origin, a delivery majority or a route ordinal. Nothing here derives a
+  // provider; an ambiguous projection is Unknown, an absent one Pending
+  // until the transfer completed.
+  if (t?.active_provider_id) {
+    return {label: String(t.active_provider_name || t.active_provider_id), state: 'known', id: t.active_provider_id};
+  }
+  if (t?.active_provider_basis === 'ambiguous' || String(t?.status || '') === 'completed') {
+    return {label: DPI18n.t('transfer.provider.unknown'), state: 'unknown'};
+  }
+  return {label: DPI18n.t('transfer.provider.pending'), state: 'pending'};
+}
+
+// The provider the row's badge names, by id ('' while none is known).
+function providerChipId(t) {
+  const provider = transferProviderPresentation(t);
+  return provider.state === 'known' ? String(provider.id || '') : '';
+}
+
+function providerChip(t, surface) {
+  const provider = transferProviderPresentation(t);
+  // A root provider route -- a torrent's one root, or a transfer one of whose
+  // roots may switch provider (``route_switch_scope``) -- has its one owner.
+  if (t && window.DPRootProvider && (Object.prototype.hasOwnProperty.call(t, 'route_provider_id')
+      || Object.prototype.hasOwnProperty.call(t, 'route_switch_scope'))) {
+    return window.DPRootProvider.badgeMarkup(t, surface, provider);
+  }
+  const identity = window.DPTransferSourcePresentation.providerBadgeIdentity(
+    provider.state === 'known' ? provider.id : '');
+  return `<span class="dp-provider-chip" data-provider-state="${provider.state}"${identity.attributes}>`
+    + `${identity.glyph}${window.DPTransferSourcePresentation.providerLabelMarkup(provider.label, provider.state === 'known' ? provider.id : '')}</span>`;
+}
+
+function routeOutcomePresentation(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  const labels = {
+    completed: 'completed',
+    succeeded: 'completed',
+    failed: 'failed',
+    cancelled: 'cancelled',
+    superseded: 'superseded',
+    resolved: 'resolved',
+    declined: 'not_applicable',
+    active: 'in_progress',
+    started: 'in_progress',
+    prepared: 'in_progress',
+    unknown: 'unknown',
+  };
+  return {label: DPI18n.t(`transfer.route_outcome.${labels[normalized] || 'unknown'}`), state: normalized || 'unknown'};
+}
+
+function renderRouteHistory(t) {
+  const attempts = Array.isArray(t?.route_attempts) ? t.route_attempts : [];
+  if (!attempts.length) {
+    const message = DPI18n.t(t?.provider_provenance_status === 'unknown_legacy'
+      ? 'details.route.empty_legacy' : 'details.route.empty');
+    return `<div class="dp-detail-route-empty">${esc(message)}</div>`;
+  }
+  // Relationship is the backend's projection (relation + contributing_transfer_id):
+  // which transfer contributed each source. Nothing is derived from an address,
+  // a file name, the candidate list or a neighbouring transfer.
+  const relationOf = (attempt) => {
+    const state = String(attempt.relation || '').trim().toLowerCase();
+    const contributor = Number(attempt.contributing_transfer_id);
+    const contributed = Number.isInteger(contributor) && contributor > 0 && contributor !== Number(t?.id);
+    // One provenance wording for any route another transfer contributed; the
+    // status column alone says whether it was verified.
+    const from = () => DPI18n.t('details.from_transfer', {id: contributor});
+    if (state === 'consolidated' && contributed) return {state, label: from()};
+    if (state === 'unverified' || state === 'failed') return {state, label: contributed ? from() : DPI18n.t('details.route.original')};
+    if (state === 'original') return {state, label: DPI18n.t('details.route.original')};
+    return {state: '', label: ''};
+  };
+  // Where the source came from reads as a parenthetical aside beside the URL;
+  // what happened to that route keeps the plain status wording to its right.
+  // Parentheses are the only change to the label text.
+  const originLabel = (label) => label ? DPI18n.t('details.route.relation_aside', {label}) : '';
+  return `<div class="dp-detail-route-list">${attempts.map((attempt) => {
+    const provider = attempt.provider_name || DPI18n.t('transfer.provider.unknown');
+    // An unverified association is the backend's statement about this source; it
+    // replaces the route's own outcome label and never reads as a verified candidate.
+    const unverified = attempt.verification_state === 'unverified';
+    const outcome = unverified ? {label: DPI18n.t('details.route.unverified'), state: 'unverified'} : routeOutcomePresentation(attempt.outcome);
+    const outcomeTitle = unverified && attempt.unverified_reason ? DPI18n.t('details.reason.unverified', {reason: attempt.unverified_reason})
+      : (attempt.failure_reason ? DPI18n.t('details.reason.failed', {reason: attempt.failure_reason}) : '');
+    const relation = relationOf(attempt);
+    const identity = attempt.route_identity || '—';
+    const identityTitle = attempt.route_location || attempt.route_identity || '';
+    const outcomeMarkup = `<span class="dp-detail-route-outcome" data-route-outcome="${esc(outcome.state)}" data-tooltip="${esc(outcomeTitle)}">${esc(outcome.label)}</span>`;
+    // A contributed source still unproven (``reconsider_available``, the
+    // backend's statement) offers its contributor's own operator Retry, which
+    // checks the source again; the server re-checks everything when it runs.
+    const contributor = Number(attempt.contributing_transfer_id);
+    const retry = unverified && attempt.reconsider_available === true && Number.isInteger(contributor)
+      && contributor > 0 && contributor !== Number(t?.id) && dpCan('transfers.operate');
+    const outcomeCell = retry
+      ? `<span class="dp-detail-route-outcome-cell">${outcomeMarkup}<button type="button" class="btn btn-blue btn-sm dp-detail-route-retry" data-default-label="${esc(DPI18n.t('details.route.retry'))}" onclick="retryUnverifiedContribution(${contributor},${Number(t.id)},this)" data-tooltip="${esc(DPI18n.t('details.route.retry_tooltip'))}" aria-label="${esc(DPI18n.t('details.route.retry_label', {id: contributor}))}">${window.DPIcons.iconLabel('refresh', DPI18n.t('details.route.retry'))}</button></span>`
+      : outcomeMarkup;
+    return `<div class="dp-detail-route-row" data-route-relation="${esc(relation.state)}">
+      <span class="dp-detail-route-order">${esc(attempt.presentation_ordinal ?? attempt.ordinal ?? '')}</span>
+      <span class="dp-detail-route-provider">${esc(provider)}</span>
+      <span class="dp-detail-route-identity" data-tooltip="${esc(identityTitle)}">${esc(identity)}</span>
+      <span class="dp-detail-route-relation">${esc(originLabel(relation.label))}</span>
+      ${outcomeCell}
+    </div>`;
+  }).join('')}</div>`;
+}
+
+// An unverified contribution's Retry is its contributor's own operator Retry
+// (POST /torrents/{contributor}/retry: the engine reconsiders a consolidated
+// contributor's unverified association); then Details shows the server's state.
+async function retryUnverifiedContribution(contributorId, targetId, button) {
+  setButtonPending(button, true, 'details.route.retrying');
+  try {
+    await api('POST', `/torrents/${contributorId}/retry`);
+    toast(DPI18n.t('details.route.retry_started'), 'success');
+  } catch (e) { toast(sanitizeErrorMsg(e.message), 'error'); }
+  if (DPModal.mode === 'details') showDetail(targetId);
+  else setButtonPending(button, false);
+}
+
+function sanitizeErrorMsg(message) {
+  const text = String(message || DPI18n.t('request.failed'));
+  return text.length > 500 ? text.slice(0, 497) + '...' : text;
+}
+
+function toast(msg, type = 'info') {
+  if (!window.DPIcons || typeof window.DPIcons.toast !== 'function') {
+    throw new Error('DownloadPulse icon runtime is unavailable');
+  }
+  return window.DPIcons.toast(msg, type);
+}
+
+// ``pendingLabel``: the words, or a catalog key -- a key is said in the page's
+// language, and again on a language change while the button stays pending.
+// The idle words are ``data-default-label``, which a keyed control's markup
+// (data-i18n-attr) or its owner keeps in the current language.
+function setButtonPending(button, pending, pendingLabel) {
+  if (!button) return;
+
+  if (!button.dataset.defaultLabel) {
+    button.dataset.defaultLabel = button.textContent;
+  }
+
+  if (pending) {
+    button.dataset.pending = '1';
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+
+    // A button with a glyph keeps it: only its label says the pending state.
+    if (pendingLabel) {
+      const keyed = DPI18n.has(pendingLabel);
+      if (keyed) button.dataset.pendingLabelKey = pendingLabel;
+      else delete button.dataset.pendingLabelKey;
+      (button.querySelector('[data-dp-icon-label]') || button).textContent = keyed ? DPI18n.t(pendingLabel) : pendingLabel;
+    }
+
+    return;
+  }
+
+  delete button.dataset.pending;
+  delete button.dataset.pendingLabelKey;
+  button.disabled = false;
+  button.removeAttribute('aria-busy');
+
+  if (button.dataset.defaultLabel) {
+    (button.querySelector('[data-dp-icon-label]') || button).textContent = button.dataset.defaultLabel;
+  }
+}
+
+// A language change: a pending control says its pending state in the new
+// words; it stays pending, disabled and busy, and nothing is run again.
+document.addEventListener('downloadpulse:locale-changed', () => {
+  document.querySelectorAll('[data-pending="1"][data-pending-label-key]').forEach(button => {
+    (button.querySelector('[data-dp-icon-label]') || button).textContent = DPI18n.t(button.dataset.pendingLabelKey);
+  });
+});
+
+function coalesceAsync(fn) {
+  let running = null;
+  let trailing = false;
+
+  return function(...args) {
+    if (running) {
+      trailing = true;
+      return running;
+    }
+
+    const context = this;
+
+    const run = async () => {
+      let result;
+
+      do {
+        trailing = false;
+        result = await fn.apply(context, args);
+      } while (trailing);
+
+      return result;
+    };
+
+    running = run().finally(() => {
+      running = null;
+    });
+
+    return running;
+  };
+}
+
+
+// ── Format ─────────────────────────────────────────────────────────────────
+// A size never shows four integer digits: from 1000 (as written, so 999.96
+// rolls too) it is the next unit's 1.0, at most "999.9 XB" -- eight characters.
+function fmtSize(b) {
+  if (!b) return '—';
+  const u = ['B','KB','MB','GB','TB','PB']; let i = 0;
+  while (Number(b.toFixed(1)) >= 1000 && i < u.length-1) {b/=1024; i++;}
+  return DPI18n.t(`format.size.${u[i].toLowerCase()}`, {value: DPI18n.number(b, 1)});
+}
+function fmtTransferRate(bps, rollover) {
+  const speed = Number(bps);
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = speed / 1024;
+  let unit = 0;
+  while (Number(value.toFixed(2)) >= rollover && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return DPI18n.t(`format.rate.${units[unit].toLowerCase()}`, {value: DPI18n.number(value, 2)});
+}
+function fmtSpeed(bps) {
+  const speed = Number(bps);
+  if (!Number.isFinite(speed) || speed <= 0) return DPI18n.t('format.rate.zero');
+  if (speed < 1024) return DPI18n.t('format.rate.below_one_kb');
+  return fmtTransferRate(speed, 100);
+}
+function fmtSpeedCap(bps) {
+  const speed = Number(bps);
+  if (!Number.isFinite(speed) || speed <= 0) return DPI18n.t('speed_cap.unlimited');
+  return fmtTransferRate(speed, 1000);
+}
+function parseApiDate(d) {
+  if (!d) return null;
+  let value = d;
+  // SQLite CURRENT_TIMESTAMP is canonical UTC but historically serialized as a
+  // naive "YYYY-MM-DD HH:MM:SS" string. Treat that legacy form as UTC.
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value.trim())) {
+    value = value.trim().replace(' ', 'T') + 'Z';
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function pct(part, total) {
+  if (!total) return 0;
+  return Math.round((part / total) * 100);
+}
+function badge(s, detail) {
+  const shown = statusShown(s, detail);
+  const html = window.DPIcons.statusBadge(shown.tone, shown.label, shown.category);
+  return shown.projected ? html.replace('<span class="badge ', '<span data-dp-lifecycle-status="' + esc(shown.projected) + '" class="badge ') : html;
+}
+// The same status as a glyph alone (a handheld Transfer Summary's metadata line).
+function statusGlyph(s, detail) {
+  const shown = statusShown(s, detail);
+  return window.DPIcons.statusGlyph(shown.tone, shown.label, shown.category);
+}
+// What a row's status shows: its tone, label and failure category.
+function statusShown(s, detail) {
+  if (!window.DPIcons || typeof window.DPIcons.statusBadge !== 'function') {
+    throw new Error('DownloadPulse icon runtime is unavailable');
+  }
+  // A backend-projected presentation_status (transfers.presentation_repository
+  // .effective_presentation) is canonical lifecycle truth and always wins over
+  // the raw status/failure-semantics guess below.
+  const projected = String(detail?.presentation_status || '').trim().toLowerCase();
+  if (projected) {
+    const tone = String(detail?.presentation_badge_status || projected).trim().toLowerCase();
+    // The server's label is a function of its presentation status (and, for a
+    // consolidation still owed proof, of its unverified associations): shown
+    // in the page's language by that status's key, its English label where
+    // the catalog has no such status.
+    const served = String(detail?.presentation_label || '').trim();
+    // The server sets the unverified label only together with a positive
+    // unverified_association_count (presentation_repository, one branch), so the
+    // count alone decides it; the words never classify a status.
+    const unverified = projected === 'consolidated' && Number(detail?.unverified_association_count) > 0;
+    const key = `status.${unverified ? 'consolidated_unverified' : projected}`;
+    const label = DPI18n.has(key) ? DPI18n.t(key) : served;
+    return {tone, label: label || undefined, category: '', projected};
+  }
+  const semantics = window.DPFailureSemantics;
+  const category = s === 'error' && semantics ? semantics.classify(detail) : '';
+  return {tone: s, label: category ? semantics.label(category) : '', category, projected: ''};
+}
+// The backend's effective presentation is the one display-status authority; every
+// list and detail payload carries it. The raw lifecycle status is only what a
+// caller that fabricated a payload without a projection can fall back to --
+// no status is derived here from extraction or source-failure fields.
+// The Details progress line: the list's rule in words -- verified material
+// first; current execution activity, only while the row is running, leads
+// while nothing is verified yet, and is never completion. A best-effort
+// estimate is never a second figure beside verified material, and a
+// processing writer's retained fill is processing, not a percentage.
+function dpDetailProgress(t) {
+  const status = transferDisplayStatus(t);
+  const active = inFlightExecutionPercent(status, t.active_execution_progress);
+  const execution = executionProcessing(status, t.active_execution_basis)
+    ? DPI18n.t('transfer.progress.processing_unverified')
+    : (active !== null ? DPI18n.t('transfer.progress.activity_unverified',
+      {activity: executionProgressWords(active, t.active_execution_basis)}) : '');
+  if (t.progress == null || (execution && Number(t.progress) === 0)) {
+    return esc(execution || '—' + (t.retained_bytes ? ' · ' + fmtSize(t.retained_bytes) : ''));
+  }
+  const beside = execution && t.active_execution_basis !== 'estimated';
+  return esc(DPI18n.t('transfer.progress.percent', {percent: DPI18n.number(Number(t.progress), 1)}) + (beside ? ' · ' + execution : ''));
+}
+// What an execution percentage counts (``active_execution_basis``): acquired
+// bytes, completed acquisition units (parts such as media segments), or one
+// writer's best-effort estimate of its whole execution -- never logical
+// completion.
+function executionProgressWords(value, basis) {
+  const percent = DPI18n.number(value, 1);
+  if (basis === 'estimated') return DPI18n.t('transfer.progress.estimated', {percent});
+  return DPI18n.t(basis === 'units' ? 'transfer.progress.in_progress_units' : 'transfer.progress.in_progress', {percent});
+}
+// The running row's writers are past acquisition (repair, unpack, remux,
+// finalization): no acquisition percentage, and nothing yet verified by it.
+function executionProcessing(status, basis) {
+  return String(status || '').toLowerCase() === 'downloading' && basis === 'processing';
+}
+function transferDisplayStatus(t) {
+  const projected = String(t && t.presentation_status || '').trim().toLowerCase();
+  return projected || (t && t.status) || '';
+}
+// The one active-execution predicate every progress presentation shares:
+// in-flight execution activity counts while the row is running or paused (a
+// paused writer keeps the completion it holds; operator, 2026-11-19), anywhere
+// else a lingering value is stale and never shown. The percentage, or null
+// when there is none to trust.
+function inFlightExecutionPercent(status, activePct) {
+  const state = String(status || '').toLowerCase();
+  if (state !== 'downloading' && state !== 'paused') return null;
+  const raw = activePct === null || activePct === undefined ? NaN : Number(activePct);
+  return Number.isFinite(raw) ? Number(Math.min(Math.max(raw, 0), 100).toFixed(1)) : null;
+}
+// The estimated time remaining of a downloading transfer, beneath its bar:
+// the backend's one estimate as it presents it (``acquisition_eta``: whole
+// seconds, held while no new data arrives, or indeterminate while acquisition
+// goes on but its time is not a number), never one of the browser's own, and
+// never counted down between updates. ``H:MM:SS`` from an hour (hours never
+// wrap at 24), else ``M:SS``; anything that is not a whole number of seconds
+// within the backend's ceiling (``MAX_ETA_SECONDS``, 9999:59:59) is "—".
+const ACQUISITION_ETA_MAX_SECONDS = 9999 * 3600 + 59 * 60 + 59;
+function acquisitionEtaText(seconds) {
+  if (!Number.isInteger(seconds) || seconds <= 0 || seconds > ACQUISITION_ETA_MAX_SECONDS) return null;
+  const two = value => String(value).padStart(2, '0');
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+  return hours ? hours + ':' + two(minutes) + ':' + two(seconds % 60) : minutes + ':' + two(seconds % 60);
+}
+function acquisitionEtaMarkup(eta) {
+  const T = (key, values) => esc(DPI18n.t(key, values));
+  if (eta?.indeterminate === true) {
+    return '<span class="prog-eta is-indeterminate" data-role="transfer-eta"' +
+      ' aria-label="' + T('transfer.eta.indeterminate.label') + '"' +
+      ' data-tooltip="' + T('transfer.eta.indeterminate.tooltip') + '">' + T('transfer.eta.value', {time: '∞'}) + '</span>';
+  }
+  const text = acquisitionEtaText(eta?.seconds);
+  if (text === null) {
+    return '<span class="prog-eta is-unavailable" data-role="transfer-eta" aria-label="' + T('transfer.eta.unavailable.label') + '"' +
+      ' data-tooltip="' + T('transfer.eta.unavailable.tooltip') + '">—</span>';
+  }
+  // Every figure reads the same: "ETA" already says it is a prediction, so
+  // whether it is held (``held``) or best-effort (``estimated``) changes
+  // neither its look nor its words.
+  return '<span class="prog-eta" data-role="transfer-eta" aria-label="' + T('transfer.eta.label', {time: text}) + '"' +
+    ' data-tooltip="' + T('transfer.eta.tooltip') + '">' + T('transfer.eta.value', {time: text}) + '</span>';
+}
+
+// ``activePct``: in-flight execution activity on the current source that is
+// not yet DP material, from any executor; shown beside, never as, completion.
+// ``basis`` (``active_execution_basis``) says what it counts. ``eta``: the
+// row's ``acquisition_eta`` where its surface shows one (Downloads and
+// Download Activity), shown
+// only while the row is downloading; omitted, no estimate is rendered. Such a
+// surface is compact: progress not yet verified is one line, its percentage
+// and what it counts, with no second line saying it is unverified.
+function progress(pct, status, activePct, basis, eta) {
+  const parts = progressParts(pct, status, activePct, basis, eta);
+  return parts.track + parts.lane + parts.line + parts.activity;
+}
+
+/* The Transfer Summary's projection of the same one progress authority (a
+ * handheld table's Name cell, below 780px): only its primary value, for the
+ * name's line, and its primary track, for the name's thin slot -- which a
+ * terminal transfer (DPProcessingPresentation.TERMINAL_PRESENTATION) does not
+ * draw. No lane, estimate or caption. Each is its own wrapper, so a live
+ * progress update rewrites them from the same parts as the progress column. */
+function progressSummary(t, presentation) {
+  const parts = progressParts(t.progress, presentation, t.active_execution_progress, t.active_execution_basis, null);
+  const terminal = window.DPProcessingPresentation.TERMINAL_PRESENTATION.includes(String(presentation || '').toLowerCase());
+  return {
+    value: progressSummaryValue(parts),
+    track: terminal ? '' : '<div class="dp-transfer-summary-track" data-role="transfer-summary-track">' + parts.track + '</div>',
+  };
+}
+// The summary's value: the primary figure and what it says to assistive
+// technology and in DP's tooltip, as the progress column's percentage.
+function progressSummaryValue(parts) {
+  return '<span class="dp-transfer-summary-value" data-role="transfer-summary-value"' + parts.valueAttrs + '>' + parts.valueLabel + '</span>';
+}
+
+/* A handheld Transfer Summary's metadata line gives way in one order
+ * (ui-dashboard-transfer-presentation.css): first the size alone, which the
+ * line sets aside by itself where the whole line does not fit; then, where
+ * the provider and the transfer's controls still cannot all show whole -- a
+ * label of theirs is being truncated -- the provider badge's short name
+ * (data-dp-short on the line; the size stays aside); and only then does a
+ * label truncate. This is that one decision, read from the rendered line:
+ * after each render of either table and whenever either table's viewport,
+ * or the fonts, change. From 780px no line is shortened. */
+function fitTransferSummaryLines() {
+  const lines = [...document.querySelectorAll(':is(#dash-tbody, #t-tbody) .dp-transfer-provider-meta')];
+  lines.forEach(meta => {
+    if (meta.dataset.dpFit === undefined) return;
+    delete meta.dataset.dpFit;
+    meta.querySelectorAll('[data-short-label]').forEach(label => delete label.dataset.tooltip);
+  });
+  if (!_shellHandheld.matches) return;
+  // Below 780px one line gives way in one order, each stage taken only where
+  // the one before does not fit: the size goes aside ("size"); a user label's
+  // text truncates, and the label goes once it has none to show ("label");
+  // then the providers draw their short labels ("short"), which truncate
+  // only after that. A stage is decided by the provider names' own room,
+  // never by a label's. Each stage is written to every line still pending,
+  // then read: one layout per stage.
+  // A text is truncated when its run is wider than the box it is drawn in
+  // (to the subpixel: an ellipsis is drawn for any overflow).
+  const truncated = node => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+      - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
+    return range.getBoundingClientRect().width > box + 0.05;
+  };
+  const providersWhole = meta => ![...meta.querySelectorAll('.dp-transfer-meta-main :is(.dp-provider-label, .dp-root-provider-name)')].some(truncated);
+  const overflows = meta => {
+    const main = meta.querySelector('.dp-transfer-meta-main');
+    return main.scrollWidth > main.clientWidth + 0.5;
+  };
+  const emptied = label => {
+    const style = getComputedStyle(label);
+    return label.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) < 2 * parseFloat(style.fontSize);
+  };
+  let pending = lines.filter(meta => {
+    const label = meta.querySelector('.dp-transfer-meta-main .lbl-badge');
+    return !providersWhole(meta) || overflows(meta) || (label && truncated(label));
+  });
+  pending.forEach(meta => { meta.dataset.dpFit = 'size'; });
+  const omit = [];
+  pending = pending.filter(meta => {
+    if (!providersWhole(meta) || overflows(meta)) return true;
+    const label = meta.querySelector('.dp-transfer-meta-main .lbl-badge');
+    if (label && truncated(label) && emptied(label)) omit.push(meta);
+    return false;
+  });
+  omit.forEach(meta => { meta.dataset.dpFit = 'label'; });
+  pending.forEach(meta => { if (meta.querySelector('.dp-transfer-meta-main .lbl-badge')) meta.dataset.dpFit = 'label'; });
+  pending = pending.filter(meta => !providersWhole(meta) || overflows(meta));
+  pending.forEach(meta => {
+    if (!meta.querySelector('.dp-transfer-meta-main [data-short-label]')) return;
+    meta.dataset.dpFit = 'short';
+    // A short label says its full name in DP's tooltip.
+    meta.querySelectorAll('[data-short-label]').forEach(label => { label.dataset.tooltip = label.textContent; });
+  });
+}
+
+// The parts of one progress projection: the primary track, the secondary
+// execution lane, the line (percentage, and the estimate on a compact
+// surface), the activity caption, and the primary value alone.
+function progressParts(pct, status, activePct, basis, eta) {
+  const state = String(status || '').toLowerCase();
+  const done = state === 'completed';
+  const failed = state === 'error';
+  const active = state === 'downloading';
+  // No trustworthy total size: the percentage is unavailable, never 0%.
+  const unknown = !done && (pct === null || pct === undefined);
+  const raw = Number(pct);
+  const actual = done ? 100 : Math.min(Math.max(Number.isFinite(raw) ? raw : 0, 0), 100);
+  const activeValue = inFlightExecutionPercent(state, activePct);
+  const inFlight = activeValue !== null;
+  // While nothing is verified (no verified percentage, or exactly 0%), current
+  // execution activity is the most useful truthful progress, so it is the
+  // primary bar -- worded as not yet verified, and never completion. Beside a
+  // nonzero verified percentage it stays secondary: nothing proves the two
+  // share a denominator, so they are never compared, and only verified
+  // material is durable across a replaced execution (no high-water mark).
+  const activeOnly = inFlight && (unknown || actual === 0);
+  const processing = executionProcessing(state, basis);
+  // A best-effort estimate of the whole execution is one primary figure, or
+  // nothing beside verified material: never a second lane. A processing
+  // writer's value is only the fill its acquisition reached.
+  const estimated = basis === 'estimated';
+  const besideVerified = inFlight && !activeOnly && !estimated && !processing;
+  // Running with no primary percentage to show -- an unknown total, nothing
+  // verified and no measurable acquisition, or writers past acquisition -- is
+  // the one moving indeterminate state: active, never a fabricated figure.
+  const showStripe = active && !activeOnly && (unknown || actual === 0);
+  const visual = activeOnly ? activeValue : actual;
+  let fillStyle = showStripe
+    ? 'width:100%;opacity:.35;background:repeating-linear-gradient(90deg,var(--accent) 0,var(--accent) 8px,transparent 8px,transparent 16px)'
+    : 'width:' + visual + '%';
+  if (failed) {
+    fillStyle += ';opacity:1;background:var(--dp-state-error)!important;background-color:var(--dp-state-error)!important;background-image:none!important;box-shadow:0 0 8px color-mix(in srgb,var(--dp-state-error) 88%,transparent),0 0 17px color-mix(in srgb,var(--dp-state-error) 46%,transparent)!important;filter:saturate(1.12) brightness(1.08)';
+  }
+  const cls = done ? 'done' : (failed ? 'error dp-terminal-error-progress' : (showStripe ? 'is-indeterminate' : ''));
+  const trackCls = failed ? 'prog dp-terminal-error-rail' : 'prog';
+  const attrs = failed
+    ? ' data-dp-actual-progress="' + actual + '" data-dp-visual-progress="' + visual + '"'
+    : (activeOnly ? ' data-progress-basis="execution"' : '');
+  // Two truths, never one number: the bar and percentage above are DP-valid
+  // material; in-flight execution activity that is not yet material (from
+  // any executor) gets its own thinner lane and label beneath, and the
+  // verified figure says so.
+  const compact = eta !== undefined;
+  // The compact line's words are their own span, so the layout owner can set
+  // them aside where the column is too narrow; the figure always stays.
+  // (Every word is the catalog's, escaped: a translation is text, never markup.)
+  const T = (key, values) => esc(DPI18n.t(key, values));
+  const percent = (value, digits) => DPI18n.number(value, digits);
+  const compactWords = T(basis === 'units' ? 'transfer.progress.words.units' : 'transfer.progress.words.estimated');
+  const label = done ? T('transfer.progress.percent', {percent: percent(100, 0)}) : (activeOnly
+    ? (processing ? T('transfer.progress.processing') : (compact
+      ? '<span class="prog-value">' + T('transfer.progress.percent', {percent: percent(activeValue, 1)})
+        + '</span><span class="prog-words"> ' + compactWords + '</span>'
+      : (estimated ? esc(executionProgressWords(activeValue, basis))
+        : T(basis === 'units' ? 'transfer.progress.active_units' : 'transfer.progress.active', {percent: percent(activeValue, 1)}))))
+    : (showStripe && processing ? T('transfer.progress.processing') : (unknown ? '—'
+      : (compact && (inFlight || processing)
+        ? '<span class="prog-value">' + T('transfer.progress.percent', {percent: percent(actual, 0)})
+          + '</span><span class="prog-words"> ' + T('transfer.progress.words.verified') + '</span>'
+        : T(inFlight || processing ? 'transfer.progress.verified' : 'transfer.progress.percent', {percent: percent(actual, 0)})))));
+  const inFlightTitle = T('transfer.progress.unverified_title');
+  const lane = besideVerified
+    ? '<div class="prog-lane" data-role="execution-progress-lane" role="progressbar" aria-valuemin="0" aria-valuemax="100"' +
+      ' aria-valuenow="' + activeValue + '" aria-label="' + inFlightTitle + '">' +
+      '<div class="prog-lane-fill" style="width:' + activeValue + '%"></div></div>'
+    : '';
+  const activityLabel = (activeOnly && !(compact && !processing)) || (showStripe && processing)
+    ? '<span class="prog-activity" data-role="execution-unverified" data-tooltip="' + inFlightTitle + '">'
+      + T('transfer.progress.not_yet_verified') + '</span>'
+    : (besideVerified
+      ? '<span class="prog-activity" data-role="execution-progress" data-tooltip="' + inFlightTitle + '">' +
+        esc(executionProgressWords(activeValue, basis)) + '</span>'
+      : (processing ? '<span class="prog-activity" data-role="execution-processing">' + T('transfer.progress.processing') + '</span>' : ''));
+  // The compact line still says, on hover, that its figure is not yet
+  // verified, and names what it counts even where its words are set aside.
+  const labelTip = compact && activeOnly && !processing
+    ? ' data-tooltip="' + inFlightTitle + '" aria-label="' + T(basis === 'units'
+      ? 'transfer.progress.compact_unverified_units' : 'transfer.progress.compact_unverified_estimated',
+    {percent: percent(activeValue, 1)}) + '"'
+    : (compact && !unknown && !done && !showStripe && (inFlight || processing)
+      ? ' aria-label="' + T('transfer.progress.verified', {percent: percent(actual, 0)}) + '"' : '');
+  const pctLabel = '<span class="prog-pct"' + labelTip + '>' + label + '</span>';
+  // A compact surface shows the percentage and, while downloading, the
+  // estimate on one line beneath the bar: words left, estimate right.
+  const line = compact
+    ? '<div class="prog-line">' + pctLabel + (active ? acquisitionEtaMarkup(eta) : '') + '</div>'
+    : pctLabel;
+  return {
+    track: '<div class="' + trackCls + '"' + (failed ? ' data-dp-actual-progress="' + actual + '"' : '') + '><div class="prog-fill ' + cls + '" style="' + fillStyle + '"' + attrs + '></div></div>',
+    lane, line, activity: activityLabel, value: pctLabel, valueLabel: label, valueAttrs: labelTip,
+  };
+}
+
+// An extraction failure is announced once per event; it paints nothing. Only
+// the publication of the transfer's claimed lifecycle event (lifecycle_event
+// "completed": the server's one announcement, as for its Discord notice) says
+// it; every other torrent_updated of the same failed transfer -- a control
+// action, a later refresh -- only re-renders it. The status badge of every row
+// comes from the backend's effective presentation on the authoritative refresh
+// that every torrent_updated event triggers.
+function notifyExtractionFailure(data) {
+  if (data?.lifecycle_event !== 'completed') return;
+  if (String(data?.extraction_status || '').trim() !== 'error') return;
+  const reason = sanitizeErrorMsg(
+    data?.extraction_error || DPI18n.t('extraction.failed_default')
+  );
+  toast(DPI18n.t('extraction.failed', {reason}), 'error');
+}
+
+function patchProgressOnlyTransferEvent(data) {
+  const updates = Array.isArray(data?.items) ? data.items : [];
+
+  if (!data?.progress_only || !updates.length) {
+    return false;
+  }
+
+  // Status transitions change filters and available action buttons.
+  // Those still get an authoritative full refresh.
+  if (updates.some(update => !!update?.status_changed)) {
+    return false;
+  }
+
+  for (const update of updates) {
+    const id = Number(update?.id ?? update?.torrent_id);
+    const nextProgress = update?.progress == null ? null : Number(update.progress);
+    const nextActivity = update?.active_execution_progress == null ? null : Number(update.active_execution_progress);
+    const nextBasis = update?.active_execution_basis ?? null;
+    const nextEta = update?.acquisition_eta ?? null;
+
+    if (!Number.isFinite(id) || (nextProgress !== null && !Number.isFinite(nextProgress))) {
+      continue;
+    }
+
+    document
+      .querySelectorAll(`tr[data-torrent-id="${id}"]`)
+      .forEach(row => {
+        // The bar is styled by the presentation status the row was rendered with;
+        // the event's raw lifecycle state is never a second source for it.
+        const status = String(row.dataset.presentationStatus || row.dataset.status || '');
+
+        const progressCell =
+          row.querySelector('[data-role="transfer-progress"]');
+
+        if (progressCell) {
+          // Only a surface that renders the compact line (Downloads and
+          // Download Activity) gets the estimate, so a patched row matches its
+          // full render; a status change is never patched here.
+          const showsEta = progressCell.querySelector('.prog-line') !== null;
+          const shownEta = progressCell.querySelector('[data-role="transfer-eta"]');
+          progressCell.innerHTML =
+            progress(nextProgress, status, nextActivity, nextBasis, showsEta ? nextEta : undefined);
+          // An estimate that reads the same stays the very element it was, so
+          // the figure, its tooltip and what is announced are left alone while
+          // the bar and percentage beside it move. Only what progress()
+          // renders is compared: an open tooltip's own marks on its host are
+          // not a different estimate.
+          const patchedEta = progressCell.querySelector('[data-role="transfer-eta"]');
+          const rendered = element => [element.className, element.getAttribute('aria-label'),
+            element.getAttribute('data-tooltip'), element.textContent];
+          if (shownEta && patchedEta && rendered(shownEta).join('\n') === rendered(patchedEta).join('\n')) {
+            patchedEta.replaceWith(shownEta);
+          }
+        }
+
+        // The Transfer Summary's value and track, from the same parts.
+        const summaryValue = row.querySelector('[data-role="transfer-summary-value"]');
+        const summaryTrack = row.querySelector('[data-role="transfer-summary-track"]');
+        if (summaryValue || summaryTrack) {
+          const parts = progressParts(nextProgress, status, nextActivity, nextBasis, null);
+          if (summaryValue) summaryValue.outerHTML = progressSummaryValue(parts);
+          if (summaryTrack) summaryTrack.innerHTML = parts.track;
+        }
+
+        const dashFill =
+          row.querySelector('.dash-row-bar-fill');
+
+        if (dashFill) {
+          const pctValue =
+            Math.min(100, Math.max(0, nextProgress));
+
+          dashFill.style.width = `${pctValue}%`;
+        }
+      });
+  }
+
+  return true;
+}
+
+// ── Status Bar ─────────────────────────────────────────────────────────────
+
+async function checkConnections() {
+  if (!dpCan('administer')) return;  // engine and provider health are Admin's
+  const cfg = settingsData || {};
+  await refreshProviderStatus();
+
+  // aria2 check — retry once if first attempt fails
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await api('POST', '/settings/test-aria2');
+      setDot('aria2', 'ok', result.version ? 'status.aria2.version' : 'status.aria2.online', {version: result.version});
+      break;
+    } catch {
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, attempt * 800));
+      } else {
+        setDot('aria2', 'error', 'status.aria2.offline');
+      }
+    }
+  }
+}
+
+// A row's last state, so a language change says it again in the new words.
+const _dotState = new Map();
+function setDot(id, state, key, values = {}) {
+  const d = document.getElementById('dot-'+id);
+  const l = document.getElementById('lbl-'+id);
+  if (!d || !l) return;  // element not in DOM yet
+  _dotState.set(id, {state, key, values});
+  d.className = 'dot' + (state ? ' '+state : '');
+  const label = DPI18n.t(key, values);
+  l.removeAttribute('data-i18n');      // this row's words are its state's from now on
+  l.textContent = label;
+  // The compact sidebar rail shows this row as its dot alone; the DP tooltip
+  // then says it (index.html marks the label it repeats).
+  const row = l.closest('.conn-row');
+  if (row) row.dataset.tooltip = label;
+}
+document.addEventListener('downloadpulse:locale-changed', () => {
+  _dotState.forEach(({state, key, values}, id) => setDot(id, state, key, values));
+});
+
+async function pauseProcessing() {
+  const button =
+    document.getElementById('btn-pause-all');
+
+  setButtonPending(button, true, 'processing.pausing');
+
+  try {
+    await api('POST', '/processing/pause');
+    processingPaused = true;
+    renderTopbarActions();
+    toast(DPI18n.t('processing.paused_toast'),'warn');
+    loadStats();
+    loadRecent();
+
+    if (
+      document
+        .getElementById('view-torrents')
+        .classList.contains('active')
+    ) {
+      loadTorrents();
+    }
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message),'error');
+  } finally {
+    setButtonPending(button, false);
+    renderTopbarActions();
+  }
+}
+
+async function resumeProcessing() {
+  const button =
+    document.getElementById('btn-resume-all');
+
+  setButtonPending(button, true, 'processing.resuming');
+
+  try {
+    await api('POST', '/processing/resume');
+    processingPaused = false;
+    renderTopbarActions();
+    toast(DPI18n.t('processing.resumed_toast'),'success');
+    loadStats();
+    loadRecent();
+
+    if (
+      document
+        .getElementById('view-torrents')
+        .classList.contains('active')
+    ) {
+      loadTorrents();
+    }
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message),'error');
+  } finally {
+    setButtonPending(button, false);
+    renderTopbarActions();
+  }
+}
+
+async function resumePausedDownloads() {
+  const button =
+    document.getElementById('btn-resume-paused');
+
+  setButtonPending(button, true, 'processing.resuming');
+
+  try {
+    await api('POST', '/processing/resume');
+    processingPaused = false;
+    renderTopbarActions();
+    toast(DPI18n.t('processing.resumed_paused_toast'),'success');
+    loadStats();
+    loadRecent();
+
+    if (
+      document
+        .getElementById('view-torrents')
+        .classList.contains('active')
+    ) {
+      loadTorrents();
+    }
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message),'error');
+  } finally {
+    setButtonPending(button, false);
+    renderTopbarActions();
+  }
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+function fmtDuration(secs) {
+  if (!secs || secs <= 0) return '—';
+  // Seconds keep the precision they came with (as String() wrote them).
+  const decimals = Math.min(20, (String(secs).match(/\.(\d+)$/) || ['', ''])[1].length);
+  if (secs < 60) return DPI18n.t('format.duration.seconds', {value: DPI18n.number(secs, decimals)});
+  if (secs < 3600) return DPI18n.t('format.duration.minutes', {value: DPI18n.number(Math.round(secs/60))});
+  return DPI18n.t('format.duration.hours', {value: DPI18n.number(secs/3600, 1)});
+}
+
+var _operatorTitleState = {active: 0, progress: 0};
+
+function renderOperatorTitle() {
+  if (_operatorTitleState.active === 0) {
+    document.title = 'DownloadPulse';
+    return;
+  }
+
+  const liveBps = (_runtimeStatusState && Number(_runtimeStatusState.liveBps)) || 0;
+  const speed = fmtTransferRate(Math.max(0, liveBps), 100).replace(/\s+/g, '');
+  document.title = DPI18n.t('operator_title.active', {speed, percent: DPI18n.number(_operatorTitleState.progress)});
+}
+
+function updateOperatorTitle(stats) {
+  const byStatus = stats && stats.by_status && typeof stats.by_status === 'object' ? stats.by_status : null;
+  const nonNegativeCount = value => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+  };
+  const logicalActive = byStatus
+    ? nonNegativeCount(byStatus.downloading) + nonNegativeCount(byStatus.queued)
+    : nonNegativeCount(stats && stats.operator_active_downloads);
+
+  updateOperatorTitle._latestLogicalActive = logicalActive;
+
+  const cancelIdle = () => {
+    if (updateOperatorTitle._idleTimer != null) {
+      clearTimeout(updateOperatorTitle._idleTimer);
+      updateOperatorTitle._idleTimer = null;
+    }
+  };
+
+  if (stats && stats.paused) {
+    cancelIdle();
+    _operatorTitleState.active = 0;
+    _operatorTitleState.progress = 0;
+    renderOperatorTitle();
+    return;
+  }
+
+  if (logicalActive > 0) {
+    cancelIdle();
+    _operatorTitleState.active = logicalActive;
+    const rawProgress = stats && stats.operator_active_progress_pct;
+    const value = rawProgress == null ? NaN : Number(rawProgress);
+    if (Number.isFinite(value)) {
+      _operatorTitleState.progress = Math.min(100, Math.max(0, Math.round(value)));
+    }
+    renderOperatorTitle();
+    return;
+  }
+
+  if (_operatorTitleState.active === 0) {
+    cancelIdle();
+    renderOperatorTitle();
+    return;
+  }
+
+  if (updateOperatorTitle._idleTimer == null) {
+    updateOperatorTitle._idleTimer = setTimeout(() => {
+      updateOperatorTitle._idleTimer = null;
+      if (updateOperatorTitle._latestLogicalActive === 0) {
+        _operatorTitleState.active = 0;
+        _operatorTitleState.progress = 0;
+        renderOperatorTitle();
+      }
+    }, 1500);
+  }
+  renderOperatorTitle();
+}
+
+
+/* Dashboard KPI sparklines are decorative artwork, not telemetry: the six
+ * cards' lines form one virtual ECG strip. Its route follows the cards as
+ * rendered -- rows top to bottom, each row right to left -- with the gaps
+ * between cards and rows travelled at their real distance, unseen. One owner
+ * starts the heartbeats; every heartbeat travels the whole strip right to left
+ * at one fixed speed, so several may be on it at once. Each card's single line
+ * is the signal: a flat baseline deformed into the ECG complex wherever a
+ * heartbeat is, its stroke gradient bright through the complex's leading QRS
+ * and fading behind it back into the dim baseline -- a fade measured in strip
+ * distance, at most 416 px long and always ending just before the next
+ * heartbeat reaches the same place, so a slow cadence leaves the strip quiet
+ * between heartbeats. Beneath the line, the card's accent glows down toward
+ * the card's floor: the area under the very same path, masked by the very same
+ * stroke gradient, so it rests faint and brightens and fades with the signal.
+ *
+ * The cadence is ambient: 3.5 BPM at rest rising linearly to 90 BPM as the
+ * aggregate download throughput (the core meter's own 4 s window) reaches the
+ * highest sustained rate this installation has shown; with no sustained peak
+ * recorded yet it stays at 3.5. The cadence eases continuously toward that
+ * target with a 4 s time constant, and a heartbeat clock advances with it: the
+ * next heartbeat comes when its phase completes. The clock is brought up to
+ * date at each heartbeat and each throughput reading, and the pending
+ * heartbeat re-timed from the phase it has reached, so a change of throughput
+ * moves it earlier or later at once without resetting the clock, bunching,
+ * doubling or catching up beats, and never later than one 3.5 BPM interval;
+ * beats already travelling keep their place and speed. Heartbeats are drawn
+ * only while the Dashboard is the active view of a visible document, and run
+ * only while motion is not reduced.
+ *
+ * Each heartbeat is drawn once, at its birth, with its own slightly different
+ * complex -- overall amplitude, R and S depths, the smaller deflections and its
+ * width varying within fixed bounds, the sequence, polarity and baseline kept --
+ * and keeps that shape across every card until it leaves the strip.
+ *
+ * Global Pause All (processingPaused, the projection of the backend's durable
+ * pause state that loadStats reads) holds the strip: no heartbeat is started,
+ * and the signal settles where it stands -- every complex on the strip eases
+ * flat to the baseline over 700 ms while it travels on, the last one keeping
+ * the trail it had (laid out for the heartbeat then due) -- and once it is flat
+ * every line becomes the same flat red, breathing in step (still, under reduced
+ * motion). Released before it is flat, it rises again from where it was.
+ * Resuming restores the cards' colours and starts a heartbeat at once -- but
+ * not before the last one's trail leaves it its clearance, nor within one 90
+ * BPM interval of it -- and the cadence carries on from the throughput. */
+const DASHBOARD_HEARTBEAT_BPM = [3.5, 90];
+const DASHBOARD_HEARTBEAT_EASE_MS = 4000;      // time constant of the cadence's approach to its target
+const DASHBOARD_HEARTBEAT_SETTLE_MS = 700;     // Global Pause All: the signal settles flat to its baseline over this
+const DASHBOARD_HEARTBEAT_SPEED = 0.24;        // px per ms along the strip
+const DASHBOARD_HEARTBEAT_COMPLEX = [          // [x px from the leading edge, y in the 24-unit viewBox]
+  [0, 16], [6, 16], [9, 13.5], [12, 16], [16, 16], [18, 17.5], [22, 2], [26, 23],
+  [29, 14], [31, 15], [36, 9], [41, 16], [44, 14.5], [47, 16], [48, 16]
+];
+const DASHBOARD_HEARTBEAT_WIDTH = 48;          // px
+const DASHBOARD_HEARTBEAT_CLEARANCE = 16;      // px of resting baseline left before the following heartbeat
+const DASHBOARD_HEARTBEAT_TRAIL = 416;         // px: the longest a trail fades over, however far behind the next heartbeat is
+const DASHBOARD_HEARTBEAT_VIEW_HEIGHT = 29.42; // viewBox units in the 38 px line box: 24 units per 31 px, the baseline 16 units down
+// The line is a calligraphic brush stroke, the page title's (icons/dp/shell-pulse.svg):
+// a broad nib held at 45 degrees -- thin along it, broad across it (px) -- its
+// width eased over this many neighbouring samples, so it never pinches or folds.
+const DASHBOARD_HEARTBEAT_NIB = Object.freeze({angle: Math.PI / 4, thin: 0.7, broad: 2.05, ease: 3});
+const _dashboardHeartbeat = {running: false, suspended: false, held: false, timer: 0, frame: 0, beats: [], route: null,
+  bytesPerSecond: 0, sustainedPeak: 0, bpm: DASHBOARD_HEARTBEAT_BPM[0], phase: 0, advancedAt: 0, nextAt: 0, earliest: 0,
+  settle: null};                               // the signal's height easing (Global Pause All): {at, from, to, span}
+
+/* One heartbeat's own complex, drawn at its birth, every bound holding however
+ * the draws combine. Height: each deflection from the y=16 baseline scales by
+ * an overall factor (+-15%) times its own -- R +-15% (0.72-1.32), S +-18%
+ * (0.70-1.36), each smaller hump +-22% (0.66-1.40), so R always stands well
+ * above T. Length: the P, QRS and T-U stretches of the complex scale by their
+ * own factors (+-18%, +-10%, +-22%) times an overall one (+-12%), so the
+ * complex runs 0.72-1.32 of its 48 px. Points stay in order, every deflection
+ * keeps its direction, and both ends rest on the baseline; S at its deepest,
+ * with its glow, still clears the card's floor. */
+function dashboardHeartbeatShape(random = Math.random) {
+  const draw = () => random() * 2 - 1;
+  const height = 1 + 0.15 * draw(), length = 1 + 0.12 * draw();
+  const factor = y => height * (1 + (y === 2 ? 0.15 : y === 23 ? 0.18 : 0.22) * draw());   // R, S, the rest
+  // Where each base x lands: the P (0-16), QRS (16-29) and T-U (29-48) stretches each scaled.
+  const stretches = [[16, 1 + 0.18 * draw()], [13, 1 + 0.10 * draw()], [19, 1 + 0.22 * draw()]];
+  const place = dx => {
+    let from = 0, to = 0;
+    for (const [span, scale] of stretches) {
+      if (dx <= from + span) return length * (to + (dx - from) * scale);
+      from += span; to += span * scale;
+    }
+    return length * to;
+  };
+  const points = DASHBOARD_HEARTBEAT_COMPLEX.map(([dx, y]) =>
+    Object.freeze([place(dx), y === 16 ? 16 : 16 + (y - 16) * factor(y)]));
+  return Object.freeze({points: Object.freeze(points), width: points[points.length - 1][0],
+    qrs: points[7][0]});                                   // where S, the end of the bright P-QRS lead, lands
+}
+
+/* Global Pause All holds the strip; once nothing is left on it, the flat red lines. */
+function syncDashboardHeartbeatFlatline() {
+  document.getElementById('dash-hero')?.classList.toggle('dash-hero--flatline',
+    processingPaused === true && !_dashboardHeartbeat.beats.length);
+}
+const _dashboardSparkReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+/* Whether the strip is on screen: the Dashboard is the active view of a visible
+ * document. Only then is anything painted; leaving the Dashboard for another
+ * view never stops the heartbeat clock. */
+function dashboardHeartbeatShown() {
+  return !document.hidden && !!document.getElementById('view-dashboard')?.classList.contains('active');
+}
+
+/* The live throughput facts, from their one poll (loadRuntimeSpeed). The
+ * heartbeat clock runs up to now on the facts it had, then the pending
+ * heartbeat is re-timed (none is pending while the strip is held). */
+function setDashboardHeartbeatThroughput(bytesPerSecond, sustainedPeak) {
+  const state = _dashboardHeartbeat;
+  const now = performance.now();
+  if (state.running) advanceDashboardHeartbeat(now);
+  state.bytesPerSecond = Math.max(0, Number(bytesPerSecond) || 0);
+  state.sustainedPeak = Math.max(0, Number(sustainedPeak) || 0);
+  if (state.running && !state.held && !state.suspended) scheduleDashboardHeartbeat(now);
+}
+
+/* The authoritative global pause state, as loadStats has just read it: hold
+ * the strip (stop starting heartbeats; those on it travel on) or release it
+ * (a heartbeat is due at once). */
+function syncDashboardHeartbeatPause() {
+  const state = _dashboardHeartbeat;
+  const held = processingPaused === true;
+  if (state.running && held !== state.held) {
+    // Unseen in a hidden document, the heartbeats due before the hold are born first.
+    if (held && state.suspended) advanceDashboardHeartbeat(performance.now());
+    state.held = held;
+    const last = state.beats[state.beats.length - 1];
+    if (held) {
+      clearTimeout(state.timer);
+      state.timer = 0;
+      if (last) last.until = state.nextAt;          // its trail stays as laid out for the heartbeat then due
+      settleDashboardHeartbeat(performance.now(), 0);   // it settles flat from where it stands
+    } else {
+      const now = performance.now();
+      settleDashboardHeartbeat(now, 1);             // not yet flat: it rises again from where it was
+      easeDashboardHeartbeat(now);                  // none was due while held
+      state.phase = 1;
+      // Not before the held trail leaves the next heartbeat its clearance.
+      state.earliest = last
+        ? last.born + (dashboardHeartbeatTrail(last, Infinity) + last.shape.width + DASHBOARD_HEARTBEAT_CLEARANCE) / DASHBOARD_HEARTBEAT_SPEED
+        : 0;
+      if (!state.suspended) scheduleDashboardHeartbeat(now);
+    }
+  }
+  syncDashboardHeartbeatFlatline();
+}
+
+function dashboardHeartbeatTargetBpm() {
+  const [low, high] = DASHBOARD_HEARTBEAT_BPM;
+  const {bytesPerSecond, sustainedPeak} = _dashboardHeartbeat;
+  if (!sustainedPeak) return low;
+  return low + (high - low) * Math.min(1, Math.max(0, bytesPerSecond / sustainedPeak));
+}
+
+/* The strip as rendered: each card's line, where the heartbeat's leading edge
+ * reaches its right edge (entry, px along the strip), and where it leaves the
+ * last card (end). */
+function measureDashboardHeartbeatRoute() {
+  const cards = [...document.querySelectorAll('#view-dashboard .dp-card-spark')].map(svg => {
+    const box = svg.getBoundingClientRect();
+    return {svg, line: svg.querySelector('.dp-card-spark-line'), fill: svg.querySelector('.dp-card-spark-fill'),
+      gradient: svg.querySelector('linearGradient[id^="dp-card-spark-signal-"]'),
+      left: box.left, right: box.right, top: box.top, middle: (box.top + box.bottom) / 2, width: box.width,
+      height: box.height || 38, d: '', paint: ''};
+  }).filter(card => card.width > 0);
+  const rows = [];
+  cards.sort((a, b) => a.top - b.top).forEach(card => {
+    const row = rows[rows.length - 1];
+    if (row && Math.abs(card.middle - row[0].middle) < 8) row.push(card);
+    else rows.push([card]);
+  });
+  const route = [];
+  let entry = 0;
+  rows.forEach(row => row.sort((a, b) => b.right - a.right).forEach(card => {
+    const previous = route[route.length - 1];
+    card.row = row;
+    if (previous) entry += previous.row === row
+      ? previous.right - card.right
+      : previous.width + Math.hypot(card.right - previous.left, card.middle - previous.middle);
+    card.entry = entry;
+    card.svg.setAttribute('viewBox', `0 0 ${card.width} ${DASHBOARD_HEARTBEAT_VIEW_HEIGHT}`);
+    route.push(card);
+  }));
+  const last = route[route.length - 1];
+  return {cards: route, end: last ? last.entry + last.width : 0};
+}
+
+/* On a handheld each KPI card, its title over its icon and value
+ * (ui-dashboard.css), shows its count whole wherever it fits beside the
+ * card's icon; where it would not, the card draws it in compact notation
+ * (1.23K, 12.3K, 123K, 1.23M), the most precise form that fits. Each card is
+ * decided on its own width, so it returns to the exact count by itself as
+ * room returns. Only what is drawn changes: the value's text stays the exact
+ * count (what assistive technology reads and every other reader sees), the
+ * compact form is its data-compact (ui-dashboard.css), and while it is drawn
+ * the card's own tooltip adds the exact count after its unchanged
+ * explanation. Run where the counts are written and when the strip's width
+ * changes; from 780px every count is drawn exactly. */
+// Compact and exact notation in the shown language (DPI18n.intlLocale).
+const _dashboardKpiFormats = new Map();
+function dashboardKpiFormats() {
+  const tag = DPI18n.intlLocale();
+  if (!_dashboardKpiFormats.has(tag)) {
+    _dashboardKpiFormats.set(tag, {
+      compact: [3, 2].map(digits => new Intl.NumberFormat(tag, {notation: 'compact', maximumSignificantDigits: digits})),
+      exact: new Intl.NumberFormat(tag),
+    });
+  }
+  return _dashboardKpiFormats.get(tag);
+}
+let _dashboardKpiTooltips = new WeakMap();
+// A language change re-renders each card's explanation (data-i18n-attr): the
+// explanations are read again and every card refitted.
+document.addEventListener('downloadpulse:locale-changed', () => {
+  _dashboardKpiTooltips = new WeakMap();
+  fitDashboardKpiValues();
+});
+function fitDashboardKpiValues() {
+  document.querySelectorAll('#view-dashboard .dash-hero-stat .dhs-val').forEach(value => {
+    const card = value.closest('.dash-hero-stat');
+    if (!_dashboardKpiTooltips.has(card)) _dashboardKpiTooltips.set(card, card.dataset.tooltip);
+    const explanation = _dashboardKpiTooltips.get(card);
+    const tooltip = text => { if (explanation !== undefined && card.dataset.tooltip !== text) card.dataset.tooltip = text; };
+    delete value.dataset.compact;
+    if (!_shellHandheld.matches || !card.offsetWidth) return tooltip(explanation);
+    const count = Number(value.textContent);
+    if (value.textContent.trim() === '' || !Number.isFinite(count)) return tooltip(explanation);
+    const style = getComputedStyle(card);
+    // The room beside the icon: the card's content width less the icon and the value's own gap from it.
+    const room = card.getBoundingClientRect().width - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth)
+      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - card.querySelector('.dhs-icon').getBoundingClientRect().width
+      - parseFloat(getComputedStyle(card.querySelector('.dhs-body')).marginLeft);
+    const fits = () => value.getBoundingClientRect().width <= room;
+    if (fits()) return tooltip(explanation);
+    const formats = dashboardKpiFormats();
+    for (const format of formats.compact) {
+      value.dataset.compact = format.format(count);
+      if (fits()) break;
+    }
+    tooltip(DPI18n.t('dashboard.kpi.exact_count', {explanation, count: formats.exact.format(count)}));
+  });
+}
+
+/* A heartbeat's trail: the strip distance to the heartbeat that follows it
+ * (born at `following`, or due then) -- or, if the strip was held, to the one
+ * that was due then -- less its own complex and the clearance, and never
+ * longer than DASHBOARD_HEARTBEAT_TRAIL. */
+function dashboardHeartbeatTrail(beat, following) {
+  const spacing = DASHBOARD_HEARTBEAT_SPEED * (Math.min(following, beat.until ?? Infinity) - beat.born);
+  return Math.min(DASHBOARD_HEARTBEAT_TRAIL, Math.max(0, spacing - beat.shape.width - DASHBOARD_HEARTBEAT_CLEARANCE));
+}
+
+/* The heartbeats on the strip at `now`, with how far each has travelled and
+ * its trail; those whose trail has left the strip are dropped. */
+function liveDashboardHeartbeats(now) {
+  const state = _dashboardHeartbeat;
+  const beats = state.beats.map((beat, i) => ({beat, shape: beat.shape,
+    travelled: (now - beat.born) * DASHBOARD_HEARTBEAT_SPEED,
+    trail: dashboardHeartbeatTrail(beat, i + 1 < state.beats.length ? state.beats[i + 1].born : state.nextAt)}));
+  const live = beats.filter(({shape, travelled, trail}) => travelled - shape.width - trail <= state.route.end);
+  state.beats = live.map(({beat}) => beat);
+  return live;
+}
+
+/* The signal's height at `now` (1 full, 0 flat on the baseline): from where
+ * it was toward where Global Pause All sends it, over a span in proportion to
+ * the distance (700 ms from full to flat) -- moving at once, then easing to
+ * rest (an ease-out). */
+function dashboardHeartbeatHeight(now) {
+  const settle = _dashboardHeartbeat.settle;
+  if (!settle) return 1;
+  const p = Math.min(1, Math.max(0, (now - settle.at) / settle.span));
+  return settle.from + (settle.to - settle.from) * (1 - (1 - p) ** 2);
+}
+function settleDashboardHeartbeat(now, to) {
+  const state = _dashboardHeartbeat;
+  // Already settled flat, though unseen (no frame ran): the strip is clear.
+  if (state.settle?.to === 0 && now - state.settle.at >= state.settle.span) Object.assign(state, {settle: null, beats: []});
+  const from = dashboardHeartbeatHeight(now);
+  state.settle = from === to || !state.beats.length ? null
+    : {at: now, from, to, span: DASHBOARD_HEARTBEAT_SETTLE_MS * Math.abs(to - from)};
+  if (!state.settle && to === 0) state.beats = [];   // nothing standing to settle
+}
+
+/* The line through `points` ([x px, y viewBox units], `scale` px per y unit) as
+ * one brush stroke: the filled outline around it, its width the nib's at each
+ * point (DASHBOARD_HEARTBEAT_NIB). Sampled at most 1 px apart, except along a
+ * flat run of baseline, whose width is one throughout. */
+function dashboardBrushOutline(points, scale) {
+  const {angle, thin, broad, ease} = DASHBOARD_HEARTBEAT_NIB;
+  const edge = ease + 2;
+  const at = [];
+  points.forEach(([x, y], i) => {
+    const X = x, Y = y * scale;
+    if (i) {
+      const [PX, PY] = at[at.length - 1];
+      const run = Math.hypot(X - PX, Y - PY);
+      if (run < 1e-6) return;
+      const steps = Math.ceil(run);
+      const flat = Y === PY && steps > 2 * edge + 2;
+      for (let s = 1; s < steps; s++) {
+        if (flat && s > edge && s < steps - edge) continue;
+        at.push([PX + (X - PX) * s / steps, PY + (Y - PY) * s / steps]);
+      }
+    }
+    at.push([X, Y]);
+  });
+  const direction = i => {
+    const a = at[Math.max(0, i - 1)], b = at[Math.min(at.length - 1, i + 1)];
+    return Math.atan2(b[1] - a[1], b[0] - a[0]);
+  };
+  const raw = at.map((_, i) => thin + (broad - thin) * Math.abs(Math.sin(direction(i) - angle)) ** 1.15);
+  const left = [], right = [];
+  at.forEach(([X, Y], i) => {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - ease); j <= Math.min(at.length - 1, i + ease); j++) { sum += raw[j]; count++; }
+    const half = sum / count / 2, t = direction(i);
+    const nx = -Math.sin(t) * half, ny = Math.cos(t) * half;
+    left.push([X + nx, (Y + ny) / scale]);
+    right.push([X - nx, (Y - ny) / scale]);
+  });
+  const fmt = value => Number(value.toFixed(2));
+  return `M ${left.concat(right.reverse()).map(([x, y]) => `${fmt(x)} ${fmt(y)}`).join(' L ')} Z`;
+}
+
+/* Draw every card's line for the heartbeats on the strip at `now`. */
+function renderDashboardHeartbeat(now) {
+  const {cards} = _dashboardHeartbeat.route;
+  const fmt = value => Number(value.toFixed(2));
+  const beats = liveDashboardHeartbeats(now);
+  for (const card of cards) {
+    const width = card.width;
+    const here = beats
+      .map(({shape, travelled, trail}) => ({x: width - (travelled - card.entry), shape, trail}))
+      .filter(({x, shape, trail}) => x - 4 < width && x + shape.width + trail > 0)
+      .sort((a, b) => a.x - b.x);
+    const complexes = here.filter(({x, shape}) => x < width && x + shape.width > 0);
+    const start = fmt(Math.min(0, complexes[0]?.x ?? 0));
+    const height = dashboardHeartbeatHeight(now);
+    const last = complexes[complexes.length - 1];
+    const finish = fmt(Math.max(width, last ? last.x + last.shape.width : 0));
+    const signal = [[start, 16]];
+    for (const {x, shape} of complexes) shape.points.forEach(([dx, y]) => signal.push([fmt(x + dx), fmt(16 + (y - 16) * height)]));
+    signal.push([finish, 16]);
+    const d = `M ${signal.map(([x, y]) => `${x} ${y}`).join(' L ')}`;
+    if (d !== card.d) {
+      card.d = d;
+      // The line: the signal drawn as one brush stroke.
+      card.line.setAttribute('d', dashboardBrushOutline(signal, card.height / DASHBOARD_HEARTBEAT_VIEW_HEIGHT));
+      // The glow: the area under the signal itself, down to the line box's floor.
+      card.fill.setAttribute('d', `${d} V ${DASHBOARD_HEARTBEAT_VIEW_HEIGHT} H ${start} Z`);
+    }
+    // Per heartbeat: rest before its leading edge, bright through P-QRS, the
+    // body colour at the complex's end, then fading through the tail to rest
+    // where its trail ends.
+    const groups = here.map(({x, shape, trail}) => {
+      const tail = x + shape.width;
+      return [x - 4, x + 4, x + shape.qrs, tail, tail + trail * 0.3, tail + trail];
+    });
+    const from = Math.min(0, ...groups.map(group => group[0]));
+    const to = Math.max(width, ...groups.map(group => group[5]));
+    const paint = `${fmt(from)} ${fmt(to)} ${groups.flat().map(fmt).join(' ')}`;
+    if (paint === card.paint) continue;
+    card.paint = paint;
+    card.gradient.setAttribute('x1', String(fmt(from)));
+    card.gradient.setAttribute('x2', String(fmt(to)));
+    const stops = card.gradient.children;
+    while (stops.length < 1 + 6 * groups.length) {
+      ['rest', 'lead', 'lead', 'body', 'tail', 'rest'].forEach(role => {
+        const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        stop.setAttribute('class', `dp-card-spark-${role}`);
+        stop.setAttribute('offset', '1');
+        card.gradient.appendChild(stop);
+      });
+    }
+    for (let group = 0; 1 + 6 * group < stops.length; group++) {
+      const positions = groups[group];
+      for (let i = 0; i < 6; i++) {
+        stops[1 + 6 * group + i].setAttribute('offset', positions ? String((positions[i] - from) / (to - from)) : '1');
+      }
+    }
+  }
+}
+
+function dashboardHeartbeatFrame(now) {
+  const state = _dashboardHeartbeat;
+  state.frame = 0;
+  renderDashboardHeartbeat(now);
+  const settle = state.settle;
+  if (settle && now - settle.at >= settle.span) {
+    state.settle = null;
+    // Settled flat: the strip is clear, drawn as the plain baseline.
+    if (settle.to === 0) { state.beats = []; renderDashboardHeartbeat(now); }
+  }
+  if (state.beats.length) state.frame = requestAnimationFrame(dashboardHeartbeatFrame);
+  else syncDashboardHeartbeatFlatline();             // a held strip, now clear
+}
+
+/* Run the heartbeat clock up to `now`: the cadence eases toward its target
+ * and the phase advances by the beats that eased cadence made (its integral).
+ * In a hidden document the clock's timer is suspended, so each heartbeat it
+ * comes due for meanwhile is born here instead, at the very instant its timer
+ * would have fired -- the strip shown again is the one that was never hidden.
+ * Every due instant is stepped through exactly (the cadence carries on from
+ * each), but only a heartbeat that can still be on the strip at `now`, trail
+ * and all, is kept and given its complex: a day hidden at 90 BPM is about
+ * 130,000 steps of this arithmetic alone, a few milliseconds. */
+function advanceDashboardHeartbeat(now) {
+  const state = _dashboardHeartbeat;
+  if (state.suspended && !state.held) {
+    const last = state.beats[state.beats.length - 1];
+    let born = last ? last.born : -Infinity;
+    // Born before this, a heartbeat has left the strip by `now` (its complex is at most 1.32 of 48 px).
+    const kept = state.route
+      ? now - (state.route.end + 2 * DASHBOARD_HEARTBEAT_WIDTH + DASHBOARD_HEARTBEAT_TRAIL) / DASHBOARD_HEARTBEAT_SPEED
+      : -Infinity;
+    for (;;) {
+      const due = state.advancedAt + dashboardHeartbeatWait(state.advancedAt, born);
+      if (due > now) { state.nextAt = due; break; }
+      easeDashboardHeartbeat(due);
+      state.phase = 0;
+      state.earliest = 0;
+      born = due;
+      if (due >= kept) state.beats.push({born: due, shape: dashboardHeartbeatShape()});
+    }
+    if (state.route) liveDashboardHeartbeats(now);   // only those still on the strip
+  }
+  easeDashboardHeartbeat(now);
+}
+function easeDashboardHeartbeat(now) {
+  const state = _dashboardHeartbeat;
+  const target = dashboardHeartbeatTargetBpm();
+  const elapsed = Math.max(0, now - state.advancedAt);
+  const settled = 1 - Math.exp(-elapsed / DASHBOARD_HEARTBEAT_EASE_MS);
+  state.phase += (target * elapsed + (state.bpm - target) * DASHBOARD_HEARTBEAT_EASE_MS * settled) / 60000;
+  state.bpm += (target - state.bpm) * settled;
+  state.advancedAt = now;
+}
+
+/* How long after `now` the pending heartbeat is due: when the phase completes
+ * at the current cadence, never sooner than one 90 BPM interval after the last
+ * one (born at `lastBorn`), nor before the clearance a held trail needs
+ * (earliest, after a resume). */
+function dashboardHeartbeatWait(now, lastBorn = _dashboardHeartbeat.beats[_dashboardHeartbeat.beats.length - 1]?.born ?? -Infinity) {
+  const state = _dashboardHeartbeat;
+  return Math.max((1 - state.phase) * 60000 / state.bpm,
+    lastBorn + 60000 / DASHBOARD_HEARTBEAT_BPM[1] - now, state.earliest - now, 0);
+}
+
+/* (Re)time the pending heartbeat. */
+function scheduleDashboardHeartbeat(now) {
+  const state = _dashboardHeartbeat;
+  const wait = dashboardHeartbeatWait(now);
+  clearTimeout(state.timer);
+  state.nextAt = now + wait;
+  state.timer = setTimeout(dashboardHeartbeat, wait);
+}
+
+function dashboardHeartbeat() {
+  const state = _dashboardHeartbeat;
+  if (processingPaused === true) return syncDashboardHeartbeatPause();   // held since this was timed
+  const now = performance.now();
+  advanceDashboardHeartbeat(now);
+  state.phase = 0;                                  // a completed phase is one heartbeat, never more
+  state.earliest = 0;
+  state.beats.push({born: now, shape: dashboardHeartbeatShape()});
+  scheduleDashboardHeartbeat(now);
+  if (!dashboardHeartbeatShown()) liveDashboardHeartbeats(now);   // off screen: only those still on the strip are kept
+  else if (!state.frame) state.frame = requestAnimationFrame(dashboardHeartbeatFrame);
+}
+
+/* The heartbeat's one lifecycle, on every view change, document visibility
+ * change and motion-preference change.
+ *
+ * Its clock starts where the Dashboard is first seen and then runs for the
+ * life of the page: another view being selected stops only the painting, so
+ * heartbeats are born on time and travel on unseen, and returning shows the
+ * strip exactly as it stands now, at once, before the next paint. A hidden
+ * document suspends the clock's timer (frames stop with it); every advance of
+ * the clock meanwhile -- each throughput reading, and the return -- births the
+ * heartbeats it came due for at their own instants (advanceDashboardHeartbeat),
+ * so the first frame back draws each where its age has carried it: the strip
+ * that was never hidden, nothing replayed, caught up or started afresh, and
+ * those whose trails have left the strip gone. Reduced motion stops it and
+ * leaves the flat baselines, as it always has. Global Pause All needs nothing
+ * here: its state reaches syncDashboardHeartbeatPause on every view, so a
+ * strip held while unseen has drained by the time it is shown. */
+function syncDashboardSparkPulses() {
+  const state = _dashboardHeartbeat;
+  if (_dashboardSparkReducedMotion.matches) {
+    if (!state.running) return;
+    clearTimeout(state.timer);
+    cancelAnimationFrame(state.frame);
+    Object.assign(state, {running: false, suspended: false, held: false, timer: 0, frame: 0, beats: [], settle: null});
+    renderDashboardHeartbeat(performance.now());   // back to the flat baselines
+    syncDashboardHeartbeatFlatline();
+    return;
+  }
+  const shown = dashboardHeartbeatShown();
+  const now = performance.now();
+  if (!state.running) {
+    if (!shown) return;
+    const held = processingPaused === true;        // entering a held strip: the flat red lines at once
+    Object.assign(state, {running: true, suspended: false, held, route: measureDashboardHeartbeatRoute(),
+      bpm: dashboardHeartbeatTargetBpm(), phase: 0, advancedAt: now, nextAt: Infinity, earliest: 0});
+    if (!held) scheduleDashboardHeartbeat(now);
+  } else if (document.hidden) {
+    if (state.suspended) return;
+    clearTimeout(state.timer);
+    cancelAnimationFrame(state.frame);
+    Object.assign(state, {suspended: true, timer: 0, frame: 0});
+    return;
+  } else if (state.suspended) {
+    advanceDashboardHeartbeat(now);                // the heartbeats due while hidden, born on time
+    state.suspended = false;
+    if (!state.held) scheduleDashboardHeartbeat(now);
+  }
+  cancelAnimationFrame(state.frame);
+  state.frame = 0;
+  if (!shown) return;
+  // Shown: this very frame is the strip as it stands now, then the frames go on.
+  state.route = measureDashboardHeartbeatRoute();
+  dashboardHeartbeatFrame(now);
+}
+
+/* A reflow of the shown strip re-measures it under the heartbeats already on
+ * it (hiding the Dashboard collapses it, which is no reflow of the strip). */
+function remeasureDashboardHeartbeat() {
+  if (!_dashboardHeartbeat.running || !dashboardHeartbeatShown()) return;
+  _dashboardHeartbeat.route = measureDashboardHeartbeatRoute();
+  renderDashboardHeartbeat(performance.now());
+}
+
+// The Dashboard figures that carry words or units, from the last /stats: written
+// with the rest on every load, and again on a language change (no refetch).
+let _lastStatsWords = null;
+function renderStatsWords(s) {
+  _lastStatsWords = s;
+  const set = (id, text) => { const node = document.getElementById(id); if (node) node.textContent = text; };
+  if (s.paused) set('s-processing', DPI18n.t('dashboard.kpi.paused'));
+  set('s-size', fmtSize(s.total_completed_bytes));
+  set('s-blocked', DPI18n.t('dashboard.kpi.blocked_files', {count: s.total_blocked_files||0}));
+  fitDashboardKpiValues();
+  set('i-success-rate', s.success_rate_pct != null ? DPI18n.t('transfer.progress.percent', {percent: s.success_rate_pct}) : '—');
+  set('i-avg-duration', fmtDuration(s.avg_download_duration_seconds));
+  set('i-avg-size', s.avg_torrent_size_bytes ? fmtSize(s.avg_torrent_size_bytes) : '—');
+}
+document.addEventListener('downloadpulse:locale-changed', () => { if (_lastStatsWords) renderStatsWords(_lastStatsWords); });
+
+async function loadStats() {
+  // Retry up to 5 times — server may be slow on first request after container start
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const s = await api('GET', '/stats');
+      updateOperatorTitle(s);
+      document.dispatchEvent(new CustomEvent('downloadpulse:dashboard-stats-rendered', {detail:s}));
+      // ── populate sidebar version ────────────────────────────────────────
+      const versionEl = document.getElementById('sidebar-version');
+      if (versionEl) versionEl.textContent = s.version ? `v${s.version}` : 'v—';
+      processingPaused = !!s.paused;
+      syncDashboardHeartbeatPause();
+      const bs = s.by_status || {};
+      pausedTransferCount = Math.max(0, Number(bs.paused) || 0);
+      renderTopbarActions();
+      // ── stat cards ─────────────────────────────────────────────────────
+      // Soft-deleted rows remain in /stats for diagnostics/duplicate revival,
+      // but they are intentionally absent from the normal Downloads view.
+      // User-facing totals and Queue Health therefore use the same visible universe.
+      const total = Object.entries(bs)
+        .filter(([status]) => status !== 'deleted')
+        .reduce((sum, [, count]) => sum + (Number(count) || 0), 0);
+      updateDownloadsTrackedCopy(total);
+      const completed = s.completed_count ?? bs.completed ?? 0;
+      document.getElementById('s-total').textContent = total;
+      document.getElementById('s-completed').textContent = completed;
+      document.getElementById('s-active').textContent = s.active_operations ?? s.active_downloads ?? 0;
+      document.getElementById('s-processing').textContent = (bs.processing||0)+(bs.uploading||0);
+      const errCount = s.error_count ?? bs.error ?? 0;
+      document.getElementById('s-error').textContent = errCount;
+      const errCard = document.getElementById('dash-error-card');
+      if (errCard) errCard.classList.toggle('dash-hero-stat--quiet', !(errCount > 0));
+      document.getElementById('i-last-day').textContent = s.completed_last_24h||0;
+      document.getElementById('i-last-week').textContent = s.completed_last_7d||0;
+      renderStatsWords(s);
+      // The Downloads badge: distinct transfers still in the ordinary download
+      // lifecycle (one torrents row each, whatever their artifacts or
+      // attempts). Failed transfers awaiting the operator and terminal ones
+      // are not counted.
+      const unfinished = ['pending', 'processing', 'input_required', 'ready', 'queued', 'downloading',
+        'paused', 'verifying', 'extracting'].reduce((sum, status) => sum + (Number(bs[status]) || 0), 0);
+      showDownloadsBadge(unfinished);
+      // The topbar's active count is NOT written here: it has exactly one
+      // writer, the neutral runtime-status poll, whose number is DownloadPulse's
+      // canonical execution-admission occupancy rather than this aggregate
+      // lifecycle count. Two writers for one visible fact is how the indicator
+      // could disagree with itself.
+      // ── DB info + dot ──────────────────────────────────────────────────
+      // Database status remains in the persistent lower-left status rail.
+      setDot('db', 'ok', 'status.db.sqlite');
+      return true; // signal success to caller
+    } catch(e) {
+      console.warn('loadStats attempt', attempt, 'failed:', e.message);
+      if (attempt < 5) {
+        await new Promise(r => setTimeout(r, 500 * attempt));
+        continue;
+      }
+      return false;
+    }
+  }
+  return false;
+}
+
+let _dashboardRecentFitLimit = null;
+// The handheld row height last measured: with no row drawn (none fitted, or
+// none yet) the room is still known, and a row is always this tall.
+let _dashboardRecentRowHeight = null;
+let _dashboardRecentResizeTimer = null;
+
+function dashboardRecentLimit() {
+  const mobile = window.matchMedia('(max-width: 779px)').matches;
+  const fallback = window.matchMedia('(max-width: 779px)').matches ? 4 : 6;
+  if (mobile) return dashboardRecentHandheldLimit() ?? _dashboardRecentFitLimit ?? fallback;
+
+  const wrap = document.querySelector('#dash-activity-card .dash-activity-table-wrap');
+  const head = wrap?.querySelector('thead');
+  const rows = Array.from(document.querySelectorAll('#dash-tbody tr[data-torrent-id]'));
+
+  if (!wrap || !head || !rows.length) {
+    return _dashboardRecentFitLimit || fallback;
+  }
+
+  const rowHeights = rows
+    .map(row => row.getBoundingClientRect().height)
+    .filter(height => Number.isFinite(height) && height > 0);
+
+  if (!rowHeights.length) {
+    return _dashboardRecentFitLimit || fallback;
+  }
+
+  const rowHeight = Math.max(...rowHeights);
+  const available = Math.max(
+    0,
+    wrap.clientHeight - head.getBoundingClientRect().height - 4
+  );
+  const fitted = Math.floor(available / rowHeight);
+  return Math.max(1, Math.min(32, fitted || 1));
+}
+
+// Below 780px Download Activity, last on the Dashboard, ends at the inset
+// #content leaves above the dock and holds the whole rows that fit between its
+// table's head and that inset (less the card's own edge beneath the table):
+// what the KPI strip, Quick Add and the card's header leave, wherever the
+// page is scrolled. None of that depends on how many rows are drawn, so the
+// measure is stable; where no whole row fits, none is drawn (0), and the page
+// scrolls only if the sections above cannot fit. With no row height known yet
+// there is nothing to measure (null).
+function dashboardRecentHandheldLimit() {
+  const content = document.getElementById('content');
+  const card = document.getElementById('dash-activity-card');
+  const wrap = card?.querySelector('.dash-activity-table-wrap');
+  const head = wrap?.querySelector('thead');
+  const heights = Array.from(document.querySelectorAll('#dash-tbody tr[data-torrent-id]'))
+    .map(row => row.getBoundingClientRect().height).filter(height => Number.isFinite(height) && height > 0);
+  if (heights.length) _dashboardRecentRowHeight = Math.max(...heights);
+  if (!content || !wrap || !head || !_dashboardRecentRowHeight) return null;
+  const space = getComputedStyle(content), box = content.getBoundingClientRect();
+  // The head's bottom and the content box's bottom, both in the workspace's own coordinates.
+  const headBottom = head.getBoundingClientRect().bottom - box.top - content.clientTop + content.scrollTop;
+  const below = card.getBoundingClientRect().bottom - wrap.getBoundingClientRect().bottom;
+  const available = content.clientHeight - parseFloat(space.paddingBottom) - headBottom - below;
+  return Math.max(0, Math.min(32, Math.floor((available + 0.5) / _dashboardRecentRowHeight)));
+}
+
+// Dashboard Recent Items has exactly one canonical renderer: renderRecent() in
+// ui-dashboard-transfer-presentation.js (a bounded presentation owner that is
+// lazy-loaded after app.js). This is the stable delegation entrypoint for it:
+// it is wrapped once by coalesceAsync (below) and never rebound afterwards, so
+// every loadRecent() trigger — startup, nav, SSE, polling, resize, pause/resume,
+// submission/import — routes through here for the life of the page.
+//
+// Calls made before the canonical owner has registered collapse into a single
+// owed refresh that fires once, at registration. This entrypoint never renders
+// rows and never emits the dashboard-recent-rendered event — the canonical
+// owner is the sole producer of both.
+let _recentRenderer = null;
+let _recentRefreshOwed = false;
+
+async function loadRecent() {
+  if (typeof _recentRenderer !== 'function') {
+    _recentRefreshOwed = true;
+    return;
+  }
+  return _recentRenderer();
+}
+
+// One-time registration hook for the canonical Dashboard Recent Items renderer.
+window.__dpRegisterRecentRenderer = function registerRecentRenderer(renderer) {
+  if (typeof renderer !== 'function' || _recentRenderer === renderer) return;
+  _recentRenderer = renderer;
+  if (_recentRefreshOwed) {
+    _recentRefreshOwed = false;
+    loadRecent().catch(() => {});
+  }
+};
+
+function openTorrentFilePicker() {
+  const input = document.getElementById('torrent-file-input');
+  if (!input) {
+    toast(DPI18n.t('upload.picker_unavailable'), 'error');
+    return;
+  }
+  input.value = '';
+  input.click();
+}
+
+/* One picker. A structured transfer file's extension chooses its canonical
+ * submission endpoint; any other file is offered as a list of links, which the
+ * server reads by its content, never its name. The browser never learns how
+ * anything is acquired. */
+const TRANSFER_UPLOADS = Object.freeze({
+  // ``kind``: what the toasts call the file (upload.* select messages, one per kind).
+  '.torrent': {endpoint: '/torrents/add-file', kind: 'torrent', interactive: true},
+  '.nzb':     {endpoint: '/usenet/add-file',   kind: 'nzb',     interactive: false,
+               // A posting's manifest is routinely tens or hundreds of
+               // megabytes and is streamed straight to durable storage, so it
+               // is not judged by a metafile's ceiling. This mirrors the one
+               // server-side ceiling (transfers/staged_input.py).
+               maxBytes: 1024 * 1024 * 1024, maxLimit: ['1', 'gb']},
+  // A Metalink file describes files and their sources: one that describes
+  // several offers the file selector like any other collection.
+  '.meta4':   {endpoint: '/multimeta/add-file', kind: 'metalink', interactive: true},
+});
+// Mirrors the server's link file ceiling (transfers/requests.py).
+const LINK_FILE_UPLOAD = Object.freeze(
+  {endpoint: '/links/add-file', kind: 'link_file', interactive: true, maxBytes: 1024 * 1024, maxLimit: ['1', 'mb']});
+
+function uploadKindFor(name) {
+  const lower = String(name || '').toLowerCase();
+  const key = Object.keys(TRANSFER_UPLOADS).find(ext => lower.endsWith(ext));
+  return key ? TRANSFER_UPLOADS[key] : null;
+}
+
+async function uploadTransferFile(input) {
+  const file = input && input.files ? input.files[0] : null;
+  if (!file) return;
+
+  const kind = uploadKindFor(file.name) || LINK_FILE_UPLOAD;
+  const maxBytes = kind.maxBytes || 16 * 1024 * 1024;
+  if (file.size > maxBytes) {
+    const [value, unit] = kind.maxLimit || ['16', 'mb'];
+    toast(DPI18n.t('upload.too_large', {kind: kind.kind, limit: DPI18n.t(`format.size.${unit}`, {value})}), 'error');
+    input.value = '';
+    return;
+  }
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+  // The built-in browser is an interactive client: opt every torrent/magnet
+  // submission into the interactive file-selection lifecycle. Historical /
+  // headless callers that omit this keep the ALL default (correction §6).
+  // A posting is acquired whole, so it has no per-file selection step.
+  if (kind.interactive) form.append('selection_mode', 'interactive');
+
+  try {
+    // A large posting takes longer to upload than a metafile. The allowance
+    // scales with the file so a slow link is not mistaken for a failure,
+    // never below the ordinary one.
+    const timeout = Math.max(60000, Math.round(file.size / 128));
+    let res;
+    try {
+      res = await api('POST', kind.endpoint, form, timeout);
+    } catch (error) {
+      // The same per-submission private-LAN confirmation as Quick Add: Allow
+      // resubmits THIS file with consent; neither answer changes a setting.
+      if (error?.detail?.confirmation === 'acquisition_scope') {
+        // A file carries no per-link answers: it is declined, never guessed.
+        toast(DPI18n.t('upload.scope_declined'), 'warn');
+        return;
+      }
+      if (error?.detail?.confirmation !== 'local_network') throw error;
+      if (!await confirmLocalNetwork(error.detail.hosts)) {
+        toast(DPI18n.t('quick_add.local_not_added'), 'info');
+        return;
+      }
+      form.append('allow_local_network', 'true');
+      res = await api('POST', kind.endpoint, form, timeout);
+    }
+    if (res && res._duplicate && res._duplicate.action === 'skip') {
+      toast(DPI18n.t('upload.already_queued', {name: res.name || res._duplicate.reason}), 'warn');
+    } else if (res && res._duplicate && res._duplicate.action === 'warn') {
+      toast(DPI18n.t('upload.added_duplicate', {kind: kind.kind}), 'warn');
+    } else if (res && res._deferred) {
+      toast(DPI18n.t('upload.added_paused', {kind: kind.kind}), 'success');
+    } else {
+      toast(DPI18n.t('upload.added', {kind: kind.kind}), 'success');
+    }
+    loadStats();
+    loadRecent();
+    if (document.getElementById('view-torrents').classList.contains('active')) {
+      loadTorrents();
+    }
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message), 'error');
+  } finally {
+    input.value = '';
+  }
+}
+
+function resizeDebridLinkInput(input) {
+  if (!input) return;
+  const styles = window.getComputedStyle(input);
+  const lineHeight = parseFloat(styles.lineHeight) || 18;
+  // scrollHeight counts content and padding but not the border, while the
+  // field's height is its border box: the border is added back below.
+  const border = (parseFloat(styles.borderTopWidth) || 0) + (parseFloat(styles.borderBottomWidth) || 0);
+  const chrome = (parseFloat(styles.paddingTop) || 0) +
+    (parseFloat(styles.paddingBottom) || 0) + border;
+  const minimum = Math.ceil((lineHeight * 2) + chrome);
+  const maximum = Math.ceil((lineHeight * 5) + chrome);
+  if (!input.value && input.dataset.placeholderConcise) input.placeholder = fittedPlaceholder(input, minimum, border);
+  // An empty field is as tall as its placeholder needs: the placeholder is
+  // measured as the field's own text (browsers differ on whether scrollHeight
+  // counts a placeholder), so a hint that wraps on a narrow screen is shown
+  // whole instead of losing its last line below the edge.
+  const placeholder = !input.value && input.placeholder;
+  if (placeholder) input.value = input.placeholder;
+  input.style.height = `${minimum}px`;
+  const needed = input.scrollHeight + border;
+  if (placeholder) input.value = '';
+  const target = Math.max(minimum, Math.min(needed, maximum));
+  input.style.height = `${target}px`;
+  input.style.overflowY = !placeholder && needed > maximum ? 'auto' : 'hidden';
+}
+
+/* A field that declares shorter placeholders (Quick Add: data-placeholder-
+ * concise, then data-placeholder-minimum) shows, on a handheld, the first of
+ * its authored placeholder, the concise one and the minimum one whose lines
+ * each fit on one line of the field as rendered -- so the empty field rests at
+ * its two lines with whole words, never a clipped or third line. From 780px
+ * it is always the authored one. Each is measured as the field's own text, as
+ * the sizing above measures a placeholder. */
+let _authoredPlaceholders = new WeakMap();
+function fittedPlaceholder(input, twoLines, border) {
+  if (!_authoredPlaceholders.has(input)) _authoredPlaceholders.set(input, input.placeholder);
+  const authored = _authoredPlaceholders.get(input);
+  if (!_shellHandheld.matches) return authored;
+  const choices = [authored, input.dataset.placeholderConcise, input.dataset.placeholderMinimum].filter(Boolean);
+  const fits = text => {
+    input.value = text;
+    input.style.height = `${twoLines}px`;
+    return input.scrollHeight + border <= twoLines;
+  };
+  const chosen = choices.find(fits) ?? choices[choices.length - 1];
+  input.value = '';
+  return chosen;
+}
+
+/* Quick Add's header on a handheld is one row whose subtitle never wraps.
+ * Where the row is short it gives way in one order (ui-dashboard.css): Recover
+ * All keeps only its glyph, then the subtitle shows its shorter wording. The
+ * first that leaves the rendered subtitle within its column is kept; from
+ * 780px the header is the desktop's. */
+// A language change has rendered Quick Add's words again (data-i18n-attr): its
+// placeholder is the new authored one, and both fits are measured afresh.
+document.addEventListener('downloadpulse:locale-changed', () => {
+  _authoredPlaceholders = new WeakMap();
+  resizeDebridLinkInput(document.getElementById('q-transfer-input'));
+  fitQuickAddHeader();
+});
+
+const QUICK_ADD_HEADER_FITS = ['', 'icon', 'icon short'];
+function fitQuickAddHeader() {
+  const header = document.querySelector('#view-dashboard .dp-dashboard-quick-add > .card-header');
+  const subtitle = header?.querySelector('.dp-card-subtitle');
+  if (!subtitle) return;
+  if (!_shellHandheld.matches) { delete header.dataset.dpFit; return; }
+  const fit = QUICK_ADD_HEADER_FITS.find(state => {
+    header.dataset.dpFit = state;
+    return subtitle.scrollWidth <= subtitle.clientWidth;
+  }) ?? QUICK_ADD_HEADER_FITS[QUICK_ADD_HEADER_FITS.length - 1];
+  header.dataset.dpFit = fit;
+}
+
+function classifyDashboardEntries(raw) {
+  const seen = new Set();
+  const direct = [];
+  const magnets = [];
+  const invalid = [];
+  const directLink = /^(?:https?|s?ftp|scp|ssh|rsync(?:\+ssh)?|(?:web)?davs?):\/\/\S+$/i;
+  String(raw || '').split(/\r?\n/).forEach((rawValue, index) => {
+    // A pasted row of TAB-separated links is ONE item with alternate
+    // sources, kept intact for the backend; empty cells are dropped.
+    const cells = [...new Set(rawValue.split('\t').map(cell => cell.trim()).filter(Boolean))];
+    const value = cells.join('\t');
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    const entry = {value, line: index + 1};
+    // Direct-source transports; the backend admission owner remains the authority.
+    if (cells.every(cell => directLink.test(cell))) direct.push(entry);
+    else if (cells.length === 1 && /^magnet:\?/i.test(value)) magnets.push(entry);
+    else invalid.push(entry);
+  });
+  return {direct, magnets, invalid};
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      try {
+        results[index] = {ok: true, value: await worker(items[index])};
+      } catch (error) {
+        results[index] = {ok: false, error};
+      }
+    }
+  }
+  const workers = Array.from(
+    {length: Math.min(Math.max(1, concurrency), Math.max(1, items.length))},
+    () => run()
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+async function addDashboardEntries() {
+  const input = document.getElementById('q-transfer-input');
+  const button = document.getElementById('btn-add-transfer');
+  const raw = input?.value || '';
+  if (!raw.trim()) {
+    openTorrentFilePicker();
+    return;
+  }
+
+  const {direct, magnets, invalid} = classifyDashboardEntries(raw);
+  if (invalid.length) {
+    const first = invalid[0];
+    toast(DPI18n.t('quick_add.invalid_line', {line: first.line}), 'error');
+    input?.focus();
+    return;
+  }
+  if (!direct.length && !magnets.length) {
+    toast(DPI18n.t('quick_add.empty'), 'warn');
+    input?.focus();
+    return;
+  }
+
+  setButtonPending(button, true, 'quick_add.adding');
+  const failed = [];
+  const kept = [];
+  let handled = 0;
+  let deferred = 0;
+  let scopeKept = 0;
+  try {
+    if (direct.length) {
+      try {
+        // The built-in browser is an interactive client: a source that proves
+        // to be a multi-file collection offers the file selector; a single
+        // file is unaffected. Headless callers that omit this keep ALL.
+        const submission = {links: direct.map(entry => entry.value), selection_mode: 'interactive'};
+        const scopes = {};
+        let result;
+        for (let asked = 0; direct.length && asked < 3; asked += 1) {
+          try {
+            submission.links = direct.map(entry => entry.value);
+            const answered = Object.fromEntries(Object.entries(scopes)
+              .filter(([link]) => direct.some(entry => entry.value.split('\t').includes(link))));
+            if (Object.keys(answered).length) submission.acquisition_scopes = answered;
+            else delete submission.acquisition_scopes;
+            result = await api('POST', '/links/add', submission, 30000);
+            break;
+          } catch (error) {
+            const confirmation = error?.detail?.confirmation;
+            if (confirmation === 'acquisition_scope') {
+              // Nothing was admitted: each link naming an item inside its
+              // collection is asked about on its own, one at a time, in input
+              // order. A cancelled link is kept in the input; every other
+              // line is still submitted. No answer is ever a default.
+              const cells = direct.flatMap(entry => entry.value.split('\t').map(cell => ({entry, cell})));
+              const cancelled = new Set();
+              for (const ask of Array.isArray(error.detail.links) ? error.detail.links : []) {
+                const target = cells[Number(ask.index)];
+                if (!target) throw error;
+                if (cancelled.has(target.entry)) continue;
+                const scope = await chooseAcquisitionScope(target.cell, ask.choices);
+                if (scope) scopes[target.cell] = scope;
+                else cancelled.add(target.entry);
+              }
+              if (cancelled.size) {
+                kept.push(...cancelled);
+                scopeKept += cancelled.size;
+                const remaining = direct.filter(entry => !cancelled.has(entry));
+                direct.length = 0;
+                direct.push(...remaining);
+              }
+              continue;
+            }
+            // A private-LAN destination with confirmation required: nothing was
+            // admitted. Allow applies to THIS submission only; neither answer
+            // changes a setting (Skip Local Connection Confirmation is the one
+            // persistent owner of "do not ask").
+            if (confirmation !== 'local_network') throw error;
+            if (!await confirmLocalNetwork(error.detail.hosts)) {
+              kept.push(...direct);
+              direct.length = 0;
+            } else {
+              submission.allow_local_network = true;
+            }
+          }
+        }
+        if (direct.length && !result) throw new Error(DPI18n.t('quick_add.not_submitted'));
+        if (direct.length) {
+          handled += direct.length;
+          if (result && result._deferred) deferred += direct.length;
+        }
+      } catch (error) {
+        direct.forEach(entry => failed.push({...entry, error}));
+      }
+    }
+
+    if (magnets.length) {
+      const results = await mapWithConcurrency(
+        magnets,
+        3,
+        entry => api('POST', '/torrents/add-magnet', {magnet: entry.value, selection_mode: 'interactive'}, 30000)
+      );
+      results.forEach((result, index) => {
+        if (result.ok) {
+          handled += 1;
+          if (result.value && result.value._deferred) deferred += 1;
+        } else failed.push({...magnets[index], error: result.error});
+      });
+    }
+
+    const remaining = [...failed, ...kept].sort((a, b) => a.line - b.line);
+    input.value = remaining.map(entry => entry.value).join('\n');
+    resizeDebridLinkInput(input);
+    input.focus();
+
+    if (failed.length) {
+      const failureMessages = [...new Set(
+        failed.map(entry => String(entry.error?.message || DPI18n.t('request.failed')))
+      )];
+      if (!handled && failureMessages.length === 1) {
+        toast(sanitizeErrorMsg(failureMessages[0]), 'error');
+      } else {
+        toast(DPI18n.t('quick_add.partly_failed', {handled, failed: failed.length}), handled ? 'warn' : 'error');
+      }
+    } else if (!handled && kept.length) {
+      toast(DPI18n.t(scopeKept === kept.length ? 'quick_add.link_not_added' : 'quick_add.local_not_added'), 'info');
+    } else if (handled && deferred === handled) {
+      toast(DPI18n.t('quick_add.added_paused', {count: handled}), 'success');
+    } else if (deferred) {
+      toast(DPI18n.t('quick_add.waiting_for_resume', {handled, deferred}), 'success');
+    } else {
+      toast(DPI18n.t('quick_add.submitted', {count: handled}), 'success');
+    }
+
+    if (handled) {
+      loadStats();
+      loadRecent();
+      if (document.getElementById('view-torrents')?.classList.contains('active')) {
+        loadTorrents();
+      }
+    }
+  } finally {
+    setButtonPending(button, false);
+  }
+}
+
+// Prevent SSE bursts and manual actions from stacking duplicate full renders.
+// loadTorrents is the Downloads owner's own self-wrap (ui-downloads.js).
+loadStats = coalesceAsync(loadStats);
+loadRecent = coalesceAsync(loadRecent);
+
+/* Recover All: a broad, provider- and executor-neutral recovery effort.
+ *
+ * It asks the backend to examine everything currently non-terminal and let the
+ * canonical recovery owner make whatever progress is legal right now. It is
+ * not an override -- every policy still holds -- so what it reports is what
+ * the canonical owners actually DID, never how much work exists.
+ *
+ * Three outcomes, and only three: nothing was legal to do, something was
+ * applied, or something failed. */
+function recoveryOutcomeSummary(result) {
+  const parts = [];
+  const recovered = Number(result?.recovered || 0);
+  const imported = Number(result?.imported || 0);
+  if (recovered > 0) parts.push(DPI18n.t('recovery.actions_applied', {count: recovered}));
+  if (imported > 0) parts.push(DPI18n.t('recovery.transfers_imported', {count: imported}));
+  return parts.join(' · ');
+}
+
+async function recoverAll(button) {
+  setButtonPending(button, true, 'recovery.recovering');
+
+  try {
+    toast(
+      DPI18n.t('recovery.checking'),
+      'info'
+    );
+
+    const r =
+      await api('POST','/torrents/recover-all');
+
+    const errors = Array.isArray(r.errors) ? r.errors.length : 0;
+    const summary = recoveryOutcomeSummary(r);
+
+    if (errors > 0) {
+      toast(DPI18n.t('recovery.finished_with_errors', {count: errors}), 'error');
+    } else if (summary) {
+      toast(DPI18n.t('recovery.complete', {summary}), 'success');
+    } else {
+      toast(DPI18n.t('recovery.nothing_found'), 'warn');
+    }
+
+    loadStats();
+    loadRecent();
+
+    if (
+      document
+        .getElementById('view-torrents')
+        .classList.contains('active')
+    ) {
+      loadTorrents();
+    }
+  } catch(e) {
+    toast(
+      sanitizeErrorMsg(e.message),
+      'error'
+    );
+  } finally {
+    setButtonPending(button, false);
+  }
+}
+
+async function pauseT(id, button) {
+  setButtonPending(button, true, 'processing.pausing');
+
+  try {
+    await api('POST',`/torrents/${id}/pause`);
+    toast(DPI18n.t('transfer.action.paused_toast'),'warn');
+    loadTorrents();
+    loadStats();
+    loadRecent();
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message),'error');
+  } finally {
+    setButtonPending(button, false);
+  }
+}
+
+async function resumeT(id, button) {
+  setButtonPending(button, true, 'processing.resuming');
+
+  try {
+    const result =
+      await api('POST',`/torrents/${id}/resume`);
+
+    if (typeof result.paused === 'boolean') {
+      processingPaused = result.paused;
+
+      renderTopbarActions();
+    }
+
+    toast(DPI18n.t('transfer.action.resumed_toast'),'success');
+    loadTorrents();
+    loadStats();
+    loadRecent();
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message),'error');
+  } finally {
+    setButtonPending(button, false);
+  }
+}
+
+// ── Shared modal coordinator ───────────────────────────────────────────────
+// app.js is the single owner of the shared #overlay/#modal shell. Bounded
+// presentation owners (Details candidates, file selection) drive it through
+// this contract and never wrap window.closeModal or window.showDetail.
+// `contain: true` declares a blocking dialog: focus moves onto the dialog when
+// it opens and Tab / Shift+Tab stay inside it until it closes.
+const DPModal = (function () {
+  const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
+  let activeMode = null;            // 'details' | 'file-selection' | null
+  let onCloseCallback = null;
+  let focusReturnTarget = null;
+  let containFocus = false;
+  let exits = 0;                    // the exit in progress; a reopening supersedes it
+
+  function containTab(event) {
+    const modal = document.getElementById('modal');
+    if (!containFocus || event.key !== 'Tab' || !modal) return;
+    const controls = Array.from(modal.querySelectorAll(FOCUSABLE))
+      .filter(control => !control.disabled && control.getClientRects().length > 0);
+    if (!controls.length) { event.preventDefault(); modal.focus(); return; }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    const active = document.activeElement;
+    if (!modal.contains(active) || active === modal) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function open(options) {
+    const opts = options || {};
+    const overlay = document.getElementById('overlay');
+    const modal = document.getElementById('modal');
+    const titleEl = document.getElementById('modal-title');
+    const footer = document.getElementById('modal-footer');
+    const closeBtn = modal ? modal.querySelector('.modal-close') : null;
+
+    activeMode = opts.mode || 'details';
+    onCloseCallback = typeof opts.onClose === 'function' ? opts.onClose : null;
+    // Opened while a dialog is still fading out, it inherits that one's return target.
+    focusReturnTarget = opts.focusReturn || (window.DPMotion ? window.DPMotion.focusOrigin()
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    exits += 1;                     // a closing shell reopened: it fades back from where it is
+    if (overlay) overlay.classList.remove('is-closing');
+    if (modal) {
+      modal.inert = false;
+      modal.style.height = '';      // a held shell (reveal({hold})) is released with a new opening
+      // `pending`: the shell waits, unseen, for its content (reveal()).
+      if (opts.pending === true) modal.dataset.dpModalPending = '';
+      else delete modal.dataset.dpModalPending;
+    }
+
+    if (overlay) { overlay.classList.add('open'); overlay.dataset.dpModalMode = activeMode; }
+    if (modal) modal.dataset.dpModalMode = activeMode;
+    if (titleEl && opts.title != null) titleEl.textContent = opts.title;
+    if (closeBtn) {
+      const label = opts.closeLabel || DPI18n.t('a11y.close_details');
+      closeBtn.setAttribute('aria-label', label);
+      closeBtn.dataset.tooltip = label;
+    }
+    if (footer) { footer.hidden = true; footer.innerHTML = ''; }
+    containFocus = opts.contain === true && Boolean(modal);
+    if (containFocus) {
+      modal.tabIndex = -1;
+      document.addEventListener('keydown', containTab);
+      modal.focus({preventScroll: true});
+    } else {
+      document.removeEventListener('keydown', containTab);
+      if (modal) modal.removeAttribute('tabindex');
+    }
+    return activeMode;
+  }
+
+  function requestModalClose(reason) {
+    const callback = onCloseCallback;
+    if (callback && callback(reason) === false) return false;   // owner vetoed
+    finishClose(reason);
+    return true;
+  }
+
+  function finishClose(reason) {
+    const overlay = document.getElementById('overlay');
+    const modal = document.getElementById('modal');
+    const footer = document.getElementById('modal-footer');
+    const closedMode = activeMode;
+    if (overlay && !overlay.classList.contains('open')) return;   // already closed (or closing)
+
+    if (overlay) { overlay.classList.remove('open'); delete overlay.dataset.dpModalMode; }
+    if (modal) delete modal.dataset.dpModalMode;
+    activeMode = null;
+    onCloseCallback = null;
+    const returnTarget = focusReturnTarget;
+    focusReturnTarget = null;
+    // The shell fades away in place, still covering the page and holding the
+    // keyboard; only once it is gone is it put away, Tab containment released
+    // and focus returned, once -- unless it was opened again meanwhile.
+    const exit = ++exits;
+    const leaving = window.DPMotion ? window.DPMotion.leave(overlay, modal, returnTarget) : Promise.resolve();
+    leaving.then(() => {
+      if (exit !== exits) return;
+      if (overlay) overlay.classList.remove('is-closing');
+      if (modal) { modal.inert = false; delete modal.dataset.dpModalPending; modal.style.height = ''; }
+      if (footer) { footer.hidden = true; footer.innerHTML = ''; }
+      if (containFocus) {
+        containFocus = false;
+        document.removeEventListener('keydown', containTab);
+        if (modal) modal.removeAttribute('tabindex');
+      }
+      if (window.DPMotion) window.DPMotion.restore(overlay, returnTarget, {remove: false});
+      else if (returnTarget && typeof returnTarget.focus === 'function') {
+        try { returnTarget.focus({preventScroll: true}); } catch (_) {}
+      }
+    });
+
+    if (closedMode === 'details') {
+      document.dispatchEvent(new CustomEvent('downloadpulse:detail-closed',
+        {detail: {reason: reason || null}}));
+    }
+  }
+
+  // The pending shell's content has arrived (or is slow): it fades in now.
+  // `hold`: shown before its content, it takes its full height -- the shell's
+  // own max-height -- and keeps it, so the content arriving never resizes it.
+  function reveal({hold = false} = {}) {
+    const modal = document.getElementById('modal');
+    if (!modal || !('dpModalPending' in modal.dataset)) return;
+    if (hold) modal.style.height = getComputedStyle(modal).maxHeight;
+    delete modal.dataset.dpModalPending;
+  }
+
+  return {
+    open,
+    reveal,
+    requestModalClose,
+    finishClose,
+    footer: function () { return document.getElementById('modal-footer'); },
+    get mode() { return activeMode; },
+  };
+})();
+window.DPModal = DPModal;
+
+// ── Detail Modal ───────────────────────────────────────────────────────────
+// Original Resource: the backend's complete safe URL, shown on hover or focus,
+// and -- only when the backend allows it -- Copy URL in the application's one
+// menu, which copies exactly that value. The menu acts only on the rendering
+// it was opened from: any other rendering or a closed Details leaves nothing
+// to copy.
+let dpDetailResource = null;
+function dpOriginalResourceMenu(event) {
+  const snapshot = dpDetailResource;
+  const node = event.target.closest?.('.dp-detail-resource');
+  if (!snapshot || !node || node !== snapshot.node || !node.isConnected) return false;
+  return dpOpenContextMenu(event, node, {
+    label: DPI18n.t('details.resource.menu_label'),
+    items: [{text: DPI18n.t('details.resource.copy'), run: () => dpCopyOriginalResource(snapshot)}],
+    restore: () => { if (snapshot.node.isConnected) snapshot.node.focus({preventScroll: true}); },
+  });
+}
+async function dpCopyOriginalResource(snapshot) {
+  if (dpDetailResource !== snapshot || !snapshot.node.isConnected) {
+    toast(DPI18n.t('details.resource.changed'), 'warn');
+    return;
+  }
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(snapshot.url);
+  } catch (_) {
+    toast(DPI18n.t('details.resource.copy_failed'), 'error');
+    return;
+  }
+  toast(DPI18n.t('details.resource.copied'), 'success');
+}
+function dpRenderOriginalResource(modalBody, t) {
+  const full = typeof t.original_resource_sanitized_full === 'string' ? t.original_resource_sanitized_full : '';
+  const field = modalBody?.querySelector('.dp-detail-original-resource .dv');
+  if (!field) return;
+  if (!full) { field.textContent = t.original_resource || '—'; return; }
+  // The compact value; the complete safe URL is its tooltip (ui-tooltip.js:
+  // on hover or keyboard focus, bounded and scrolling however long the URL,
+  // hidden by Escape or by opening its Copy URL menu).
+  const value = document.createElement('span');
+  value.className = 'dp-detail-resource';
+  value.tabIndex = 0;
+  value.dataset.tooltip = full;
+  value.textContent = t.original_resource || full;
+  field.replaceChildren(value);
+  if (t.original_resource_copy_allowed === true) dpDetailResource = {url: full, node: value};
+}
+document.addEventListener('downloadpulse:detail-closed', () => { dpDetailResource = null; });
+
+/* Details' ERROR: the message as it always was, and -- when the backend
+ * discloses facts of that very error (error_disclosure, bound to it by the
+ * Details route) -- the same message as a collapsed disclosure revealing
+ * them. Every value is text; nothing here interprets a provider or an error. */
+// Each fact's label is details.error_fact.<fact>; an enumerated value is
+// details.error_fact.<fact>.<value> (the error model's codes), else its own words.
+const DP_ERROR_FACTS = Object.freeze(['integration_id', 'origin', 'domain', 'diagnostic', 'native_code', 'stage',
+  'permanence', 'retryability']);
+// Classifications read as words; a diagnostic, native code or identifier is shown exactly.
+const DP_ERROR_VERBATIM = new Set(['diagnostic', 'native_code', 'integration_id']);
+function dpRenderErrorDisclosure(modalBody, t) {
+  const field = modalBody?.querySelector('.dp-detail-error .dv');
+  const facts = t.error_disclosure && typeof t.error_disclosure === 'object' ? t.error_disclosure : null;
+  if (!field || !facts) return;
+  const rows = [];
+  for (const key of DP_ERROR_FACTS) {
+    const raw = facts[key];
+    if (typeof raw !== 'string' || !raw) continue;
+    const label = DPI18n.t(`details.error_fact.${key}`);
+    const coded = `details.error_fact.${key}.${raw}`;
+    let value = DP_ERROR_VERBATIM.has(key) ? raw : (DPI18n.has(coded) ? DPI18n.t(coded) : raw.replace(/_/g, ' '));
+    if (key === 'integration_id' && typeof facts.integration_name === 'string' && facts.integration_name && facts.integration_name !== raw) {
+      value = `${facts.integration_name} (${raw})`;
+    }
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    rows.push(term, detail);
+  }
+  if (!rows.length) return;
+  const disclosure = document.createElement('details');
+  disclosure.className = 'dp-detail-error-disclosure';
+  const summary = document.createElement('summary');
+  summary.textContent = field.textContent;
+  const list = document.createElement('dl');
+  list.append(...rows);
+  disclosure.append(summary, list);
+  field.replaceChildren(disclosure);
+}
+
+/* Details' REASON: the reporting integration's own words for the failure
+ * Details shows or DownloadPulse is still recovering from (error_reason, from
+ * the Details route), with only a real schedule -- the next automatic attempt
+ * when one is scheduled, else that none is. The lifecycle stays the Status
+ * badge's; every value is text. */
+function dpErrorReasonMarkup(t) {
+  const reason = t.error_reason && typeof t.error_reason === 'object' ? t.error_reason : null;
+  if (!reason || typeof reason.reason !== 'string' || !reason.reason) return '';
+  const at = Number(reason.scheduled_retry_at);
+  const schedule = reason.scheduled_retry_at != null && Number.isFinite(at) && at > 0
+    ? esc(DPI18n.t('details.reason.next_attempt')) + ' ' + window.downloadsDateMarkup(new Date(at * 1000).toISOString())
+    : esc(DPI18n.t('details.reason.no_retry'));
+  const explanation = typeof reason.explanation === 'string' && reason.explanation
+    ? `<div class="dp-detail-error-reason-explanation">${esc(reason.explanation)}</div>` : '';
+  return `<div class="dp-detail-error-reason" style="grid-column:1/-1"><div class="dk">${esc(DPI18n.t('details.field.reason'))}</div><div class="dv">`
+    + `<div class="dp-detail-error-reason-text">${esc(reason.reason)}</div>${explanation}`
+    + `<div class="dp-detail-error-reason-schedule">${schedule}</div></div></div>`;
+}
+
+/* Details' body and title from one payload: drawn when it arrives, and again --
+ * from the same payload, with no request -- when the page's language changes. */
+let dpDetailShown = null;
+function dpPaintDetail(t, relabel) {
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+    if (modalTitle) {
+      modalTitle.textContent =
+        t.display_name || t.name || DPI18n.t('details.title_fallback');
+    }
+
+    const providerPresentation = transferProviderPresentation(t);
+    // The file-selection affordance (DP 1.0.12 Workstream B) can be valid
+    // before any artifact exists yet (manifest-pending window, §6.5), so the
+    // Files-section header must be able to render even when t.files is
+    // still empty -- gated on the durable torrent/magnet source-kind fact,
+    // never on filename shape or provider identity.
+    const dpMayHaveFileSelection = ['magnet', 'torrent_file'].includes(
+      String(t.current_source_identity && t.current_source_identity.kind || '').toLowerCase());
+    // Which collection the Files card shows is decided by its one row owner:
+    // the canonical-object presentation when the backend projects it, the
+    // physical collection otherwise. The title and the rows read the same list.
+    const dpDisplayFiles = window.DPDetailCandidates.displayRows(t);
+    const dpShowFilesCard = Boolean(dpDisplayFiles.length || dpMayHaveFileSelection);
+    if (modalBody) modalBody.innerHTML = `
+      <div class="detail-grid">
+        ${dpDetailFactCells(t, providerPresentation)}
+        <div class="dp-detail-original-resource" style="grid-column:${t.requested_by ? '1' : '1/-1'}"><div class="dk">${esc(DPI18n.t('details.field.original_resource'))}</div><div class="dv"></div></div>
+        ${dpRequestedByMarkup(t.requested_by)}
+        <div style="grid-column:1/-1"><div class="dk">${esc(DPI18n.t('details.field.transfer_id'))}</div><div class="dv">${t.id}</div></div>
+        <div style="grid-column:1/-1"><div class="dk">${esc(DPI18n.t('details.field.hash'))}</div><div class="dv" style="font-size:11px">${esc(t.hash||'—')}</div></div>
+        ${t.local_path?`<div style="grid-column:1/-1"><div class="dk">${esc(DPI18n.t('details.field.local_path'))}</div><div class="dv" style="font-size:11px">${esc(t.local_path)}</div></div>`:''}
+        ${dpErrorReasonMarkup(t)}
+        ${t.error_message?`<div class="dp-detail-error" style="grid-column:1/-1"><div class="dk">${esc(DPI18n.t('details.field.error'))}</div><div class="dv" style="color:var(--red)">${esc(t.error_message)}</div></div>`:''}
+        ${t.extraction_status?`<div><div class="dk">${esc(DPI18n.t('details.field.extraction'))}</div><div class="dv">${esc(DPI18n.has(`details.extraction.${t.extraction_status}`) ? DPI18n.t(`details.extraction.${t.extraction_status}`) : t.extraction_status)}</div></div>`:''}
+        ${t.extraction_error?`<div style="grid-column:1/-1"><div class="dk">${esc(DPI18n.t('details.field.extraction_error'))}</div><div class="dv" style="color:var(--red)">${esc(t.extraction_error)}</div></div>`:''}
+      </div>
+      <div class="card dp-detail-section-card dp-detail-route-history">
+        <div class="card-header"><span class="card-title">${esc(DPI18n.t('details.route.title'))}</span></div>
+        <div class="dp-detail-route-body">${renderRouteHistory(t)}</div>
+      </div>
+      <details class="dp-detail-advanced">
+        <summary>${esc(DPI18n.t('details.advanced.title'))}</summary>
+        <div class="dp-detail-advanced-grid">
+          <div><span>${esc(DPI18n.t('details.advanced.executor'))}</span><strong>${esc((t.executors || []).join(', ') || '—')}</strong></div>
+          <div><span>${esc(DPI18n.t('details.advanced.origin_provider'))}</span><strong>${esc(t.origin_provider_id || '—')}</strong></div>
+          <div><span>${esc(DPI18n.t('details.advanced.current_provider'))}</span><strong>${esc(t.current_provider_id || '—')}</strong></div>
+          <div><span>${esc(DPI18n.t('details.advanced.delivering_provider'))}</span><strong>${esc(t.delivering_provider_id || '—')}</strong></div>
+        </div>
+      </details>
+      ${dpShowFilesCard?`
+        <div class="card dp-detail-section-card dp-detail-files-card">
+          <div class="card-header dp-detail-files-header">
+            <span class="card-title">${esc(dpDisplayFiles.length ? DPI18n.t('details.files.title_count', {count: dpDisplayFiles.length}) : DPI18n.t('details.files.title'))}</span>
+            <span class="dp-detail-files-header-actions">
+              <span class="dp-detail-files-provider-slot" data-dp-root-provider-mount data-dp-transfer-id="${t.id}"></span>
+              <span class="dp-detail-files-group-slot" data-dp-group-candidates-mount data-dp-transfer-id="${t.id}"></span>
+              <span class="dp-detail-files-selection-slot" data-dp-file-selection-mount data-dp-transfer-id="${t.id}"></span>
+            </span>
+          </div>
+          ${dpDisplayFiles.length?`
+          <div class="dp-detail-table-wrap">
+            <table class="t-table">
+              <thead><tr><th>${esc(DPI18n.t('details.files.filename'))}</th><th>${esc(DPI18n.t('transfer.column.size'))}</th><th>${esc(DPI18n.t('transfer.column.status'))}</th></tr></thead>
+              <tbody>${window.DPDetailCandidates.rowsMarkup(dpDisplayFiles, t)}</tbody>
+            </table>
+          </div>
+          `:''}
+        </div>
+      `:''}
+      ${t.source_outcomes && t.source_outcomes.length ? `
+        <div class="card dp-detail-section-card">
+          <div class="card-header"><span class="card-title">${esc(DPI18n.t('details.source_warnings', {count: t.source_outcomes.length}))}</span></div>
+          <div class="dp-detail-table-wrap"><table class="t-table"><tbody>
+            ${t.source_outcomes.map(source => `<tr><td>${esc(source.name)}</td><td>${badge('error', source)}</td></tr>`).join('')}
+          </tbody></table></div>
+        </div>
+      ` : ''}
+      ${t.events&&t.events.length?`
+        <div class="card dp-detail-section-card dp-detail-events-card">
+          <div class="card-header">
+            <span class="card-title">${esc(DPI18n.t('details.events'))}</span>
+          </div>
+          <div class="dp-detail-events-list">
+            ${t.events.map(ev=>`
+              <div class="event-item">
+                <div class="elevel ${esc(ev.level)}"></div>
+                <div class="emsg">${esc(ev.message)}</div>
+                <div class="etime">${window.downloadsDateMarkup(ev.created_at)}</div>
+              </div>`).join('')}
+          </div>
+        </div>
+      `:''}
+    `;
+    dpRenderOriginalResource(modalBody, t);
+    dpRenderErrorDisclosure(modalBody, t);
+    dpRenderWithdrawal(t);
+
+    // ``relabel``: the same transfer re-said in another language; the Files
+    // header owners re-word from what they hold instead of re-reading.
+    document.dispatchEvent(new CustomEvent('downloadpulse:detail-rendered',
+      {detail: {transferId: Number(t.id), transfer: t, relabel: Boolean(relabel)}}));
+}
+
+/* Repaint ``root`` from data it already shows, keeping the reader's place: its
+ * scroll, which <details> are open, and focus -- the element at the same place
+ * (the same data draws the same structure), else the dialog's close control. */
+function dpRepaintKeepingPlace(root, paint) {
+  const scroll = root.scrollTop;
+  const opened = Array.from(root.querySelectorAll('details'), node => node.open);
+  const active = document.activeElement;
+  const path = [];
+  if (active && active !== root && root.contains(active)) {
+    for (let node = active; node !== root; node = node.parentElement) path.unshift(Array.prototype.indexOf.call(node.parentElement.children, node));
+  }
+  paint();
+  root.querySelectorAll('details').forEach((node, index) => { if (index < opened.length) node.open = opened[index]; });
+  root.scrollTop = scroll;
+  if (!path.length) return;
+  let target = root;
+  for (const index of path) target = target && target.children[index];
+  const same = target && active && target.tagName === active.tagName && target.className === active.className;
+  (same ? target : document.querySelector('#modal .modal-close'))?.focus?.({preventScroll: true});
+}
+document.addEventListener('downloadpulse:locale-changed', () => {
+  const body = document.getElementById('modal-body');
+  if (DPModal.mode !== 'details' || !dpDetailShown || !body) return;
+  // The newest payload held for this transfer (the Files owner may have refreshed it).
+  const newer = window.DPDetailCandidates?.latest?.();
+  if (newer && Number(newer.id) === Number(dpDetailShown.id)) dpDetailShown = newer;
+  dpRepaintKeepingPlace(body, () => dpPaintDetail(dpDetailShown, true));
+});
+document.addEventListener('downloadpulse:detail-closed', () => { dpDetailShown = null; });
+
+/* Details opens its backdrop at once and its shell with its content: the
+ * shell stays unseen until the transfer is rendered into it, so it never
+ * appears small and then grows. Only an answer slower than
+ * DETAIL_LOADING_GRACE_MS shows the loading line first -- inside the shell at
+ * its full height, which the content then fills without resizing it.
+ * Each opening is its own: an answer for an earlier one, or one arriving after
+ * the shell was closed or given to another view, is never shown. */
+const DETAIL_LOADING_GRACE_MS = 300;
+let dpDetailOpening = 0;
+async function showDetail(id) {
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody = document.getElementById('modal-body');
+  dpDetailResource = null;
+  dpCloseContextMenu(false);
+  const opening = ++dpDetailOpening;
+  const current = () => opening === dpDetailOpening && DPModal.mode === 'details';
+
+  DPModal.open({mode: 'details', title: DPI18n.t('common.loading'), closeLabel: DPI18n.t('a11y.close_details'), pending: true});
+  const slow = setTimeout(() => { if (current()) DPModal.reveal({hold: true}); }, DETAIL_LOADING_GRACE_MS);
+  const traceButton = document.querySelector('#modal .dp-detail-trace');
+  if (traceButton) traceButton.dataset.dpTransferId = String(id);
+
+  if (modalBody) {
+    modalBody.innerHTML =
+      `<div class="empty" style="padding:24px">${esc(DPI18n.t('details.loading'))}</div>`;
+  }
+
+  try {
+    const t = await api('GET',`/torrents/${id}`);
+    if (!current()) return;
+
+    dpDetailShown = t;
+    dpPaintDetail(t);
+  } catch(e) {
+    if (!current()) return;
+    if (modalBody) {
+      modalBody.innerHTML =
+        `<div class="empty" style="padding:24px">${esc(DPI18n.t('details.load_failed', {reason: sanitizeErrorMsg(e.message)}))}</div>`;
+    }
+
+    toast(sanitizeErrorMsg(e.message),'error');
+    document.dispatchEvent(new CustomEvent('downloadpulse:detail-rendered',
+      {detail: {transferId: Number(id), transfer: null, error: true}}));
+  } finally {
+    clearTimeout(slow);
+    if (current()) DPModal.reveal();
+  }
+}
+
+// Requested By: the requests this transfer's work serves, exactly as the
+// server's demand ledger projects them (requested_by) -- one entry per
+// request, oldest first, withdrawn ones in place -- as one field of Details'
+// metadata grid beside Original Resource. It says who ASKED; it is not who
+// owns or runs the transfer. The earliest request is always shown; every
+// later one waits behind Details' disclosure chevron, which counts them.
+// The facts above Original Resource, in two columns read row by row: the
+// left column Status, Progress, Submitted As, Completed; the right column
+// Provider, Size, Added -- and, for a Usenet transfer, the servers its own
+// execution evidence names, second, beneath Provider.
+function dpDetailFactCells(t, providerPresentation) {
+  // ``key``: the label's catalog key (details.field.*).
+  const cell = (key, value, cls) => `<div${cls ? ` class="${cls}"` : ''}><div class="dk">${esc(DPI18n.t(`details.field.${key}`))}</div><div class="dv">${value}</div></div>`;
+  const status = cell('status', badge(transferDisplayStatus(t), t));
+  const provider = cell('provider', esc(providerPresentation.label), 'dp-detail-provider');
+  const progress = cell('progress', dpDetailProgress(t));
+  const size = cell('size', esc(fmtSize(t.size_bytes)));
+  const submitted = cell('submitted_as', sourceLabel(t.source, t.request_kinds));
+  const added = cell('added', window.downloadsDateMarkup(t.created_at));
+  const completed = cell('completed', window.downloadsDateMarkup(t.completed_at));
+  const servers = dpUsenetServersCell(t.usenet_servers);
+  return (servers
+    ? [status, provider, progress, servers, submitted, size, completed, added]
+    : [status, provider, progress, size, submitted, added, completed]).join('');
+}
+// Recorded evidence only: a server the job's own report names, never the
+// configured list. Unknown is said, not guessed.
+function dpUsenetServersCell(evidence) {
+  if (!evidence || typeof evidence !== 'object') return '';
+  const servers = Array.isArray(evidence.servers) ? evidence.servers : [];
+  const T = (key, values) => esc(DPI18n.t(key, values));
+  const label = T('details.usenet.servers', {count: servers.length});
+  let value;
+  if (evidence.state === 'known' && servers.length) {
+    value = servers.map(server => {
+      const notes = [];
+      if (server.reported) notes.push(DPI18n.t('details.usenet.reported_share', {share: server.reported}));
+      if (!server.attributed) notes.push(DPI18n.t('details.usenet.unattributed'));
+      if (server.removed) notes.push(DPI18n.t('details.usenet.removed_note'));
+      const named = server.name || server.recorded_name || DPI18n.t('details.usenet.unnamed');
+      const name = server.removed ? T('details.usenet.removed_name', {name: named}) : esc(named);
+      return `<span class="dp-detail-usenet-server"${notes.length ? ` data-tooltip="${esc(notes.join('; '))}"` : ''}>${name}</span>`;
+    }).join(', ');
+  } else if (evidence.state === 'none') {
+    value = `<span class="dp-detail-usenet-server is-unknown" data-tooltip="${T('details.usenet.none_tooltip')}">${T('details.usenet.none')}</span>`;
+  } else {
+    value = `<span class="dp-detail-usenet-server is-unknown" data-tooltip="${T('details.usenet.unavailable_tooltip')}">${T('details.usenet.unavailable')}</span>`;
+  }
+  return `<div class="dp-detail-usenet-servers"><div class="dk">${label}</div><div class="dv">${value}</div></div>`;
+}
+function dpRequestedByMarkup(requested) {
+  if (!requested) return '';
+  const T = (key, values) => esc(DPI18n.t(key, values));
+  const standing = new Set(['disabled', 'deleted', 'merged']);
+  // (A date is the date owner's markup: placed beside its words, never inside a translation.)
+  const dated = (key, at) => DPI18n.t(key, {date: '\u0000'}).split('\u0000').map(esc).join(window.downloadsDateMarkup(at));
+  const entry = item => {
+    const facts = [];
+    if (item.kind === 'integration') facts.push(item.token_label ? T('details.requested_by.integration_token', {token: item.token_label}) : T('details.requested_by.integration'));
+    // A person's request carried by one of their connected browsers names that browser.
+    else if (item.token_label) facts.push(T('details.requested_by.browser', {token: item.token_label}));
+    if (standing.has(item.standing)) facts.push(T(`details.requested_by.account_${item.standing}`));
+    if (item.via_transfer_id != null) facts.push(T('details.requested_by.via', {id: item.via_transfer_id}));
+    facts.push(dated('details.requested_by.requested', item.requested_at));
+    if (item.withdrawn_at) facts.push(dated('details.requested_by.withdrawn', item.withdrawn_at));
+    return `<li class="dp-detail-requester${item.withdrawn_at ? ' is-withdrawn' : ''}">
+        <span class="dp-detail-requester-name">${esc(item.name)}${item.reference ? ` <span class="dp-detail-requester-ref">#${esc(item.reference)}</span>` : ''}</span>
+        <span class="dp-detail-requester-facts">${facts.join(' · ')}</span>
+      </li>`;
+  };
+  const requests = Array.isArray(requested.requests) ? requested.requests : [];
+  const [first, ...later] = requests;
+  const withdrawn = later.filter(item => item.withdrawn_at).length;
+  const summary = T(withdrawn ? 'details.requested_by.more_withdrawn' : 'details.requested_by.more', {count: later.length, withdrawn});
+  return `
+        <div class="dp-detail-requested-by"><div class="dk">${T('details.field.requested_by')}</div><div class="dv">
+          ${first
+            ? `<ul class="dp-detail-requesters">${entry(first)}</ul>`
+            : `<div class="dp-detail-requesters-empty">${T('details.requested_by.none')}</div>`}
+          ${later.length ? `
+          <details class="dp-detail-requesters-more">
+            <summary>${summary}</summary>
+            <ul class="dp-detail-requesters">${later.map(entry).join('')}</ul>
+          </details>` : ''}
+        </div></div>`;
+}
+
+// The caller's own outstanding requests that this transfer serves (the
+// server's access projection, directly or through consolidation) can be
+// withdrawn here, in the Requested By field that names them. An Admin already
+// withdraws any account's request from Users & Access, so this is the
+// non-administering account's control. The server decides what withdrawal
+// stops; this only asks.
+function dpRenderWithdrawal(t) {
+  const field = document.querySelector('#modal-body .dp-detail-requested-by > .dv');
+  const own = Array.isArray(t.access?.own_requests) ? t.access.own_requests : [];
+  if (!field || !own.length || dpCan('administer')) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn btn-ghost btn-sm dp-detail-withdraw';
+  button.textContent = DPI18n.t('details.withdraw.button', {count: own.length});
+  button.dataset.defaultLabel = button.textContent;
+  button.dataset.dpWithdrawCount = String(own.length);     // a language change says it again
+  button.addEventListener('click', () => dpWithdrawOwnRequests(t, own, button));
+  field.appendChild(button);
+}
+
+async function dpWithdrawOwnRequests(t, own, button) {
+  const confirmed = await window.DPSettingsModal.confirm({
+    title: DPI18n.t('details.withdraw.confirm_title', {count: own.length}),
+    message: DPI18n.t('details.withdraw.confirm_message'),
+    confirmLabel: DPI18n.t('details.withdraw.confirm'),
+  });
+  if (!confirmed) return;
+  setButtonPending(button, true, 'details.withdraw.pending');
+  // Each request's outcome is what the server answered for it: withdrawn now,
+  // already withdrawn, refused (with the server's own reason), or unknown when
+  // no answer arrived. Nothing is inferred beyond that.
+  const outcome = {withdrawn: 0, already: 0, refused: [], unknown: 0};
+  for (const demand of own) {
+    try {
+      const result = await api('POST', `/requests/${encodeURIComponent(demand)}/withdraw`);
+      if (result && result.already_withdrawn) outcome.already += 1; else outcome.withdrawn += 1;
+    } catch (error) {
+      if (error && error.status) outcome.refused.push(sanitizeErrorMsg(error.message));
+      else outcome.unknown += 1;
+    }
+  }
+  const parts = [];
+  if (outcome.withdrawn) parts.push(DPI18n.t('details.withdraw.part_withdrawn', {count: outcome.withdrawn}));
+  if (outcome.already) parts.push(DPI18n.t('details.withdraw.part_already', {count: outcome.already}));
+  if (outcome.refused.length) parts.push(DPI18n.t('details.withdraw.part_refused', {count: outcome.refused.length, reasons: [...new Set(outcome.refused)].join('; ')}));
+  if (outcome.unknown) parts.push(DPI18n.t('details.withdraw.part_unknown', {count: outcome.unknown}));
+  const failed = outcome.refused.length + outcome.unknown;
+  const message = own.length > 1 ? DPI18n.t('details.withdraw.summary', {parts: parts.join(', ')})
+    : outcome.withdrawn ? DPI18n.t('details.withdraw.done')
+    : outcome.already ? DPI18n.t('details.withdraw.already')
+    : outcome.refused.length ? DPI18n.t('details.withdraw.refused', {reason: outcome.refused[0]})
+    : DPI18n.t('details.withdraw.unknown');
+  toast(message, !failed ? 'success' : (outcome.withdrawn || outcome.already ? 'warning' : 'error'));
+  // Whatever happened, Details shows the server's state now.
+  if (DPModal.mode === 'details') showDetail(t.id);
+  else setButtonPending(button, false);
+}
+
+// Transfer Trace Log: the backend builds and sanitizes the trace
+// (GET /torrents/{id}/trace); this only hands the returned file to the browser.
+async function downloadTransferTrace(button) {
+  const id = button && button.dataset.dpTransferId;
+  if (!id) return;
+  setButtonPending(button, true, 'details.trace.generating');
+  try {
+    if (DPDesktopSave.active) {
+      await DPDesktopSave.save(`/torrents/${encodeURIComponent(id)}/trace/save`);
+      return;
+    }
+    const r = await window.downloadPulseAuth.fetch(`${API}/torrents/${encodeURIComponent(id)}/trace`);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      // The same reading of a refusal as api(): a structured detail speaks
+      // through its message, never as "[object Object]".
+      const detail = data.detail;
+      throw new Error((detail && typeof detail === 'object' ? detail.message : detail)
+        || DPI18n.t('details.trace.failed'));
+    }
+    const named = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+    const url = URL.createObjectURL(await r.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = named ? named[1] : `downloadpulse-transfer-${id}-trace.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch(e) {
+    toast(sanitizeErrorMsg(e.message),'error');
+  } finally {
+    setButtonPending(button, false);
+  }
+}
+window.downloadTransferTrace = downloadTransferTrace;
+
+// Thin global entry retained for the inline #overlay / close-button handlers.
+// The shared modal coordinator owns the actual close decision and lifecycle
+// events; this is not a wrapper layer.
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('overlay')) return;
+  DPModal.requestModalClose(e ? 'backdrop' : 'button');
+}
+window.closeModal = closeModal;
+window.showDetail = showDetail;
+
+// ── Theme toggle ─────────────────────────────────────────────────────────────
+/* The compact desktop sidebar rail and its temporary overlay: the one sidebar
+ * state owner. ui-shell-structural.css owns the rail's geometry and this same
+ * range. Its handle shows the same sidebar at full width above the page for
+ * the moment, leaving the page exactly where it is; the handle again, Escape,
+ * a press outside the sidebar or choosing a page (navigateTo) closes it, and
+ * leaving the range clears it. Nothing is remembered. */
+const SIDEBAR_COMPACT_QUERY = '(min-width: 780px) and (max-width: 1559px)';
+const _sidebarCompact = window.matchMedia(SIDEBAR_COMPACT_QUERY);
+
+function sidebarOverlayOpen() {
+  return Boolean(document.getElementById('sidebar')?.classList.contains('sidebar-overlay-open'));
+}
+
+// A change of presentation replaces Provider Status' and the session's
+// composition at once: the stack fades back in as the width settles. Which
+// change it is -- the persistent one (the window crossing 1560px), the
+// handheld one (crossing 779px, the rail's other edge: the sidebar gives way
+// to the handheld shell's dock), or the overlay,
+// which never moves the page -- is said beside it. The
+// mark lasts exactly as long as that fade: where there is none (reduced
+// motion, or no desktop sidebar), it is not left behind.
+function markSidebarReflow(sidebar, change) {
+  sidebar.classList.remove('sidebar-reflowing');
+  sidebar.dataset.sidebarReflow = change;
+  void sidebar.offsetWidth;
+  sidebar.classList.add('sidebar-reflowing');
+  if (!sidebarRevealing(sidebar)) endSidebarReflow(sidebar);
+}
+
+function sidebarRevealing(sidebar) {
+  return sidebar.getAnimations({subtree: true}).some(animation => animation.animationName === 'dp-sidebar-reveal');
+}
+
+function endSidebarReflow(sidebar) {
+  sidebar.classList.remove('sidebar-reflowing');
+  delete sidebar.dataset.sidebarReflow;
+}
+
+// The persistent change follows a window that changes continuously, a
+// frame's width at a time: the sidebar animates its width, and on the way to
+// the rail yields the page its room at once (ui-shell-structural.css), its
+// moving edge passing over no more than the page's clear inset. A single
+// change of the window wider than that inset -- a snap, maximise or restore,
+// at the crossing or while the sidebar is still moving -- is no such motion:
+// animating after it would cover the page's content or move it through
+// widths neither side has, so the sidebar takes its new geometry in that
+// same frame instead: its transitions are off for exactly the one style
+// update that applies it, and the change is then named immediate (no yield).
+let _sidebarViewportWidth = window.innerWidth;
+let _sidebarViewportStep = 0;
+
+function settleSidebarChange(sidebar) {
+  if (sidebar.dataset.sidebarReflow !== 'persistent') return;
+  const content = document.getElementById('content');
+  const clearInset = content ? parseFloat(getComputedStyle(content).paddingLeft) || 0 : 0;
+  if (Math.abs(_sidebarViewportStep) <= clearInset) return;
+  sidebar.dataset.sidebarReflow = 'immediate';
+  sidebar.classList.add('sidebar-settling');
+  void sidebar.offsetWidth;
+  sidebar.classList.remove('sidebar-settling');
+}
+
+function setSidebarOverlay(open, {focusHandle = false} = {}) {
+  const sidebar = document.getElementById('sidebar');
+  const handle = document.getElementById('sidebar-handle');
+  if (!sidebar || !handle) return;
+  const next = Boolean(open) && _sidebarCompact.matches;
+  if (sidebar.classList.contains('sidebar-overlay-open') !== next) {
+    markSidebarReflow(sidebar, 'overlay');
+    sidebar.classList.toggle('sidebar-overlay-open', next);
+  }
+  const label = DPI18n.t(next ? 'shell.sidebar.collapse' : 'shell.sidebar.expand');
+  handle.setAttribute('aria-expanded', String(next));
+  handle.setAttribute('aria-label', label);
+  handle.dataset.tooltip = label;
+  if (focusHandle) handle.focus();
+}
+
+function toggleSidebarOverlay() {
+  setSidebarOverlay(!sidebarOverlayOpen(), {focusHandle: true});
+}
+
+// The window's resize is reported before its change of range, in the same
+// frame and before that frame is drawn.
+window.addEventListener('resize', () => {
+  _sidebarViewportStep = window.innerWidth - _sidebarViewportWidth;
+  _sidebarViewportWidth = window.innerWidth;
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) settleSidebarChange(sidebar);
+});
+_sidebarCompact.addEventListener('change', () => {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) {
+    // Into the range by narrowing, or out of it by widening: 1560px.
+    const persistent = _sidebarCompact.matches === (_sidebarViewportStep < 0);
+    markSidebarReflow(sidebar, persistent ? 'persistent' : 'drawer');
+    settleSidebarChange(sidebar);
+  }
+  setSidebarOverlay(false);
+});
+document.getElementById('sidebar')?.addEventListener('animationend', event => {
+  if (event.animationName === 'dp-sidebar-reveal') endSidebarReflow(event.currentTarget);
+});
+// A fade cancelled without a new one (the sidebar leaving the desktop range,
+// or motion being reduced mid-change) ends the mark too.
+document.getElementById('sidebar')?.addEventListener('animationcancel', event => {
+  if (event.animationName === 'dp-sidebar-reveal' && !sidebarRevealing(event.currentTarget)) endSidebarReflow(event.currentTarget);
+});
+/* The sidebar's magnification (ui-shell-structural.css): its contents grow with
+ * the page's zoom only while the brand, every navigation entry and the whole
+ * bottom stack fit its height together. Measured at full size, from the
+ * sidebar's own height and the contents' own: when they do not fit, the
+ * premium crown section yields first (ui-shell-provider-status.css), and
+ * only what still does not fit scales the contents down, to exactly the
+ * sidebar's height. A change of either size -- the sidebar's box, or what
+ * its contents hold -- fits it again; the sidebar's box and the rest of the
+ * page are never touched. */
+function fitSidebarScale(sidebar) {
+  const logo = sidebar.querySelector(':scope > .logo');
+  const nav = sidebar.querySelector(':scope > nav');
+  const stack = sidebar.querySelector(':scope > .sidebar-bottom-stack');
+  if (_shellHandheld.matches || !logo || !nav || !stack) return;
+  // Every size here is the contents' own, at full size: a scaled box reports
+  // its unscaled offset and scroll sizes, and the yielded crown section keeps
+  // its size out of the flow, so nothing has to be undone to be measured.
+  const crown = document.getElementById('premium-row');
+  const yielded = sidebar.hasAttribute('data-sidebar-crown-yield');
+  const crownStyle = crown && getComputedStyle(crown);
+  const crownSize = crownStyle && crownStyle.display !== 'none'
+    ? crown.offsetHeight + parseFloat(crownStyle.marginTop) + parseFloat(crownStyle.marginBottom) : 0;
+  const contents = logo.offsetHeight + nav.scrollHeight + stack.offsetHeight
+    + (parseFloat(getComputedStyle(stack).marginBottom) || 0);
+  const withCrown = yielded ? contents + crownSize : contents;
+  const withoutCrown = withCrown - crownSize;
+  const available = sidebar.clientHeight;
+  const yieldCrown = crownSize > 0 && withCrown > available;
+  const needed = yieldCrown ? withoutCrown : withCrown;
+  // Scaled layout rounds each box to the device pixel grid, so a few pixels
+  // are kept back for it: the scaled contents must never overflow.
+  const scale = needed > available ? String(Math.floor((available - 4) / needed * 1000) / 1000) : '';
+  if (yieldCrown !== yielded) sidebar.toggleAttribute('data-sidebar-crown-yield', yieldCrown);
+  if (scale === sidebar.style.getPropertyValue('--dp-sidebar-scale')) return;
+  // A new scale is the sidebar's size at once, never an animation of the
+  // rail's inset (ui-shell-structural.css [data-sidebar-rescaling]).
+  sidebar.toggleAttribute('data-sidebar-rescaling', true);
+  if (scale) sidebar.style.setProperty('--dp-sidebar-scale', scale);
+  else sidebar.style.removeProperty('--dp-sidebar-scale');
+  void sidebar.offsetWidth;
+  sidebar.toggleAttribute('data-sidebar-rescaling', false);
+}
+/* The handle's place on the sidebar's edge (the compact rail and its
+ * overlay; ui-shell-structural.css): centred, unless that would put it over
+ * something the sidebar shows there -- a section heading's letters, an icon,
+ * a count, the brand or the bottom stack -- and then the centre nearest to
+ * it that is clear of them by HANDLE_CLEARANCE, above or below. At rest it
+ * is placed on the sidebar's edge; while the overlay opens or closes, on
+ * every edge it passes, from the rail's to the overlay's, so the handle
+ * travelling with the edge never crosses what it avoids -- and once the
+ * edge has arrived (transitionend), on that edge alone. The sidebar's
+ * contents never move for it. */
+const HANDLE_CLEARANCE = 6;
+function placeSidebarHandle(sidebar) {
+  const handle = document.getElementById('sidebar-handle');
+  if (!handle) return;
+  if (getComputedStyle(handle).display === 'none') {
+    handle.style.removeProperty('--dp-sidebar-handle-centre');
+    return;
+  }
+  const box = sidebar.getBoundingClientRect();
+  const edge = name => parseFloat(getComputedStyle(sidebar).getPropertyValue(name)) || box.width;
+  const rail = edge('--dp-shell-rail');
+  const full = edge('--dp-shell-sidebar-full');
+  const target = sidebar.classList.contains('sidebar-overlay-open') ? full : rail;
+  const travelling = Math.abs(box.width - target) > 0.5;
+  const right = box.left + (travelling ? Math.max(rail, full) : target);
+  const left = box.left + (travelling ? Math.min(rail, full) : target) - handle.offsetWidth;
+  const size = handle.offsetHeight;
+  const room = sidebar.clientHeight;
+  const shown = node => {
+    const style = getComputedStyle(node);
+    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0;
+  };
+  // A heading is its letters, not its padded box.
+  const heading = node => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return range.getBoundingClientRect();
+  };
+  const blocked = [
+    ...Array.from(sidebar.querySelectorAll(':scope > nav .nav-group'), node => shown(node) ? heading(node) : null),
+    ...Array.from(sidebar.querySelectorAll(':scope > .logo, :scope > nav .nav-item .icon, :scope > nav .nav-badge, :scope > .sidebar-bottom-stack > *'),
+      node => shown(node) ? node.getBoundingClientRect() : null),
+  ].filter(rect => rect && rect.width && rect.height && rect.right > left && rect.left < right)
+    .map(rect => [rect.top - box.top - HANDLE_CLEARANCE, rect.bottom - box.top + HANDLE_CLEARANCE]);
+  const clear = centre => centre - size / 2 >= 0 && centre + size / 2 <= room
+    && blocked.every(([top, bottom]) => centre + size / 2 <= top || centre - size / 2 >= bottom);
+  const preferred = room / 2;
+  let centre = preferred;
+  if (!clear(preferred)) {
+    const options = blocked.flatMap(([top, bottom]) => [top - size / 2, bottom + size / 2]).filter(clear);
+    if (options.length) centre = options.reduce((best, option) =>
+      Math.abs(option - preferred) < Math.abs(best - preferred) ? option : best);
+  }
+  if (centre === preferred) handle.style.removeProperty('--dp-sidebar-handle-centre');
+  else handle.style.setProperty('--dp-sidebar-handle-centre', `${Math.round(centre)}px`);
+}
+{
+  // The sidebar's own box (unscaled) is observed for its size; its scaled
+  // contents for what they hold (a resize of a scaled box is not reliably
+  // reported), and the sidebar's class for the overlay. Webfonts can change
+  // every height once loaded.
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar && 'ResizeObserver' in window) {
+    const refit = () => { fitSidebarScale(sidebar); placeSidebarHandle(sidebar); };
+    new ResizeObserver(refit).observe(sidebar);
+    // The overlay's edge has arrived: the handle is placed on it alone.
+    sidebar.addEventListener('transitionend', event => {
+      if (event.target === sidebar && event.propertyName === 'width') placeSidebarHandle(sidebar);
+    });
+    const contents = new MutationObserver(refit);
+    contents.observe(sidebar, {attributes: true, attributeFilter: ['class']});
+    sidebar.querySelectorAll(':scope > :is(.logo, nav, .sidebar-bottom-stack)').forEach(part =>
+      contents.observe(part, {childList: true, subtree: true, attributes: true, characterData: true}));
+    document.fonts?.ready.then(refit);
+  }
+}
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || event.defaultPrevented || !sidebarOverlayOpen()) return;
+  setSidebarOverlay(false, {focusHandle: true});
+});
+document.addEventListener('pointerdown', event => {
+  if (!sidebarOverlayOpen() || (event.target instanceof Element && event.target.closest('#sidebar'))) return;
+  setSidebarOverlay(false);
+}, true);
+
+function toggleTheme() {
+  const isLight = window.DPTheme.mode() !== 'light';
+  window.DPTheme.setMode(isLight);
+  document.dispatchEvent(new CustomEvent('downloadpulse:theme-changed', {detail:{light:isLight}}));
+}
+// The toggle's glyph follows every effective theme change: this toggle, a
+// palette choice, and an account's appearance read after first paint.
+document.addEventListener('downloadpulse:theme-changed', event => updateThemeToggle(!!event.detail?.light));
+
+function updateThemeToggle(isLight) {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  if (!window.DPIcons || typeof window.DPIcons.renderThemeGlyph !== 'function') {
+    throw new Error('DownloadPulse icon runtime is unavailable');
+  }
+  const action = DPI18n.t(isLight ? 'theme.switch_to_dark' : 'theme.switch_to_light');
+  btn.dataset.tooltip = action;
+  btn.setAttribute('aria-label', action);
+  btn.dataset.themeToggleLight = isLight ? '1' : '0';
+  window.DPIcons.renderThemeGlyph(!!isLight);
+}
+document.addEventListener('downloadpulse:locale-changed', () => {
+  const btn = document.getElementById('theme-toggle');
+  if (btn && btn.dataset.themeToggleLight) updateThemeToggle(btn.dataset.themeToggleLight === '1');
+});
+document.addEventListener('DOMContentLoaded', () => {
+  loadRuntimeSpeed().catch(()=>{});
+  loadRuntimeStatus().catch(()=>{});
+  setInterval(function() {
+    loadRuntimeSpeed().catch(()=>{});
+  }, RUNTIME_SPEED_INTERVAL_MS);
+  setInterval(function() {
+    loadRuntimeStatus().catch(()=>{});
+  }, RUNTIME_STATUS_INTERVAL_MS);
+  document.addEventListener('click', function(event) {
+    if (!event.target.closest('.runtime-cap-control')) closeSpeedCapMenu();
+  });
+  // Below 780px the cap menu is the page's own scrim with its panel at the
+  // top (ui-shell-mobile.css), so a press beside the panel lands on the menu
+  // itself, never on the page: it closes it.
+  document.getElementById('runtime-cap-menu')?.addEventListener('click', function(event) {
+    if (_shellHandheld.matches && event.target === event.currentTarget) closeSpeedCapMenu();
+  });
+  // Crossing 779/780px changes the shell: its open sheets close rather than
+  // stay over a presentation that is gone.
+  _shellHandheld.addEventListener('change', function() {
+    closeSpeedCapMenu({immediate: true});
+    closeShellMore({immediate: true});
+  });
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') closeSpeedCapMenu();
+  });
+  window.addEventListener('resize', function() {
+    clearTimeout(_dashboardRecentResizeTimer);
+    _dashboardRecentResizeTimer = setTimeout(function() {
+      if (!document.getElementById('view-dashboard')?.classList.contains('active')) return;
+      const fittedLimit = dashboardRecentLimit();
+      if (fittedLimit !== _dashboardRecentFitLimit) {
+        _dashboardRecentFitLimit = fittedLimit;
+        loadRecent().catch(() => {});
+      }
+    }, 120);
+  });
+  _dashboardSparkReducedMotion.addEventListener('change', syncDashboardSparkPulses);
+  document.addEventListener('visibilitychange', syncDashboardSparkPulses);
+  new ResizeObserver(remeasureDashboardHeartbeat).observe(document.getElementById('dash-hero'));
+  // Both transfer tables' handheld metadata lines, refitted with their viewports and fonts.
+  const summaryLines = new ResizeObserver(() => fitTransferSummaryLines());
+  ['#dash-activity-card .dash-activity-table-wrap', '#view-torrents .dp-downloads-table-wrap']
+    .forEach(selector => { const node = document.querySelector(selector); if (node) summaryLines.observe(node); });
+  document.fonts?.addEventListener?.('loadingdone', () => fitTransferSummaryLines());
+  // The strip's width changing re-fits its counts (which changes neither the
+  // strip's size nor its cards' lines), as do the fonts they are drawn in.
+  new ResizeObserver(fitDashboardKpiValues).observe(document.getElementById('dash-hero'));
+  document.fonts?.ready.then(() => fitDashboardKpiValues());
+  // Quick Add sizes to its text, or to its placeholder while empty, and both
+  // wrap with the field's width: size it once now and again whenever that
+  // width changes (a resize, or the Dashboard first being shown). Its own
+  // height changes are ignored, so sizing never re-triggers itself.
+  const quickAdd = document.getElementById('q-transfer-input');
+  if (quickAdd) {
+    let quickAddWidth = -1;
+    new ResizeObserver(() => {
+      const width = quickAdd.clientWidth;
+      if (width === quickAddWidth) return;
+      quickAddWidth = width;
+      resizeDebridLinkInput(quickAdd);
+    }).observe(quickAdd);
+  }
+  // Its header is fitted again whenever its width or Recover All's label
+  // (Recovering…) changes; the header and the field's placeholder once the
+  // fonts they are measured in have loaded.
+  const quickAddHeader = document.querySelector('#view-dashboard .dp-dashboard-quick-add > .card-header');
+  if (quickAddHeader) {
+    const refit = new ResizeObserver(() => fitQuickAddHeader());
+    [quickAddHeader, document.getElementById('btn-recover-all')].forEach(node => node && refit.observe(node));
+    document.fonts?.ready.then(() => { fitQuickAddHeader(); resizeDebridLinkInput(quickAdd); });
+  }
+  // Returning to the Dashboard: the route is read again from the settled cards
+  // (the heartbeat clock and the beats on the strip are untouched).
+  document.addEventListener('downloadpulse:navigation-settled', function(event) {
+    if (event.detail?.view === 'dashboard') remeasureDashboardHeartbeat();
+  });
+  syncDashboardSparkPulses();
+  // ui-theme-bootstrap.js applied the stored mode and its palette at first paint.
+  const isLight = window.DPTheme.mode() === 'light';
+  document.dispatchEvent(new CustomEvent('downloadpulse:theme-changed', {detail:{light:isLight}}));
+});
+
+
+// ── Init ───────────────────────────────────────────────────────────────────
+(async()=>{
+  setDot('aria2', 'check', 'status.aria2.checking');
+  setDot('db',    'check', 'status.db.checking');
+
+  // Load settings (Admin's: the configuration surface is Admin's alone)
+  if (dpCan('administer')) {
+    try {
+      settingsData = await api('GET', '/settings');
+    } catch(e) {
+    }
+  }
+
+  renderTopbarActions();
+
+  // Load stats with visible retry
+  let statsLoaded = false;
+  let statsAttempt = 0;
+
+  while (!statsLoaded) {
+    statsAttempt++;
+
+    statsLoaded = await loadStats();
+
+    if (!statsLoaded) {
+      const delay =
+        Math.min(
+          400 + statsAttempt * 400,
+          3000
+        );
+
+
+      await new Promise(
+        r => setTimeout(r, delay)
+      );
+
+      if (statsAttempt >= 10) {
+        break;
+      }
+    }
+  }
+
+  // Start background tasks immediately — do not wait for stats
+  const recentLoaded = loadRecent().catch(() => {});
+  const connectionsChecked = checkConnections().catch(() => {});
+  // The interface is ready -- its figures are in, its first list and status
+  // checks have answered, its fonts have loaded, and the first-run wizard
+  // (parser-loaded after this script, so read once the page is parsed) is
+  // open if this installation's setup is unfinished: said once, however each
+  // settled. The desktop starting cover lifts on it (ui-desktop-start.js).
+  const parsed = document.readyState === 'loading'
+    ? new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, {once: true}))
+    : Promise.resolve();
+  parsed
+    .then(() => Promise.allSettled([recentLoaded, connectionsChecked, document.fonts?.ready,
+                                    window.DPSetupWizard?.started]))
+    .then(() => document.dispatchEvent(new CustomEvent('downloadpulse:interface-ready')));
+
+  // Generic statistics availability says nothing about provider health.
+  // The neutral provider-status runtime owns provider presentation.
+
+  // ── Server-Sent Events — live updates without 15 s polling ──────────────
+  // Falls back to polling if SSE is unavailable (proxy, browser quirk, etc.)
+  (function initSSE() {
+    if (
+      typeof EventSource === 'undefined'
+    ) {
+      return startPolling();
+    }
+
+    var es;
+    var sseOk = false;
+    var fallbackTimer = null;
+    // Set when a connected stream is lost (it ended or failed): events sent
+    // meanwhile never arrive, so the next connection re-reads this module's
+    // live views rather than showing them as they were.
+    var streamLost = false;
+
+    function rereadLiveViews() {
+      loadStats().catch(()=>{});
+      if (document.getElementById('view-dashboard')?.classList.contains('active')) {
+        loadRecent().catch(()=>{});
+      }
+      if (document.getElementById('view-torrents')?.classList.contains('active')) {
+        loadTorrents().catch(()=>{});
+      }
+    }
+
+    function connect() {
+      try {
+        es =
+          new EventSource(
+            '/api/events/stream'
+          );
+
+        es.addEventListener(
+          'connected',
+          function() {
+            sseOk = true;
+
+            if (fallbackTimer) {
+              clearInterval(
+                fallbackTimer
+              );
+
+              fallbackTimer = null;
+            }
+
+            if (streamLost) {
+              streamLost = false;
+              rereadLiveViews();
+            }
+
+            // Cold-load / reconnect recovery hook for bounded owners that must
+            // re-query authoritative state (e.g. file-selection offers, §40).
+            // The stream's state is also readable (data-dp-pulse) by an owner
+            // that binds after this event.
+            document.documentElement.dataset.dpPulse = 'connected';
+            document.dispatchEvent(new CustomEvent('downloadpulse:pulse-connected'));
+          }
+        );
+
+        // Neutral file-selection availability signal (§39). Carries only
+        // { transfer_id }; the owner then GETs authoritative state (§40, §48).
+        es.addEventListener(
+          'file_selection_available',
+          function(e) {
+            let payload = {};
+            try { payload = JSON.parse(e.data || '{}'); } catch (_) {}
+            document.dispatchEvent(new CustomEvent('downloadpulse:file-selection-available',
+              {detail: payload}));
+          }
+        );
+
+        // The Activity Log's journal changed. Carries only the newest committed
+        // id ({latest}); the Activity Log owner decides whether to re-read the
+        // journal itself. The server sends it only to a role that may read it.
+        es.addEventListener(
+          'activity_journal_changed',
+          function(e) {
+            let payload = {};
+            try { payload = JSON.parse(e.data || '{}'); } catch (_) {}
+            document.dispatchEvent(new CustomEvent('downloadpulse:activity-journal-changed',
+              {detail: payload}));
+          }
+        );
+
+        // Statistics' own inputs changed (the journal). Carries nothing; the
+        // server sends it only to a role that may read Statistics.
+        es.addEventListener(
+          'statistics_changed',
+          function() {
+            document.dispatchEvent(new CustomEvent('downloadpulse:statistics-invalidated'));
+          }
+        );
+
+        // Neutral integration-status invalidation. Carries nothing; the
+        // provider-status owner re-observes each canonical status endpoint.
+        es.addEventListener(
+          'integration_status_changed',
+          function() {
+            document.dispatchEvent(new CustomEvent('downloadpulse:integration-status-changed'));
+          }
+        );
+
+        // Duplicate-consolidation notice. This module owns the one application
+        // EventSource, so the event is registered here; operator-title.js owns
+        // only the copy (consolidationToastCopy) and the toast presentation.
+        // The payload carries public counts/ids only and is never replayed
+        // client-side after a reload.
+        es.addEventListener(
+          'duplicate_consolidated',
+          function(e) {
+            try {
+              const copy = window.DPIcons.consolidationToastCopy(JSON.parse(e.data));
+              if (copy) window.DPIcons.toast(copy, 'success');
+            } catch (_) {
+              // Invalid public event data is ignored rather than rendered.
+            }
+          }
+        );
+
+        // That execution activity changed, for an owner that shows it
+        // (Settings -> Downloads -> Download Engine Activity). Carries nothing:
+        // the owner re-reads its own authorized projection. Bridged from the
+        // transfer and statistics signals every connection already receives,
+        // so no executor fact reaches a new audience.
+        function executionActivityChanged() {
+          document.dispatchEvent(new CustomEvent('downloadpulse:execution-activity-changed'));
+        }
+
+        es.addEventListener(
+          'stats_changed',
+          function() {
+            executionActivityChanged();
+            loadStats().catch(()=>{});
+            // The Statistics owner decides whether it is shown and when to re-read.
+            document.dispatchEvent(new CustomEvent('downloadpulse:statistics-invalidated'));
+
+            if (
+              document
+                .getElementById(
+                  'view-dashboard'
+                )
+                ?.classList.contains(
+                  'active'
+                )
+            ) {
+              loadRecent().catch(()=>{});
+            }
+          }
+        );
+
+        var progressStatsTimer = null;
+
+        es.addEventListener(
+          'torrent_updated',
+          function(e) {
+            let payload = {};
+
+            try {
+              payload = JSON.parse(e.data || '{}');
+            } catch (_) {}
+
+            notifyExtractionFailure(payload);
+            executionActivityChanged();
+
+            const patchedProgress =
+              patchProgressOnlyTransferEvent(payload);
+
+            if (!patchedProgress) {
+              if (
+                document
+                  .getElementById('view-torrents')
+                  ?.classList.contains('active')
+              ) {
+                loadTorrents().catch(()=>{});
+              }
+
+              if (
+                document
+                  .getElementById('view-dashboard')
+                  ?.classList.contains('active')
+              ) {
+                loadRecent().catch(()=>{});
+              }
+
+              loadStats().catch(()=>{});
+
+              // One minimal generic local signal that THIS transfer's semantic
+              // presentation changed (never file-selection-specific, never
+              // emitted for a progress-only patch) so a bounded owner with an
+              // already-open, transfer-scoped surface (e.g. Details'
+              // file-selection mount) can re-read authoritative state without
+              // requiring the user to click a now-invalid control first.
+              const semanticTransferId =
+                Number(payload?.id ?? payload?.torrent_id);
+
+              if (Number.isFinite(semanticTransferId)) {
+                document.dispatchEvent(new CustomEvent('downloadpulse:transfer-updated',
+                  {detail: {transferId: semanticTransferId}}));
+              }
+            } else if (!progressStatsTimer) {
+              progressStatsTimer = setTimeout(
+                ()=>{
+                  progressStatsTimer = null;
+                  loadStats().catch(()=>{});
+                },
+                1500
+              );
+            }
+          }
+        );
+
+        // The heartbeat, at least every 30 s however busy the stream: the
+        // clock for figures that change with time alone.
+        es.addEventListener(
+          'ping',
+          function() {
+            // Statistics' Overall & Rolling row is this owner's (/stats): its
+            // last-24-hours and last-7-days figures age while the page is open.
+            if (document.getElementById('view-stats')?.classList.contains('active')) {
+              loadStats().catch(()=>{});
+            }
+            document.dispatchEvent(new CustomEvent('downloadpulse:pulse-heartbeat'));
+          }
+        );
+
+        // The account's role changed: its session continues under the new
+        // authority, so start over from what the server now allows.
+        es.addEventListener('account_changed', function() {
+          window.location.reload();
+        });
+
+        // The session ended (disabled, deleted, credentials changed): the
+        // session owner confirms and signs the browser out.
+        es.addEventListener('session_ended', function() {
+          es.close();
+          document.documentElement.dataset.dpPulse = 'lost';
+          document.dispatchEvent(new CustomEvent('downloadpulse:pulse-lost'));
+          window.downloadPulseAuth.refreshSession({force: true}).catch(()=>{});
+        });
+
+        es.onerror = function() {
+          if (sseOk) streamLost = true;
+          // Owners that present live state stop claiming it until the next
+          // downloadpulse:pulse-connected.
+          document.documentElement.dataset.dpPulse = 'lost';
+          document.dispatchEvent(new CustomEvent('downloadpulse:pulse-lost'));
+          // A refused reconnect is often an ended session or a changed role.
+          window.downloadPulseAuth.refreshSession({force: true}).catch(()=>{});
+          if (!sseOk) {
+            startPolling();
+          }
+
+          es.close();
+
+          setTimeout(
+            connect,
+            10000
+          );
+        };
+      } catch(err) {
+        startPolling();
+      }
+    }
+
+    function startPolling() {
+      if (fallbackTimer) return;
+
+      fallbackTimer =
+        setInterval(()=>{
+          loadStats().catch(()=>{});
+
+          if (
+            document
+              .getElementById(
+                'view-dashboard'
+              )
+              ?.classList.contains(
+                'active'
+              )
+          ) {
+            loadRecent()
+              .catch(()=>{});
+          }
+
+          if (
+            document
+              .getElementById(
+                'view-torrents'
+              )
+              ?.classList.contains(
+                'active'
+              )
+          ) {
+            loadTorrents()
+              .catch(()=>{});
+          }
+        }, 15000);
+    }
+
+    connect();
+
+    // Still refresh stats every 60 s as a safety net even with SSE
+    setInterval(
+      ()=>{
+        loadStats().catch(()=>{});
+      },
+      60000
+    );
+  })();
+
+  setInterval(
+    ()=>checkConnections().catch(()=>{}),
+    60000
+  );
+})();
+
+
+// ── Download speed cap ────────────────────────────────────────────────────────
+
+async function _setDownloadSpeedCap(bps) {
+  try {
+    // DP 1.0.12 canonical architecture correction: the neutral runtime-limit
+    // surface, not the aria2-specific route, is the write authority for live
+    // bandwidth (specification section 9.6).
+    var limitResult = await api('PATCH', '/execution/runtime-limits', {max_download_bytes_per_second: bps});
+    // Saved first, then applied: a value the server now holds that downloads
+    // could not take yet is said as such (its error stays in the server log).
+    if (limitResult && limitResult.ok === false) {
+      toast(DPI18n.t(limitResult.configured?.max_download_bytes_per_second === bps
+        ? 'speed_cap.saved_not_applied' : 'speed_cap.not_applied'), 'error');
+      return false;
+    }
+    // The canonical cache follows the value the runtime-limits surface accepted.
+    if (settingsData) {
+      settingsData.execution_runtime_limits = Object.assign({}, settingsData.execution_runtime_limits,
+        {max_download_bytes_per_second: bps});
+    }
+    updateRuntimeStatusBadge({limitBps: bps});
+    return true;
+  } catch(e) {
+    // A refusal is already a sentence about the speed limit; anything else
+    // (a timeout, a lost connection) is said with what failed.
+    toast(e.status === 400 ? sanitizeErrorMsg(e.message)
+      : DPI18n.t('speed_cap.not_changed', {reason: sanitizeErrorMsg(e.message)}), 'error');
+    return false;
+  }
+}
+
+// ── Neutral runtime status (topbar indicator + browser tab) ──────────────────
+//
+// ONE state object, ONE writer, ONE neutral backend fact. The topbar and the
+// browser-tab title both read `_runtimeStatusState`, so they can never disagree,
+// and nothing here polls an executor: `/execution/throughput` reads the core
+// throughput owner, which aggregates every currently acquiring executor. A
+// future executor contributes by implementing the neutral executor contracts,
+// without either of these surfaces changing.
+//
+// The facts arrive at their own cadence: the volatile speed (and the cap it
+// is shown against) from `/execution/throughput`, a pure in-memory read of the
+// core throughput fact; the occupancy count from `/execution/runtime-status`,
+// which also reads the repository. Each fact has exactly one source, both land
+// in the one state through the one writer, and neither poll waits for the
+// other -- a slow occupancy read can never stretch the speed cadence.
+var _runtimeStatusState = {
+  active: 0,
+  limitBps: 0,
+  liveBps: 0,
+};
+var _runtimeSpeedBusy = false;
+var _runtimeStatusBusy = false;
+var RUNTIME_SPEED_INTERVAL_MS = 500;
+var RUNTIME_STATUS_INTERVAL_MS = 1000;
+
+async function loadRuntimeSpeed() {
+  if (_runtimeSpeedBusy) return;
+  _runtimeSpeedBusy = true;
+  try {
+    const data = await api('GET', '/execution/throughput', null, 3000);
+    setDashboardHeartbeatThroughput(data.download_bytes_per_second, data.sustained_peak_bytes_per_second);
+    updateRuntimeStatusBadge({
+      liveBps: Number(data.download_bytes_per_second) || 0,
+      limitBps: Number(data.max_download_bytes_per_second) || 0,
+    });
+  } finally {
+    _runtimeSpeedBusy = false;
+  }
+}
+
+async function loadRuntimeStatus() {
+  if (_runtimeStatusBusy || !dpCan('administer')) return;
+  _runtimeStatusBusy = true;
+  try {
+    const data = await api('GET', '/execution/runtime-status', null, 3000);
+    updateRuntimeStatusBadge({
+      // DownloadPulse's own execution-admission occupancy, never a native queue count.
+      active: Number(data.active_execution_slots) || 0,
+    });
+  } finally {
+    _runtimeStatusBusy = false;
+  }
+}
+
+function updateRuntimeStatusBadge(patch) {
+  Object.assign(_runtimeStatusState, patch);
+  var s = _runtimeStatusState;
+  var topBadge = document.getElementById('runtime-speed-badge');
+  var elActive = document.getElementById('runtime-badge-active');
+  var elMax    = document.getElementById('runtime-badge-max');
+  var elSpeed  = document.getElementById('runtime-badge-speed');
+  var elLimit  = document.getElementById('runtime-badge-limit');
+  if (!topBadge) return;
+
+  if (elActive) elActive.textContent = s.active;
+  // The denominator is DownloadPulse scheduler capacity: the canonical
+  // transfer policy, never a value reported by any download engine.
+  var maxDl = window.DPProcessingPresentation
+    ? window.DPProcessingPresentation.configuredMaxConcurrency() : null;
+  if (elMax)    elMax.textContent    = maxDl || '—';
+  if (elSpeed)  elSpeed.textContent  = fmtSpeed(s.liveBps || 0);
+
+  if (elLimit) { elLimit.removeAttribute('data-i18n'); elLimit.textContent = fmtSpeedCap(s.limitBps); }
+  // Active/max are the reading's only figures without a fixed width: the
+  // handheld header refits when what they show changes.
+  var figures = (elActive ? elActive.textContent : '') + '/' + (elMax ? elMax.textContent : '');
+  if (figures !== _shellHeaderFigures) {
+    _shellHeaderFigures = figures;
+    fitShellHeader();
+  }
+
+  // Occupancy and capacity are administrative runtime facts: a caller who
+  // cannot read them sees only the live speed, never a stand-in zero.
+  topBadge.dataset.tooltip = DPI18n.t(dpCan('administer') ? 'runtime_badge.tooltip_admin' : 'runtime_badge.tooltip');
+
+  renderOperatorTitle();
+
+  document.querySelectorAll('#runtime-cap-menu [data-cap-bps]').forEach(function(button) {
+    button.classList.toggle(
+      'active',
+      Number(button.dataset.capBps) === Number(s.limitBps || 0)
+    );
+  });
+}
+
+// A language change says the badge, the topbar's processing controls and the
+// browser-tab title again from the state they already hold.
+document.addEventListener('downloadpulse:locale-changed', () => {
+  renderTopbarActions();
+  updateRuntimeStatusBadge({});
+  renderOperatorTitle();
+});
+
+// The cap menu opens and closes through the shell's one sheet lifetime
+// (DPShellSheet): closing, it rolls back up before it is hidden, and a press
+// on its toggle meanwhile opens it again from where it is drawn.
+function toggleSpeedCapMenu(event) {
+  if (event) event.stopPropagation();
+  var menu = document.getElementById('runtime-cap-menu');
+  var toggle = document.getElementById('runtime-cap-toggle');
+  if (!menu || !toggle) return;
+  if (DPShellSheet.isOpen(menu)) {
+    closeSpeedCapMenu();
+    return;
+  }
+  // Drawn at once, or once another sheet has finished closing.
+  DPShellSheet.open(menu, {opener: toggle, panel: menu.querySelector('.runtime-cap-panel'), shown: function() {
+    var custom = document.getElementById('runtime-cap-custom-mbps');
+    if (custom && _runtimeStatusState.limitBps > 0) {
+      custom.value = (_runtimeStatusState.limitBps / 1048576).toFixed(1).replace(/\.0$/, '');
+    }
+    if (_shellHandheld.matches) (menu.querySelector('[data-cap-bps].active') || menu.querySelector('[data-cap-bps]'))?.focus();
+  }});
+}
+
+function closeSpeedCapMenu(options) {
+  var menu = document.getElementById('runtime-cap-menu');
+  if (!menu) return;
+  // Below 780px the menu is a sheet over the page: focus inside it returns
+  // to the toggle that opened it.
+  DPShellSheet.close(menu, Object.assign({restoreFocus: _shellHandheld.matches}, options));
+}
+
+async function applyTopbarSpeedCap(bps) {
+  var applied = await _setDownloadSpeedCap(Math.max(0, Number(bps) || 0));
+  if (applied) closeSpeedCapMenu();
+}
+
+async function applyTopbarCustomSpeedCap() {
+  var input = document.getElementById('runtime-cap-custom-mbps');
+  var raw = input ? input.value.trim() : '';
+  var mbps = raw === '' ? NaN : Number(raw);
+  if (!Number.isFinite(mbps) || mbps < 0) {
+    toast(DPI18n.t('speed_cap.custom_invalid'), 'error');
+    return;
+  }
+  await applyTopbarSpeedCap(Math.round(mbps * 1048576));
+}

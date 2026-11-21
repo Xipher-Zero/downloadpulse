@@ -1,0 +1,2561 @@
+/* DownloadPulse Authentication and Users & Access cards.
+
+   Every governing card here takes the hinted Settings card header
+   (ui-settings-page.css, fitHeaderHints): identity, the purpose hint on the
+   header's own midpoint while it fits, the rail. Only the hint's type is
+   stated here. */
+#view-settings .dp-settings-auth-header-copy {
+  min-width: 0;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-auth-header-enable {
+  width: auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: end;
+  gap: 10px;
+  margin: 0 !important;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+#view-settings .dp-settings-auth-header-enable .toggle-info {
+  display: block;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-auth-header-enable .toggle-info .tl {
+  display: block;
+  white-space: nowrap;
+}
+
+:is(#view-settings, .dp-setup-provider-surface) .dp-settings-auth-header-enable .toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0;
+}
+
+/* Authentication Status --------------------------------------------------- */
+#view-settings .dp-settings-auth-kpi-grid {
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* A reading's short words (authKpiItems) are drawn only where the grid asks
+   for them (data-kpi-words, handheld); the full words stay its text to
+   assistive technology. */
+#view-settings .dp-settings-kpi-words--short {
+  display: none;
+}
+
+#view-settings .dp-settings-auth-kpi-grid[data-kpi-words='short'] .dp-settings-kpi-words--full {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+#view-settings .dp-settings-auth-kpi-grid[data-kpi-words='short'] .dp-settings-kpi-words--short {
+  display: inline;
+}
+
+/* Reuse the Dashboard KPI component classes/material language while adapting
+   only the state-card geometry: no icon, no sparkline, centered two-line copy. */
+#view-settings .dp-settings-auth-kpi.dash-hero-stat {
+  --c: var(--dp-text-muted);
+  min-width: 0;
+  min-height: 76px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 13px 16px 12px;
+  border: 1px solid rgba(105, 119, 181, .23);
+  border-radius: var(--dp-radius-lg);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--c) 12%, transparent) 0%,
+      color-mix(in srgb, var(--c) 5%, transparent) 24%,
+      transparent 48%),
+    linear-gradient(145deg, rgba(17, 22, 51, .96), rgba(9, 14, 35, .98));
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.025),
+    -7px 9px 24px -14px rgba(0, 0, 14, .42),
+    0 7px 20px rgba(0,0,12,.055);
+  transform: none;
+  transition: none;
+}
+
+body.light #view-settings .dp-settings-auth-kpi.dash-hero-stat {
+  border-color: #dce1ef;
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--c) 9%, white) 0%,
+      color-mix(in srgb, var(--c) 3%, white) 27%,
+      #ffffff 58%,
+      #f8f9fd 100%);
+  box-shadow:
+    inset 0 1px rgba(255,255,255,.70),
+    -8px 10px 25px -14px rgba(64, 73, 110, .22),
+    0 6px 18px rgba(70, 79, 113, .055);
+}
+
+#view-settings .dp-settings-auth-kpi.dash-hero-stat::before {
+  display: block;
+  content: '';
+  position: absolute;
+  z-index: 4;
+  left: -1px;
+  top: -1px;
+  width: calc(100% - 19px);
+  height: 10px;
+  border-top: 3px solid var(--c);
+  border-left: 1.5px solid color-mix(in srgb, var(--c) 72%, transparent);
+  border-top-left-radius: 12px;
+  background: transparent;
+  box-shadow: 0 -1px 8px color-mix(in srgb, var(--c) 24%, transparent);
+  -webkit-mask-image: linear-gradient(90deg,
+    #000 0%, #000 87%, rgba(0,0,0,.80) 93%, transparent 100%);
+  mask-image: linear-gradient(90deg,
+    #000 0%, #000 87%, rgba(0,0,0,.80) 93%, transparent 100%);
+  pointer-events: none;
+}
+
+#view-settings .dp-settings-auth-kpi[data-c="green"] {
+  --c: var(--dp-state-success);
+}
+#view-settings .dp-settings-auth-kpi[data-c="yellow"] {
+  --c: var(--dp-state-caution);
+}
+#view-settings .dp-settings-auth-kpi[data-c="red"] {
+  --c: var(--dp-state-error);
+}
+#view-settings .dp-settings-auth-kpi[data-c="neutral"] {
+  --c: var(--dp-text-muted);
+}
+
+#view-settings .dp-settings-auth-kpi[data-c="green"] .dhs-val {
+  color: var(--dp-state-success);
+}
+#view-settings .dp-settings-auth-kpi[data-c="yellow"] .dhs-val {
+  color: var(--dp-state-caution);
+}
+#view-settings .dp-settings-auth-kpi[data-c="red"] .dhs-val {
+  color: var(--dp-state-error);
+}
+#view-settings .dp-settings-auth-kpi[data-c="neutral"] .dhs-val {
+  color: var(--dp-text-muted);
+}
+
+#view-settings .dp-settings-auth-kpi .dhs-body {
+  min-width: 0;
+  width: 100%;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  text-align: center;
+}
+
+#view-settings .dp-settings-auth-kpi .dhs-label {
+  min-width: 0;
+  color: var(--dp-text-primary);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.25;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: center;
+}
+
+#view-settings .dp-settings-auth-kpi .dhs-val {
+  min-width: 0;
+  color: var(--dp-text-muted);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* One bounded, CENTRED island beneath the KPI row: what a browser session is
+   and how long it lasts, read together. Same relationship container and the
+   same padding density as the accepted Extraction behaviour island. */
+#view-settings .dp-settings-auth-status-card .dp-settings-auth-session-row {
+  min-width: 0;
+  display: flex;
+  /* STRETCH, not centre: the two settings' informational stacks wrap to
+     different line counts as text reflows, and centring items of unequal
+     height pulls the taller one's top upward -- so two settings genuinely on
+     one row stop sharing a baseline. Equal-height items keep that promise at
+     any font metric; each field still centres its own control against its own
+     stack. */
+  align-items: stretch;
+  justify-content: center;
+  /* One line while the card has room: the island grows to its content's
+     width, bounded by the card, and only then does a sentence wrap -- it
+     widens before it grows taller. The two settings move onto separate lines
+     only at the narrower widths below. */
+  flex-wrap: nowrap;
+  gap: 18px 44px;
+  width: max-content;
+  /* Bounded by the card, not by a number. The island holds font-sized content
+     -- a Log Out button, two labels, a unit suffix -- so any declared ceiling
+     is a guess about text this stylesheet cannot measure. An 880px cap sat 22px
+     above the content on one machine and below it on another, which wrapped a
+     row that was supposed to stay a row. `max-content` still keeps the island
+     content-bounded; the card decides when it genuinely cannot fit. */
+  max-width: 100%;
+  margin: 14px auto 0;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  /* Compact and even above and below: a reading beneath the KPI cards, so
+     visibly shorter than they are. */
+  padding: 10px var(--dp-island-padding-inline, 22px);
+}
+
+#view-settings .dp-settings-auth-session-row > .dp-settings-inline-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The sessions reading is short and keeps its own line; the Browser Session
+   Lifetime sentence is the one that yields width when the card bounds the
+   island. */
+#view-settings .dp-settings-auth-session-row > .dp-settings-auth-session-count {
+  flex-shrink: 0;
+}
+
+/* The Browser Session Lifetime information column is as wide as its sentence
+   needs in about two lines, and no wider, so the hours control sits right
+   beside it at the field's own gap and the island stays compact and centred.
+   The column takes its width from the sentence (its label is shorter), so the
+   measure is stated on the sentence, in the sentence's own `ch` -- the
+   column's own `ch` belongs to its larger label font. It is just over half the
+   sentence and wraps greedily: balanced lines would end short of the measure
+   and leave the column wider than its text. */
+#view-settings .dp-settings-auth-session-lifetime .form-hint {
+  max-width: 54ch;
+}
+
+/* The logout action lives inside the sessions field, at its trailing edge.
+   Being a flex SIBLING of the count is what keeps the two apart: nothing here
+   reserves a guessed width for a button whose size the font decides. */
+#view-settings .dp-settings-auth-session-count > .dp-settings-inline-field-action .btn {
+  white-space: nowrap;
+}
+
+/* A READING, not a control: it states a positive fact about the installation,
+   so it takes the positive-state colour and a restrained border, and nothing
+   that would suggest it can be pressed -- Active Browser Sessions' count and
+   the Deployment Type (Users & Access, below) alike, centred against the
+   title/hint stack beside it rather than stretched to that stack's height. */
+#view-settings :is(.dp-settings-auth-session-count-value, .dp-settings-deployment-value) {
+  align-self: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--dp-state-success) 42%, transparent);
+  border-radius: 10px;
+  background: var(--dp-surface-2);
+  color: var(--dp-state-success);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: default;
+  user-select: none;
+}
+
+/* The count is a square tile sized around its digits: wider counts widen it
+   and it stays square. */
+#view-settings .dp-settings-auth-session-count-value {
+  min-width: 46px;
+  aspect-ratio: 1;
+  padding: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The action needs room to read as separate from the count it sits beside. */
+#view-settings .dp-settings-auth-session-count > .dp-settings-inline-field-action {
+  margin-inline-start: 8px;
+}
+
+/* Username & Password ------------------------------------------------------ */
+/* Two settings, each the shared inline field, as ONE pair: equal shares of the
+   row, each shrinking -- its sentence wraps, its control narrows -- down to
+   the one minimum both declare before the pair breaks, so they stay side by
+   side as long as both remain usable; broken, each is the same bounded width,
+   centred, one above the other. Clear Stored Password is inside the password
+   field (its embedded action, a sibling of the input, so it never covers
+   typed text) and Apply is the field's own trailing action. */
+#view-settings .dp-settings-auth-credentials-row {
+  /* The narrowest either setting stays usable at: its sentence in about
+     100px, the password's own room beside Clear, and Apply. */
+  --dp-auth-credential-min: 460px;
+  min-width: 0;
+  display: flex;
+  /* STRETCH, not centre: the two settings' informational stacks wrap to
+     different line counts as text reflows, and centring items of unequal
+     height pulls the taller one's top upward -- so two settings genuinely on
+     one row stop sharing a baseline. Equal-height items keep that promise at
+     any font metric; each field still centres its own control against its own
+     stack. */
+  align-items: stretch;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 18px 44px;
+}
+
+#view-settings .dp-settings-auth-credentials-row > .dp-settings-inline-field {
+  flex: 1 1 0;
+  min-width: min(100%, var(--dp-auth-credential-min));
+  max-width: 600px;
+}
+
+/* The pair's share of a ROW: its sentence and its control each start at
+   150px of width. From 780px only -- below it each setting is a column, where
+   a basis is a height (ui-settings-page.css). */
+@media (min-width: 780px) {
+  #view-settings .dp-settings-auth-credentials-row .dp-settings-inline-field-info {
+    flex: 1 1 150px;
+    min-width: 100px;
+  }
+
+  #view-settings .dp-settings-auth-credentials-row .dp-settings-inline-field-control {
+    flex: 1 1 150px;
+  }
+}
+
+#view-settings .dp-settings-auth-username-field .input,
+#view-settings .dp-settings-auth-password-field .dp-action-field {
+  width: 100%;
+}
+
+/* A stored secret's field -- the local password and the OIDC client secret --
+   carries its Clear inside its own border (the shared .dp-action-field, Clear a
+   sibling of the input, so it never covers typed text, placeholder or caret).
+   The control never narrows past what it holds -- its typing room and Clear
+   beside it -- so Clear stays inside the field and clear of anything after it. */
+#view-settings :is(.dp-settings-auth-password-field, .dp-settings-oidc-client-secret-field) .dp-action-field > .input {
+  min-width: 100px;
+}
+
+#view-settings :is(.dp-settings-auth-password-field, .dp-settings-oidc-client-secret-field) :is(.dp-settings-inline-field-control, .dp-action-field) {
+  min-width: min-content;
+}
+
+#view-settings :is(.dp-settings-auth-password-field, .dp-settings-oidc-client-secret-field) :is(.dp-action-field, .dp-settings-inline-field-action) .btn {
+  white-space: nowrap;
+}
+
+/* API Access --------------------------------------------------------------- */
+/* The Authentication cards use the SAME operational header rail as a provider
+   card -- state, then the action that proves it, then participation -- so
+   status is the canonical coloured text, never a badge of its own. The rail
+   itself, and the rail's own status treatment, are declared ONCE by the
+   Settings card owner (ui-settings-page.css); this file restated both, and a
+   third copy would have appeared with the Notifications cards. Only what is
+   genuinely local to these cards stays here. */
+#view-settings .dp-settings-oidc-grouped-card .dp-settings-card-header-controls > .dp-settings-auth-header-enable {
+  justify-self: auto;
+}
+
+@media (max-width: 1280px) {
+  #view-settings .dp-settings-auth-status-card .dp-settings-auth-session-row,
+  #view-settings .dp-settings-auth-credentials-row {
+    gap: 16px 28px;
+  }
+
+  #view-settings .dp-settings-auth-status-card .dp-settings-auth-session-row {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 779px) {
+  /* (Not a hinted header, whose rail stays at the trailing edge:
+     ui-settings-page.css, dp-settings-card-header--hinted.) */
+  #view-settings :where(:not(.dp-settings-card-header--hinted)) > .dp-settings-card-header-controls {
+    justify-self: start;
+    justify-content: flex-start;
+  }
+
+  /* All three readings stay visible at every width: side by side while
+     their words fit (row), else the mode across the whole row above its two
+     mechanisms (split), else that with closer card padding (close), else
+     that with their short words. fitAuthKpis chooses, from the steps
+     declared here, by reading the cards as drawn. */
+  #view-settings .dp-settings-auth-kpi-grid {
+    --dp-kpi-fit-steps: 4;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  #view-settings .dp-settings-auth-kpi-grid:is([data-kpi-fit='split'], [data-kpi-fit='close']) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #view-settings .dp-settings-auth-kpi-grid:is([data-kpi-fit='split'], [data-kpi-fit='close']) > .dp-settings-auth-kpi[data-auth-kpi='mode'] {
+    grid-column: 1 / -1;
+  }
+
+  #view-settings .dp-settings-auth-kpi-grid[data-kpi-fit='close'] > .dp-settings-auth-kpi.dash-hero-stat {
+    padding-inline: 10px;
+  }
+
+  /* A word runs past its card rather than breaking, so the fit can see it;
+     only the last composition breaks one, as it always could. */
+  #view-settings .dp-settings-auth-kpi-grid:not([data-kpi-words='short']) .dp-settings-auth-kpi :is(.dhs-label, .dhs-val) {
+    overflow-wrap: normal;
+  }
+
+  /* Stacked, each setting keeps its own inline title/hint + control, and the
+     pair stops being content-bounded because there is only one column. (The
+     session island is a Settings island: its handheld steps are the shared
+     ones, ui-settings-page.css.) */
+  #view-settings .dp-settings-auth-credentials-row {
+    width: auto;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  /* The password field and its Apply are one control group: the setting is
+     its title over that group (each setting below 780px is a column,
+     ui-settings-page.css), the field taking what Apply leaves and Apply its
+     own size beside it, at the setting's own gap. */
+  #view-settings .dp-settings-auth-credentials-row > .dp-settings-inline-field.dp-settings-auth-password-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  #view-settings .dp-settings-auth-password-field > .dp-settings-inline-field-info {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Canonical authentication field/duration details. */
+
+/* Keep the title clean while declaring the UOM as part of the control. */
+#view-settings .dp-settings-auth-duration-control {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-auth-duration-control > .input {
+  width: 128px;
+  max-width: 100%;
+  padding-inline-end: 62px;
+}
+
+#view-settings .dp-settings-auth-duration-unit {
+  position: absolute;
+  inset-inline-end: 14px;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Canonical Authentication continuation: OIDC presentation belongs to Authentication. */
+
+/* Consolidated from ui-settings-authentication-oidc.css. */
+/* DownloadPulse OpenID Connect Settings component. */
+
+/* Header follows the same Title / centered flavor / Enable pattern as the
+   other Settings cards with a master control. */
+/* An explicit 1fr column. Without it the auto column is sized to the widest
+   item's max-content, and a content-bounded island's own `max-width: 100%`
+   then resolves against that overgrown track instead of the card. */
+#view-settings .dp-settings-oidc-grouped-card > .card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  /* The body's own width decides when each group stacks (below). */
+  container: dp-oidc / inline-size;
+}
+
+#view-settings .dp-settings-oidc-sandwich > .form-label {
+  display: block;
+  margin-bottom: 7px;
+}
+
+#view-settings .dp-settings-oidc-sandwich > .form-hint {
+  display: block;
+  margin-top: 7px;
+  line-height: 1.4;
+}
+
+/* ── The OIDC body ────────────────────────────────────────────────────────
+   Three restrained relationship groups -- outward-facing identity, client
+   credentials, protocol details -- with the issuer endpoint floating free
+   between the first two, because it is the one authority the others describe.
+   Each group is content-bounded and centred; none of them is a card. */
+/* A relationship container at the body's normal inset, not a narrow island.
+   The room it holds belongs to the FIELDS: each one grows with the container
+   instead of sitting at a width chosen here, so a URL is readable without the
+   group announcing itself.
+
+   STRETCH, not centre: the informational stacks wrap to different line counts
+   as text reflows, and centring items of unequal height pulls the taller one's
+   top upward -- so settings genuinely on one row stop sharing a baseline.
+   Equal-height items keep that promise at any font metric; each field still
+   centres its own control against its own stack.
+
+   ONE row or one field per row, never a partial wrap: a group that no longer
+   gives every control a usable width stacks whole (the body's container
+   queries below), so its fields never wrap two-plus-one. */
+#view-settings .dp-settings-oidc-group {
+  /* A control's reading room -- its cap on a row, its width when stacked. */
+  --dp-oidc-control: 420px;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 18px 32px;
+  width: auto;
+  margin-inline: 8px;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px 22px 17px;
+}
+
+/* The fields share the group's spare width rather than each keeping a fixed
+   one; the informational stack stays bounded so the growth reaches controls. */
+#view-settings .dp-settings-oidc-group > .dp-settings-inline-field {
+  min-width: 0;
+}
+
+#view-settings .dp-settings-oidc-group .dp-settings-inline-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Room to read a URL, not room to stretch one across the card. */
+  max-width: var(--dp-oidc-control);
+}
+
+#view-settings .dp-settings-oidc-group .dp-settings-inline-field-control > .input,
+#view-settings .dp-settings-oidc-group .dp-action-field {
+  width: 100%;
+}
+
+/* A hint is a sentence, not a single line: bound the informational stack so
+   the group's width is decided by how much room its CONTROLS need, not by how
+   long its longest sentence happens to be. The session island is not bounded
+   here: its sentences take the width the card gives the island (above). */
+#view-settings .dp-settings-auth-credentials-row .dp-settings-inline-field-info {
+  max-width: 200px;
+}
+
+/* Inside a group the hint is bounded harder than elsewhere: three of them
+   share one row, so every pixel the sentences keep is a pixel the URL fields
+   do not get. The hints wrap; the values stay readable. */
+#view-settings .dp-settings-oidc-group .dp-settings-inline-field-info {
+  max-width: 158px;
+}
+
+#view-settings .dp-settings-oidc-issuer-field .dp-settings-inline-field-info {
+  max-width: 300px;
+}
+
+/* The fields grow with their group (above). What differs between them is only
+   how much of a row each one deserves -- a provider name is short, a callback
+   URL is not -- so they state PROPORTION, not pixels.
+
+   The informational stack stays bounded, which is what makes the group's spare
+   width reach the controls rather than the sentences. */
+/* Scoped to the group so these state the proportion INSIDE it -- the group's
+   own child rule above is more specific than a bare field class would be. */
+/* Their share of a ROW, from 780px only: below it the group is a column of
+   settings, where a basis is a height (the handheld layout, below). */
+@media (min-width: 780px) {
+  #view-settings .dp-settings-oidc-group > .dp-settings-inline-field {
+    flex: 1 1 260px;
+  }
+
+  #view-settings .dp-settings-oidc-group > .dp-settings-oidc-provider-field {
+    flex: 1 1 200px;
+  }
+
+  #view-settings .dp-settings-oidc-group > .dp-settings-auth-public-base-field {
+    flex: 1.35 1 260px;
+  }
+
+  #view-settings .dp-settings-oidc-group > .dp-settings-auth-callback-field {
+    flex: 1.45 1 280px;
+  }
+
+  #view-settings .dp-settings-oidc-group > .dp-settings-oidc-client-id-field {
+    flex: 1.1 1 300px;
+  }
+
+  #view-settings .dp-settings-oidc-group > .dp-settings-oidc-client-secret-field {
+    flex: 1 1 300px;
+  }
+}
+
+/* Inside the group every control may narrow to nothing (above); the client
+   secret's may not narrow past its typing room and the Clear inside it -- its
+   sentence yields the width instead. */
+#view-settings .dp-settings-oidc-group > .dp-settings-oidc-client-secret-field .dp-settings-inline-field-control {
+  min-width: min-content;
+}
+
+@media (min-width: 780px) {
+  #view-settings .dp-settings-oidc-group > .dp-settings-oidc-scopes-field {
+    flex: 1.5 1 300px;
+  }
+
+  /* A claim name is one short word; it does not earn half the row. */
+  #view-settings .dp-settings-oidc-group > .dp-settings-oidc-group-claim-field {
+    flex: 1 1 240px;
+  }
+}
+
+/* Stacked, a group is one field per row in a centred, content-bounded
+   island: one description column (190px) and one control column (the
+   control's 420px reading room), so every control in the group starts at one
+   left edge, ends at one right edge and is one width. The island hugs those
+   columns -- its rows are as tall as their content, the row's flex basis being
+   a width -- and where the card is narrower than that, the controls yield the
+   difference. A control's width is its own, never its value's.
+
+   Each group stacks below its own measured card-body width, holding with the
+   local fonts and the wider CI fallback (DejaVu) alike:
+   - Provider Identity, 1176px: below it the Public Base URL's control falls
+     under 204px (Provider Name, a short name, keeps at least 147px).
+   - Client Credentials, 1168px: below it the Client Secret's typing room
+     beside its Clear falls under 280px (a 40-character Client ID still shows
+     whole there).
+   - Protocol Details, 846px: below it Group Claim falls under 160px.
+   From 780px only; the handheld layout (below 780px) keeps its own stack. */
+@media (min-width: 780px) {
+  @container dp-oidc (width < 1176px) {
+    #view-settings .dp-settings-oidc-group--identity {
+      flex-direction: column;
+      gap: 16px;
+      width: fit-content;
+      max-width: calc(100% - 16px);
+      margin-inline: auto;
+    }
+
+    #view-settings .dp-settings-oidc-group--identity > .dp-settings-inline-field {
+      flex: 0 0 auto;
+    }
+
+    #view-settings .dp-settings-oidc-group--identity > .dp-settings-inline-field > .dp-settings-inline-field-info {
+      flex: 0 0 auto;
+      width: min(190px, 40cqi);
+      max-width: none;
+    }
+
+    #view-settings .dp-settings-oidc-group--identity .dp-settings-inline-field-control {
+      flex: 0 1 auto;
+      width: var(--dp-oidc-control);
+    }
+  }
+
+  @container dp-oidc (width < 1168px) {
+    #view-settings .dp-settings-oidc-group--credentials {
+      flex-direction: column;
+      gap: 16px;
+      width: fit-content;
+      max-width: calc(100% - 16px);
+      margin-inline: auto;
+    }
+
+    #view-settings .dp-settings-oidc-group--credentials > .dp-settings-inline-field {
+      flex: 0 0 auto;
+    }
+
+    #view-settings .dp-settings-oidc-group--credentials > .dp-settings-inline-field > .dp-settings-inline-field-info {
+      flex: 0 0 auto;
+      width: min(190px, 40cqi);
+      max-width: none;
+    }
+
+    #view-settings .dp-settings-oidc-group--credentials .dp-settings-inline-field-control {
+      flex: 0 1 auto;
+      width: var(--dp-oidc-control);
+    }
+  }
+
+  @container dp-oidc (width < 846px) {
+    #view-settings .dp-settings-oidc-group--protocol {
+      flex-direction: column;
+      gap: 16px;
+      width: fit-content;
+      max-width: calc(100% - 16px);
+      margin-inline: auto;
+    }
+
+    #view-settings .dp-settings-oidc-group--protocol > .dp-settings-inline-field {
+      flex: 0 0 auto;
+    }
+
+    #view-settings .dp-settings-oidc-group--protocol > .dp-settings-inline-field > .dp-settings-inline-field-info {
+      flex: 0 0 auto;
+      width: min(190px, 40cqi);
+      max-width: none;
+    }
+
+    #view-settings .dp-settings-oidc-group--protocol .dp-settings-inline-field-control {
+      flex: 0 1 auto;
+      width: var(--dp-oidc-control);
+    }
+  }
+}
+
+/* The identity-provider authority endpoint: centred, unbordered, and given
+   about 70% of the body so it reads as the central statement between the
+   group above it and the group below. */
+#view-settings .dp-settings-oidc-issuer-band {
+  min-width: 0;
+  width: 70%;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+#view-settings .dp-settings-oidc-issuer-field {
+  justify-content: space-between;
+}
+
+#view-settings .dp-settings-oidc-issuer-field > .dp-settings-inline-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-oidc-issuer-field .input {
+  width: 100%;
+}
+
+/* Access control is one coherent section, four rows at every desktop width:
+   ONE header row (the heading at its start, the policy decision at its end),
+   the provisioning role centred on its own row, the allowlists' hint centred
+   beneath it, then the allowlists themselves. */
+#view-settings .dp-settings-oidc-access {
+  --dp-oidc-role-island: 412px;
+  --dp-oidc-band-gap: 16px;
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  padding-top: 20px;
+  container-type: inline-size;
+  container-name: dp-oidc-access;
+}
+
+/* A muted, centred rule -- a change of subject, not a subsection boundary.
+   It is drawn as the section's own leading element so it cannot be mistaken
+   for a card edge, and it spans most of the body rather than all of it. */
+#view-settings .dp-settings-oidc-access::before {
+  content: '';
+  justify-self: center;
+  width: 70%;
+  height: 1px;
+  margin-bottom: 4px;
+  background: var(--dp-divider);
+}
+
+#view-settings .dp-settings-oidc-section-heading {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+}
+
+#view-settings .dp-settings-oidc-section-title {
+  justify-self: start;
+  color: var(--dp-text-primary);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+/* The provisioning role and the allowlists' hint: an ordinary stack, each on
+   its own row, the hint directly over the allowlists it introduces. */
+#view-settings .dp-settings-oidc-policy-band {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: var(--dp-oidc-band-gap);
+}
+
+/* The provisioning role: one bounded island in the canonical Settings island
+   material (the Download Engine, Statistics cadence and session islands),
+   centred on the section as they are. */
+#view-settings .dp-settings-oidc-default-role {
+  justify-self: center;
+  min-width: 0;
+  max-width: min(100%, var(--dp-oidc-role-island));
+  box-sizing: border-box;
+  border: 1px solid var(--dp-divider);
+  border-radius: 12px;
+  padding: 16px 22px 17px;
+}
+
+/* A hint is a sentence: bound it so the island's width is decided by its
+   control, as the Download Engine island's is. */
+#view-settings .dp-settings-oidc-default-role .dp-settings-inline-field-info {
+  max-width: 200px;
+}
+
+/* The role selector is sized for its longest role, ReadOnly User, on one line
+   with the trigger's own padding and chevron; the shared menu matches the
+   trigger, so the open list holds it on one line too. */
+#view-settings .dp-settings-oidc-default-role .dp-settings-inline-field-control > :is(select.input, .dp-dropdown-shell) {
+  width: calc(13ch + 50px) !important;
+  max-width: 100%;
+}
+
+/* The allowlists' own introduction, centred over all three of them. */
+#view-settings .dp-settings-oidc-section-copy {
+  justify-self: center;
+  max-width: 620px;
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* The policy control keeps its right-side place and its neutral treatment;
+   the only addition is a restrained border that says the label and its toggle
+   are one control. */
+#view-settings .dp-settings-oidc-section-heading > .dp-settings-oidc-allow-all {
+  width: auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  justify-self: end;
+  gap: 12px;
+  margin: 0 !important;
+  padding: 7px 12px;
+  border: 1px solid var(--dp-divider);
+  border-radius: 10px;
+  background: transparent;
+}
+
+#view-settings .dp-settings-oidc-allow-all .toggle-info {
+  display: block;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* One line wherever the row has room; a narrow section may give the label a
+   second line rather than collide. */
+#view-settings .dp-settings-oidc-allow-all .toggle-info .tl {
+  display: block;
+}
+
+#view-settings .dp-settings-oidc-allow-all .toggle {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0;
+}
+
+#view-settings .dp-settings-oidc-allowlists {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 20px;
+}
+
+#view-settings .dp-settings-oidc-allowlists > .dp-settings-field {
+  min-width: 0;
+  margin: 0;
+}
+
+#view-settings .dp-settings-oidc-allowlists textarea.input {
+  min-height: 104px;
+  resize: vertical;
+}
+
+@media (max-width: 1280px) {
+  #view-settings .dp-settings-oidc-group {
+    gap: 16px 28px;
+  }
+
+  #view-settings .dp-settings-oidc-issuer-band {
+    width: 85%;
+  }
+}
+
+@media (max-width: 779px) {
+  /* Stacked, each setting keeps its own inline title/hint + control. */
+  #view-settings .dp-settings-oidc-group {
+    width: auto;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  #view-settings .dp-settings-oidc-issuer-band {
+    width: auto;
+    max-width: none;
+  }
+
+  #view-settings .dp-settings-oidc-allowlists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Each Username & Password and OpenID Connect setting is its title over its
+     control; its hint leaves the layout and its title says it as a tooltip
+     (fitAuthBody, promoteHints) -- still the control's neighbour to assistive
+     technology, as the islands' hidden hints are. */
+  #view-settings :is(.dp-settings-username-password-card, .dp-settings-oidc-card) .dp-settings-inline-field-info > .form-hint {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Help, lent to the identity group (fitHeaderSteps), sits in its top-right
+     corner, on the Provider Name title's row. */
+  #view-settings .dp-settings-oidc-group--identity.dp-settings-help-slot > .dp-settings-help-chip {
+    top: 9px;
+    right: 12px;
+  }
+
+  /* While the group holds it, the chip reaches below Provider Name's title
+     line: that setting's control then starts lower, so the chip keeps the
+     same clearance above it that a title keeps (8px). Without the chip, the
+     ordinary title-to-control gap. */
+  #view-settings .dp-settings-oidc-group--identity:has(> .dp-settings-help-chip) > .dp-settings-oidc-provider-field {
+    row-gap: 14px;
+  }
+
+  /* Access control: no rule before it, its heading centred on its own row,
+     the policy toggle's row beneath it, the policy's explanation directly
+     under that, then the provisioning role and the allowlists. The policy
+     band's two members join the section's own rows to be ordered so. */
+  #view-settings .dp-settings-oidc-access::before {
+    display: none;
+  }
+
+  #view-settings .dp-settings-oidc-section-heading {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #view-settings .dp-settings-oidc-section-title {
+    justify-self: center;
+  }
+
+  #view-settings .dp-settings-oidc-policy-band {
+    display: contents;
+  }
+
+  #view-settings .dp-settings-oidc-access > .dp-settings-oidc-section-heading { order: 0; }
+  #view-settings .dp-settings-oidc-policy-band > .dp-settings-oidc-section-copy { order: 1; }
+  #view-settings .dp-settings-oidc-policy-band > .dp-settings-oidc-default-role { order: 2; }
+  #view-settings .dp-settings-oidc-access > .dp-settings-oidc-allowlists { order: 3; }
+
+  /* The policy's explanation reads across the whole section. */
+  #view-settings .dp-settings-oidc-section-copy {
+    justify-self: stretch;
+    max-width: none;
+  }
+
+  /* The provisioning role: its title over its selector, the selector centred
+     in the section. */
+  #view-settings .dp-settings-oidc-default-role .dp-settings-inline-field-control {
+    justify-content: center;
+  }
+
+  /* The allowlists keep their guidance beneath each list, centred. */
+  #view-settings .dp-settings-oidc-sandwich > .form-hint {
+    text-align: center;
+  }
+
+  /* The policy toggle says its short words where its full ones would not
+     stay on one line (fitAuthBody); its full words stay its name. */
+  #view-settings .dp-settings-oidc-allow-all[data-words='short'] .dp-settings-oidc-allow-all-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-oidc-allow-all[data-words='short'] .dp-settings-oidc-allow-all-short::before {
+    content: attr(data-short-label);
+  }
+}
+
+/* Where the heading and the policy decision can no longer share one row,
+   each leads its own row, and the role follows them, rather than colliding or
+   hugging a right edge that no longer exists. */
+/* (The section is never this narrow from 780px: this is the handheld one.)
+   Its heading centred on its own row, the policy toggle's row beneath it at
+   the section's width, the provisioning role centred. */
+@container dp-oidc-access (max-width: 559px) {
+  #view-settings .dp-settings-oidc-section-heading {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  #view-settings .dp-settings-oidc-section-title,
+  #view-settings .dp-settings-oidc-default-role {
+    justify-self: center;
+  }
+
+  #view-settings .dp-settings-oidc-section-heading > .dp-settings-oidc-allow-all {
+    justify-self: stretch;
+  }
+}
+
+/* Users & Access ---------------------------------------------------------- */
+#view-settings .dp-settings-users {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Deployment Type: one assembly, centred in the card body -- the reading (the
+   title over its hint, beside the type) on one row, and the action on its own
+   row beneath the whole reading. The reading is as wide as its one row
+   (max-content): fitDeploymentType (ui-settings-page.js) replaces the hint
+   with a shorter wording while that row and a 16px gutter on each side are
+   wider than the card, then stacks
+   the title over the type with no hint (data-deployment-fit 3). A hint never
+   wraps. */
+#view-settings .dp-settings-deployment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+#view-settings .dp-settings-deployment-reading {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: max-content;
+}
+
+#view-settings .dp-settings-deployment-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+#view-settings .dp-settings-deployment-copy > .form-hint {
+  margin-top: 0;
+}
+
+#view-settings .dp-settings-deployment-copy > .form-hint[hidden] {
+  display: none;
+}
+
+/* A text reading: as wide as its word, not a square. */
+#view-settings .dp-settings-deployment-value {
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+
+#view-settings .dp-settings-deployment[data-deployment-fit='3'] .dp-settings-deployment-reading {
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Deployment & Language: on the desktop application Local Port first (its
+   title over its one-line hint, the port field beside them, centred against
+   them), then the Deployment Type assembly, as it always was, and the Default
+   Language block -- its title over its one-line hint, both centred, and the
+   language button centred beneath them. In one row, each as wide as its own
+   content and all centred as one group, with the same room on each side of
+   the divider before each item after the first, while that fits; narrower,
+   the last item on its own centred row beneath the others (three items: the
+   inverted triangle); narrower still, every item on its own centred row
+   (fitDeploymentType decides, from measured natural widths,
+   data-language-layout beside / triangle / below). The fitter measures on
+   hidden clones in its own zero-size box ([data-language-measure]), so the
+   card never shows a candidate it does not keep. */
+#view-settings .dp-settings-deployment-language {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 16px 24px;
+  min-width: 0;
+}
+#view-settings .dp-settings-deployment-language:is([data-language-layout='beside'], [data-language-layout='triangle']) > :is(.dp-settings-local-port, .dp-settings-deployment) {
+  flex: 0 0 auto;
+}
+#view-settings .dp-settings-deployment-language > [data-language-measure] {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+}
+#view-settings .dp-settings-deployment-language > [data-language-measure] > * {
+  width: max-content;
+}
+#view-settings .dp-settings-deployment-language[data-language-layout='below'] {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+#view-settings .dp-settings-default-language {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  text-align: center;
+}
+/* The divider and the room after it -- the same as the gap before it -- are
+   each in-row item's after the first, and its measured clone's. An item on a
+   row of its own (the triangle's last, every stacked item after the first)
+   has its divider above it instead. */
+#view-settings .dp-settings-deployment-language[data-language-layout='beside'] > * + :not([data-language-measure]),
+#view-settings .dp-settings-deployment-language[data-language-layout='triangle'] > * + :not(:last-child, [data-language-measure]),
+#view-settings .dp-settings-deployment-language > [data-language-measure] > * + * {
+  flex: 0 0 auto;
+  padding-inline-start: 24px;
+  border-inline-start: 1px solid var(--dp-divider);
+}
+#view-settings .dp-settings-deployment-language[data-language-layout='triangle'] > .dp-settings-default-language {
+  flex: 0 0 100%;
+  box-sizing: border-box;
+  padding-top: 16px;
+  border-top: 1px solid var(--dp-divider);
+}
+#view-settings .dp-settings-deployment-language[data-language-layout='below'] > * + :not([data-language-measure]) {
+  padding-top: 16px;
+  border-top: 1px solid var(--dp-divider);
+}
+
+/* Local Port: its title over its hint, the port field beside them and
+   centred against them, as Deployment Type's reading is; stacked (title, hint
+   and field, centred) where even its shortest reading does not fit its row.
+   A hint never wraps. */
+#view-settings .dp-settings-local-port {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-width: 0;
+}
+#view-settings .dp-settings-deployment-language > [data-language-measure] > .dp-settings-local-port,
+#view-settings .dp-settings-deployment-language:is([data-language-layout='beside'], [data-language-layout='triangle']) > .dp-settings-local-port {
+  width: max-content;
+}
+#view-settings .dp-settings-local-port-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  white-space: nowrap;
+}
+#view-settings .dp-settings-local-port-copy > .form-hint {
+  margin-top: 0;
+}
+#view-settings .dp-settings-local-port-copy > .form-hint[hidden] {
+  display: none;
+}
+/* As wide as the largest port (five digits) with room to spare, plus the
+   field's own padding, border and number spinner -- never a clipped digit. */
+#view-settings .dp-settings-local-port-field {
+  flex: 0 0 auto;
+  width: calc(6ch + 46px);
+  min-width: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+#view-settings .dp-settings-local-port[data-local-port-fit='stacked'] {
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+#view-settings .dp-settings-local-port[data-local-port-fit='stacked'] > .dp-settings-local-port-copy {
+  align-items: center;
+}
+#view-settings .dp-settings-default-language > .form-label,
+#view-settings .dp-settings-default-language > .form-hint {
+  white-space: nowrap;
+}
+#view-settings .dp-settings-default-language > .form-hint {
+  margin-top: 0;
+}
+#view-settings .dp-settings-default-language > .form-hint[hidden] {
+  display: none;
+}
+#view-settings .dp-settings-default-language > .dp-language-button {
+  margin-top: 9px;
+}
+
+#view-settings .dp-settings-users-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+#view-settings .dp-settings-users-table,
+#view-settings .dp-settings-users-tokens,
+#view-settings .dp-settings-profiles-table {
+  width: 100%;
+}
+
+#view-settings .dp-settings-users-table td,
+#view-settings .dp-settings-users-tokens td {
+  vertical-align: middle;
+}
+
+/* From 780px every token table in the card (each Integration account's, and
+   Connected browsers) lays its columns out alike, so Issued, Status and
+   Actions stand in one place down the whole card: Token takes the rest.
+   Below 780px fitIntegrationAccounts shares measured widths instead. */
+@media (min-width: 780px) {
+  #view-settings .dp-settings-users-tokens {
+    table-layout: fixed;
+  }
+  #view-settings .dp-settings-users-tokens > thead > tr > th:nth-child(2) {
+    width: 12rem;
+  }
+  #view-settings .dp-settings-users-tokens > thead > tr > th:nth-child(3) {
+    width: 9rem;
+  }
+  #view-settings .dp-settings-users-tokens > thead > tr > th:nth-child(4) {
+    width: 9rem;
+  }
+  /* A token's name: at most two lines, then its end is cut (its whole
+     name is then its tooltip, fitIntegrationAccounts). */
+  #view-settings .dp-settings-users-tokens .dp-settings-users-token-name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* An account table is not a transfer table: the transfer tables' narrow-width
+   column reduction (ui-transfer-contract.css) never removes its Status or
+   Actions. It scrolls inside its own wrapper instead. */
+#view-settings :is(.dp-settings-users-table, .dp-settings-users-tokens, .dp-settings-profiles-table) :is(th, td) {
+  display: table-cell;
+}
+
+#view-settings .dp-settings-users-name {
+  font-weight: 650;
+  color: var(--dp-text-primary, var(--text));
+}
+/* The account's name is the way to its details: a text button. */
+#view-settings .dp-settings-users-name-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+#view-settings .dp-settings-users-name-link:hover {
+  text-decoration: underline;
+}
+#view-settings .dp-settings-users-name-link:focus-visible {
+  outline: 2px solid var(--accent, #a855f7);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+#view-settings .dp-settings-users-detail {
+  color: var(--dp-text-muted);
+  font-size: 11.5px;
+}
+
+#view-settings .dp-settings-users-actions-head {
+  text-align: right;
+}
+
+#view-settings .dp-settings-users-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+}
+
+#view-settings .dp-settings-users-hint {
+  color: var(--dp-text-muted);
+  font-size: 11.5px;
+  text-align: right;
+}
+/* The protected Administrator's notice is always the same two lines,
+   "Password managed" over "in Authentication", at every width. */
+#view-settings .dp-settings-users-hint > span {
+  display: block;
+  white-space: nowrap;
+}
+/* Drawn only by the handheld User Accounts stages (below): the built-in
+   Administrator's shorter notice, and an account's state beside its name. */
+#view-settings .dp-settings-users-hint > .dp-settings-users-hint-short,
+#view-settings .dp-settings-users-state {
+  display: none;
+}
+
+/* The User Accounts table below 780px gives back its secondary information
+   one stage at a time (fitUsersTable, data-users-fit): 1 the emails, 2 the
+   Sign-In column, 3 the Status column -- each name then in its account's
+   enabled (success) or disabled (caution) colour, the state still said to
+   assistive technology beside it -- and 4 closer cell padding. At every
+   stage each cell keeps one line and every row the stage's one height. The
+   built-in Administrator's notice says "Built-in Admin Account" (label 1, on
+   two lines as its full words are) or
+   "Default" (2) where its full words do not fit (data-users-label). */
+@media (max-width: 779px) {
+  #view-settings .dp-settings-users-table {
+    --dp-users-fit-steps: 5;
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-fit="1"], [data-users-fit="2"], [data-users-fit="3"], [data-users-fit="4"])
+    td:first-child > .dp-settings-users-detail {
+    display: none;
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-fit="2"], [data-users-fit="3"], [data-users-fit="4"]) :is(th, td):nth-child(3),
+  #view-settings .dp-settings-users-table:is([data-users-fit="3"], [data-users-fit="4"]) :is(th, td):nth-child(4) {
+    display: none;
+  }
+
+  /* At every stage no cell's information wraps (fitUsersTable then gives
+     back information rather than let a row grow): the Account column takes
+     what the others leave, its name and email cut short where too long; the
+     others keep one line; and every row is the stage's one height. */
+  #view-settings .dp-settings-users-table[data-users-fit] :is(th, td):first-child {
+    width: 100%;
+    max-width: 0;
+  }
+
+  #view-settings .dp-settings-users-table[data-users-fit] :is(th, td):not(:first-child) {
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-table[data-users-fit] .dp-settings-users-name {
+    display: block;
+  }
+
+  /* (The email is a block already, and its stage hides it from 1.) */
+  #view-settings .dp-settings-users-table[data-users-fit] :is(.dp-settings-users-name, td:first-child > .dp-settings-users-detail) {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-table[data-users-fit] > tbody > tr {
+    height: var(--dp-users-row, auto);
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-fit="3"], [data-users-fit="4"]) .dp-settings-users-name[data-enabled="true"] {
+    color: var(--dp-state-success);
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-fit="3"], [data-users-fit="4"]) .dp-settings-users-name[data-enabled="false"] {
+    color: var(--dp-state-caution);
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-fit="3"], [data-users-fit="4"]) .dp-settings-users-state {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-table[data-users-fit="4"] :is(th, td) {
+    padding-inline: 6px;
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-label="1"], [data-users-label="2"]) .dp-settings-users-hint > span:not(.dp-settings-users-hint-short) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-table:is([data-users-label="1"], [data-users-label="2"]) .dp-settings-users-hint-short {
+    display: inline;
+    white-space: nowrap;
+  }
+
+  /* Two lines, as the full notice is: "Built-in Admin" over "Account",
+     neither wrapping further. */
+  #view-settings .dp-settings-users-table[data-users-label="1"] .dp-settings-users-hint-short {
+    display: block;
+    white-space: pre;
+  }
+
+  #view-settings .dp-settings-users-table[data-users-label="1"] .dp-settings-users-hint-short::before {
+    content: attr(data-label-1);
+  }
+
+  #view-settings .dp-settings-users-table[data-users-label="2"] .dp-settings-users-hint-short::before {
+    content: attr(data-label-2);
+  }
+}
+
+#view-settings .dp-settings-users-self {
+  color: var(--dp-text-muted);
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+/* Status is coloured text, as everywhere in Settings. */
+#view-settings .dp-settings-users-status {
+  font-size: 12px;
+  font-weight: 650;
+}
+#view-settings .dp-settings-users-status[data-tone='success'] {
+  color: var(--dp-state-success, var(--green));
+}
+#view-settings .dp-settings-users-status[data-tone='neutral'] {
+  color: var(--dp-text-muted);
+}
+
+#view-settings .dp-settings-users-empty {
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 10px 0;
+}
+
+/* A suggestion, in the caution language: it asks for a look, nothing more. */
+#view-settings .dp-settings-users-duplicates {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--dp-state-caution) 55%, var(--dp-border-default));
+  border-radius: var(--dp-radius-sm);
+  background: var(--dp-state-caution-bg);
+  padding: 11px 14px;
+  font-size: 12px;
+}
+#view-settings .dp-settings-users-duplicates > b {
+  color: var(--dp-state-caution);
+}
+#view-settings .dp-settings-users-duplicate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+#view-settings .dp-settings-users-integration {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+}
+#view-settings .dp-settings-users-integration + .dp-settings-users-integration {
+  border-top: 1px solid var(--dp-border-default);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+#view-settings .dp-settings-users-integration-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+#view-settings .dp-settings-users-integration-head > .dp-settings-users-actions {
+  margin-left: auto;
+}
+/* The Connected browsers group (every person's browsers): a heading as an
+   account's name reads, without an account's actions or status. */
+#view-settings .dp-settings-users-browsers-head {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+}
+
+/* Drawn only by the handheld Integration Accounts stages (below): a token's
+   issue day beneath its name, its Revoke glyph and the token it names. */
+#view-settings .dp-settings-users-tokens :is(.dp-settings-users-token-issued, .dp-settings-users-token-target, .dp-row-action-icon) {
+  display: none;
+}
+
+/* The Integration Accounts card below 780px (fitIntegrationAccounts).
+   Each account's header keeps one row: 0 its actions as they are, 1 one
+   Manage Tokens menu holding them, 2 that menu reading "Manage", 3 its
+   status said by its name's colour -- enabled (success) or disabled
+   (caution) -- and to assistive technology beside the name.
+   The token tables share one stage and one set of column widths: 0 four
+   columns, 1 each token's issue day beneath its name instead of its own
+   column, 2 each Revoke its glyph alone, 3 closer cell padding. No cell's
+   information wraps, and every row keeps the four-column rows' height. */
+@media (max-width: 779px) {
+  #view-settings .dp-settings-users-integration-head {
+    --dp-account-fit-steps: 4;
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit] {
+    flex-wrap: nowrap;
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit] > .dp-settings-users-name {
+    display: block;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit] > :is(.dp-settings-users-status, .dp-settings-users-actions, .dp-settings-header-test-group) {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-integration-head:not([data-account-fit="1"], [data-account-fit="2"], [data-account-fit="3"]) > .dp-settings-header-test-group,
+  #view-settings .dp-settings-users-integration-head:is([data-account-fit="1"], [data-account-fit="2"], [data-account-fit="3"]) > .dp-settings-users-actions {
+    display: none;
+  }
+
+  #view-settings .dp-settings-users-integration-head > .dp-settings-header-test-group {
+    margin-left: auto;
+  }
+
+  #view-settings .dp-settings-users-integration-head:is([data-account-fit="2"], [data-account-fit="3"]) .dp-settings-fit-label-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-integration-head:is([data-account-fit="2"], [data-account-fit="3"]) .dp-settings-fit-label-short {
+    display: inline;
+  }
+
+  #view-settings .dp-settings-users-integration-head:is([data-account-fit="2"], [data-account-fit="3"]) .dp-settings-fit-label-short::before {
+    content: attr(data-fit-2);
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit="3"] > .dp-settings-users-status {
+    display: none;
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit="3"] > .dp-settings-users-name[data-enabled="true"] {
+    color: var(--dp-state-success);
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit="3"] > .dp-settings-users-name[data-enabled="false"] {
+    color: var(--dp-state-caution);
+  }
+
+  #view-settings .dp-settings-users-integration-head[data-account-fit="3"] > .dp-settings-users-state {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-tokens {
+    --dp-tokens-fit-steps: 4;
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] {
+    table-layout: fixed;
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] > thead > tr > th:nth-child(2) {
+    width: var(--dp-tokens-issued, auto);
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] > thead > tr > th:nth-child(3) {
+    width: var(--dp-tokens-status, auto);
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] > thead > tr > th:nth-child(4) {
+    width: var(--dp-tokens-action, auto);
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] :is(th, td) {
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] :is(.dp-settings-users-token-name, .dp-settings-users-token-issued) {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit] > tbody > tr {
+    height: var(--dp-tokens-row, auto);
+  }
+
+  #view-settings .dp-settings-users-tokens:is([data-tokens-fit="0"]) .dp-settings-users-token-issued,
+  #view-settings .dp-settings-users-tokens:is([data-tokens-fit="1"], [data-tokens-fit="2"], [data-tokens-fit="3"]) :is(th, td):nth-child(2) {
+    display: none;
+  }
+
+  /* The name and its day are two lines where the row's height is its
+     Revoke's and the cell's padding: the cell gives up its own padding to
+     them (the row keeps its height, the two centred in it). */
+  #view-settings .dp-settings-users-tokens:is([data-tokens-fit="1"], [data-tokens-fit="2"], [data-tokens-fit="3"]) td:first-child {
+    padding-block: 0;
+  }
+
+  #view-settings .dp-settings-users-tokens:is([data-tokens-fit="2"], [data-tokens-fit="3"]) [data-user-action="revoke-token"] {
+    position: relative;
+    min-width: 36px;
+    padding-inline: 0;
+    justify-content: center;
+  }
+
+  #view-settings .dp-settings-users-tokens:is([data-tokens-fit="2"], [data-tokens-fit="3"]) [data-user-action="revoke-token"] :is([data-dp-icon-label], .dp-settings-users-token-target) {
+    display: inline;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    opacity: 0;
+  }
+
+  #view-settings .dp-settings-users-tokens:is([data-tokens-fit="2"], [data-tokens-fit="3"]) [data-user-action="revoke-token"] .dp-row-action-icon {
+    display: block;
+    width: 15px;
+    height: 15px;
+  }
+
+  #view-settings .dp-settings-users-tokens[data-tokens-fit="3"] :is(th, td) {
+    padding-inline: 6px;
+  }
+}
+
+/* Account dialogs (DPSettingsModal): fields stack, one per line. */
+.dp-modal-dialog.dp-users-dialog .dp-modal-body,
+.dp-modal-dialog.dp-account-dialog .dp-account-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dp-modal-dialog.dp-users-dialog .dp-modal-field,
+.dp-modal-dialog.dp-account-dialog .dp-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-view[hidden] {
+  display: none;
+}
+/* A described choice (the Role selector): its one-sentence description and
+   the help chip that opens the full comparison, beneath the selector. */
+.dp-modal-dialog.dp-users-dialog .dp-users-choice-description {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: -6px;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.dp-modal-dialog.dp-users-dialog .dp-users-choice-description > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Edit User: the role and the local password as two groups, and the same
+   dialog's impact confirmation (its other view). Contained like the Delivery
+   Profile editor: never taller than the overlay leaves, its header (the
+   username and its pencil) and footer stay in view and the body scrolls. */
+.dp-modal-dialog.dp-users-edit-dialog {
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+.dp-modal-dialog.dp-users-edit-dialog > .dp-modal-header,
+.dp-modal-dialog.dp-users-edit-dialog > .dp-modal-footer {
+  flex: 0 0 auto;
+}
+.dp-modal-dialog.dp-users-edit-dialog > .dp-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+@media (max-width: 620px) {
+  .dp-modal-dialog.dp-users-edit-dialog {
+    max-height: calc(100dvh - 24px);
+  }
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-view[hidden] {
+  display: none;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-identity {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+}
+
+/* The account's sign-in methods: the line's last item below 780px only,
+   where the User Accounts table has no Sign-In column (editUser). */
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-signin {
+  display: none;
+}
+
+@media (max-width: 779px) {
+  .dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-signin {
+    display: inline;
+  }
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--dp-border-subtle);
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-group > [data-edit-role] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-heading {
+  margin: 0;
+  color: var(--dp-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+.dp-modal-dialog.dp-users-edit-dialog :is(.dp-users-edit-note, .dp-users-password-status) {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-status {
+  margin-top: -4px;
+}
+/* A username chosen from the title's pencil and not yet applied. */
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-username-draft {
+  margin: 0;
+  color: var(--dp-state-caution);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-status:empty {
+  display: none;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-status[data-state='mismatch'] {
+  color: var(--dp-state-error);
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-status[data-state='match'] {
+  color: var(--dp-state-success);
+}
+/* The confirmation's agreement mark sits inside its field, which keeps room
+   for it; a mismatch takes the error edge. */
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-input {
+  position: relative;
+  display: block;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-input > .input {
+  width: 100%;
+  padding-right: 36px;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-check {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  display: none;
+  width: 17px;
+  height: 17px;
+  transform: translateY(-50%);
+  color: var(--dp-state-success);
+  pointer-events: none;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-check > svg {
+  width: 100%;
+  height: 100%;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-confirm[data-match='true'] .dp-users-password-check {
+  display: block;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-confirm[data-match='true'] .input {
+  border-color: color-mix(in srgb, var(--dp-state-success) 70%, var(--dp-border-default));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dp-state-success) 14%, transparent);
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-password-confirm .input[aria-invalid='true'] {
+  border-color: color-mix(in srgb, var(--dp-state-error) 74%, var(--dp-border-default));
+}
+.dp-modal-dialog.dp-users-edit-dialog :is(.dp-users-edit-outcome, .dp-users-edit-stale, .dp-account-impact-refusal) {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-outcome[data-tone='error'],
+.dp-modal-dialog.dp-users-edit-dialog .dp-account-impact-refusal {
+  color: var(--dp-state-error);
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-outcome[data-tone='success'] {
+  color: var(--dp-state-success);
+}
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-stale {
+  color: var(--dp-state-caution);
+}
+
+/* Integration Delivery Profiles: the catalog table's category chips, and
+   the profile dialog. The dialog keeps its header and footer and scrolls its
+   own body on a short viewport; its three views (form, token, disclosure)
+   swap in place. */
+#view-settings .dp-settings-profiles-table td {
+  vertical-align: top;
+}
+/* Paths: each path one line, shortened with an ellipsis only when its column
+   is narrower than the path; the mapping arrow stays in view beside a
+   shortened import path. Its one grid track (0 .. the path's own width)
+   takes a share of the room in proportion to the path. Its minimum -- its
+   own width, up to 30% of the table's container -- is met before Categories
+   and API Tokens are kept on one line, so a path is shortened only when it
+   is longer than that, and the table still fits its card at 780px with the
+   wider fallback face (DejaVu: 36% overflowed the card by 20px there). Where
+   calc-size() is unsupported the minimum is dropped and the table still fits. */
+#view-settings .dp-settings-profile-path-lines {
+  display: grid;
+  grid-template-columns: minmax(0, max-content);
+  min-width: calc-size(max-content, min(size, 30cqi));
+}
+#view-settings .dp-settings-profile-path {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+#view-settings .dp-settings-profile-path-arrow {
+  flex: 0 0 auto;
+}
+#view-settings .dp-settings-profile-path-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Retention leaves before Paths would be shortened for it. Measured: a
+   representative table (a category pair, an API token, /download/tv mapped
+   to /data/media/downloads/tv) needs 774px of its own width with Retention
+   and 684px without, so below 780px of the table's container -- the card's
+   width, not the viewport's -- Retention gives its 90px to Paths. */
+#view-settings .dp-settings-profiles-table-wrap {
+  container: dp-delivery-profiles / inline-size;
+}
+@container dp-delivery-profiles (width < 780px) {
+  #view-settings .dp-settings-profiles-table .dp-settings-profiles-retention {
+    display: none;
+  }
+}
+/* Drawn only by the handheld stages (below): a profile's tokens beneath its
+   name. */
+#view-settings .dp-settings-profiles-table .dp-settings-profile-token {
+  display: none;
+}
+
+/* The Integration Delivery Profiles table below 780px (fitProfilesTable,
+   data-profiles-fit): 1 the Categories column leaves, 2 the API Tokens
+   column -- each profile's tokens then named, by their labels alone,
+   beneath its name -- 3 closer cell padding. No cell's information wraps:
+   a name, its tokens and each path keep one line, Paths keeping what Profile
+   and Edit leave it. Every row is the stage's one height, its Edit's, its
+   contents centred in it. (Retention has left already, above.) */
+@media (max-width: 779px) {
+  #view-settings .dp-settings-profiles-table {
+    --dp-profiles-fit-steps: 4;
+  }
+
+  #view-settings .dp-settings-profiles-table[data-profiles-fit] :is(th, td) {
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-profiles-table[data-profiles-fit] td {
+    vertical-align: middle;
+  }
+
+  #view-settings .dp-settings-profiles-table[data-profiles-fit] > tbody > tr {
+    height: var(--dp-profiles-row, auto);
+  }
+
+  #view-settings .dp-settings-profiles-table[data-profiles-fit] .dp-settings-profile-chip {
+    margin-block: 0;
+  }
+
+  #view-settings .dp-settings-profiles-table:is([data-profiles-fit="1"], [data-profiles-fit="2"], [data-profiles-fit="3"]) :is(th, td):nth-child(2),
+  #view-settings .dp-settings-profiles-table:is([data-profiles-fit="2"], [data-profiles-fit="3"]) :is(th, td):nth-child(3) {
+    display: none;
+  }
+
+  /* The name, and from 2 its tokens beneath it: each one line, cut short
+     only where the last stage still lacks room (fitProfilesTable). The two
+     take the cell's room where its padding would have been. */
+  #view-settings .dp-settings-profiles-table[data-profiles-fit] :is(.dp-settings-profile-name, .dp-settings-profile-token) {
+    max-width: var(--dp-profiles-name, none);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #view-settings .dp-settings-profiles-table[data-profiles-fit] .dp-settings-profile-name {
+    display: block;
+  }
+
+  #view-settings .dp-settings-profiles-table:is([data-profiles-fit="2"], [data-profiles-fit="3"]) .dp-settings-profile-token {
+    display: block;
+  }
+
+  #view-settings .dp-settings-profiles-table:is([data-profiles-fit="2"], [data-profiles-fit="3"]) td:first-child {
+    padding-block: 0;
+  }
+
+  #view-settings .dp-settings-profiles-table[data-profiles-fit="3"] :is(th, td) {
+    padding-inline: 6px;
+  }
+}
+
+/* The profile dialog's Path Summary: below 780px only, the form's two paths
+   as the table maps them, whole. */
+.dp-modal-dialog.dp-profile-dialog .dp-profile-path-summary {
+  display: none;
+}
+@media (max-width: 779px) {
+  .dp-modal-dialog.dp-profile-dialog .dp-profile-path-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    border: 1px solid var(--dp-border-default);
+    border-radius: var(--dp-radius-sm);
+    padding: 9px 12px;
+  }
+
+  .dp-modal-dialog.dp-profile-dialog .dp-profile-path-summary-route {
+    color: var(--dp-text-secondary, var(--dp-text-muted));
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.dp-settings-profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 4px 4px 0;
+  border: 1px solid var(--dp-border-default);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-family: var(--dp-font-mono);
+  font-size: 11.5px;
+}
+.dp-modal-dialog.dp-profile-dialog {
+  width: min(600px, 100%);
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+.dp-modal-dialog.dp-profile-dialog > .dp-modal-header,
+.dp-modal-dialog.dp-profile-dialog > .dp-modal-footer {
+  flex: 0 0 auto;
+}
+.dp-modal-dialog.dp-profile-dialog > .dp-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.dp-modal-dialog.dp-profile-dialog .dp-profile-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dp-modal-dialog.dp-profile-dialog .dp-profile-view[hidden],
+.dp-modal-dialog.dp-profile-dialog .dp-modal-field[hidden] {
+  display: none;
+}
+.dp-profile-chips,
+.dp-profile-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dp-profile-chip-remove {
+  border: 0;
+  background: none;
+  color: var(--dp-text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+.dp-profile-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dp-profile-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.dp-profile-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.dp-profile-create-token {
+  align-self: flex-start;
+}
+.dp-profile-error {
+  margin: 0;
+  color: var(--dp-state-error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+@media (max-width: 620px) {
+  .dp-modal-dialog.dp-profile-dialog {
+    max-height: calc(100dvh - 24px);
+  }
+}
+/* Email and the account's language share one row: the two-line Email block
+   (its title close over the address) and, at the row's far end, the language
+   button, centred against Email's field -- the address being entered, or the
+   saved address's line -- never against the whole block with its title: it
+   sits at the block's foot, raised by half the difference between that line's
+   height and its own. When the two no longer fit side by side, the whole
+   button wraps beneath Email and starts the row there (a lone item on a
+   space-between line starts it). An address being entered takes the room it
+   needs before the button keeps its place beside it. */
+.dp-modal-dialog.dp-account-dialog .dp-account-email-row {
+  /* The saved address's line: as tall as its Pencil (a small control), with or without it. */
+  --dp-account-email-line: var(--dp-control-height-sm);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-top: 6px;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-email-row > .dp-account-email {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-email-row > .dp-account-email:has(input) {
+  flex: 1 1 16rem;
+  gap: 5px;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-language {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  margin-block-end: calc((var(--dp-account-email-line) - var(--dp-control-height-md)) / 2);
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-email:has(input) + .dp-account-language {
+  margin-block-end: calc((var(--dp-input-height) - var(--dp-control-height-md)) / 2);
+}
+/* Rerun Setup Wizard: the last part of the profile, in its scrolling body
+   above the fixed footer -- the centred heading, its sentence (wrapping
+   within itself when narrow) and the secondary button. */
+.dp-modal-dialog.dp-account-dialog .dp-account-setup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  text-align: center;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-setup-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-setup-hint {
+  margin: 0;
+  max-inline-size: 100%;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-setup-rerun {
+  margin-block-start: 6px;
+}
+/* The language view: its list scrolls inside the dialog's fixed body, so the
+   header and the footer stay where the profile has them. */
+.dp-modal-dialog.dp-account-dialog .dp-account-language-view {
+  height: 100%;
+  min-height: 0;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-email-value {
+  min-height: var(--dp-account-email-line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-email-address {
+  min-width: 0;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-email-edit {
+  flex: 0 0 auto;
+}
+/* The account's DP Username: read-only, selectable text an Admin changes. */
+.dp-modal-dialog.dp-account-dialog .dp-account-username-value {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 600;
+  user-select: text;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-username-note {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* My Account's Easy | Advanced (auth.js presentationSelector): one control
+   of two contiguous compartments, in the theme control's grammar. Each
+   compartment draws its own border, rounded on its outer side only, and the
+   second overlaps the first by the border's width, so the pair has one
+   outline and one seam. The chosen compartment's border is the palette's
+   accent, raised over its neighbour's, with a faint accent surface and the
+   full text colour; the other stays readable and neutral. Unread, neither is
+   chosen; saving, the chosen border is fainter until the server answers. */
+.dp-presentation-switch {
+  --dp-presentation-radius: var(--dp-radius-md);
+  display: inline-flex;
+  border-radius: var(--dp-presentation-radius);
+  background: var(--dp-surface-input);
+}
+.dp-presentation-option {
+  position: relative;
+  appearance: none;
+  min-height: 34px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: 0;
+  background: transparent;
+  color: var(--dp-text-secondary);
+  font: 600 12.5px/1 var(--dp-font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .12s ease, background-color .12s ease, border-color .12s ease;
+}
+.dp-presentation-option:first-of-type {
+  border-start-start-radius: var(--dp-presentation-radius);
+  border-end-start-radius: var(--dp-presentation-radius);
+}
+/* The edges are the reading direction's (logical), so a right-to-left
+   language rounds its own outer corners and keeps one seam between them. */
+.dp-presentation-option:last-of-type {
+  margin-inline-start: -1px;
+  border-start-end-radius: var(--dp-presentation-radius);
+  border-end-end-radius: var(--dp-presentation-radius);
+}
+.dp-presentation-option:hover {
+  color: var(--dp-text-primary);
+}
+.dp-presentation-option[aria-checked="true"] {
+  z-index: 1;
+  border-color: rgba(var(--dp-accent-rgb), .78);
+  background: rgba(var(--dp-accent-rgb), .12);
+  color: var(--dp-text-primary);
+}
+.dp-presentation-switch[data-state="saving"] .dp-presentation-option[aria-checked="true"] {
+  border-color: rgba(var(--dp-accent-rgb), .4);
+}
+.dp-presentation-option:focus-visible {
+  z-index: 2;
+  outline: 2px solid rgba(var(--dp-accent-rgb), .9);
+  outline-offset: 2px;
+}
+.dp-presentation-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* My Account's header end: Help, then Easy | Advanced, right aligned beside
+   the title and its hint (the dialog header's own row). In a narrow dialog
+   the header is two rows instead: the title -- wrapping between its words
+   where it must -- and the pair share the first, centred against each other;
+   the Standalone password line, when there is one, is the second, centred
+   across the whole header. Nothing is cloned and the title keeps its text. */
+.dp-account-header-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dp-modal-dialog.dp-account-dialog {
+  container-type: inline-size;
+}
+@container (max-width: 419px) {
+  .dp-modal-dialog.dp-account-dialog > .dp-modal-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "title end";
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 6px;
+    padding-block: 10px;
+  }
+  .dp-modal-dialog.dp-account-dialog > .dp-modal-header:has(.dp-modal-title-hint) {
+    grid-template-areas: "title end" "hint hint";
+  }
+  .dp-modal-dialog.dp-account-dialog > .dp-modal-header > .dp-modal-heading {
+    display: contents;
+  }
+  .dp-modal-dialog.dp-account-dialog > .dp-modal-header .dp-modal-title {
+    grid-area: title;
+    overflow-wrap: normal;
+  }
+  .dp-modal-dialog.dp-account-dialog > .dp-modal-header .dp-modal-title-hint {
+    grid-area: hint;
+    text-align: center;
+  }
+  .dp-modal-dialog.dp-account-dialog > .dp-modal-header > .dp-modal-header-end {
+    grid-area: end;
+    margin-left: 0;
+    padding-left: 0;
+  }
+}
+
+/* Clear Password's consequence, beneath its one field. */
+.dp-modal-dialog.dp-account-dialog .dp-account-clear-warning {
+  margin: 0;
+  color: var(--dp-state-error);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* My Account is ONE dialog of ONE size for both of its views (profile and
+   password): sized for the taller of the two (the profile, with its DP
+   Username and that line's explanation), its body takes whatever the
+   header and footer leave, so swapping views -- or withdrawing the leading
+   Change Password action -- never moves the dialog or its action row, and
+   neither view scrolls. Below the dialog contract's narrow breakpoint the
+   footer stacks its buttons, and the fixed height allows for that, and for
+   the language button wrapping beneath Email (the profile's last row). The
+   language view's list scrolls inside the same body. */
+.dp-modal-dialog.dp-account-dialog {
+  width: min(460px, 100%);
+  height: min(501px, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
+}
+/* Offering both Change Password and Clear Password (a password-protected
+   Standalone installation), it is as wide as its four footer controls on one
+   row, in every view; below the narrow breakpoint they stack as before. */
+.dp-modal-dialog.dp-account-dialog:has(.dp-modal-action-leading ~ .dp-modal-action-leading) {
+  width: min(560px, 100%);
+}
+/* The body never hides its last row: where a language's words make the
+   profile taller than the fixed size, the body scrolls instead (in English
+   it fits exactly and nothing scrolls). The language view's list scrolls on
+   its own inside it. */
+.dp-modal-dialog.dp-account-dialog .dp-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (max-width: 620px) {
+  .dp-modal-dialog.dp-account-dialog {
+    height: min(656px, calc(100dvh - 24px));
+  }
+}
+/* A person who may connect browsers has one more profile row (Connected
+   browsers: a 36px control after the view's 12px gap, 4px above it), and the
+   fixed size grows by exactly that row, so the profile still fits without
+   scrolling; every other account and view keeps its size. */
+.dp-modal-dialog.dp-account-dialog:has(.dp-account-browsers-entry) {
+  height: min(553px, calc(100dvh - 48px));
+}
+@media (max-width: 620px) {
+  .dp-modal-dialog.dp-account-dialog:has(.dp-account-browsers-entry) {
+    height: min(708px, calc(100dvh - 24px));
+  }
+}
+
+/* The account-impact confirmation (its own dialog, or Edit User's other
+   view): the consequence, centred; the server's figures; the qualifier
+   beside the footer. */
+.dp-modal-dialog.dp-account-impact .dp-modal-body,
+.dp-modal-dialog.dp-users-edit-dialog .dp-users-edit-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.dp-modal-dialog:is(.dp-account-impact, .dp-users-edit-dialog) .dp-account-impact-lead {
+  max-width: 44ch;
+  margin: 0;
+}
+.dp-account-impact-figures {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+}
+.dp-account-impact-figures > div {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 4px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-sm);
+  padding: 10px 8px;
+}
+.dp-account-impact-figures dt {
+  color: var(--dp-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.dp-account-impact-figures dd {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+.dp-account-impact-note,
+.dp-account-impact-qualifier {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--dp-text-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+@media (max-width: 560px) {
+  .dp-account-impact-figures {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The one-time token disclosure: warning and value as one unit, in the
+   caution language -- important, not destructive. */
+.dp-token-disclosure {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, var(--dp-state-caution) 55%, var(--dp-border-default));
+  border-radius: var(--dp-radius-sm);
+  background: var(--dp-state-caution-bg);
+  padding: 13px 15px 15px;
+}
+.dp-token-disclosure-warning {
+  color: var(--dp-state-caution);
+  font-size: 11.5px;
+  font-weight: 750;
+}
+.dp-token-disclosure .input {
+  font-family: var(--dp-font-mono);
+  font-size: 12px;
+}
+
+.dp-users-activity-wrap {
+  max-height: 50vh;
+  overflow: auto;
+}
+.dp-users-activity {
+  width: 100%;
+}
+.dp-users-activity-outstanding {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Account Details: the profile as label/value rows, then its Activity. */
+.dp-account-details-profile {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.dp-account-details-profile > div {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
+  gap: 12px;
+}
+.dp-account-details-profile dt {
+  color: var(--dp-text-muted);
+  font-size: 12px;
+}
+.dp-account-details-profile dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.dp-account-details-profile dd.is-missing {
+  color: var(--dp-text-muted);
+  font-style: italic;
+}
+.dp-account-details-heading {
+  margin: 4px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Connected browsers (WS-S1): the person's own list in My Account and the
+   "Connect a browser" approval dialog. (An Admin's view is the Integration
+   Accounts token table.) */
+.dp-account-browsers {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dp-account-browser {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dp-border-subtle, rgba(127, 127, 127, .2));
+}
+.dp-account-browser-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.dp-account-browser-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.dp-account-browser-detail,
+.dp-account-browsers-intro,
+.dp-account-browsers-empty {
+  color: var(--dp-text-muted);
+  font-size: 13px;
+}
+.dp-modal-dialog.dp-account-dialog .dp-account-browsers-entry {
+  display: flex;
+  margin-top: 4px;
+}
+.dp-browser-pairing-facts {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.dp-browser-pairing-facts > div {
+  display: flex;
+  gap: 8px;
+}
+.dp-browser-pairing-facts dt {
+  min-width: 8em;
+  color: var(--dp-text-muted);
+}
+.dp-browser-pairing-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.dp-browser-pairing-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+.dp-browser-pairing-hint {
+  color: var(--dp-text-muted);
+  font-size: 13px;
+}
+.dp-browser-pairing-warning {
+  margin-top: 12px;
+  font-weight: 600;
+}
+
+/* Merge Accounts: a bounded list of identities, then the consequences. */
+.dp-merge-list {
+  display: grid;
+  gap: 6px;
+  max-height: min(320px, 46vh);
+  overflow: auto;
+}
+.dp-merge-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: var(--dp-radius-sm);
+  cursor: pointer;
+}
+.dp-merge-option input {
+  margin-top: 3px;
+}
+.dp-merge-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dp-merge-identity > span {
+  color: var(--dp-text-muted);
+  font-size: 11.5px;
+}
+.dp-merge-absorbed {
+  margin: 0;
+  font-size: 12.5px;
+}
+.dp-merge-consequences {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--dp-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.dp-merge-refusal {
+  margin: 0;
+  color: var(--dp-state-error);
+  font-size: 12.5px;
+  font-weight: 600;
+}

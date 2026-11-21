@@ -1,0 +1,331 @@
+/* DownloadPulse v1.0.11 bundled Help legal-document overlay.
+ *
+ * License actions open the exact document shipped with the running DownloadPulse
+ * build. GitHub is never required to read the bundled copy; the only external
+ * navigation is the explicit "latest version" link shown inside the overlay.
+ *
+ * Words (1.0.14 localization): the viewer's own words are catalog messages
+ * its nodes name by key, so an open viewer is re-said in place on a language
+ * change (ui-i18n.js render). The document itself -- its text and its own
+ * title, as the server sends them -- is the legally authoritative English
+ * and is shown exactly as bundled, in every language.
+ */
+(function () {
+  'use strict';
+
+  const t = (key, values) => window.DPI18n.t(key, values);
+  // A node says a catalog message: now, and again on a language change.
+  function say(node, key, values) {
+    node.dataset.i18n = key;
+    if (values) node.dataset.i18nValues = JSON.stringify(values);
+    else delete node.dataset.i18nValues;
+    node.textContent = t(key, values);
+    return node;
+  }
+  // A node that now shows other words (the document, or its own title) is no longer said.
+  function unsay(node) {
+    delete node.dataset.i18n;
+    delete node.dataset.i18nValues;
+  }
+
+  let activeBackdrop = null;
+  let activeOpener = null;
+  const helpRoot = () => document.getElementById('view-help');
+
+  function focusableElements(dialog) {
+    return Array.from(dialog.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+      'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter(function (element) {
+      return !element.hasAttribute('hidden') && element.getAttribute('aria-hidden') !== 'true';
+    });
+  }
+
+  function closeModal(options) {
+    const restoreFocus = !options || options.restoreFocus !== false;
+    if (!activeBackdrop) return;
+
+    const opener = activeOpener;
+    const target = restoreFocus && opener ? opener : null;
+    // It fades away in place, still covering the page, holding the keyboard
+    // and the page lock; only once it is gone are they released and focus
+    // returned, once (ui-motion.js leave/restore). A document opened
+    // meanwhile replaces it at once and keeps the lock.
+    const backdrop = activeBackdrop;
+    const leaving = window.DPMotion
+      ? window.DPMotion.leave(backdrop, backdrop.querySelector('.dp-dialog'), target) : Promise.resolve();
+    activeBackdrop = null;
+    activeOpener = null;
+    leaving.then(function () {
+      if (window.DPMotion) window.DPMotion.restore(backdrop, target);
+      else {
+        backdrop.remove();
+        if (target && document.contains(target)) target.focus();
+      }
+      if (!activeBackdrop) document.body.classList.remove('dp-help-legal-modal-open');
+    });
+  }
+
+  function trapDialogKeydown(event, dialog) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeModal();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = focusableElements(dialog);
+    if (!focusable.length) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function isMarkdownHeading(line) {
+    return /^#{1,6}\s+/.test(line.trim());
+  }
+
+  function isListItem(line) {
+    return /^(?:[-*+]\s+|\d+[.)]\s+)/.test(line.trim());
+  }
+
+  function isTableRow(line) {
+    return /^\s*\|.*\|\s*$/.test(line);
+  }
+
+  function isCodeFence(line) {
+    return /^\s*```/.test(line);
+  }
+
+  function appendDocumentBlock(container, text, className) {
+    const block = document.createElement('div');
+    block.className = 'dp-help-legal-document-block' + (className ? ' ' + className : '');
+    block.textContent = text;
+    container.appendChild(block);
+  }
+
+  function renderFlowingBlock(container, blockText) {
+    const lines = blockText.split('\n');
+
+    if (lines.some(isCodeFence) || lines.every(function (line) {
+      return !line.trim() || isTableRow(line);
+    })) {
+      appendDocumentBlock(container, blockText, 'is-structured');
+      return;
+    }
+
+    if (lines.length === 1 && isMarkdownHeading(lines[0])) {
+      appendDocumentBlock(container, lines[0].trim(), 'is-heading');
+      return;
+    }
+
+    if (lines.some(isListItem)) {
+      let current = '';
+      let currentIsListItem = false;
+
+      lines.forEach(function (line) {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+
+        if (isListItem(line) || isMarkdownHeading(line)) {
+          if (current) {
+            appendDocumentBlock(container, current, currentIsListItem ? 'is-list-item' : '');
+          }
+          current = trimmed;
+          currentIsListItem = isListItem(line);
+          return;
+        }
+
+        current = current ? current + ' ' + trimmed : trimmed;
+      });
+
+      if (current) {
+        appendDocumentBlock(container, current, currentIsListItem ? 'is-list-item' : '');
+      }
+      return;
+    }
+
+    appendDocumentBlock(
+      container,
+      lines.map(function (line) { return line.trim(); }).filter(Boolean).join(' '),
+      ''
+    );
+  }
+
+  function renderBundledDocument(container, content) {
+    const normalized = String(content || '').replace(/\r\n?/g, '\n').trim();
+    container.replaceChildren();
+    if (!normalized) return;
+
+    normalized.split(/\n[\t ]*\n+/).forEach(function (blockText) {
+      renderFlowingBlock(container, blockText);
+    });
+  }
+
+  async function fetchBundledDocument(documentId) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(function () { controller.abort(); }, 8000);
+    try {
+      const response = await window.downloadPulseAuth.fetch('/api/legal-documents/' + encodeURIComponent(documentId), {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: {'Accept': 'application/json'},
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(function () { return {}; });
+      if (!response.ok) {
+        // The server's reason, or none (said in the shown language when the viewer shows it).
+        const failure = new Error(payload.detail || response.statusText || '');
+        failure.unexplained = !failure.message;
+        throw failure;
+      }
+      return payload;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  function makeModal(opener) {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'dp-backdrop dp-help-legal-backdrop';
+
+    const dialog = document.createElement('section');
+    dialog.className = 'dp-dialog dp-dialog--lg dp-help-legal-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', 'dp-help-legal-dialog-title');
+    dialog.tabIndex = -1;
+
+    const header = document.createElement('header');
+    header.className = 'dp-dialog__header dp-help-legal-dialog-header';
+
+    const title = document.createElement('div');
+    title.className = 'dp-dialog__title';
+    title.id = 'dp-help-legal-dialog-title';
+    // Until the document's own title arrives: the words of the button that opened it.
+    const openerKey = opener.getAttribute('data-i18n');
+    if (openerKey) say(title, openerKey);
+    else say(title, 'help.legal.title_fallback');
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'dp-icon-btn dp-icon-btn--ghost dp-help-legal-close';
+    close.dataset.i18nAttr = 'aria-label:help.legal.close';
+    close.setAttribute('aria-label', t('help.legal.close'));
+    close.textContent = '×';
+
+    header.append(title, close);
+
+    const body = document.createElement('div');
+    body.className = 'dp-dialog__body dp-help-legal-dialog-body';
+
+    const latest = document.createElement('div');
+    latest.className = 'dp-help-legal-latest';
+    latest.setAttribute('role', 'note');
+    latest.appendChild(say(document.createElement('span'), 'help.legal.loading_note'));
+
+    const documentBody = document.createElement('div');
+    documentBody.className = 'dp-help-legal-document';
+    say(documentBody, 'common.loading');
+
+    body.append(latest, documentBody);
+    dialog.append(header, body);
+    backdrop.appendChild(dialog);
+
+    close.addEventListener('click', function () { closeModal(); });
+    backdrop.addEventListener('click', function (event) {
+      if (event.target === backdrop) closeModal();
+    });
+    dialog.addEventListener('keydown', function (event) {
+      trapDialogKeydown(event, dialog);
+    });
+
+    return {backdrop, dialog, title, close, latest, documentBody, body};
+  }
+
+  async function openDocument(opener, documentId) {
+    closeModal({restoreFocus: false});
+    activeOpener = opener;
+
+    const modal = makeModal(opener);
+    activeBackdrop = modal.backdrop;
+    document.body.classList.add('dp-help-legal-modal-open');
+    if (window.DPMotion) window.DPMotion.enter(modal.backdrop, '.dp-backdrop');
+    document.body.appendChild(modal.backdrop);
+    modal.close.focus();
+
+    try {
+      const payload = await fetchBundledDocument(documentId);
+      if (activeBackdrop !== modal.backdrop) return;
+
+      // The document's own title, as bundled; without one, the opener's words stay.
+      if (payload.title) {
+        unsay(modal.title);
+        modal.title.textContent = payload.title;
+      }
+      modal.latest.replaceChildren();
+
+      const version = String(payload.bundled_version || '').trim();
+      const prefix = version
+        ? say(document.createElement('span'), 'help.legal.bundled', {version})
+        : say(document.createElement('span'), 'help.legal.bundled_unversioned');
+
+      const link = document.createElement('a');
+      link.href = String(payload.latest_url || '#');
+      link.target = '_blank';
+      link.rel = 'noopener';
+      say(link, 'help.legal.latest');
+
+      modal.latest.append(prefix, ' ', link);
+      unsay(modal.documentBody);
+      renderBundledDocument(modal.documentBody, payload.content);
+      modal.body.scrollTop = 0;
+    } catch (error) {
+      if (activeBackdrop !== modal.backdrop) return;
+      modal.latest.classList.add('is-error');
+      modal.latest.replaceChildren(say(document.createElement('span'), 'help.legal.failed'));
+      unsay(modal.documentBody);
+      if (error && error.message && !error.unexplained) renderBundledDocument(modal.documentBody, String(error.message));
+      else {
+        const block = document.createElement('div');
+        block.className = 'dp-help-legal-document-block';
+        modal.documentBody.replaceChildren(say(block, 'help.legal.load_failed'));
+      }
+    }
+  }
+
+  function bindEvents(view) {
+    if (view.dataset.dpHelpLegalDocumentsBound === '1') return;
+    view.dataset.dpHelpLegalDocumentsBound = '1';
+
+    view.addEventListener('click', function (event) {
+      const button = event.target.closest('.dp-help-local-document-button[data-legal-document]');
+      if (!button || !view.contains(button)) return;
+      event.preventDefault();
+      void openDocument(button, button.dataset.legalDocument);
+    });
+  }
+
+  function enhance() {
+    const view = helpRoot();
+    if (!view || !view.querySelector('.dp-help-license-actions')) return false;
+    bindEvents(view);
+    view.dataset.dpHelpLegalDocumentsReady = '1';
+    return true;
+  }
+
+  // The Help owner emits this only after its canonical markup exists.
+  document.addEventListener('downloadpulse:help-rendered', enhance);
+})();

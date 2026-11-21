@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DownloadPulse</title>
+<meta name="description" content="DownloadPulse is a self-hosted transfer manager for debrid services, Usenet, network sources and media pages: direct links, magnets, torrents and NZBs.">
+<link rel="icon" type="image/svg+xml" href="./frontend/static/favicon.svg">
+<link rel="apple-touch-icon" href="./docs/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#07080c;--bg2:#0b0d14;--surf:#10121a;--brd:#181b27;
+  --acc:#4d9cff;--acc2:#74b4ff;--green:#3de68b;--yellow:#f5c542;--red:#ff5f5f;
+  --tx:#dde1f5;--mu:#40455e;--mu2:#6b708f;
+  --disp:'Bricolage Grotesque',sans-serif;--mono:'DM Mono',monospace;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--tx);font-family:var(--mono);font-size:15px;line-height:1.7;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");pointer-events:none;z-index:0;opacity:.35}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;padding:0 5vw;height:64px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(77,156,255,.08);background:rgba(7,8,12,.9);backdrop-filter:blur(14px)}
+.nav-logo{display:flex;align-items:center;gap:12px;text-decoration:none}
+.nav-logo img{width:34px;height:34px;border-radius:9px}
+.nav-logo-text{font-family:var(--disp);font-size:19px;font-weight:800;color:#fff}
+.nav-logo-text span{color:var(--acc)}
+.nav-links{display:flex;align-items:center;gap:28px;list-style:none}
+.nav-links a{color:var(--mu2);text-decoration:none;font-size:13px;transition:color .2s}
+.nav-links a:hover{color:var(--tx)}
+.nav-cta{padding:8px 20px;background:var(--acc);color:#fff!important;border-radius:8px;font-weight:500;font-size:13px!important;transition:background .2s,transform .15s!important}
+.nav-cta:hover{background:var(--acc2)!important;transform:translateY(-1px)}
+.hamburger{display:none;flex-direction:column;gap:5px;cursor:pointer;padding:4px}
+.hamburger span{width:22px;height:2px;background:var(--mu2);border-radius:2px;transition:all .3s}
+.nav-mobile{display:none;position:fixed;top:64px;left:0;right:0;background:rgba(7,8,12,.97);backdrop-filter:blur(14px);border-bottom:1px solid var(--brd);padding:20px 5vw;flex-direction:column;gap:0;z-index:99}
+.nav-mobile.open{display:flex}
+.nav-mobile a{color:var(--mu2);text-decoration:none;font-size:14px;padding:12px 0;border-bottom:1px solid var(--brd)}
+.nav-mobile a:hover{color:var(--tx)}
+@media(max-width:700px){.nav-links{display:none}.hamburger{display:flex}}
+
+/* HERO */
+.hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:120px 5vw 80px;position:relative}
+.hero::after{content:'';position:absolute;top:40%;left:50%;transform:translateX(-50%);width:900px;height:550px;background:radial-gradient(ellipse,rgba(77,156,255,.055) 0%,transparent 65%);pointer-events:none;z-index:-1}
+.hero-badge{display:inline-flex;align-items:center;gap:8px;padding:5px 16px;border:1px solid rgba(77,156,255,.3);border-radius:100px;background:rgba(77,156,255,.07);color:var(--acc);font-size:12px;letter-spacing:.5px;text-transform:uppercase;margin-bottom:32px;animation:fadeUp .6s ease both}
+.badge-dot{width:6px;height:6px;border-radius:50%;background:var(--acc);animation:blink 2s infinite;flex-shrink:0}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.hero-title{font-family:var(--disp);font-size:clamp(46px,8vw,90px);font-weight:800;line-height:1.02;letter-spacing:-2px;color:#fff;margin-bottom:24px;animation:fadeUp .7s .1s ease both}
+.hero-title span{color:var(--acc)}
+.hero-sub{font-size:clamp(15px,2vw,18px);color:var(--mu2);max-width:620px;margin-bottom:48px;animation:fadeUp .8s .2s ease both}
+.hero-license{font-size:11px;color:var(--mu2);max-width:760px;margin-top:24px;animation:fadeUp .95s .35s ease both}
+.hero-license a{color:var(--acc);text-decoration:none}
+.hero-ctas{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;animation:fadeUp .9s .3s ease both}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 28px;border-radius:10px;font-family:var(--mono);font-size:14px;font-weight:500;text-decoration:none;transition:all .2s;cursor:pointer;border:none}
+.btn-primary{background:var(--acc);color:#fff}
+.btn-primary:hover{background:var(--acc2);transform:translateY(-2px)}
+.btn-ghost{background:transparent;color:var(--tx);border:1px solid var(--brd)}
+.btn-ghost:hover{border-color:rgba(77,156,255,.4);color:var(--acc);transform:translateY(-2px)}
+.hero-stats{display:flex;gap:48px;margin-top:72px;justify-content:center;flex-wrap:wrap;animation:fadeUp 1s .4s ease both}
+.hero-stat{text-align:center}
+.hero-stat-num{font-family:var(--disp);font-size:34px;font-weight:800;color:var(--acc)}
+.hero-stat-label{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+
+/* REVEAL */
+.reveal{opacity:0;transform:translateY(28px);transition:opacity .7s ease,transform .7s ease}
+.reveal.visible{opacity:1;transform:none}
+
+/* SECTION */
+.section-label{font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--acc);margin-bottom:12px}
+.section-title{font-family:var(--disp);font-size:clamp(30px,4.5vw,50px);font-weight:800;color:#fff;line-height:1.1;margin-bottom:16px}
+.section-sub{color:var(--mu2);font-size:16px;max-width:560px;line-height:1.6}
+.section-wrap{max-width:1200px;margin:0 auto;padding:100px 5vw}
+
+/* PIPELINE */
+.pipeline-bg{background:var(--bg2);border-top:1px solid var(--brd);border-bottom:1px solid var(--brd);padding:80px 5vw}
+.pipeline-inner{max-width:1100px;margin:0 auto}
+.pipeline-flow{display:flex;align-items:flex-start;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:56px}
+.pipe-step{display:flex;flex-direction:column;align-items:center;gap:10px;min-width:100px}
+.pipe-icon{width:58px;height:58px;border-radius:14px;background:var(--surf);border:1px solid var(--brd);display:flex;align-items:center;justify-content:center;font-size:22px;transition:all .3s}
+.pipe-step:hover .pipe-icon{border-color:rgba(77,156,255,.4);background:rgba(77,156,255,.07)}
+.pipe-label{font-size:10px;color:var(--mu2);text-align:center;text-transform:uppercase;letter-spacing:.5px;line-height:1.3}
+.pipe-arrow{color:var(--mu);font-size:20px;flex-shrink:0;margin-top:18px;padding:0 2px}
+@media(max-width:600px){.pipe-arrow{display:none}.pipe-step{min-width:72px}}
+
+/* FEATURES */
+.features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px;margin-top:56px}
+.feat-card{background:var(--surf);border:1px solid var(--brd);border-radius:16px;padding:28px;transition:border-color .3s,transform .3s}
+.feat-card:hover{border-color:rgba(77,156,255,.22);transform:translateY(-3px)}
+.feat-icon{font-size:26px;margin-bottom:14px}
+.feat-title{font-family:var(--disp);font-size:17px;font-weight:700;color:#fff;margin-bottom:8px}
+.feat-text{color:var(--mu2);font-size:13px;line-height:1.65}
+
+/* INSTALL */
+.install-grid{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:start}
+@media(max-width:768px){.install-grid{grid-template-columns:1fr}}
+.install-steps{margin-top:32px;display:flex;flex-direction:column;gap:24px}
+.install-step{display:flex;gap:16px;align-items:flex-start}
+.step-num{width:32px;height:32px;border-radius:8px;background:rgba(77,156,255,.1);border:1px solid rgba(77,156,255,.25);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--acc);flex-shrink:0;margin-top:2px}
+.step-body strong{color:var(--tx);font-size:14px;display:block;margin-bottom:4px}
+.step-body p{color:var(--mu2);font-size:13px}
+.step-body a{color:var(--acc);text-decoration:none}
+
+/* CODE */
+.code-block{background:var(--surf);border:1px solid var(--brd);border-radius:14px;overflow:hidden}
+.code-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--brd);background:rgba(0,0,0,.3)}
+.code-title{font-size:12px;color:var(--mu2)}
+.copy-btn{font-size:11px;color:var(--mu);background:none;border:1px solid var(--brd);cursor:pointer;font-family:var(--mono);padding:3px 10px;border-radius:5px;transition:all .2s}
+.copy-btn:hover{color:var(--acc);border-color:rgba(77,156,255,.3)}
+pre{padding:20px;font-size:12.5px;line-height:1.75;overflow-x:auto;color:var(--tx);white-space:pre}
+.kw{color:var(--acc)}.str{color:var(--green)}.cm{color:var(--mu)}.num{color:var(--yellow)}
+
+/* DISCORD */
+.discord-card{background:rgba(88,101,242,.06);border:1px solid rgba(88,101,242,.2);border-radius:20px;padding:48px;display:flex;gap:48px;align-items:center;flex-wrap:wrap}
+.discord-icon-wrap{width:80px;height:80px;flex-shrink:0;background:rgba(88,101,242,.1);border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:36px}
+.discord-text h3{font-family:var(--disp);font-size:24px;font-weight:700;color:#fff;margin-bottom:8px}
+.discord-text p{color:var(--mu2);max-width:480px;font-size:14px;margin-bottom:20px}
+.discord-btn{display:inline-flex;align-items:center;gap:8px;padding:12px 28px;background:rgba(88,101,242,.8);color:#fff;border-radius:10px;text-decoration:none;font-size:14px;font-weight:500;transition:all .2s}
+.discord-btn:hover{background:rgba(88,101,242,1);transform:translateY(-2px)}
+.webhook-events{display:flex;gap:8px;flex-wrap:wrap;margin-top:36px}
+.event-pill{padding:5px 14px;border-radius:100px;border:1px solid var(--brd);background:var(--surf);font-size:12px;color:var(--mu2)}
+.pill-added{border-color:rgba(77,156,255,.3);color:var(--acc)}
+.pill-done{border-color:rgba(61,230,139,.3);color:var(--green)}
+.pill-error{border-color:rgba(255,95,95,.3);color:var(--red)}
+.pill-partial{border-color:rgba(245,197,66,.3);color:var(--yellow)}
+.pill-fg{border-color:rgba(160,100,255,.3);color:#a064ff}
+
+/* WHY */
+.why-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:48px}
+@media(max-width:680px){.why-grid{grid-template-columns:1fr}}
+.why-card{padding:28px;border-radius:16px;border:1px solid var(--brd)}
+.why-card.accent{background:rgba(77,156,255,.04);border-color:rgba(77,156,255,.18)}
+.why-card h4{font-family:var(--disp);font-size:16px;font-weight:700;color:#fff;margin-bottom:14px}
+.why-list{list-style:none;display:flex;flex-direction:column;gap:9px}
+.why-list li{font-size:13px;color:var(--mu2);display:flex;align-items:flex-start;gap:8px}
+.why-list li::before{content:'✓';color:var(--green);flex-shrink:0}
+
+/* FOOTER */
+footer{padding:48px 5vw;border-top:1px solid var(--brd);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;max-width:1400px;margin:0 auto;width:100%}
+.footer-logo{font-family:var(--disp);font-size:18px;font-weight:800;color:#fff;text-decoration:none}
+.footer-logo span{color:var(--acc)}
+.footer-links{display:flex;gap:20px;flex-wrap:wrap}
+.footer-links a{color:var(--mu);font-size:13px;text-decoration:none;transition:color .2s}
+.footer-links a:hover{color:var(--tx)}
+.footer-copy{color:var(--mu);font-size:12px}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">
+    <img src="./docs/logo.svg" alt="DownloadPulse logo">
+    <span class="nav-logo-text">Download<span>Pulse</span></span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#pipeline">How it works</a></li>
+    <li><a href="#install">Install</a></li>
+    <li><a href="https://github.com/Xipher-Zero/downloadpulse" target="_blank" class="nav-cta">GitHub ↗</a></li>
+  </ul>
+  <div class="hamburger" id="hamburger" onclick="toggleNav()">
+    <span></span><span></span><span></span>
+  </div>
+</nav>
+<div class="nav-mobile" id="nav-mobile">
+  <a href="#features" onclick="toggleNav()">Features</a>
+  <a href="#pipeline" onclick="toggleNav()">How it works</a>
+  <a href="#install" onclick="toggleNav()">Install</a>
+  <a href="https://github.com/Xipher-Zero/downloadpulse" target="_blank">GitHub ↗</a>
+</div>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-badge">
+    <span class="badge-dot"></span>
+    v<span id="version-num">latest</span>&nbsp;·&nbsp;open source
+  </div>
+  <h1 class="hero-title">Debrid downloads,<br><span>in motion.</span></h1>
+  <p class="hero-sub">Submit direct links, magnets, or torrent files through one self-hosted manager. DownloadPulse handles the full lifecycle — submit, process, unlock, download, track, and recover.</p>
+  <div class="hero-ctas">
+    <a href="#install" class="btn btn-primary">⚡ Get started</a>
+    <a href="https://github.com/Xipher-Zero/downloadpulse" target="_blank" class="btn btn-ghost">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/></svg>
+      GitHub
+    </a>
+    <a href="https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse" target="_blank" class="btn btn-ghost">🐳 GHCR</a>
+  </div>
+  <p class="hero-license">GPL-2.0-or-later · DownloadPulse © 2026 Chris Moore</p>
+  <div class="hero-stats">
+    <div class="hero-stat"><div class="hero-stat-num">3</div><div class="hero-stat-label">Input types</div></div>
+    <div class="hero-stat"><div class="hero-stat-num">Bundled</div><div class="hero-stat-label">aria2 engine</div></div>
+    <div class="hero-stat"><div class="hero-stat-num">Live</div><div class="hero-stat-label">Status pulse</div></div>
+    <div class="hero-stat"><div class="hero-stat-num">GPL</div><div class="hero-stat-label">2.0 or later</div></div>
+  </div>
+</section>
+
+<!-- PIPELINE -->
+<div class="pipeline-bg">
+  <div class="pipeline-inner">
+    <div class="section-label reveal" style="text-align:center">How it works</div>
+    <h2 class="section-title reveal" style="text-align:center">The full lifecycle,<br>fully automated.</h2>
+    <p class="section-sub reveal" style="text-align:center;margin:0 auto">From magnet to downloaded file — every step handled automatically.</p>
+    <div class="pipeline-flow reveal">
+      <div class="pipe-step"><div class="pipe-icon">🧲</div><div class="pipe-label">Link / magnet / .torrent</div></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step"><div class="pipe-icon">☁️</div><div class="pipe-label">Submit to provider</div></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step"><div class="pipe-icon">🔄</div><div class="pipe-label">Poll until ready</div></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step"><div class="pipe-icon">🔓</div><div class="pipe-label">Unlock links</div></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step"><div class="pipe-icon">⬇️</div><div class="pipe-label">aria2 download</div></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step"><div class="pipe-icon">🔔</div><div class="pipe-label">Discord notify</div></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step"><div class="pipe-icon">✅</div><div class="pipe-label">Done</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- FEATURES -->
+<div class="section-wrap">
+  <div id="features">
+    <div class="section-label reveal">Features</div>
+    <h2 class="section-title reveal">Everything you need.<br>Nothing you don't.</h2>
+    <p class="section-sub reveal">Built for self-hosters who want reliable debrid downloads with full visibility into what is happening.</p>
+    <div class="features-grid">
+      <div class="feat-card reveal"><div class="feat-icon">🖥️</div><div class="feat-title">Web UI</div><div class="feat-text">Clean single-page dashboard: all torrents, status, progress, events, file list. Dark tech aesthetic, mobile-friendly.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">⏯️</div><div class="feat-title">Pause-aware queue</div><div class="feat-text">Pause individual transfers without consuming active slots. The queue advances around paused work and resumes cleanly.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">🔗</div><div class="feat-title">Direct debrid links</div><div class="feat-text">Submit up to 100 hoster links in one tracked transaction, including delayed link generation and recovery.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">🌐</div><div class="feat-title">REST API</div><div class="feat-text">Full REST API for adding magnets, querying status, triggering syncs and webhooks. Swagger UI at /docs.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">⬇️</div><div class="feat-title">aria2 integration</div><div class="feat-text">Slot-based queue with configurable concurrency. Existing downloads detected on restart — no duplicates, no orphans.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">🔔</div><div class="feat-title">Discord webhooks</div><div class="feat-text">Rich embeds for every event. Separate channel support for added vs completed. Custom avatar and username.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">⚡</div><div class="feat-title">Live application pulse</div><div class="feat-text">Server-Sent Events keep transfer state, progress, and recent activity current without full-page polling.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">🚫</div><div class="feat-title">File selection</div><div class="feat-text">Choose which files of a multi-file torrent or folder to download. The choice is kept when the download moves to another provider, and a file you cancel no longer holds up the rest.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">🗄️</div><div class="feat-title">SQLite / WAL</div><div class="feat-text">A single SQLite/WAL database is the authoritative runtime store — persistent, self-contained, and zero-config.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">📊</div><div class="feat-title">Statistics</div><div class="feat-text">Rolling snapshots with configurable retention. Periodic summary reports via webhook.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">💾</div><div class="feat-title">Automatic backups</div><div class="feat-text">SQLite backups on a configurable schedule. Retained by number of days, stored in the data folder.</div></div>
+      <div class="feat-card reveal"><div class="feat-icon">🔧</div><div class="feat-title">Config validation</div><div class="feat-text">Settings validated and auto-corrected on every startup. Invalid URLs cleared, numeric fields clamped, stale JSON reset.</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- INSTALL -->
+<div style="background:var(--bg2);border-top:1px solid var(--brd);border-bottom:1px solid var(--brd);padding:100px 5vw">
+<div id="install" style="max-width:1200px;margin:0 auto">
+  <div class="install-grid">
+    <div>
+      <div class="section-label reveal">Get started</div>
+      <h2 class="section-title reveal">Up in 60 seconds.</h2>
+      <p class="section-sub reveal">One compose file. Configure the rest in the browser.</p>
+      <div class="install-steps">
+        <div class="install-step reveal">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <strong>Copy the compose file</strong>
+            <p>Adjust volume paths for your setup. The download folder is where DownloadPulse and its aria2 engine write files.</p>
+          </div>
+        </div>
+        <div class="install-step reveal">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <strong>Open the Web UI</strong>
+            <p><a href="http://your-server:8095">http://your-server:8095</a> → Settings → Services → connect a premium service or enable the network sources you use (each change saves as you make it).</p>
+          </div>
+        </div>
+        <div class="install-step reveal">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <strong>Add your first download</strong>
+            <p>Paste links or magnets, or upload a .torrent, NZB, Metalink or link file from the Dashboard.</p>
+          </div>
+        </div>
+        <div class="install-step reveal">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <strong>Unraid App Store</strong>
+            <p>Use the versioned GHCR image and preserve the existing config, data and download mounts.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="code-block reveal">
+        <div class="code-header">
+          <span class="code-title">docker-compose.yml</span>
+          <button class="copy-btn" onclick="copyCode('cc1',this)">copy</button>
+        </div>
+        <pre id="cc1"><span class="kw">services</span>:
+  <span class="kw">downloadpulse</span>:
+    <span class="cm">image</span>: <span class="str">ghcr.io/xipher-zero/downloadpulse:v1.0.0</span>
+    <span class="cm">container_name</span>: <span class="str">downloadpulse</span>
+    <span class="cm">restart</span>: <span class="str">unless-stopped</span>
+    <span class="cm">ports</span>: <span class="str">["8095:8095"]</span>
+    <span class="cm">environment</span>:
+      - <span class="str">TZ=Europe/Berlin</span>
+      - <span class="str">LOG_LEVEL=INFO</span>
+    <span class="cm">volumes</span>:
+      - <span class="str">/mnt/appdata/downloadpulse/config:/app/config</span>
+      - <span class="str">/mnt/appdata/downloadpulse/data:/app/data</span>
+      - <span class="str">/mnt/downloads/downloadpulse:/download</span></pre>
+      </div>
+      <div class="code-block reveal">
+        <div class="code-header">
+          <span class="code-title">docker run (one-liner)</span>
+          <button class="copy-btn" onclick="copyCode('cc2',this)">copy</button>
+        </div>
+        <pre id="cc2"><span class="str">docker run -d \
+  --name downloadpulse \
+  --restart unless-stopped \
+  -p 8095:8095 \
+  -e TZ=Europe/Berlin \
+  -e CONFIG_PATH=/app/config/config.json \
+  -e DB_PATH=/app/data/downloadpulse.db \
+  -v /mnt/appdata/downloadpulse/config:/app/config \
+  -v /mnt/appdata/downloadpulse/data:/app/data \
+  -v /mnt/downloads/downloadpulse:/download \
+  ghcr.io/xipher-zero/downloadpulse:v1.0.0</span></pre>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- NOTIFICATIONS -->
+<div class="section-wrap">
+<div id="discord">
+  <div class="section-label reveal">Notifications</div>
+  <h2 class="section-title reveal">Know what the queue is doing.</h2>
+  <p class="section-sub reveal">Optional Discord webhooks report important download lifecycle events.</p>
+  <div style="margin-top:48px">
+    <div class="section-label reveal">Webhook events</div>
+    <p class="section-sub reveal" style="margin-bottom:20px">Rich Discord embeds for every important event — configure once in Settings:</p>
+    <div class="webhook-events reveal">
+      <span class="event-pill pill-added">📥 Torrent Added</span>
+      <span class="event-pill pill-done">✅ Download Complete</span>
+      <span class="event-pill pill-error">❌ Download Error</span>
+      <span class="event-pill pill-partial">⚠️ Partial (filtered)</span>
+      <span class="event-pill pill-added">🔗 Direct Link Added</span>
+      <span class="event-pill pill-partial">🔄 Transfer Retried</span>
+      <span class="event-pill pill-added">📊 Stats Report</span>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- WHY -->
+<div style="background:var(--bg2);border-top:1px solid var(--brd);padding:100px 5vw">
+<div id="why" style="max-width:1100px;margin:0 auto">
+  <div class="section-label reveal">Why DownloadPulse</div>
+  <h2 class="section-title reveal">Built for reliability.</h2>
+  <p class="section-sub reveal">Designed to run unattended for weeks. Every edge case is handled.</p>
+  <div class="why-grid">
+    <div class="why-card accent reveal">
+      <h4>What it handles automatically</h4>
+      <ul class="why-list">
+        <li>Duplicate download prevention across restarts</li>
+        <li>Stuck download detection and cleanup</li>
+        <li>aria2 GID tracking — no orphaned jobs on restart</li>
+        <li>AllDebrid magnet auto-deleted after completion</li>
+        <li>Cancelled files never hold up the rest of a download</li>
+        <li>Config auto-corrected at startup</li>
+        <li>Rate-limit aware AllDebrid API calls</li>
+        <li>Expired debrid links regenerated during recovery</li>
+      </ul>
+    </div>
+    <div class="why-card reveal">
+      <h4>Stack</h4>
+      <ul class="why-list">
+        <li>Python 3.12 + FastAPI — fully async</li>
+        <li>Single-file vanilla JS frontend (no build step)</li>
+        <li>aiohttp, aiosqlite, asyncpg</li>
+        <li>SQLite default, PostgreSQL optional</li>
+        <li>Single-container deployment with bundled aria2</li>
+        <li>GPL-2.0-or-later, 100 % open source</li>
+        <li>Automated tests and container smoke checks in CI</li>
+      </ul>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <a href="#" class="footer-logo">Download<span>Pulse</span></a>
+  <div class="footer-copy">DownloadPulse · GPL-2.0-or-later · © 2026 Chris Moore</div>
+  <div class="footer-links">
+    <a href="https://github.com/Xipher-Zero/downloadpulse" target="_blank">GitHub</a>
+    <a href="https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse" target="_blank">GHCR</a>
+    <a href="https://github.com/Xipher-Zero/downloadpulse/blob/main/CHANGELOG.md" target="_blank">Changelog</a>
+    <a href="https://github.com/Xipher-Zero/downloadpulse/blob/main/LICENSE" target="_blank">License</a>
+  </div>
+</footer>
+
+<script>
+// Version from the canonical VERSION file
+(async()=>{
+  try{
+    const r=await fetch('https://raw.githubusercontent.com/Xipher-Zero/downloadpulse/main/VERSION');
+    if(r.ok){const v=(await r.text()).trim();if(v)document.getElementById('version-num').textContent=v;}
+  }catch(e){}
+})();
+
+// Scroll reveal
+const obs=new IntersectionObserver(entries=>{
+  entries.forEach(e=>{if(e.isIntersecting){e.target.classList.add('visible');obs.unobserve(e.target);}});
+},{threshold:0.08,rootMargin:'0px 0px -40px 0px'});
+document.querySelectorAll('.reveal').forEach(el=>obs.observe(el));
+
+// Copy code blocks
+function copyCode(id,btn){
+  const el=document.getElementById(id);
+  if(!el)return;
+  navigator.clipboard.writeText(el.innerText||el.textContent).then(()=>{
+    const o=btn.textContent;btn.textContent='copied!';btn.style.color='var(--green)';
+    setTimeout(()=>{btn.textContent=o;btn.style.color='';},1800);
+  });
+}
+
+// Mobile nav
+function toggleNav(){document.getElementById('nav-mobile').classList.toggle('open');}
+document.addEventListener('click',e=>{
+  const n=document.getElementById('nav-mobile'),h=document.getElementById('hamburger');
+  if(n.classList.contains('open')&&!n.contains(e.target)&&!h.contains(e.target))n.classList.remove('open');
+});
+</script>
+</body>
+</html>

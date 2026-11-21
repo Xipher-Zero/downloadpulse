@@ -1,0 +1,83 @@
+import asyncio
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+def test_aria2_success_logging_never_formats_request_uri():
+    import ast
+    root = Path(__file__).parents[1] / "executors" / "aria2"
+    for name in ("client.py", "executor.py"):
+        source = (root / name).read_text()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == "logger":
+                call = ast.get_source_segment(source, node)
+                assert "normalized_uri" not in call
+                assert "candidate.endpoints" not in call
+
+
+def test_dockerfile_uses_current_v1_oci_identity():
+    root = Path(__file__).parents[2]
+    dockerfile = (root / "Dockerfile").read_text()
+    workflow = (root / ".github" / "workflows" / "image.yml").read_text()
+    expected_title = "DownloadPulse: Universal Transfer Manager"
+
+    assert f'org.opencontainers.image.title="{expected_title}"' in dockerfile
+    assert "org.opencontainers.image.title=" + expected_title in workflow
+    assert f'expected_title="{expected_title}"' in workflow
+    assert "DownloadPulse \u2014 AllDebrid + aria2 Download Manager" not in dockerfile
+    assert "DownloadPulse \u2014 AllDebrid + aria2 Download Manager" not in workflow
+    assert 'org.opencontainers.image.description="Universal transfer orchestration for debrid services and Usenet plus direct network and media sources with managed download engines"' in dockerfile
+    assert "Multi-provider Debrid Download Manager" not in dockerfile
+    assert "Multi-provider debrid download manager" not in dockerfile
+
+
+def test_lifespan_shutdown_is_finally_guarded():
+    backend = Path(__file__).parents[1]
+    source = (backend / "main.py").read_text()
+    block = source.split("async def lifespan", 1)[1].split("class _RequestBodyTooLarge", 1)[0]
+    started = block.index("await start_application(application)")
+    guarded = block.index("try:", started)
+    yielded = block.index("yield", guarded)
+    final = block.index("finally:", yielded)
+    stopped = block.index("await stop_application(app.state.application)", final)
+    assert started < guarded < yielded < final < stopped
+    # The one lifetime owner begins integrations (off the control-plane
+    # critical path) and starts the scheduler last, and stops the scheduler
+    # first, then stops integrations even when stopping the scheduler failed.
+    lifetime = (backend / "application" / "lifetime.py").read_text()
+    start = lifetime.split("async def start_application", 1)[1].split("async def stop_application", 1)[0]
+    assert start.index("application.begin_integrations()") < start.index("await scheduler.start_scheduler(application)")
+    stop = lifetime.split("async def stop_application", 1)[1].split("\ndef ", 1)[0]
+    scheduler_stopped = stop.index("await scheduler.stop_scheduler()")
+    final = stop.index("finally:", scheduler_stopped)
+    assert final < stop.index("await application.stop_integrations()")
+
+
+def test_event_and_snapshot_routes_use_public_timestamp_serialization():
+    source = (Path(__file__).parents[1] / "api" / "routes.py").read_text()
+    detail = re.split(r"\n(?:async )?def ", source.split("async def get_torrent(torrent_id: int,", 1)[1], maxsplit=1)[0]
+    snapshots = source.split("async def list_stats_snapshots", 1)[1].split("@router", 1)[0]
+    presentation = source.split("def _public_transfer_presentation", 1)[1].split("def _password_auth_binding", 1)[0]
+    assert "result = public_payload(value)" in presentation
+    # Details returns exactly the public presentation (plus what it adds to it).
+    assert "result = _public_transfer_presentation(\n        item, application.definitions," in detail
+    assert detail.count("return ") == 1 and "\n    return result\n" in detail
+    assert 'return {"snapshots": public_payload(rows)}' in snapshots
+
+    # GET /api/events (api.operational_downloads.list_activity_events) reads
+    # the event journal, whose one projection states every timestamp as an
+    # explicit UTC instant ("Z").
+    journal = (Path(__file__).parents[1] / "db" / "event_journal.py").read_text()
+    assert journal.count("strftime('%Y-%m-%dT%H:%M:%fZ'") == 2
+
+
+def test_public_payload_normalizes_event_timestamp():
+    from api.serializers import public_payload
+
+    payload = public_payload({"message": "x", "created_at": "2026-08-21 03:00:00"})
+    assert payload["created_at"] == "2026-08-21T03:00:00Z"
+
+

@@ -1,0 +1,806 @@
+/* DownloadPulse v1.0.11 structural shell calibration.
+   This layer intentionally changes composition, not just color. */
+
+:root {
+  --dp-shell-sidebar: 240px;
+  --dp-shell-header: 102px;
+  /* The page's horizontal inset: one value from the shell's 780px mode change
+     up, at every width; the handheld shell (below 780px) sets its own. */
+  --dp-shell-x: 22px;
+  /* The one desktop page-title size: every page's title, Activity Log's drawn
+     one included (ui-activity-log-page.css), from the 780px mode change up. */
+  --dp-shell-title-size: 23px;
+}
+
+html, body {
+  min-height: 100%;
+  background: #050817;
+}
+
+body {
+  background:
+    radial-gradient(900px 520px at 78% -15%, rgba(45, 75, 190, .09), transparent 64%),
+    radial-gradient(760px 500px at 34% 12%, rgba(123, 58, 237, .055), transparent 70%),
+    #050817;
+}
+
+#sidebar {
+  width: var(--dp-shell-sidebar);
+  min-width: var(--dp-shell-sidebar);
+  background: var(--dp-chrome-sidebar-surface);
+  border-right: 1px solid rgba(116, 130, 194, .15);
+  /* The sidebar's one separation from the page, along its right edge, in
+     every desktop and tablet presentation (docked, the rail and, beneath its
+     own elevation, the overlay): restrained, a close edge and a soft falloff.
+     Below 780px there is no sidebar (ui-shell-mobile.css). */
+  --dp-sidebar-separation: 1px 0 2px rgba(0, 0, 10, .34), 6px 0 22px rgba(0, 0, 10, .30);
+  box-shadow: none;
+  overflow: hidden;
+}
+
+#sidebar > .dp-signal-field {
+  position: absolute;
+  left: -72px;
+  right: -45px;
+  bottom: 280px;
+  height: 210px;
+  opacity: .34;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 56% 48%, rgba(146, 71, 255, .34) 0 1px, transparent 1.8px) 0 0 / 19px 19px,
+    radial-gradient(ellipse at 45% 54%, transparent 0 46%, rgba(124, 58, 237, .16) 46.5% 47%, transparent 47.5%),
+    radial-gradient(ellipse at 55% 58%, transparent 0 49%, rgba(43, 116, 255, .14) 49.5% 50%, transparent 50.5%);
+  transform: rotate(-7deg);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 20%, #000 80%, transparent 100%);
+}
+
+/* The sidebar icon rail. Every navigation icon is centred at
+   item inset + icon size / 2; the brand glyph and the Log Out glyph derive
+   their position from these same values, so the rail cannot drift apart. */
+:root {
+  --dp-sidebar-inset: 23px;
+  --dp-sidebar-icon-size: 20px;
+  --dp-sidebar-brand-glyph: 48px;
+}
+
+/* The sidebar's magnification. Its contents -- the brand, the navigation and
+   the bottom stack -- magnify with the page until together they would no
+   longer fit the sidebar's height; from there app.js (fitSidebarScale) sets
+   --dp-sidebar-scale below 1, from the measured height and the contents'
+   own, so the sidebar alone stops growing while the page goes on zooming. The
+   sidebar's own box (its width, the rail and the shell's mode changes) is
+   never scaled. The icon rail stays where it is at any scale: the inset every
+   rail position derives from (--dp-sidebar-item-inset) is the one that puts
+   the scaled icon's centre where the unscaled one's is. */
+#sidebar > :is(.logo, nav, .sidebar-bottom-stack) {
+  zoom: var(--dp-sidebar-scale, 1);
+  --dp-sidebar-item-inset: calc((var(--dp-sidebar-inset) + var(--dp-sidebar-icon-size) / 2) / var(--dp-sidebar-scale, 1) - var(--dp-sidebar-icon-size) / 2);
+}
+#sidebar[data-sidebar-rescaling] :is(.logo, .nav-item) {
+  transition: none;
+}
+
+.logo {
+  height: 92px;
+  min-height: 92px;
+  padding: 18px 22px;
+  gap: 13px;
+  border-bottom: 1px solid rgba(116, 130, 194, .13);
+  background: transparent;
+}
+
+.logo-icon {
+  width: var(--dp-sidebar-brand-glyph);
+  height: var(--dp-sidebar-brand-glyph);
+  border-radius: 12px;
+  box-shadow: 0 0 22px rgba(117, 72, 255, .19);
+}
+
+.logo-name {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+.logo-name span { color: var(--dp-chrome-brand-text); }
+body.light .logo-name { color: var(--dp-chrome-brand-name); }
+body.light .logo-name span { color: var(--dp-chrome-brand-text); }
+
+#sidebar nav {
+  padding: 10px 0 12px;
+  position: relative;
+  z-index: 2;
+}
+/* A section heading is centred on the icon rail, not on the labels: its left
+   edge is placed at the rail's centre (the same inset and icon size every
+   navigation icon uses) and it is shifted back by half its own width, so the
+   alignment follows the rail at every sidebar width. The start padding equals
+   the trailing letter-spacing, so the visible letters, not the box, are
+   centred. Only the heading moves; the icons and labels do not. */
+.nav-group {
+  width: max-content;
+  padding: 13px 0 7px .075em;
+  margin: 0 0 0 calc(var(--dp-sidebar-item-inset) + var(--dp-sidebar-icon-size) / 2);
+  transform: translateX(-50%);
+  color: var(--dp-chrome-nav-heading);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+.nav-group:not(:first-child) { margin-top: 5px; }
+
+.nav-item {
+  min-height: 46px;
+  margin: 0;
+  padding: 0 var(--dp-sidebar-item-inset);
+  gap: 14px;
+  border-radius: 0;
+  color: var(--dp-chrome-nav-text);
+  font-size: 13px;
+  font-weight: 450;
+  background: transparent;
+}
+.nav-item::before {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 0;
+}
+.nav-item:hover {
+  color: var(--dp-chrome-nav-text-hover);
+  background: rgba(124, 58, 237, .07);
+}
+.nav-item.active {
+  color: var(--dp-chrome-nav-text-active);
+  font-weight: 600;
+  background:
+    linear-gradient(90deg, rgba(124, 58, 237, .42), rgba(124, 58, 237, .19) 78%, rgba(124, 58, 237, .05));
+  box-shadow: inset 0 1px rgba(164, 92, 255, .12), inset 0 -1px rgba(124, 58, 237, .08);
+}
+.nav-item.active::before {
+  background: #b960ff;
+  box-shadow: 0 0 13px rgba(185, 96, 255, .92);
+}
+.nav-item .icon,
+.nav-item .icon svg {
+  width: var(--dp-sidebar-icon-size);
+  height: var(--dp-sidebar-icon-size);
+}
+.nav-item.active .icon { color: #c9a3ff; }
+
+.sidebar-footer {
+  margin: 0;
+  padding: 14px 14px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--dp-chrome-sidebar-panel-edge);
+  background: var(--dp-chrome-sidebar-panel);
+  box-shadow: 0 14px 35px rgba(0, 0, 10, .18);
+  backdrop-filter: blur(10px);
+}
+.sidebar-footer::before {
+  text-align: center !important;
+}
+.conn-row {
+  min-height: 22px;
+  margin: 0;
+  gap: 8px;
+  color: var(--dp-chrome-sidebar-text);
+  font-size: 11px;
+}
+.conn-row .dot {
+  width: 8px;
+  height: 8px;
+  box-shadow: 0 0 9px currentColor;
+}
+/* On a light panel the dot keeps its vivid fill and glow (its own state is
+   currentColor there, ui-shell.css) inside a 1px rim of the same hue,
+   deepened, so the mark keeps its edge against white. */
+body.light .conn-row .dot {
+  box-shadow: 0 0 0 1px oklch(from currentColor min(l, 0.48) c h), 0 0 9px currentColor;
+}
+#premium-row {
+  margin-bottom: 5px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(119, 132, 190, .11);
+}
+#lbl-premium {
+  color: #b86cff !important;
+  font-size: 10px !important;
+}
+
+#main {
+  margin-left: 0 !important;
+  min-width: 0;
+  background: transparent;
+}
+
+#topbar {
+  height: var(--dp-shell-header);
+  min-height: var(--dp-shell-header);
+  padding: 27px 66px 14px var(--dp-shell-x);
+  padding-right: var(--dp-shell-x) !important;
+  gap: 10px;
+  align-items: flex-start;
+  background: transparent;
+  border-bottom: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.dp-page-heading {
+  min-width: 300px;
+  flex: 1 1 auto;
+}
+#page-title {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+  margin: 0;
+  color: var(--dp-chrome-title);
+  font-size: var(--dp-shell-title-size);
+  line-height: 1.04;
+  font-weight: 700;
+  letter-spacing: -.03em;
+}
+#page-title::after {
+  width: 105px;
+  height: 19px;
+  margin-left: 4px;
+  opacity: .85;
+  /* Its glow is the mask's #glow halo (ui-shell.css). */
+  filter: saturate(1.15);
+}
+.dp-page-subtitle {
+  margin: 9px 0 0;
+  color: var(--dp-chrome-subtitle);
+  font-size: 12.5px;
+  line-height: 1.35;
+  font-weight: 400;
+}
+
+#topbar-actions {
+  margin-top: 6px;
+  gap: 9px;
+}
+#topbar-actions .btn,
+#runtime-speed-badge,
+#update-badge {
+  height: 37px;
+  min-height: 37px;
+  border-radius: 8px !important;
+  background: rgba(14, 19, 45, .86) !important;
+  border: 1px solid rgba(116, 130, 194, .19) !important;
+  box-shadow: inset 0 1px rgba(255,255,255,.025), 0 4px 14px rgba(0,0,12,.09);
+}
+#topbar-actions .btn {
+  padding: 0 13px;
+  color: #d9d2ff;
+}
+#btn-pause-all,
+#btn-resume-all,
+#btn-resume-paused {
+  border-color: rgba(139, 92, 246, .28) !important;
+}
+#runtime-speed-badge {
+  margin-top: 6px;
+  padding: 0 12px !important;
+  color: var(--dp-chrome-control-text) !important;
+}
+
+.sidebar-theme-control {
+  top: 29px;
+  right: 18px;
+  width: 37px;
+  height: 37px;
+}
+.theme-toggle {
+  width: 37px;
+  height: 37px;
+  border-radius: 8px;
+  background: rgba(14, 19, 45, .86);
+  border-color: rgba(116, 130, 194, .19);
+}
+
+/* operator-title.js moves the compatibility wrapper into #topbar. Resolve that
+   final shell geometry here instead of relying on a later correction layer.
+   The desktop shell's (from 780px); the handheld shell's is
+   ui-shell-mobile.css's. */
+@media (min-width: 780px) {
+.sidebar-theme-control.topbar-theme-control {
+  position: relative !important;
+  top: auto !important;
+  right: auto !important;
+  left: auto !important;
+  bottom: auto !important;
+  width: 37px !important;
+  min-width: 37px !important;
+  height: 37px !important;
+  margin: 6px 0 0 0 !important;
+  padding: 0 !important;
+  flex: 0 0 37px !important;
+  align-self: flex-start !important;
+  pointer-events: auto !important;
+  z-index: 1 !important;
+}
+.topbar-theme-control .theme-toggle {
+  width: 37px !important;
+  min-width: 37px !important;
+  height: 37px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  pointer-events: auto !important;
+}
+}
+
+/* The shell owns the ordinary content inset. Page layers may own geometry
+   inside their .view, but they must not replace the shell material itself. */
+#content {
+  padding: 0 var(--dp-shell-x) 24px;
+  background: transparent;
+}
+
+/* Legacy app.js still toggles settings-active during navigation. Inherited
+   style.css historically used that state to turn Settings into a different
+   shell viewport. Neutralize only that obsolete behavior here so Settings
+   resolves to the same normal #content scrolling contract as other pages.
+   Remove this bridge when the legacy navigation class is pruned. */
+#content.settings-active {
+  overflow-y: auto;
+  padding-left: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+}
+
+body.light {
+  background:
+    radial-gradient(900px 520px at 76% -12%, rgba(69, 93, 235, .08), transparent 65%),
+    #f3f5fb;
+}
+body.light #sidebar {
+  --dp-sidebar-separation: 1px 0 2px rgba(45, 61, 96, .07), 6px 0 20px rgba(45, 61, 96, .11);
+  background: var(--dp-chrome-sidebar-surface);
+  border-right-color: #dde1ef;
+}
+body.light .nav-item { color: var(--dp-chrome-nav-text); }
+body.light .nav-item:hover { color: var(--dp-chrome-nav-text-hover); background: #f0edff; }
+body.light .nav-item.active {
+  color: var(--dp-text-primary);
+  background: linear-gradient(90deg, #e9deff, #f3edff 82%, #f8f6ff);
+}
+body.light .sidebar-footer {
+  background: var(--dp-chrome-sidebar-panel);
+  border-color: var(--dp-chrome-sidebar-panel-edge);
+  box-shadow: 0 12px 32px rgba(72, 79, 112, .08);
+}
+body.light .conn-row { color: var(--dp-chrome-sidebar-text); }
+body.light #page-title { color: var(--dp-chrome-title); }
+body.light .dp-page-subtitle { color: var(--dp-chrome-subtitle); }
+body.light #topbar-actions .btn,
+body.light #runtime-speed-badge,
+body.light #update-badge,
+body.light .theme-toggle {
+  background: rgba(255,255,255,.90) !important;
+  border-color: #d9deed !important;
+  color: var(--dp-chrome-control-text) !important;
+  box-shadow: 0 4px 15px rgba(62, 70, 104, .07);
+}
+
+@media (max-width: 1180px) {
+  :root { --dp-shell-sidebar: 220px; --dp-sidebar-inset: 18px; }
+}
+
+/* The brand glyph is centred on the navigation icon rail at every width (the
+   expanded sidebar, the compact rail, the drawer). Only the block's leading
+   padding moves, so the wordmark follows the glyph at its existing gap. */
+.logo {
+  padding-left: calc(var(--dp-sidebar-item-inset) + (var(--dp-sidebar-icon-size) - var(--dp-sidebar-brand-glyph)) / 2);
+}
+
+/* ── Desktop sidebar: expanded and compact ───────────────────────────────
+   One universal width decides the desktop shell. From 1560 CSS px the full
+   240px sidebar; from 780 to 1559px the compact 72px icon rail. 1560 is just
+   above the Dashboard's first measured pressure point with the full sidebar
+   (its six-card row runs out of room near 1535px); the rail gives the page
+   168px back. Below 780px the handheld shell's dock replaces the sidebar
+   (ui-shell-mobile.css); the sidebar never widens again as the window narrows. app.js reads the same range (SIDEBAR_COMPACT_QUERY) for the
+   rail's handle.
+
+   The rail is the same sidebar, not a second one: every label stays in place
+   and in the accessibility tree, faded out and clipped by the sidebar's edge,
+   while the section headings, the icons, the brand glyph, Provider Status
+   (as its indicators) and the session controls stay on the one icon rail.
+   Its handle shows the same sidebar at full width above the page for the
+   moment: the overlay's negative trailing margin keeps the sidebar's share
+   of the row at the rail's width, so the page does not move at all. */
+:root {
+  --dp-shell-rail: 72px;
+  --dp-shell-sidebar-full: 240px;
+}
+
+.sidebar-handle { display: none; }
+
+@media (min-width: 780px) {
+  /* The persistent change (a window crossing 1560px) and the overlay animate
+     the sidebar's width -- the page follows only the persistent one. Labels
+     fade out before the edge reaches them, and fade in once it has passed. */
+  #sidebar {
+    box-shadow: var(--dp-sidebar-separation);
+    transition:
+      width var(--dp-motion-expand) var(--dp-motion-ease),
+      min-width var(--dp-motion-expand) var(--dp-motion-ease),
+      margin-right var(--dp-motion-expand) var(--dp-motion-ease),
+      box-shadow var(--dp-motion-expand) var(--dp-motion-ease);
+  }
+  .logo,
+  .nav-item {
+    transition: background .14s ease, color .14s ease, box-shadow .14s ease,
+      padding var(--dp-motion-expand) var(--dp-motion-ease);
+  }
+  #sidebar :is(.logo-text, .nav-label) {
+    white-space: nowrap;
+    transition: opacity 140ms var(--dp-motion-ease) 110ms;
+  }
+  /* A change of presentation (rail, full, overlay) replaces the Provider
+     Status and session composition at once; app.js marks the moment and the
+     stack fades back in once the sidebar has nearly reached its new width. */
+  #sidebar.sidebar-reflowing .sidebar-bottom-stack > *,
+  #sidebar.sidebar-reflowing .sidebar-bottom-stack .sidebar-footer {
+    animation: dp-sidebar-reveal 140ms var(--dp-motion-ease) 120ms both;
+  }
+  /* A single change of the window wider than the page's clear inset (a snap
+     rather than a drag; app.js measures it) takes the new width at once, in
+     that frame, in either direction: app.js holds this class only for the
+     style update that applies it. */
+  #sidebar.sidebar-settling:not(.sidebar-overlay-open),
+  #sidebar.sidebar-settling:not(.sidebar-overlay-open) :is(.logo, .nav-item, .logo-text, .nav-label) {
+    transition: none;
+  }
+}
+
+@keyframes dp-sidebar-yield {
+  from { margin-right: clamp(calc(var(--dp-shell-rail) - var(--dp-shell-sidebar-full)), 100vw - 1560px, 0px); }
+  to { margin-right: 0px; }
+}
+
+@keyframes dp-sidebar-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (min-width: 780px) and (max-width: 1559px) {
+  :root {
+    --dp-shell-sidebar: var(--dp-shell-rail);
+    --dp-sidebar-inset: 26px;
+  }
+
+  #sidebar:not(.sidebar-overlay-open) {
+    transition:
+      width var(--dp-motion-collapse) var(--dp-motion-ease) 60ms,
+      min-width var(--dp-motion-collapse) var(--dp-motion-ease) 60ms,
+      margin-right var(--dp-motion-collapse) var(--dp-motion-ease) 60ms,
+      box-shadow var(--dp-motion-collapse) var(--dp-motion-ease);
+  }
+  #sidebar:not(.sidebar-overlay-open) :is(.logo-text, .nav-label) {
+    opacity: 0;
+    transition: opacity 90ms var(--dp-motion-ease);
+  }
+
+  /* The persistent change to the rail gives the page its room back at once.
+     A window still narrowing as it crosses 1559px (a drag) would otherwise
+     leave the page narrower than at any resting width -- the full sidebar not
+     yet contracting while the window keeps losing width -- and its content
+     would re-flow for that moment alone. So the sidebar's share of the row
+     yields at once whatever the window has lost below 1560px (as the
+     overlay's trailing margin does, never more than the rail keeps), and
+     gives it back on the width's own timing as the sidebar contracts; its
+     drawn width, motion and timing are unchanged, passing over the page's
+     edge by that much meanwhile. Without motion there is no such moment. */
+  #sidebar.sidebar-reflowing[data-sidebar-reflow="persistent"]:not(.sidebar-overlay-open) {
+    animation: dp-sidebar-yield var(--dp-motion-collapse) var(--dp-motion-ease) 60ms both;
+  }
+
+  /* The temporary overlay: the full sidebar above the page, its row share
+     still the rail's. It floats: a concentrated shadow just past its edge
+     separates it from the page, and a wide soft one falls off into the page
+     it covers, over the sidebar's own separation. Only this state has the
+     elevation; closing it leaves the separation as it was. */
+  #sidebar.sidebar-overlay-open {
+    width: var(--dp-shell-sidebar-full);
+    min-width: var(--dp-shell-sidebar-full);
+    margin-right: calc(var(--dp-shell-rail) - var(--dp-shell-sidebar-full));
+    box-shadow:
+      4px 0 10px -2px rgba(0, 0, 10, .62),
+      22px 0 72px rgba(0, 0, 10, .55),
+      var(--dp-sidebar-separation);
+  }
+  body.light #sidebar.sidebar-overlay-open {
+    box-shadow:
+      3px 0 8px -1px rgba(45, 61, 96, .22),
+      20px 0 64px rgba(45, 61, 96, .20),
+      var(--dp-sidebar-separation);
+  }
+
+  /* The handle: centred on the sidebar's right edge, it follows that edge
+     as the overlay opens and closes, and its chevron says which way it goes.
+     Where the centre would cover something the sidebar shows there (a
+     section heading), app.js (placeSidebarHandle) gives the nearest clear
+     centre, and the handle takes it at once: a move never travels through
+     what it avoids. */
+  .sidebar-handle {
+    display: grid;
+    place-items: center;
+    position: absolute;
+    top: var(--dp-sidebar-handle-centre, 50%);
+    right: 0;
+    z-index: 6;
+    width: 18px;
+    height: 46px;
+    margin: 0;
+    padding: 0;
+    transform: translateY(-50%);
+    border: 1px solid var(--dp-chrome-handle-edge);
+    border-right: 0;
+    border-radius: 9px 0 0 9px;
+    background: var(--dp-chrome-handle-surface);
+    color: var(--dp-chrome-handle-text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .sidebar-handle:hover {
+    color: var(--dp-chrome-handle-text-hover);
+    background: var(--dp-chrome-handle-surface-hover);
+  }
+  .sidebar-handle:focus-visible {
+    outline: 2px solid var(--accent, #a855f7);
+    outline-offset: -2px;
+  }
+  .sidebar-handle svg {
+    width: 14px;
+    height: 14px;
+    transition: transform var(--dp-motion-expand) var(--dp-motion-ease);
+  }
+  #sidebar.sidebar-overlay-open .sidebar-handle svg {
+    transform: rotate(180deg);
+  }
+  body.light .sidebar-handle {
+    border-color: var(--dp-chrome-handle-edge);
+    background: var(--dp-chrome-handle-surface);
+    color: var(--dp-chrome-handle-text);
+  }
+  body.light .sidebar-handle:hover {
+    color: var(--dp-chrome-handle-text-hover);
+    background: var(--dp-chrome-handle-surface-hover);
+  }
+
+  /* Downloads' active count stays with its icon. */
+  #sidebar:not(.sidebar-overlay-open) nav .nav-badge {
+    position: absolute;
+    top: 5px;
+    left: calc(var(--dp-sidebar-item-inset) + var(--dp-sidebar-icon-size) - 6px);
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    font-size: 8px;
+  }
+
+  /* Provider Status keeps its bounded panel on the rail, as indicators
+     (ui-provider-state.css composes them). */
+  #sidebar:not(.sidebar-overlay-open) .sidebar-footer {
+    padding: 10px 4px 9px;
+  }
+}
+
+/* The rail's other edge (779/780px) is a change of kind, not of width: below
+   it the sidebar is not shown at all, so it takes its new place at once --
+   never an in-flow width growing from nothing (which would narrow the page
+   and give it back). app.js names the change; the name lasts only for its
+   reveal, if any. */
+#sidebar[data-sidebar-reflow="drawer"],
+#sidebar[data-sidebar-reflow="drawer"] :is(.logo, .nav-item, .logo-text, .nav-label) {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar,
+  #sidebar:not(.sidebar-overlay-open),
+  .logo,
+  .nav-item,
+  #sidebar :is(.logo-text, .nav-label),
+  #sidebar:not(.sidebar-overlay-open) :is(.logo-text, .nav-label),
+  .sidebar-handle svg {
+    transition: none;
+  }
+  #sidebar.sidebar-reflowing .sidebar-bottom-stack > *,
+  #sidebar.sidebar-reflowing .sidebar-bottom-stack .sidebar-footer,
+  #sidebar.sidebar-reflowing[data-sidebar-reflow="persistent"]:not(.sidebar-overlay-open) {
+    animation: none;
+  }
+}
+
+/* The desktop topbar (the shell's 780px mode change up): every page's title
+   and its pulse artwork keep one line, within the heading -- whose end is the
+   controls' gap, so a title never reaches the controls. Where the title would
+   (the longest, Help & License, in the wider fallback face), its artwork
+   yields what the title lacks, the same shape and never hidden (48px at the
+   least); otherwise it keeps its size. The controls never move for it. */
+@media (min-width: 780px) {
+  #page-title { white-space: nowrap; max-width: 100%; }
+  #page-title::after { flex: 0 1 auto; min-width: 48px; }
+}
+
+/* The compact operational controls: at and below 1023px, one width for
+   every page and download state, Pause All, Resume All and Resume Paused show
+   their glyph only. Measured on the widest composition -- Help & License with
+   its artwork, Resume Paused beside Pause All, the full speed badge and the
+   theme controls -- the labelled row keeps the topbar's 10px gap from 1005px
+   with the fallback fonts (968px with Outfit); 1023px leaves room for other
+   fallback faces. Each keeps its element, handler, state, colours and glyph;
+   its label (app.js renderTopbarActions, the paused count included) stays its
+   accessible name and becomes its tooltip (ui-tooltip.js data-tooltip-label). */
+@media (min-width: 780px) and (max-width: 1023px) {
+  /* One 6px spacing through the narrowed rail (the topbar's 10px and the
+     controls' 9px), and the speed badge's 12px side padding at 8px. */
+  #topbar,
+  #topbar-actions { gap: 6px; }
+  #runtime-speed-badge { padding-inline: 8px !important; }
+  #topbar-actions .btn {
+    width: 37px;
+    padding: 0;
+    justify-content: center;
+  }
+  #topbar-actions .btn [data-dp-icon-label] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    opacity: 0;
+  }
+}
+
+/* Where even the narrowed rail is short -- Resume Paused beside Pause All
+   below 788px, measured with the fallback fonts -- the title's artwork is drawn
+   10% smaller (105x19 to 95x17.2, the same shape), never hidden; it returns to
+   its size as Resume Paused leaves or the window widens. */
+@media (min-width: 780px) and (max-width: 787px) {
+  #topbar:has(#topbar-actions[data-resume-paused]) #page-title::after {
+    width: 95px;
+    height: 17.2px;
+  }
+}
+
+/* Preserve the full desktop control row (the runtime speed badge included) down
+   to the shell's 780px mode change by allowing the heading flex item to yield
+   its unused minimum; below 780px the handheld header composes its own. */
+@media (min-width: 780px) and (max-width: 1050px) {
+  .dp-page-heading { min-width: 0; }
+}
+
+/* Canonical selected-navigation and shell depth retained from the accepted Dashboard review. */
+.nav-item.active {
+  background: var(--dp-chrome-nav-active-surface) !important;
+  box-shadow: var(--dp-chrome-nav-active-edge) !important;
+}
+.nav-item.active::after {
+  content: '';
+  position: absolute;
+}
+body.light .nav-item.active {
+  background: var(--dp-chrome-nav-active-surface) !important;
+}
+body.light .nav-item.active::before {
+  background: var(--dp-chrome-nav-rail) !important;
+  box-shadow: var(--dp-chrome-nav-rail-glow) !important;
+}
+#sidebar {
+  position: relative;
+  z-index: 3;
+  border-right-color: var(--dp-chrome-sidebar-edge) !important;
+}
+body.light #sidebar {
+  border-right-color: var(--dp-chrome-sidebar-edge) !important;
+}
+#main {
+  position: relative;
+  z-index: 1;
+}
+body.light #page-title {
+  text-shadow:
+    0 2px 5px rgba(58, 64, 96, .17),
+    0 1px 0 rgba(255,255,255,.78);
+}
+/* Light's shade and glow: the mask's #glow-light halo (ui-shell.css). */
+body.light #page-title::after {
+  filter: saturate(1.16) !important;
+  -webkit-mask-image: url('/icons/dp/shell-pulse.svg?v=4'), url('/icons/dp/shell-pulse.svg?v=4#glow-light');
+  mask-image: url('/icons/dp/shell-pulse.svg?v=4'), url('/icons/dp/shell-pulse.svg?v=4#glow-light');
+}
+
+/* Canonical viewport canvas and selected-rail base retained from Dashboard
+   live review. Later shell calibration continues to own the final selected
+   row fill, endpoint energy and sidebar wave geometry. */
+body {
+  background: var(--dp-chrome-canvas) !important;
+}
+/* The light header surface is the canvas's top layer, not a band of its own:
+   held behind the title row, then eased (smoothstep) into the page from
+   mid-header to beyond its bottom edge, so header and page meet without a
+   seam. Every palette's own header surface and canvas, behind the cards. */
+body.light {
+  background:
+    linear-gradient(180deg,
+      var(--dp-chrome-topbar-surface) 0,
+      var(--dp-chrome-topbar-surface) calc(var(--dp-shell-header) * .45),
+      color-mix(in srgb, var(--dp-chrome-topbar-surface) 90%, transparent) calc(var(--dp-shell-header) * .73),
+      color-mix(in srgb, var(--dp-chrome-topbar-surface) 65%, transparent) calc(var(--dp-shell-header) * 1.01),
+      color-mix(in srgb, var(--dp-chrome-topbar-surface) 35%, transparent) calc(var(--dp-shell-header) * 1.29),
+      color-mix(in srgb, var(--dp-chrome-topbar-surface) 10%, transparent) calc(var(--dp-shell-header) * 1.57),
+      transparent calc(var(--dp-shell-header) * 1.85)),
+    var(--dp-chrome-canvas) !important;
+}
+#main,
+#content {
+  background: transparent !important;
+}
+#sidebar > .dp-signal-field {
+  z-index: 0;
+  left: 0;
+  right: 0;
+  transform: none !important;
+}
+.nav-item.active::before {
+  width: 6px !important;
+  background: var(--dp-chrome-nav-rail) !important;
+  box-shadow: var(--dp-chrome-nav-rail-glow) !important;
+}
+
+/* Canonical selected-navigation icon treatment retained from the accepted review. */
+.nav-item.active .icon,
+.nav-item.active .icon svg {
+  color: var(--dp-chrome-nav-icon-active) !important;
+  opacity: 1 !important;
+  stroke-width: 2.25 !important;
+  filter: var(--dp-chrome-nav-icon-glow);
+}
+body.light .nav-item.active .icon,
+body.light .nav-item.active .icon svg {
+  color: var(--dp-chrome-nav-icon-active) !important;
+  filter: var(--dp-chrome-nav-icon-glow);
+}
+
+/* Canonical masthead depth retained from the accepted review. */
+.logo {
+  position: relative !important;
+  isolation: isolate;
+  border-bottom-color: transparent !important;
+  background: var(--dp-chrome-logo-band) !important;
+}
+body.light .logo {
+  background: var(--dp-chrome-logo-band) !important;
+}
+.logo-icon {
+  box-shadow:
+    0 5px 12px rgba(0,0,0,.18),
+    0 0 27px rgba(var(--dp-logo-halo-rgb),.25) !important;
+}
+body.light .logo-icon {
+  box-shadow:
+    0 5px 12px rgba(47,42,70,.16),
+    0 0 25px rgba(117,72,255,.19) !important;
+}
+.logo-name {
+  text-shadow: 0 1px 1px rgba(0,0,0,.20);
+}
+body.light .logo-name {
+  text-shadow: 0 1px 1px rgba(37,30,58,.10);
+}
+.logo-name span {
+  text-shadow: var(--dp-chrome-brand-glow);
+}
+body.light .logo-name span {
+  text-shadow: var(--dp-chrome-brand-glow);
+}
+.logo-ver { opacity: .78; }

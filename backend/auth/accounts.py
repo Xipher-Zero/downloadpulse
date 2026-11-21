@@ -1,0 +1,1732 @@
+"""DownloadPulse accounts: the ONE owner of durable identity.
+
+An account is the stable, immutable identity every sign-in resolves to. Its
+facts are kept apart: the ROLE (``accounts.role``), the human account's one
+USERNAME (``accounts.username``), its zero-or-one local PASSWORD
+(``account_local_credentials``) and the zero-or-more linked OIDC IDENTITIES
+(``account_oidc_bindings``, keyed by the validated ``(issuer, subject)``).
+
+The username is the account's own, whatever it signs in with: an OIDC
+identity's first sign-in gives it one from the identity's claims, an Admin
+changes it, and it is the name a local password signs in under. It is not the
+display name, which the account chooses for itself, and it is not identity:
+the account is its internal ID, an OIDC sign-in finds the account through its
+binding alone, and a username or email address never links, merges or grants
+anything. Email is display metadata only.
+
+Two protected default identities always exist, with well-known IDs: the
+default **Admin** (no password until the operator sets one) and the default
+**Automation** Integration account (no token). The default Admin is the
+standalone no-authentication principal and the account the offline
+configuration-file credential recovers (``import_legacy_credential``), so it is
+never deleted, disabled, demoted or merged away.
+
+Every mutation is one ``BEGIN IMMEDIATE`` transaction that re-checks, under the
+authentication configuration lock, that a usable Admin remains
+(``usable_admin_exists``), bumps the account's ``generation`` and, after it
+commits, revokes every session of the accounts it changed: the session store
+never holds a session whose role, status or credential is older than the
+account's current state.
+
+Accounts are configuration, not transfer history: the explicit database wipe
+keeps them; a restore replaces them with the backup's, and is refused when the
+restored state would leave no usable Admin (``restored_state_has_usable_admin``).
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+import secrets
+import sqlite3
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any, Iterable, Mapping
+
+from auth.passwords import (
+    basic_verification_cache,
+    hash_password,
+    is_usable_password_hash,
+    password_credential_version,
+)
+from auth.policy import interactive_auth_enabled, oidc_auth_enabled, password_auth_enabled, standalone_deployment
+
+
+class Role(StrEnum):
+    ADMIN = "admin"
+    USER = "user"
+    READONLY = "readonly"
+    INTEGRATION = "integration"
+
+
+HUMAN_ROLES = frozenset({Role.ADMIN, Role.USER, Role.READONLY})
+# The roles Authentication settings may give an account created by its first
+# admitted OIDC sign-in. Admin is never provisioned automatically.
+OIDC_PROVISION_ROLES = frozenset({Role.USER, Role.READONLY})
+# The roles whose people may connect a browser (``browser`` tokens): every
+# account that may submit downloads. ReadOnly and Integration accounts may not.
+BROWSER_ROLES = frozenset({Role.ADMIN, Role.USER})
+
+DEFAULT_ADMIN_ID = "00000000-0000-4000-8000-000000000001"
+DEFAULT_INTEGRATION_ID = "00000000-0000-4000-8000-000000000002"
+
+# An account's local password: a row exists only while it holds one. The name
+# it signs in under is the account's username (``accounts.username``).
+_CREDENTIAL_COLUMNS = """(
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+        password_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )"""
+
+SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS accounts (
+        id TEXT PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('admin','user','readonly','integration')),
+        origin TEXT NOT NULL CHECK (origin IN ('local','oidc','integration')),
+        display_name TEXT NOT NULL DEFAULT '',
+        username TEXT,
+        actual_name TEXT,
+        email TEXT NOT NULL DEFAULT '',
+        email_verified INTEGER NOT NULL DEFAULT 0,
+        email_verified_known INTEGER NOT NULL DEFAULT 0,
+        email_self_entered INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        protected TEXT UNIQUE CHECK (protected IN ('default_admin','default_integration')),
+        generation INTEGER NOT NULL DEFAULT 1,
+        merged_into TEXT REFERENCES accounts(id),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+    )""",
+    "CREATE TABLE IF NOT EXISTS account_local_credentials " + _CREDENTIAL_COLUMNS,
+    """CREATE TABLE IF NOT EXISTS account_oidc_bindings (
+        issuer TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (issuer, subject)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_account_oidc_bindings_account ON account_oidc_bindings (account_id)",
+    # Integration accounts' API tokens. Only a SHA-256 verifier of a 256-bit
+    # random secret is stored; a revoked token keeps its row (and label) so
+    # every request it carried stays attributable. ``client_id`` is the
+    # external client the token authenticates as (``external``): a new token
+    # is a new client; only an Admin's explicit rotation (``create_token``
+    # with ``succeeds``) gives a token its predecessor's client.
+    # ``kind`` is what the token is: ``integration`` (an Integration account's
+    # API token) or ``browser`` (a person's connected browser, issued only by
+    # pairing, ``auth.browser_pairing``). A browser token's authority is the
+    # browser client alone (``auth.permissions``), never its account's role.
+    """CREATE TABLE IF NOT EXISTS account_tokens (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        label TEXT NOT NULL,
+        verifier TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT,
+        client_id TEXT,
+        kind TEXT NOT NULL DEFAULT 'integration'
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_account_tokens_account ON account_tokens (account_id)",
+    # A User's own notification configuration (``services.account_notifications``):
+    # one document per account, keyed by the durable account ID and never by a
+    # name, email, token or OIDC subject. It belongs to exactly that account:
+    # Remove and Merge retire it with the account, and nothing inherits it.
+    """CREATE TABLE IF NOT EXISTS account_notifications (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+        settings TEXT NOT NULL,
+        last_report_at REAL,
+        updated_at TEXT NOT NULL
+    )""",
+    # A human account's own appearance (``services.account_appearance``): its
+    # interface mode and the palette it chose for each mode, its Easy or
+    # Advanced presentation (``presentation_mode``) and its interface language
+    # (``locale``), both added by ``ensure_schema``,
+    # keyed by the durable account ID. It belongs to exactly that account:
+    # Remove and Merge retire it with the account, and nothing inherits it.
+    """CREATE TABLE IF NOT EXISTS account_appearance (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+        mode TEXT NOT NULL CHECK (mode IN ('dark','light')),
+        dark_palette TEXT NOT NULL,
+        light_palette TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    # The installation's login appearance (``services.account_appearance``):
+    # one row, the mode and palette an Admin last published. It belongs to the
+    # installation and names no account: no account's later change, removal
+    # or merge alters it.
+    """CREATE TABLE IF NOT EXISTS login_appearance (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        mode TEXT NOT NULL CHECK (mode IN ('dark','light')),
+        palette TEXT NOT NULL
+    )""",
+    # The installation's initial setup (``services.setup_lifecycle``): one
+    # row, written only when the database bootstrap creates a genuinely new
+    # installation. No row is an installation from before the setup wizard,
+    # whose setup is complete. ``bootstrap_account_id`` is the one named
+    # Administrator a new Server installation's setup created, committed in
+    # that account's own transaction; ``bootstrap_configured_at`` is when
+    # Username & Password was confirmed enabled for it.
+    """CREATE TABLE IF NOT EXISTS installation_setup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        initial_setup_complete INTEGER NOT NULL DEFAULT 0 CHECK (initial_setup_complete IN (0,1)),
+        initial_phase TEXT,
+        bootstrap_account_id TEXT REFERENCES accounts(id),
+        bootstrap_configured_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL
+    )""",
+    # An Admin's own unfinished setup rerun (``services.setup_lifecycle``),
+    # keyed by the durable account ID. It belongs to exactly that account:
+    # Remove and Merge retire it with the account, and nothing inherits it.
+    """CREATE TABLE IF NOT EXISTS account_setup_rerun (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+        phase TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+)
+TABLES = ("accounts", "account_local_credentials", "account_oidc_bindings", "account_tokens",
+          "account_notifications", "account_appearance", "login_appearance",
+          "installation_setup", "account_setup_rerun")
+TOKEN_PREFIX = "dp_"
+TOKEN_KIND_INTEGRATION = "integration"
+TOKEN_KIND_BROWSER = "browser"
+_TOKEN_RANDOM_BYTES = 32
+
+
+class AccountRefused(Exception):
+    """A requested account change would break an account invariant.
+
+    ``code`` and ``params``, where given, name the refusal the interface shows
+    (``core.localization.DisplayError``; the catalog key ``error.<code>``);
+    the English message stays the refusal's text for every API client."""
+
+    def __init__(self, message: str = "", *, code: str | None = None, params: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.params = dict(params or {})
+        # The same name every response boundary reads (``core.localization.code_of``).
+        self.display_code, self.display_params = code, self.params
+
+
+class InvalidEmail(AccountRefused):
+    """A self-entered email address that is not a usable address."""
+
+
+@dataclass(frozen=True, slots=True)
+class Account:
+    id: str
+    role: Role
+    origin: str
+    display_name: str
+    email: str
+    email_verified: bool
+    enabled: bool
+    protected: str
+    generation: int
+    merged_into: str
+    deleted_at: str
+    username: str = ""
+    credential_version: str = ""
+    # The person's name, and whether the identity provider STATED the email's
+    # verification (``email_verified`` holds what it stated). Profile only:
+    # neither identifies, links or authorizes anything.
+    actual_name: str = ""
+    email_verified_known: bool = False
+    # The account entered the email itself (``set_own_email``): it is recorded
+    # unverified and no identity provider's claim ever verifies it.
+    email_self_entered: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and not self.deleted_at and not self.merged_into
+
+    @property
+    def has_password(self) -> bool:
+        return bool(self.credential_version)
+
+
+def admitted(account: Account | None, settings=None) -> bool:
+    """Whether a resolved account may be signed in: it exists and is active
+    and, while the installation is Standalone, it is the default Admin -- every
+    other person keeps its stored ``enabled`` but cannot sign in. What it may
+    then do is its role's (``auth.permissions``)."""
+    if account is None or not account.active:
+        return False
+    if settings is None:
+        from core.config import get_settings
+
+        settings = get_settings()
+    return account.id in deployment_eligible({account.id}, settings) or account.role is Role.INTEGRATION
+
+
+def deployment_eligible(account_ids: Iterable[str], settings) -> set[str]:
+    """Which of these accounts the deployment type lets act as a person: all
+    of them on a Server, the default Admin alone on a Standalone installation."""
+    ids = {str(account_id) for account_id in account_ids}
+    return ids & {DEFAULT_ADMIN_ID} if standalone_deployment(settings) else ids
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def ensure_schema(db) -> None:
+    """Schema and the two protected default identities (``db.database.init_db``)."""
+    from db.database import _ensure_column
+
+    for statement in SCHEMA:
+        await db.execute(statement)
+    # NULL: never populated (an identity's claims may complete it); a string,
+    # even an empty one, is the account's own choice and is never overwritten.
+    await _ensure_column(db, "accounts", "actual_name", "TEXT")
+    await _ensure_column(db, "accounts", "email_verified_known", "INTEGER NOT NULL DEFAULT 0")
+    # An email recorded as verified was recorded only from an explicit
+    # ``email_verified: true`` claim, so its verification is known.
+    await db.execute("UPDATE accounts SET email_verified_known=1 WHERE email_verified=1 AND email_verified_known=0")
+    # Before an account could enter its own email, every email came from an
+    # identity provider's claim.
+    await _ensure_column(db, "accounts", "email_self_entered", "INTEGER NOT NULL DEFAULT 0")
+    # Every token issued before external clients existed was its own client.
+    await _ensure_column(db, "account_tokens", "client_id", "TEXT")
+    # When a token last authenticated a request (``resolve_token``), at most
+    # every TOKEN_SEEN_SECONDS: how Local Port knows a client is in use.
+    await _ensure_column(db, "account_tokens", "last_seen_at", "TEXT")
+    # Every token issued before browser tokens existed is an Integration token.
+    await _ensure_column(db, "account_tokens", "kind", "TEXT NOT NULL DEFAULT 'integration'")
+    await db.execute("UPDATE account_tokens SET client_id=id WHERE client_id IS NULL")
+    await _ensure_column(db, "accounts", "username", "TEXT")
+    # NULL: the account never chose Easy or Advanced, which is Advanced
+    # (``services.account_appearance.load_presentation``).
+    await _ensure_column(db, "account_appearance", "presentation_mode", "TEXT")
+    # NULL: the account never chose a language, so it has the installation's
+    # default (``services.account_appearance.load_locale``).
+    await _ensure_column(db, "account_appearance", "locale", "TEXT")
+    now = _now()
+    await db.execute(
+        "INSERT OR IGNORE INTO accounts(id,role,origin,display_name,protected,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (DEFAULT_ADMIN_ID, Role.ADMIN.value, "local", "Administrator", "default_admin", now, now),
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO accounts(id,role,origin,display_name,protected,created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (DEFAULT_INTEGRATION_ID, Role.INTEGRATION.value, "integration", "Automation",
+         "default_integration", now, now),
+    )
+    await _initialize_usernames(db)
+
+
+async def _initialize_usernames(db) -> None:
+    """Every current human account has a username; idempotent. Before
+    usernames were the account's, only a local credential held one: that
+    name is kept, and the credential table keeps the password alone (a row
+    without one is no credential). Any other account takes its stored display
+    name, made unique (``_available_username``) in creation order. Nothing is
+    looked up anywhere else."""
+    await db.commit()
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        columns = {row[1] for row in await (await db.execute("PRAGMA table_info(account_local_credentials)")).fetchall()}
+        if "username" in columns:
+            await db.execute(
+                "UPDATE accounts SET username=(SELECT c.username FROM account_local_credentials c "
+                "WHERE c.account_id=accounts.id) WHERE username IS NULL AND role<>'integration' "
+                "AND EXISTS (SELECT 1 FROM account_local_credentials c WHERE c.account_id=accounts.id)")
+            await db.execute(f"CREATE TABLE account_local_credentials_next {_CREDENTIAL_COLUMNS}")
+            await db.execute(
+                "INSERT INTO account_local_credentials_next(account_id,password_hash,updated_at) "
+                "SELECT account_id, password_hash, updated_at FROM account_local_credentials WHERE password_hash<>''")
+            await db.execute("DROP TABLE account_local_credentials")
+            await db.execute("ALTER TABLE account_local_credentials_next RENAME TO account_local_credentials")
+        pending = await (await db.execute(
+            "SELECT id, display_name FROM accounts WHERE username IS NULL AND role<>'integration' "
+            "AND deleted_at IS NULL AND merged_into IS NULL ORDER BY created_at, id")).fetchall()
+        for account_id, display_name in pending:
+            name = await _available_username(db, str(display_name or ""), str(account_id))
+            await db.execute("UPDATE accounts SET username=? WHERE id=?", (name, account_id))
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts (username) WHERE username IS NOT NULL")
+    except BaseException:
+        await db.rollback()
+        raise
+    await db.commit()
+
+
+_ACCOUNT_SELECT = (
+    "SELECT a.*, COALESCE(c.password_hash,'') AS password_hash "
+    "FROM accounts a LEFT JOIN account_local_credentials c ON c.account_id = a.id"
+)
+
+
+def _account(row: Mapping[str, Any] | None) -> Account | None:
+    if row is None:
+        return None
+    password_hash = str(row.get("password_hash") or "")
+    return Account(
+        id=str(row["id"]),
+        role=Role(row["role"]),
+        origin=str(row["origin"]),
+        display_name=str(row.get("display_name") or ""),
+        email=str(row.get("email") or ""),
+        email_verified=bool(row.get("email_verified")),
+        enabled=bool(row.get("enabled")),
+        protected=str(row.get("protected") or ""),
+        generation=int(row.get("generation") or 0),
+        merged_into=str(row.get("merged_into") or ""),
+        deleted_at=str(row.get("deleted_at") or ""),
+        username=str(row.get("username") or ""),
+        credential_version=(
+            password_credential_version(password_hash) if is_usable_password_hash(password_hash) else ""
+        ),
+        actual_name=str(row.get("actual_name") or ""),
+        email_verified_known=bool(row.get("email_verified_known")),
+        email_self_entered=bool(row.get("email_self_entered")),
+    )
+
+
+async def _fetch(db, account_id: str) -> Account | None:
+    return _account(await db.fetchone(f"{_ACCOUNT_SELECT} WHERE a.id=?", (str(account_id or ""),)))
+
+
+@asynccontextmanager
+async def _transaction():
+    from db.database import get_db
+
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            yield db
+        except BaseException:
+            await db.rollback()
+            raise
+        await db.commit()
+
+
+# ── reads ───────────────────────────────────────────────────────────────────
+
+async def get_account(account_id: str) -> Account | None:
+    from db.database import get_db
+
+    async with get_db() as db:
+        return await _fetch(db, account_id)
+
+
+async def canonical_account_id(account_id: str) -> str:
+    """The current account an historical account ID now means: a merged
+    account redirects to the account it was merged into; every other ID,
+    deleted ones included, means itself. Historical rows are never rewritten."""
+    from db.database import get_db
+
+    current = str(account_id or "")
+    seen: set[str] = set()
+    async with get_db() as db:
+        while current and current not in seen:
+            seen.add(current)
+            row = await db.fetchone("SELECT merged_into FROM accounts WHERE id=?", (current,))
+            if row is None or not row["merged_into"]:
+                return current
+            current = str(row["merged_into"])
+    return current
+
+
+async def local_credential(username: str) -> tuple[Account, str] | None:
+    """The active account owning ``username`` and its stored verifier."""
+    return await _local_credential("a.username=?", str(username or ""))
+
+
+async def default_admin_credential() -> tuple[Account, str] | None:
+    """The default Admin and its stored verifier: the one local credential a
+    Standalone sign-in checks, found by the account's ID, never by a name."""
+    return await _local_credential("a.id=?", DEFAULT_ADMIN_ID)
+
+
+async def _local_credential(where: str, value: str) -> tuple[Account, str] | None:
+    from db.database import get_db
+
+    async with get_db() as db:
+        row = await db.fetchone(f"{_ACCOUNT_SELECT} WHERE {where}", (value,))
+    account = _account(row)
+    if account is None or not account.active or not account.has_password:
+        return None
+    return account, str(row["password_hash"])
+
+
+# ── the last-usable-Admin invariant ─────────────────────────────────────────
+
+def _oidc_issuer(settings) -> str:
+    if not oidc_auth_enabled(settings):
+        return ""
+    from auth.oidc import OidcConfigurationError, oidc_configuration
+
+    try:
+        return oidc_configuration(settings).issuer
+    except OidcConfigurationError:
+        return ""
+
+
+def usable_admin_exists(admins: Mapping[str, tuple[bool, frozenset[str]]], settings) -> bool:
+    """Whether some active Admin can still sign in under ``settings``.
+
+    ``admins`` holds, per active Admin account ID, whether it has a usable
+    local password and the OIDC issuers it is bound under. Without interactive
+    authentication the request acts as the open principal, the default Admin,
+    so an Admin is always usable. A Standalone installation counts the default
+    Admin's own password alone."""
+    if not interactive_auth_enabled(settings):
+        return True
+    password = password_auth_enabled(settings)
+    issuer = "" if standalone_deployment(settings) else _oidc_issuer(settings)
+    eligible = deployment_eligible(admins, settings)
+    return any((password and has_password) or (issuer and issuer in issuers)
+               for account_id, (has_password, issuers) in admins.items() if account_id in eligible)
+
+
+_ADMIN_FACTS = (
+    "SELECT a.id, COALESCE(c.password_hash,'') AS password_hash, b.issuer "
+    "FROM accounts a LEFT JOIN account_local_credentials c ON c.account_id = a.id "
+    "LEFT JOIN account_oidc_bindings b ON b.account_id = a.id "
+    "WHERE a.role='admin' AND a.enabled=1 AND a.deleted_at IS NULL AND a.merged_into IS NULL"
+)
+
+
+def _admin_facts(rows) -> dict[str, tuple[bool, frozenset[str]]]:
+    facts: dict[str, tuple[bool, set[str]]] = {}
+    for account_id, password_hash, issuer in rows:
+        has_password, issuers = facts.setdefault(str(account_id), (is_usable_password_hash(password_hash), set()))
+        if issuer:
+            issuers.add(str(issuer))
+    return {key: (has_password, frozenset(issuers)) for key, (has_password, issuers) in facts.items()}
+
+
+async def _usable_admin(db, settings) -> bool:
+    rows = await db.fetchall(_ADMIN_FACTS)
+    facts = _admin_facts((row["id"], row["password_hash"], row["issuer"]) for row in rows)
+    return usable_admin_exists(facts, settings)
+
+
+async def usable_admin_present(settings) -> bool:
+    from db.database import get_db
+
+    async with get_db() as db:
+        return await _usable_admin(db, settings)
+
+
+async def admin_password_holders(settings) -> set[str]:
+    """Active Admin accounts holding a usable local password that ``settings``'
+    deployment type lets sign in (``deployment_eligible``)."""
+    from db.database import get_db
+
+    async with get_db() as db:
+        rows = await db.fetchall(_ADMIN_FACTS)
+    facts = _admin_facts((row["id"], row["password_hash"], row["issuer"]) for row in rows)
+    holders = {account_id for account_id, (has_password, _issuers) in facts.items() if has_password}
+    return deployment_eligible(holders, settings)
+
+
+def _legacy_credential(document: Mapping[str, Any]) -> tuple[str, str]:
+    username = str(document.get("auth_username") or "").strip()
+    password_hash = str(document.get("auth_password_hash") or "").strip()
+    return username, (password_hash if is_usable_password_hash(password_hash) else "")
+
+
+def restored_state_has_usable_admin(conn: sqlite3.Connection, document: Mapping[str, Any]) -> bool:
+    """Whether a restore point's state, once started, leaves a usable Admin.
+
+    ``conn`` reads the restore point's (or its staged copy's) database and
+    ``document`` is its configuration. A database from before accounts existed
+    holds only what startup will create: the default Admin, given the
+    configuration's own pre-account credential (``import_legacy_credential``)."""
+    from core.config import validate_settings_document
+
+    settings = validate_settings_document(dict(document))
+    _username, legacy_hash = _legacy_credential(document)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "accounts" in tables:
+        facts = _admin_facts(conn.execute(_ADMIN_FACTS).fetchall())
+    else:
+        facts = {DEFAULT_ADMIN_ID: (False, frozenset())}
+    if legacy_hash:
+        _has_password, issuers = facts.get(DEFAULT_ADMIN_ID, (False, frozenset()))
+        facts[DEFAULT_ADMIN_ID] = (True, issuers)
+    return usable_admin_exists(facts, settings)
+
+
+# ── mutation core ───────────────────────────────────────────────────────────
+
+async def _touch(db, account_ids: Iterable[str]) -> None:
+    now = _now()
+    for account_id in account_ids:
+        await db.execute(
+            "UPDATE accounts SET generation = generation + 1, updated_at=? WHERE id=?", (now, account_id),
+        )
+
+
+async def _rebind(account_ids: Iterable[str]) -> None:
+    """A change of authority only (a role): the accounts' live sessions are
+    re-bound to their current state instead of ended."""
+    from auth.sessions import session_store
+
+    for account_id in account_ids:
+        account = await get_account(account_id)
+        if account is None or not account.active:
+            _revoke([account_id])
+        else:
+            session_store.rebind_account(account)
+
+
+def _revoke(account_ids: Iterable[str]) -> None:
+    from auth.sessions import session_store
+
+    for account_id in account_ids:
+        session_store.revoke_account(account_id)
+    basic_verification_cache.clear()
+
+
+@asynccontextmanager
+async def _mutation(touched: list[str], settings=None, persist=None, *, rebind: bool = False):
+    """One account change: a transaction that must not be the change that
+    leaves no usable Admin under ``settings`` (the live authentication
+    settings unless the same critical section is about to commit others).
+
+    ``persist`` writes those other settings. It runs inside the still-open
+    transaction, after every check, so a failed write rolls the account change
+    back and nothing is changed anywhere; the caller undoes the write if the
+    transaction then fails to commit.
+
+    The caller holds ``authentication_configuration_lock``, which serializes
+    this change against every other account change and every authentication
+    setting the invariant is evaluated under."""
+    from core.config import get_settings
+
+    current = get_settings()
+    async with _transaction() as db:
+        had_usable_admin = await _usable_admin(db, current)
+        yield db
+        if had_usable_admin and not await _usable_admin(db, settings if settings is not None else current):
+            raise AccountRefused("At least one usable Admin account must remain", code="account.last_admin")
+        await _touch(db, touched)
+        if persist is not None:
+            persist()
+    if rebind:
+        await _rebind(touched)
+    else:
+        _revoke(touched)
+
+
+@asynccontextmanager
+async def _locked_mutation(touched: list[str], *, rebind: bool = False):
+    from auth.transitions import authentication_configuration_lock
+
+    async with authentication_configuration_lock:
+        async with _mutation(touched, rebind=rebind) as db:
+            yield db
+
+
+async def _require(db, account_id: str) -> Account:
+    account = await _fetch(db, account_id)
+    if account is None or account.deleted_at or account.merged_into:
+        raise AccountRefused("Account does not exist", code="account.missing")
+    return account
+
+
+def _not_self(actor_id: str, account_id: str) -> None:
+    if str(actor_id or "") == str(account_id or ""):
+        raise AccountRefused("An account cannot make this change to itself", code="account.self_change")
+
+
+# A password set from now on -- created, changed by its account or reset by an
+# Admin -- is at least this long. A stored shorter one still signs in.
+MIN_NEW_PASSWORD_LENGTH = 8
+
+
+def _new_password_rule(password: str) -> None:
+    """The one new-password rule: a password set now is long enough."""
+    if len(password) < MIN_NEW_PASSWORD_LENGTH:
+        raise AccountRefused(f"A password must be at least {MIN_NEW_PASSWORD_LENGTH} characters",
+                             code="account.password_too_short", params={"minimum": MIN_NEW_PASSWORD_LENGTH})
+
+
+async def _new_verifier(password: str | None) -> str | None:
+    """The verifier for a password being set now, or ``None`` when none is:
+    the new-password rule (``_new_password_rule``), hashed off the event
+    loop and before any write transaction opens."""
+    if not password:
+        return None
+    _new_password_rule(password)
+    return await asyncio.to_thread(hash_password, password)
+
+
+USERNAME_LIMIT = 256
+
+
+async def _username_owner(db, name: str, account_id: str) -> bool:
+    # The bootstrap's connection and the request connection both answer this.
+    cursor = await db.execute("SELECT 1 FROM accounts WHERE username=? AND id<>?", (name, account_id))
+    return await cursor.fetchone() is not None
+
+
+async def _set_username(db, account_id: str, username: str) -> None:
+    """An explicitly chosen username: one another account holds is refused,
+    never taken over or varied."""
+    name = str(username or "").strip()
+    if not name or len(name) > USERNAME_LIMIT:
+        raise AccountRefused("A username is required", code="account.username_required")
+    if await _username_owner(db, name, account_id):
+        raise AccountRefused("That username belongs to another account", code="account.username_taken")
+    await db.execute("UPDATE accounts SET username=?, updated_at=? WHERE id=?", (name, _now(), account_id))
+
+
+async def _available_username(db, preferred: str, account_id: str) -> str:
+    """The username an account is GIVEN (an OIDC identity's first sign-in,
+    an account from before usernames): ``preferred`` when no other account
+    holds it, else the first free ``preferred-2``, ``preferred-3``, ...; an
+    empty preference is ``user-`` and the start of the account's ID."""
+    base = str(preferred or "").strip()[:USERNAME_LIMIT] or f"user-{account_id[:8]}"
+    name, suffix = base, 1
+    while await _username_owner(db, name, account_id):
+        suffix += 1
+        tail = f"-{suffix}"
+        name = f"{base[:USERNAME_LIMIT - len(tail)]}{tail}"
+    return name
+
+
+async def _set_password_row(db, account_id: str, verifier: str) -> None:
+    """Create or replace an account's local password; ``verifier`` is a
+    prepared ``_new_verifier``. It signs in under the account's username."""
+    await db.execute(
+        "INSERT INTO account_local_credentials(account_id,password_hash,updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(account_id) DO UPDATE SET password_hash=excluded.password_hash, updated_at=excluded.updated_at",
+        (account_id, verifier, _now()),
+    )
+
+
+# ── sign-in resolution ──────────────────────────────────────────────────────
+
+def _claim_text(claims: Mapping[str, Any], key: str, limit: int) -> str:
+    value = claims.get(key)
+    return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def oidc_profile(claims: Mapping[str, Any]) -> dict:
+    """The profile an OIDC identity's claims offer, by standard precedence.
+    Absent claims stay absent: nothing is fabricated, and an email's
+    verification is ``None`` unless the provider stated a boolean."""
+    actual = _claim_text(claims, "name", 256) or " ".join(
+        part for part in (_claim_text(claims, "given_name", 128), _claim_text(claims, "family_name", 128)) if part)
+    verified = claims.get("email_verified")
+    email = _claim_text(claims, "email", 320)
+    name = (_claim_text(claims, "preferred_username", 256) or _claim_text(claims, "nickname", 256)
+            or _claim_text(claims, "name", 256))
+    return {
+        # The display name and the username a new account is given start from
+        # the same claims; afterwards each is its own.
+        "display_name": name,
+        "username": name or email,
+        "actual_name": actual[:256],
+        "email": email,
+        "email_verified": verified if isinstance(verified, bool) and email else None,
+    }
+
+
+async def resolve_oidc(issuer: str, subject: str, claims: Mapping[str, Any], *, default_role) -> Account | None:
+    """The account an admitted OIDC identity signs in as.
+
+    A bound identity resolves to its account; an unbound one is provisioned
+    exactly once -- the binding's primary key makes a concurrent first sign-in
+    of the same identity find the account the first one created -- with the
+    configured default role and a username from the claims
+    (``_available_username``), which no later sign-in changes. Only ``(issuer,
+    subject)`` identifies: a matching username or email never links an
+    existing account.
+
+    An identity whose account was REMOVED (its binding still names that
+    tombstone, the durable marker) returns as a new account under a fresh ID,
+    created DISABLED whatever the default role: the binding moves to it, the
+    tombstone keeps its history, and no session results until an Admin
+    enables the new account. A DISABLED account is never provisioned around:
+    its identity keeps resolving to it. Returns ``None`` for any account that
+    is not active and for an identity that cannot be provisioned."""
+    issuer, subject = str(issuer or ""), str(subject or "")
+    if not issuer or not subject:
+        return None
+    role = Role(default_role) if default_role in {r.value for r in OIDC_PROVISION_ROLES} else Role.USER
+    profile = oidc_profile(claims)
+    email, verified = profile["email"], profile["email_verified"]
+    display = (profile["display_name"] or email or subject)[:256]
+    async with _transaction() as db:
+        row = await db.fetchone(
+            "SELECT account_id FROM account_oidc_bindings WHERE issuer=? AND subject=?", (issuer, subject),
+        )
+        async def provision(enabled: bool) -> str:
+            account_id = str(uuid.uuid4())
+            now = _now()
+            await db.execute(
+                "INSERT INTO accounts(id,role,origin,display_name,username,actual_name,email,email_verified,"
+                "email_verified_known,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (account_id, role.value, "oidc", display,
+                 await _available_username(db, profile["username"], account_id), profile["actual_name"] or None,
+                 email, int(verified is True), int(verified is not None), int(enabled), now, now),
+            )
+            return account_id
+
+        if row is None:
+            account_id = await provision(True)
+            await db.execute(
+                "INSERT INTO account_oidc_bindings(issuer,subject,account_id,created_at) VALUES(?,?,?,?)",
+                (issuer, subject, account_id, _now()),
+            )
+        else:
+            account_id = str(row["account_id"])
+            bound = await _fetch(db, account_id)
+            if bound is not None and bound.deleted_at and not bound.merged_into:
+                removed, account_id = account_id, await provision(False)
+                await db.execute(
+                    "UPDATE account_oidc_bindings SET account_id=? WHERE issuer=? AND subject=? AND account_id=?",
+                    (account_id, issuer, subject, removed))
+            else:
+                await _complete_oidc_profile(db, account_id, profile)
+        account = await _fetch(db, account_id)
+    return account if account is not None and account.active else None
+
+
+async def _complete_oidc_profile(db, account_id: str, profile: Mapping[str, Any]) -> None:
+    """A returning identity's claims only complete what the account lacks.
+    Its username, display and actual names are its own and are never
+    overwritten -- an actual name the account set or cleared is a
+    string, and only a never-populated one (NULL) is completed; an empty
+    email is filled; the provider may restate the verification of the SAME
+    address only, and never of one the account entered itself. Nothing here
+    identifies, links, enables or changes the role of anything."""
+    account = await _fetch(db, account_id)
+    if account is None or not account.active:
+        return
+    changes: dict[str, Any] = {}
+    never_named = (await db.fetchone("SELECT actual_name IS NULL AS unset FROM accounts WHERE id=?",
+                                     (account.id,)))["unset"]
+    if never_named and profile["actual_name"]:
+        changes["actual_name"] = profile["actual_name"]
+    email, verified = profile["email"], profile["email_verified"]
+    if email and not account.email:
+        changes.update(email=email, email_verified=int(verified is True), email_verified_known=int(verified is not None),
+                       email_self_entered=0)
+    elif (email and verified is not None and not account.email_self_entered
+          and email.casefold() == account.email.casefold()):
+        changes.update(email_verified=int(verified), email_verified_known=1)
+    if changes:
+        assignments = ",".join(f"{column}=?" for column in changes)
+        await db.execute(f"UPDATE accounts SET {assignments}, updated_at=? WHERE id=?",
+                         (*changes.values(), _now(), account.id))
+
+
+async def bind_verified_oidc(issuer: str, subject: str, account_id: str) -> Account | None:
+    """Verify Sign-In's binding: the Admin who started the verification has
+    just proven, in this browser, that they control ``(issuer, subject)``.
+
+    An unbound identity is linked to that Admin; an identity already bound
+    keeps its account, which must itself be an active Admin. ``None`` refuses
+    the verification. The caller holds the authentication configuration lock."""
+    issuer, subject = str(issuer or ""), str(subject or "")
+    async with _transaction() as db:
+        row = await db.fetchone(
+            "SELECT account_id FROM account_oidc_bindings WHERE issuer=? AND subject=?", (issuer, subject),
+        )
+        target = str(row["account_id"]) if row is not None else str(account_id or "")
+        account = await _fetch(db, target) if target else None
+        if not issuer or not subject or account is None or not account.active or account.role is not Role.ADMIN:
+            await db.rollback()
+            return None
+        if row is None:
+            await db.execute(
+                "INSERT INTO account_oidc_bindings(issuer,subject,account_id,created_at) VALUES(?,?,?,?)",
+                (issuer, subject, target, _now()),
+            )
+    return account
+
+
+# ── Stage 1 self-service through Authentication settings ───────────────────
+
+async def set_own_local_credential(
+    account_id: str, *, username: str | None = None, password: str | None = None, clear: bool = False,
+    settings=None, persist=None,
+) -> None:
+    """The signed-in account's own username and local password, as Settings
+    -> Authentication edits them, committed together with the authentication
+    ``settings`` that ``persist`` writes (``_mutation``). The caller holds the
+    authentication configuration lock (the Authentication settings mutation
+    path)."""
+    touched = [str(account_id)]
+    verifier = None if clear else await _new_verifier(password)
+    async with _mutation(touched, settings, persist) as db:
+        account = await _require(db, account_id)
+        if account.role is Role.INTEGRATION:
+            raise AccountRefused("Integration accounts have no password", code="account.integration_no_password")
+        if username is not None:
+            await _set_username(db, account.id, username)
+        if clear:
+            await db.execute("DELETE FROM account_local_credentials WHERE account_id=?", (account.id,))
+        elif verifier:
+            await _set_password_row(db, account.id, verifier)
+
+
+async def local_credential_status(account_id: str) -> tuple[str, bool]:
+    account = await get_account(account_id) if account_id else None
+    return (account.username, account.has_password) if account is not None else ("", False)
+
+
+# ── offline recovery / pre-account migration ────────────────────────────────
+
+async def import_legacy_credential(username: str, password_hash: str) -> bool:
+    """Install the configuration file's local credential on the default Admin.
+
+    Before accounts, the one local credential lived in ``config.json``; it is
+    that installation's operator, the default Admin. The same file input
+    remains the offline recovery path: an operator who can no longer sign in
+    stops DownloadPulse, writes ``auth_username`` and a plaintext
+    ``auth_password`` into the configuration file (``core.config`` turns the
+    plaintext into a verifier at load) and starts it again; this replaces the
+    default Admin's credential. Idempotent. Returns whether anything changed."""
+    username = str(username or "").strip()
+    password_hash = str(password_hash or "").strip()
+    if not is_usable_password_hash(password_hash):
+        return False
+    async with _transaction() as db:
+        current = await db.fetchone(
+            "SELECT a.username, COALESCE(c.password_hash,'') AS password_hash FROM accounts a "
+            "LEFT JOIN account_local_credentials c ON c.account_id=a.id WHERE a.id=?",
+            (DEFAULT_ADMIN_ID,),
+        )
+        name = username or str(current["username"] or "")
+        if not name:
+            raise RuntimeError("The configuration file's password has no username to sign in with")
+        if current["username"] == name and current["password_hash"] == password_hash:
+            await db.rollback()
+            return False
+        if await _username_owner(db, name, DEFAULT_ADMIN_ID):
+            raise RuntimeError("The configuration file's username belongs to another account")
+        await db.execute("UPDATE accounts SET username=? WHERE id=?", (name, DEFAULT_ADMIN_ID))
+        await _set_password_row(db, DEFAULT_ADMIN_ID, password_hash)
+        await _touch(db, [DEFAULT_ADMIN_ID])
+    _revoke([DEFAULT_ADMIN_ID])
+    return True
+
+
+# ── account management domain (Stage 2 wires permission-gated endpoints) ───
+
+async def create_local_account(username: str, password: str, *, role, display_name: str = "") -> Account:
+    role = Role(role)
+    if role not in HUMAN_ROLES:
+        raise AccountRefused("Local accounts hold a human role", code="account.local_human_role")
+    account_id = str(uuid.uuid4())
+    verifier = await _new_verifier(password)
+    async with _locked_mutation([]) as db:
+        now = _now()
+        await db.execute(
+            "INSERT INTO accounts(id,role,origin,display_name,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (account_id, role.value, "local", str(display_name or username).strip()[:256], now, now),
+        )
+        await _set_username(db, account_id, username)
+        await _set_password_row(db, account_id, verifier)
+    return await get_account(account_id)
+
+
+def new_password_rule(password: str) -> None:
+    """Refuse a password being set now that is missing or too short."""
+    if not password:
+        raise AccountRefused("A password is required", code="account.password_required")
+    _new_password_rule(password)
+
+
+async def create_initial_admin(username: str, verifier: str, *, settings, claim) -> Account:
+    """A new Server installation's named Administrator: a local Admin account,
+    distinct from the protected default Admin, created with its password in
+    one transaction together with ``claim(db, account_id)`` -- the setup
+    lifecycle's own admission check and record of this account, which raises
+    to refuse. The transaction must leave an Admin usable under ``settings``,
+    the authentication settings that enable Username & Password for it; the
+    caller writes those once this commits (``services.setup_lifecycle``).
+    ``verifier`` is a prepared password verifier. The caller holds the
+    authentication configuration lock."""
+    account_id = str(uuid.uuid4())
+    async with _mutation([], settings) as db:
+        now = _now()
+        await db.execute(
+            "INSERT INTO accounts(id,role,origin,display_name,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (account_id, Role.ADMIN.value, "local", str(username or "").strip()[:256], now, now),
+        )
+        await _set_username(db, account_id, username)
+        await _set_password_row(db, account_id, verifier)
+        await claim(db, account_id)
+    return await get_account(account_id)
+
+
+async def create_integration_account(display_name: str) -> Account:
+    account_id = str(uuid.uuid4())
+    async with _locked_mutation([]) as db:
+        now = _now()
+        await db.execute(
+            "INSERT INTO accounts(id,role,origin,display_name,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (account_id, Role.INTEGRATION.value, "integration", str(display_name or "").strip()[:256], now, now),
+        )
+    return await get_account(account_id)
+
+
+async def set_role(actor_id: str, account_id: str, role) -> None:
+    """A role change takes effect on the account's next request: its live
+    sessions are re-bound to the new role (never ended), and each connected
+    browser is told to reset (``account_changed``)."""
+    role = Role(role)
+    _not_self(actor_id, account_id)
+    async with _locked_mutation([str(account_id)], rebind=True) as db:
+        account = await _require(db, account_id)
+        if account.protected:
+            raise AccountRefused("A default account's role cannot change", code="account.default_role_fixed")
+        if (account.role is Role.INTEGRATION) != (role is Role.INTEGRATION):
+            raise AccountRefused("Integration and human roles are not interchangeable", code="account.roles_not_interchangeable")
+        await db.execute("UPDATE accounts SET role=? WHERE id=?", (role.value, account.id))
+
+
+async def _withdraw_owned_demand(db, account_id: str, reason: str) -> list[int]:
+    """Withdraw every outstanding demand the account owns, in the caller's
+    account transaction (accounts and transfers share one database), through
+    the transfer owner. Its consequences are the transfer core's
+    (``TransferEngine.settle_withdrawn_demand``), derived from this durable
+    withdrawal by the next resolution cycle even if nothing else runs."""
+    from transfers.recovery_repository import TransferRepository
+
+    changed: list[int] = []
+    for owner in await _owned_account_ids(db, account_id):
+        changed.extend(await TransferRepository.withdraw_demand_in(db, account_id=owner, by=reason))
+    return sorted(set(changed))
+
+
+async def _owned_account_ids(db, account_id: str) -> list[str]:
+    """The account and every account merged into it: demand recorded under
+    any of them is this account's (``canonical_account_id``)."""
+    rows = await db.fetchall("SELECT id, merged_into FROM accounts WHERE merged_into IS NOT NULL")
+    parent = {str(row["id"]): str(row["merged_into"]) for row in rows}
+
+    def root(identity: str) -> str:
+        seen = set()
+        while identity in parent and identity not in seen:
+            seen.add(identity)
+            identity = parent[identity]
+        return identity
+
+    return [str(account_id), *sorted(identity for identity in parent if root(identity) == str(account_id))]
+
+
+async def owned_account_ids(account_id: str) -> list[str]:
+    from db.database import get_db
+
+    async with get_db() as db:
+        return await _owned_account_ids(db, account_id)
+
+
+async def _revoke_browsers(db, account_id: str, why: str) -> None:
+    """A person who can no longer sign in keeps no connected browser: each of
+    their browser tokens is revoked in the caller's transaction and journaled
+    (re-enabling restores sign-in, never a browser; it pairs again)."""
+    from db.event_journal import JournalEvent, record
+
+    rows = await db.fetchall("SELECT id, label FROM account_tokens WHERE account_id=? AND kind=? AND revoked_at IS NULL",
+                             (str(account_id), TOKEN_KIND_BROWSER))
+    if not rows:
+        return
+    await db.execute("UPDATE account_tokens SET revoked_at=? WHERE account_id=? AND kind=? AND revoked_at IS NULL",
+                     (_now(), str(account_id), TOKEN_KIND_BROWSER))
+    for row in rows:
+        await record(db, JournalEvent(
+            "administration", "administration.browser_disconnected", "info",
+            "A connected browser was disconnected by an Admin", "account", str(account_id),
+            detail=f"token {row['id']} ({row['label']}); {why}"))
+
+
+async def set_enabled(actor_id: str, account_id: str, enabled: bool) -> list[int]:
+    """Disable revokes access at once and, in the same transaction, withdraws
+    the account's outstanding demand. Re-enabling restores access only: a
+    withdrawn demand is never restored. Returns the transfers whose demand
+    was withdrawn."""
+    _not_self(actor_id, account_id)
+    withdrawn: list[int] = []
+    async with _locked_mutation([str(account_id)]) as db:
+        account = await _require(db, account_id)
+        if account.protected == "default_admin" and not enabled:
+            raise AccountRefused("The default Admin account cannot be disabled", code="account.default_admin_not_disableable")
+        await db.execute("UPDATE accounts SET enabled=? WHERE id=?", (int(bool(enabled)), account.id))
+        if not enabled:
+            await _revoke_browsers(db, account.id, "account disabled")
+            withdrawn = await _withdraw_owned_demand(db, account.id, "account_disabled")
+    return withdrawn
+
+
+async def delete_account(actor_id: str, account_id: str) -> list[int]:
+    """Remove an account from the active directory, keeping its tombstone.
+
+    The ID stays interpretable for every historical record. The local
+    credential is released; OIDC bindings stay on the tombstone as the
+    removed-identity marker, so that identity signing in again gets a NEW,
+    disabled account (``resolve_oidc``), never this one back."""
+    _not_self(actor_id, account_id)
+    async with _locked_mutation([str(account_id)]) as db:
+        account = await _require(db, account_id)
+        if account.protected:
+            raise AccountRefused("A default account cannot be deleted", code="account.default_not_deletable")
+        await db.execute("DELETE FROM account_local_credentials WHERE account_id=?", (account.id,))
+        # A removed account's username is released with its password.
+        await db.execute("UPDATE accounts SET enabled=0, username=NULL, deleted_at=? WHERE id=?",
+                         (_now(), account.id))
+        await db.execute("UPDATE account_tokens SET revoked_at=? WHERE account_id=? AND revoked_at IS NULL",
+                         (_now(), account.id))
+        await db.execute("DELETE FROM account_notifications WHERE account_id=?", (account.id,))
+        await db.execute("DELETE FROM account_appearance WHERE account_id=?", (account.id,))
+        await db.execute("DELETE FROM account_setup_rerun WHERE account_id=?", (account.id,))
+        return await _withdraw_owned_demand(db, account.id, "account_deleted")
+
+
+async def merge_accounts(actor_id: str, source_ids, target_id: str) -> None:
+    """Fold one or more duplicate accounts into one surviving account,
+    explicitly and atomically: every source is folded in the same transaction,
+    or nothing changes.
+
+    Each source's OIDC identities, and its local password when it holds the
+    only one among them all, move to the target; each source becomes a
+    tombstone redirecting to the target (``canonical_account_id``) and
+    releases its username. No historical row is rewritten. The target keeps
+    its own role and username, which a moved password then signs in under."""
+    sources = [str(source_ids)] if isinstance(source_ids, str) else [str(item) for item in source_ids]
+    sources = list(dict.fromkeys(sources))
+    if not sources:
+        raise AccountRefused("Choose at least one account to merge", code="account.merge_none")
+    _not_self(actor_id, target_id)
+    for source_id in sources:
+        _not_self(actor_id, source_id)
+    if str(target_id) in sources:
+        raise AccountRefused("An account cannot be merged into itself", code="account.merge_self")
+    async with _locked_mutation([*sources, str(target_id)]) as db:
+        target = await _require(db, target_id)
+        holders = []
+        for source_id in sources:
+            source = await _require(db, source_id)
+            if source.protected:
+                raise AccountRefused("A default account cannot be merged away", code="account.merge_default")
+            if (source.role is Role.INTEGRATION) != (target.role is Role.INTEGRATION):
+                raise AccountRefused("Integration and human accounts cannot be merged", code="account.merge_kinds_mixed")
+            if await db.fetchone("SELECT 1 FROM account_local_credentials WHERE account_id=?", (source.id,)):
+                holders.append(source.id)
+        if await db.fetchone("SELECT 1 FROM account_local_credentials WHERE account_id=?", (target.id,)):
+            holders.append(target.id)
+        if len(holders) > 1:
+            raise AccountRefused("More than one of these accounts holds a local credential; remove all but one first", code="account.merge_credentials_conflict")
+        now = _now()
+        for source_id in sources:
+            if source_id in holders:
+                await db.execute(
+                    "UPDATE account_local_credentials SET account_id=? WHERE account_id=?", (target.id, source_id))
+            await db.execute("UPDATE account_oidc_bindings SET account_id=? WHERE account_id=?", (target.id, source_id))
+            # A folded account's notification destinations, appearance and
+            # setup rerun are its own: they are retired, never merged into the
+            # survivor's.
+            await db.execute("DELETE FROM account_notifications WHERE account_id=?", (source_id,))
+            await db.execute("DELETE FROM account_appearance WHERE account_id=?", (source_id,))
+            await db.execute("DELETE FROM account_setup_rerun WHERE account_id=?", (source_id,))
+            await _revoke_browsers(db, source_id, "account merged")
+            await db.execute(
+                "UPDATE accounts SET enabled=0, username=NULL, merged_into=?, deleted_at=? WHERE id=?",
+                (target.id, now, source_id))
+
+
+async def reset_password(actor_id: str, account_id: str, password: str, *, username: str | None = None) -> None:
+    """An Admin sets or resets another account's local password, under its
+    username -- or under ``username``, changed in the same transaction."""
+    _not_self(actor_id, account_id)
+    known = await get_account(account_id)
+    if known is not None and known.role is Role.INTEGRATION:
+        raise AccountRefused("Integration accounts have no password", code="account.integration_no_password")
+    if not password:
+        raise AccountRefused("A password is required", code="account.password_required")
+    verifier = await _new_verifier(password)
+    async with _locked_mutation([str(account_id)]) as db:
+        account = await _require(db, account_id)
+        if account.role is Role.INTEGRATION:
+            raise AccountRefused("Integration accounts have no password", code="account.integration_no_password")
+        if username is not None:
+            await _set_username(db, account.id, username)
+        await _set_password_row(db, account.id, verifier)
+
+
+async def set_username(actor_id: str, account_id: str, username: str) -> None:
+    """An Admin changes another human account's username. A stored password
+    is kept and signs in under the new name alone; like every credential
+    change, the account's sessions then end (``_mutation``), so nothing stays
+    signed in under the former name. An account without a password keeps its
+    sessions, re-bound to its current state. Its display name, actual name,
+    email and OIDC identities are untouched."""
+    _not_self(actor_id, account_id)
+    known = await get_account(account_id)
+    async with _locked_mutation([str(account_id)], rebind=known is not None and not known.has_password) as db:
+        account = await _require(db, account_id)
+        if account.role is Role.INTEGRATION:
+            raise AccountRefused("Integration accounts have no username", code="account.integration_no_username")
+        if known is None or account.has_password != known.has_password:
+            raise AccountRefused("The account changed meanwhile; try again", code="account.changed")
+        await _set_username(db, account.id, username)
+
+
+async def set_display_name(account_id: str, display_name: str) -> None:
+    """An account's display name, set by itself or by an Admin."""
+    name = str(display_name or "").strip()[:256]
+    if not name:
+        raise AccountRefused("A display name is required", code="account.display_name_required")
+    async with _locked_mutation([]) as db:
+        account = await _require(db, account_id)
+        await db.execute("UPDATE accounts SET display_name=?, updated_at=? WHERE id=?", (name, _now(), account.id))
+
+
+async def set_actual_name(account_id: str, actual_name: str) -> None:
+    """An account's own record of the person's name. Blank clears it, and a
+    cleared name stays cleared: it is a choice, not a missing value."""
+    name = str(actual_name or "").strip()[:256]
+    async with _locked_mutation([]) as db:
+        account = await _require(db, account_id)
+        await db.execute("UPDATE accounts SET actual_name=?, updated_at=? WHERE id=?", (name, _now(), account.id))
+
+
+# A self-entered address: one ``local@domain`` of printable characters within
+# the SMTP path limits, with a dotted host name. Syntax only -- it proves
+# nothing about who receives mail there.
+_EMAIL_LIMIT = 254
+_EMAIL_LOCAL = re.compile(r'[^\s@<>()\[\]\\,;:"\x00-\x1f\x7f]{1,64}')
+_EMAIL_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def entered_email(value: str) -> str:
+    """The normalized form of an address an account enters itself, or
+    ``InvalidEmail``: surrounding space removed and the domain lower-cased."""
+    email = str(value or "").strip()
+    local, _, domain = email.rpartition("@")
+    domain = domain.lower()
+    labels = domain.split(".")
+    if (len(email) > _EMAIL_LIMIT or not _EMAIL_LOCAL.fullmatch(local) or len(labels) < 2
+            or not all(_EMAIL_LABEL.fullmatch(label) for label in labels)):
+        raise InvalidEmail("Enter a valid email address", code="account.email_invalid")
+    return f"{local}@{domain}"
+
+
+async def set_own_email(account_id: str, email: str, expected: str = "") -> str:
+    """An account records its own email while it has none, and corrects an
+    email it entered itself. ``expected`` is the email the caller's form
+    showed ('' for none): the write is conditional on the stored email still
+    being exactly that, so a stale form or a concurrent save can never replace
+    a newer address. An email the account's identity provider supplied is
+    never replaced here. The address is recorded unverified
+    (``email_verified_known`` with ``email_verified`` false) and as
+    self-entered: it never links, binds, admits or authorizes anything. There
+    is no clearing: an empty address is not a valid one."""
+    address = entered_email(email)
+    expected = str(expected or "")
+    async with _locked_mutation([]) as db:
+        account = await _require(db, account_id)
+        if account.role is Role.INTEGRATION:
+            raise AccountRefused("Integration accounts have no email", code="account.integration_no_email")
+        cursor = await db.execute(
+            "UPDATE accounts SET email=?, email_verified=0, email_verified_known=1, email_self_entered=1, updated_at=? "
+            "WHERE id=? AND email=? AND (email='' OR email_self_entered=1)", (address, _now(), account.id, expected))
+        if cursor.rowcount != 1:
+            current = await _require(db, account_id)
+            if current.email and not current.email_self_entered:
+                raise AccountRefused("This email comes from your identity provider and cannot be changed here",
+                                     code="account.email_provider_owned")
+            if not expected:
+                raise AccountRefused("This account already has an email address", code="account.email_already_set")
+            raise AccountRefused("This email was changed since this form was opened", code="account.email_changed")
+    return address
+
+
+async def list_accounts() -> list[dict]:
+    """The account directory with each account's sign-in facts; never a
+    secret or verifier."""
+    from db.database import get_db
+
+    async with get_db() as db:
+        rows = await db.fetchall(
+            f"""SELECT a.*, COALESCE(c.password_hash,'') AS password_hash,
+                    (SELECT COUNT(*) FROM account_oidc_bindings b WHERE b.account_id=a.id) AS oidc_identities,
+                    (SELECT COUNT(*) FROM account_tokens t WHERE t.account_id=a.id AND t.revoked_at IS NULL)
+                        AS active_tokens
+                FROM accounts a LEFT JOIN account_local_credentials c ON c.account_id=a.id
+                ORDER BY a.created_at, a.id""")
+    result = []
+    for row in rows:
+        account = _account(row)
+        result.append({
+            "id": account.id, "role": account.role.value, "origin": account.origin,
+            "display_name": account.display_name, "actual_name": account.actual_name, "email": account.email,
+            "email_verified": account.email_verified, "email_verified_known": account.email_verified_known,
+            "email_self_entered": account.email_self_entered, "enabled": account.enabled,
+            "protected": account.protected or None, "generation": account.generation,
+            "merged_into": account.merged_into or None, "deleted_at": account.deleted_at or None,
+            "username": account.username, "has_password": account.has_password,
+            "oidc_identities": int(row["oidc_identities"]), "active_tokens": int(row["active_tokens"]),
+        })
+    return result
+
+
+async def requester_identities(account_ids, token_ids) -> tuple[dict[str, dict], dict[str, str]]:
+    """What attributing a request may show about who made it: each account's
+    display name, kind and standing, read from that account's own row (a
+    deleted or merged account keeps it, so attribution never moves to a
+    survivor), and each token's label (a revoked token keeps it). Never a
+    credential, verifier, username, email or identity-provider claim."""
+    from db.database import get_db
+
+    accounts_ = sorted({str(item) for item in account_ids if item})
+    tokens = sorted({str(item) for item in token_ids if item})
+    people: dict[str, dict] = {}
+    labels: dict[str, str] = {}
+    async with get_db() as db:
+        if accounts_:
+            for row in await db.fetchall(
+                    f"SELECT id, role, display_name, enabled, merged_into, deleted_at FROM accounts "
+                    f"WHERE id IN ({','.join('?' * len(accounts_))})", accounts_):
+                standing = ("merged" if row["merged_into"] else "deleted" if row["deleted_at"]
+                            else "active" if row["enabled"] else "disabled")
+                people[str(row["id"])] = {
+                    "name": str(row["display_name"] or ""),
+                    "kind": "integration" if row["role"] == Role.INTEGRATION.value else "person",
+                    "standing": standing,
+                }
+        if tokens:
+            for row in await db.fetchall(
+                    f"SELECT id, label FROM account_tokens WHERE id IN ({','.join('?' * len(tokens))})", tokens):
+                labels[str(row["id"])] = str(row["label"] or "")
+    return people, labels
+
+
+async def change_own_password(account_id: str, current_password: str, new_password: str, *,
+                              peer: str = "unknown") -> None:
+    """A signed-in account replaces its own password, proving the current one.
+
+    The proof is a sign-in attempt and takes the sign-in path's own measures:
+    the transport peer's admission and failure throttle (failures attributed
+    to this account's username) and the Argon2 verification off the event
+    loop, outside the authentication lock and any write transaction. Under
+    the lock the stored credential must still be the one just proven."""
+    from auth.throttle import password_failure_throttle
+
+    if not new_password:
+        raise AccountRefused("A password is required", code="account.password_required")
+    if len(new_password) < MIN_NEW_PASSWORD_LENGTH:
+        raise AccountRefused(f"A password must be at least {MIN_NEW_PASSWORD_LENGTH} characters",
+                             code="account.password_too_short", params={"minimum": MIN_NEW_PASSWORD_LENGTH})
+    proven, identity = await prove_own_password(account_id, current_password, peer=peer)
+    verifier = await _new_verifier(new_password)
+    async with _locked_mutation([str(account_id)]) as db:
+        account = await _require(db, account_id)
+        await _require_proven(db, account.id, proven)
+        await _set_password_row(db, account.id, verifier)
+    password_failure_throttle.record_success(peer, identity)
+
+
+async def prove_own_password(account_id: str, current_password: str, *, peer: str = "unknown") -> tuple[str, str]:
+    """Prove the account's current password, as a sign-in attempt: the
+    transport peer's admission and failure throttle (failures attributed to
+    this account's username) and the Argon2 verification off the event loop,
+    outside the authentication lock and any write transaction. Returns the
+    stored verifier just proven -- the change re-checks under the lock that it
+    is still the stored one (``_require_proven``) -- and the throttle identity,
+    whose success the caller records once its change is made."""
+    from auth.manager import PasswordAuthenticationBusy, password_attempt_admission
+    from auth.passwords import verify_password_candidate_async
+    from auth.throttle import password_failure_throttle
+
+    # Admission covers the proof only: the change itself is re-checked under
+    # the lock, so waiting for the lock never holds a sign-in slot.
+    if not password_attempt_admission.acquire(peer):
+        raise PasswordAuthenticationBusy
+    try:
+        delay = password_failure_throttle.delay_for(peer)
+        if delay:
+            await asyncio.sleep(delay)
+        account = await get_account(account_id)
+        found = await local_credential(account.username) if account is not None and account.username else None
+        proven = found[1] if found is not None and found[0].id == str(account_id) else ""
+        identity = account.username if account is not None else str(account_id)
+        verified = await verify_password_candidate_async(proven, str(current_password or ""),
+                                                         use_configured_hash=bool(proven))
+    finally:
+        password_attempt_admission.release(peer)
+    if not verified:
+        password_failure_throttle.record_failure(peer, identity)
+        raise AccountRefused("The current password is not correct", code="account.current_password_incorrect")
+    return proven, identity
+
+
+async def _require_proven(db, account_id: str, proven: str) -> None:
+    """The account's stored password is still the one ``prove_own_password``
+    proved: one changed, reset or removed meanwhile is refused."""
+    row = await db.fetchone(
+        "SELECT password_hash FROM account_local_credentials WHERE account_id=?", (account_id,))
+    if row is None or not secrets.compare_digest(password_credential_version(row["password_hash"]),
+                                                 password_credential_version(proven)):
+        raise AccountRefused("The password was changed meanwhile; try again", code="account.password_changed")
+
+
+def _first_password_refusal(account: Account | None) -> tuple[str, str]:
+    """Why ``account`` cannot set a first password now, and that condition's
+    code, or ``("", "")``."""
+    if account is None or account.deleted_at or account.merged_into:
+        return "Account does not exist", "account.missing"
+    if account.role is Role.INTEGRATION:
+        return "Integration accounts have no password", "account.integration_no_password"
+    if not account.enabled:
+        return "The account is disabled", "account.disabled"
+    if not account.username:
+        return "The account has no username to sign in with", "account.no_username"
+    if account.has_password:
+        return "The account already has a password; use Change Password", "account.password_exists"
+    return "", ""
+
+
+async def set_own_first_password(account_id: str, new_password: str, *, peer: str = "unknown") -> None:
+    """A signed-in human account that has no local password gives itself its
+    first one, signing in under the username it already has. Its signed-in
+    session is the authority; there is no current password to prove.
+
+    It sets a FIRST password only: under the authentication lock, in the same
+    transaction as the write, the account must still hold no credential, so
+    a password set meanwhile -- by an Admin, or by an earlier submission -- is
+    refused and kept, never replaced (that is Change Password's, with its
+    proof). Its OIDC identities, username, role and profile are untouched.
+    Like every credential change, the account's sessions then end
+    (``_mutation``): it signs in again.
+
+    Hashing is the expensive part, so it is admitted like a sign-in attempt's
+    proof (``first_password_verifier``); the write is ``commit_first_password``."""
+    from auth.transitions import authentication_configuration_lock
+
+    verifier = await first_password_verifier(account_id, new_password, peer=peer)
+    async with authentication_configuration_lock:
+        await commit_first_password(account_id, verifier)
+
+
+async def first_password_verifier(account_id: str, new_password: str, *, peer: str = "unknown") -> str:
+    """The verifier for ``account_id``'s first password, prepared outside any
+    lock: an account that cannot set one now is refused before any hashing (a
+    fast answer only -- the transaction still decides), then the request takes
+    the password-attempt admission (``password_attempt_admission``: per peer
+    and in all, fail-fast) and the verifier is generated in the bounded Argon2
+    worker slots. The admission is held until that worker finishes, even if
+    the request is cancelled meanwhile."""
+    new_password_rule(new_password)
+    refusal, code = _first_password_refusal(await get_account(account_id))
+    if refusal:
+        raise AccountRefused(refusal, code=code)
+    return await admitted_verifier(new_password, peer=peer)
+
+
+async def admitted_verifier(new_password: str, *, peer: str = "unknown") -> str:
+    """The verifier for a password being set now by a request no sign-in
+    admitted the work of (a first password, the initial Administrator's):
+    the request takes the password-attempt admission (per peer and in all,
+    fail-fast) and the verifier is generated in the bounded Argon2 worker
+    slots, the admission held until that worker finishes. The caller has
+    applied the new-password rule."""
+    from auth.manager import PasswordAuthenticationBusy, password_attempt_admission
+    from auth.passwords import hash_password_async
+
+    if not password_attempt_admission.acquire(peer):
+        raise PasswordAuthenticationBusy
+    return await hash_password_async(new_password, finished=lambda: password_attempt_admission.release(peer))
+
+
+async def commit_first_password(account_id: str, verifier: str, *, settings=None, persist=None) -> None:
+    """Store a prepared first-password verifier, committed together with the
+    authentication ``settings`` that ``persist`` writes (``_mutation``). The
+    caller holds the authentication configuration lock."""
+    async with _mutation([str(account_id)], settings, persist) as db:
+        account = await _require(db, account_id)
+        refusal, code = _first_password_refusal(account)
+        if refusal:
+            raise AccountRefused(refusal, code=code)
+        if await db.fetchone("SELECT 1 FROM account_local_credentials WHERE account_id=?", (account.id,)):
+            raise AccountRefused("The account already has a password; use Change Password", code="account.password_exists")
+        await _set_password_row(db, account.id, verifier)
+
+
+async def commit_password_clear(account_id: str, proven: str, *, settings, persist) -> None:
+    """Remove the account's proven local password, committed together with the
+    authentication ``settings`` that ``persist`` writes (``_mutation``): the
+    stored password must still be the one proven. Nothing else of the account,
+    or of any other, is touched. The caller holds the authentication
+    configuration lock."""
+    async with _mutation([str(account_id)], settings, persist) as db:
+        account = await _require(db, account_id)
+        await _require_proven(db, account.id, proven)
+        await db.execute("DELETE FROM account_local_credentials WHERE account_id=?", (account.id,))
+
+
+async def change_deployment_credentials(*, settings, persist) -> None:
+    """The account half of a deployment-type transition: the default Admin's
+    local password, if it has one, is removed, in the transaction that
+    ``persist`` writes the new deployment ``settings`` in (``_mutation``).
+    Nothing else is touched -- no other account's credential, binding, token,
+    ``enabled`` or demand. The caller holds the authentication configuration
+    lock, and ends every browser session once both are applied."""
+    async with _mutation([DEFAULT_ADMIN_ID], settings, persist) as db:
+        await db.execute("DELETE FROM account_local_credentials WHERE account_id=?", (DEFAULT_ADMIN_ID,))
+
+
+# ── Integration API tokens ──────────────────────────────────────────────────
+
+def _token_verifier(raw: str) -> str:
+    return hashlib.sha256(str(raw or "").encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+async def create_token(account_id: str, label: str, *, succeeds: str | None = None) -> tuple[dict, str]:
+    """Issue a labeled token for an Integration account. The raw secret is
+    returned once, here, and never again.
+
+    A token is a new external client (``client_id``) unless it ``succeeds``
+    an earlier token: an Admin's explicit rotation, which gives the new token
+    that token's client -- and so its external jobs -- and revokes the
+    predecessor in the same transaction. The predecessor may already be
+    revoked (recovering a client whose token was lost), but it must belong to
+    this account or to an account merged into it. Rotation withdraws nothing."""
+    label = str(label or "").strip()[:128]
+    if not label:
+        raise AccountRefused("A token needs a label", code="account.token_label_required")
+    raw = TOKEN_PREFIX + secrets.token_urlsafe(_TOKEN_RANDOM_BYTES)
+    token_id = str(uuid.uuid4())
+    client_id = token_id
+    async with _transaction() as db:
+        account = await _require(db, account_id)
+        if account.role is not Role.INTEGRATION:
+            raise AccountRefused("Only Integration accounts hold API tokens", code="account.tokens_integration_only")
+        if succeeds is not None:
+            predecessor = await db.fetchone("SELECT id, account_id, client_id FROM account_tokens WHERE id=?",
+                                            (str(succeeds),))
+            if predecessor is None or str(predecessor["account_id"]) not in await _owned_account_ids(db, account.id):
+                raise AccountRefused("The token to succeed does not exist", code="account.token_successor_missing")
+            client_id = str(predecessor["client_id"] or predecessor["id"])
+            await db.execute("UPDATE account_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                             (_now(), predecessor["id"]))
+        await db.execute(
+            "INSERT INTO account_tokens(id,account_id,label,verifier,created_at,client_id,kind) VALUES(?,?,?,?,?,?,?)",
+            (token_id, account.id, label, _token_verifier(raw), _now(), client_id, TOKEN_KIND_INTEGRATION))
+        if succeeds is not None:
+            from db.event_journal import JournalEvent, record
+
+            await record(db, JournalEvent(
+                "administration", "administration.integration_token_rotated", "info",
+                "An Integration token was rotated: its external client continues under the new token",
+                "account", account.id, detail=f"client {client_id}; predecessor token {predecessor['id']}"))
+    return {"id": token_id, "account_id": str(account_id), "label": label, "revoked_at": None,
+            "client_id": client_id}, raw
+
+
+async def issue_browser_token(account_id: str, label: str, *, requester: str = "") -> tuple[dict, str]:
+    """Issue a browser token for a person's own account, at the moment they
+    approve a pairing (``auth.browser_pairing``). The raw secret is returned
+    once, here, and never stored. The token is its own client, so each
+    browser's work stays fenced from every other credential's. Only an active
+    Admin or User account may hold one (``BROWSER_ROLES``). The connection is
+    journaled in the same transaction, naming the requesting address but never
+    the secret."""
+    label = str(label or "").strip()[:128]
+    if not label:
+        raise AccountRefused("A connected browser needs a name.", code="account.browser_token_label_required")
+    raw = TOKEN_PREFIX + secrets.token_urlsafe(_TOKEN_RANDOM_BYTES)
+    token_id = str(uuid.uuid4())
+    async with _transaction() as db:
+        account = await _require(db, account_id)
+        if not account.active or account.role not in BROWSER_ROLES:
+            raise AccountRefused("This account can't connect a browser.", code="account.browser_not_permitted")
+        await db.execute(
+            "INSERT INTO account_tokens(id,account_id,label,verifier,created_at,client_id,kind) VALUES(?,?,?,?,?,?,?)",
+            (token_id, account.id, label, _token_verifier(raw), _now(), token_id, TOKEN_KIND_BROWSER))
+        from db.event_journal import JournalEvent, record
+
+        await record(db, JournalEvent(
+            "administration", "administration.browser_connected", "info",
+            "A browser was connected to an account", "account", account.id,
+            detail=f"token {token_id} ({label}); requested from {str(requester or 'unknown')[:64]}"))
+    return {"id": token_id, "account_id": str(account_id), "label": label, "kind": TOKEN_KIND_BROWSER,
+            "revoked_at": None, "client_id": token_id}, raw
+
+
+async def list_tokens(account_id: str) -> list[dict]:
+    """An account's ACTIVE tokens: the ones that can still be revoked -- an
+    Integration account's API tokens, or a person's browser tokens (each row
+    names its ``kind``). A revoked token keeps its row for attribution
+    (``requester_identities``) but is no longer the account's to manage."""
+    from db.database import get_db
+
+    async with get_db() as db:
+        return await db.fetchall(
+            "SELECT id, account_id, label, created_at, revoked_at, client_id, kind, last_seen_at FROM account_tokens "
+            "WHERE account_id=? AND revoked_at IS NULL ORDER BY created_at, id", (str(account_id),))
+
+
+async def list_browser_tokens() -> list[dict]:
+    """Every person's connected browsers (active browser tokens), for an
+    Admin's API-token view: each token's name, its person and when it was
+    issued and last used. Never a credential or verifier."""
+    from db.database import get_db
+
+    async with get_db() as db:
+        return await db.fetchall(
+            "SELECT t.id, t.label, t.account_id, t.created_at, t.last_seen_at, "
+            "COALESCE(NULLIF(a.display_name, ''), a.username, '') AS account_name "
+            "FROM account_tokens t JOIN accounts a ON a.id = t.account_id "
+            "WHERE t.kind = ? AND t.revoked_at IS NULL ORDER BY t.created_at, t.id", (TOKEN_KIND_BROWSER,))
+
+
+async def revoke_token(account_id: str, token_id: str, *, kind: str | None = None,
+                       actor_id: str | None = None) -> bool:
+    """Revoke one token at once. Its row stays for attribution; work it
+    submitted is untouched. ``kind`` restricts which token may be revoked (a
+    person revoking their own browser token names ``browser``). Revoking a
+    browser token is journaled, naming whether its owner or an Admin did it."""
+    async with _transaction() as db:
+        row = await db.fetchone(
+            "SELECT id, label, kind FROM account_tokens WHERE id=? AND account_id=? AND revoked_at IS NULL",
+            (str(token_id), str(account_id)))
+        if row is None or (kind is not None and str(row["kind"]) != kind):
+            return False
+        await db.execute("UPDATE account_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                         (_now(), row["id"]))
+        if str(row["kind"]) == TOKEN_KIND_BROWSER:
+            from db.event_journal import JournalEvent, record
+
+            by_owner = actor_id is None or str(actor_id) == str(account_id)
+            await record(db, JournalEvent(
+                "administration", "administration.browser_disconnected", "info",
+                ("A connected browser was disconnected by its owner" if by_owner
+                 else "A connected browser was disconnected by an Admin"),
+                "account", str(account_id), detail=f"token {row['id']} ({row['label']})"))
+        return True
+
+
+async def resolve_token(raw: str) -> tuple[Account, str, str, str] | None:
+    """The account, token ID, client ID and token kind a bearer secret names:
+    an active Integration account's ``integration`` token, or an active Admin
+    or User account's ``browser`` token. Every other pairing is refused, and
+    the account is re-read on every request, so a person demoted to ReadOnly,
+    deactivated, merged or removed stops every browser of theirs at once.
+
+    Lookup is by verifier, so tokens cannot be enumerated or probed by
+    prefix; the matched verifier is still compared in constant time."""
+    from db.database import get_db
+
+    raw = str(raw or "")
+    if not raw.startswith(TOKEN_PREFIX) or len(raw) > 256:
+        return None
+    verifier = _token_verifier(raw)
+    async with get_db() as db:
+        row = await db.fetchone(
+            "SELECT id, account_id, verifier, client_id, kind FROM account_tokens "
+            "WHERE verifier=? AND revoked_at IS NULL",
+            (verifier,))
+        account = await _fetch(db, row["account_id"]) if row is not None else None
+    if row is None or not secrets.compare_digest(str(row["verifier"]), verifier):
+        return None
+    kind = str(row["kind"] or TOKEN_KIND_INTEGRATION)
+    if account is None or not account.active:
+        return None
+    if not ((kind == TOKEN_KIND_INTEGRATION and account.role is Role.INTEGRATION)
+            or (kind == TOKEN_KIND_BROWSER and account.role in BROWSER_ROLES)):
+        return None
+    await _seen(str(row["id"]))
+    return account, str(row["id"]), str(row["client_id"] or row["id"]), kind
+
+
+# A token's last use is written at most this often (an in-process throttle):
+# one small write per client every few minutes, never one per request.
+TOKEN_SEEN_SECONDS = 300
+_token_seen: dict[str, float] = {}
+
+
+async def _seen(token_id: str) -> None:
+    """Record that this token just authenticated a request. Best effort: a
+    failed write never fails the request it is recording."""
+    import time
+
+    from db.database import get_db
+
+    now = time.monotonic()
+    if now - _token_seen.get(token_id, -TOKEN_SEEN_SECONDS) < TOKEN_SEEN_SECONDS:
+        return
+    _token_seen[token_id] = now
+    try:
+        async with get_db() as db:
+            await db.execute("UPDATE account_tokens SET last_seen_at=? WHERE id=?", (_now(), token_id))
+            await db.commit()
+    except Exception:  # noqa: BLE001 -- recording use must never refuse the use
+        import logging
+        logging.getLogger("downloadpulse.accounts").warning("a token's last use could not be recorded", exc_info=True)
+
+
+async def recent_clients(days: int = 7) -> list[dict]:
+    """The external clients in use: active tokens of active Integration
+    accounts that authenticated a request within ``days``, newest first --
+    each its token's label, its account's name and when it was last seen."""
+    from datetime import timedelta
+
+    from db.database import get_db
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+    async with get_db() as db:
+        rows = await db.fetchall(
+            "SELECT t.label, t.last_seen_at, a.display_name, a.username FROM account_tokens t "
+            "JOIN accounts a ON a.id = t.account_id WHERE t.revoked_at IS NULL AND t.last_seen_at >= ? "
+            "AND a.role = ? AND a.enabled = 1 AND a.deleted_at IS NULL AND a.merged_into IS NULL "
+            "ORDER BY t.last_seen_at DESC", (since, Role.INTEGRATION.value))
+    return [{"label": str(row["label"]), "account": str(row["display_name"] or row["username"] or ""),
+             "last_seen": str(row["last_seen_at"])} for row in rows]
+
+
+async def any_active_client(client_ids) -> bool:
+    """Whether any of these external clients is currently backed by a token
+    ``resolve_token`` would accept: not revoked, of an active Integration
+    account. Answers only that -- one bounded existence read, no token,
+    verifier or account leaves it. A token's client is its ``client_id``, or
+    its own ID for a token issued before clients existed (as in
+    ``resolve_token``)."""
+    from db.database import get_db
+
+    clients = sorted({str(client) for client in client_ids if client})
+    if not clients:
+        return False
+    async with get_db() as db:
+        row = await db.fetchone(
+            "SELECT 1 FROM account_tokens t JOIN accounts a ON a.id = t.account_id "
+            "WHERE t.revoked_at IS NULL AND COALESCE(t.client_id, t.id) IN (SELECT value FROM json_each(?)) "
+            # ``Account.active`` and the Integration role, as ``resolve_token`` reads them.
+            "AND a.role = 'integration' AND COALESCE(a.enabled, 0) != 0 "
+            "AND COALESCE(a.deleted_at, '') = '' AND COALESCE(a.merged_into, '') = '' "
+            "LIMIT 1", (json.dumps(clients),))
+    return row is not None
+
+
+async def retire_legacy_api_token(path) -> bool:
+    """The pre-account global API token stops authenticating: its verifier
+    file is removed and the operator is told to issue an Integration token.
+    It never becomes any account's credential."""
+    from pathlib import Path
+
+    target = Path(path)
+    if not target.exists():
+        return False
+    target.unlink()
+    from db.event_journal import JournalEvent, record_now
+
+    await record_now(JournalEvent(
+        "administration", "administration.api_token_retired", "warning",
+        "The global API token was retired: issue a token for an Integration account and update its clients",
+        "installation"))
+    return True

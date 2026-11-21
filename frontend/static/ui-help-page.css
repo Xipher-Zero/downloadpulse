@@ -1,0 +1,503 @@
+/* DownloadPulse v1.0.11 clean-room Help & Documentation page.
+ *
+ * Help follows the same full-height master-card composition as Settings,
+ * Downloads, Activity Log, and Statistics. Shared card/tab/button material is
+ * inherited from the canonical dp-* component language; this layer owns Help
+ * geometry, documentation typography, accordions, and content flow only.
+ */
+
+/* At every width -- as Settings, the Activity Log and Statistics -- Help is
+   the bounded master card: #content does not scroll, the card fills the
+   content box the shell gives the page (from 780px its desktop gutters, so
+   the version beneath the view stays on screen; below 780px the 10px inset
+   under the header and above the dock), its header stays and only the manual
+   (.dp-help-scroll) scrolls. */
+#content:has(#view-help.active) {
+  overflow-y: hidden;
+}
+
+#view-help.dp-help-clean-view.active {
+  display: flex !important;
+  flex-direction: column;
+  height: 100% !important;
+  min-height: 0;
+  overflow: visible;
+}
+
+#view-help > .dp-help-master-card {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 0 !important;
+}
+
+/* Desktop and tablet (780px and wider): one row, as Settings. The
+   navigation -- the complete tab strip, or the compact navigator when the
+   strip and the copy do not fit side by side -- keeps the strip's own place:
+   centred in the whole header while the copy fits beside it, otherwise right
+   after the copy (ui-help-chrome.css). The shared section navigator
+   (ui-section-nav.js, ui-section-nav.css) decides which and draws the
+   compact one. Handheld (below 780px): the header wraps and the complete
+   strip, the header's width, scrolls beneath the copy. */
+#view-help .dp-help-master-header {
+  flex: 0 0 auto;
+  min-height: 76px;
+  padding: 10px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+#view-help .dp-help-header-copy {
+  flex: 1 1 0;
+  min-width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#view-help .dp-help-title-icon {
+  width: 51px;
+  min-width: 51px;
+  height: 51px;
+  flex: 0 0 51px;
+  object-fit: contain;
+  padding: 3px;
+}
+
+#view-help .dp-help-header-title {
+  min-width: 0;
+  color: var(--dp-text-primary);
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  white-space: nowrap;
+}
+
+#view-help .dp-help-tabs {
+  scrollbar-width: thin;
+}
+
+#view-help .dp-help-tab {
+  min-width: max-content;
+}
+
+@media (min-width: 780px) {
+  #view-help .dp-help-master-header {
+    flex-wrap: nowrap;
+  }
+}
+
+#view-help .dp-help-master-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#view-help .dp-help-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+#view-help .dp-help-panels {
+  width: 100%;
+  min-width: 0;
+  padding: 16px 18px 22px;
+}
+
+#view-help .dp-help-panel {
+  width: 100%;
+  min-width: 0;
+}
+
+#view-help .dp-help-panel[hidden] {
+  display: none !important;
+}
+
+#view-help .dp-help-document {
+  width: min(100%, 980px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+#view-help .dp-help-section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--dp-divider);
+}
+
+#view-help .dp-help-section-heading h2 {
+  margin: 0;
+  color: var(--dp-accent-purple-bright);
+  font-size: 15px;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+#view-help .dp-help-section-heading p {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+#view-help .dp-help-copy {
+  color: var(--dp-text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+#view-help .dp-help-copy b,
+#view-help .dp-help-prose h3,
+#view-help .dp-help-inset h3 {
+  color: var(--dp-text-primary);
+}
+
+#view-help .dp-help-copy a,
+#view-help .dp-help-document > a {
+  color: var(--dp-accent-purple-bright);
+}
+
+#view-help .dp-help-copy code,
+#view-help .dp-help-license-note code {
+  padding: 2px 5px;
+  border: 1px solid var(--dp-border-subtle);
+  border-radius: 5px;
+  background: var(--dp-surface-3);
+  color: var(--dp-text-primary);
+  font-family: var(--dp-font-mono);
+  font-size: .91em;
+}
+
+#view-help .dp-help-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-lg);
+  overflow: hidden;
+}
+
+#view-help .dp-help-step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--dp-divider);
+  background: transparent;
+}
+
+#view-help .dp-help-step:last-child {
+  border-bottom: 0;
+}
+
+#view-help .dp-help-step-number {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--dp-accent-purple-bright) 46%, var(--dp-border-default));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--dp-accent-purple) 17%, var(--dp-surface-2));
+  color: var(--dp-nav-active-text);
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 750;
+}
+
+#view-help .dp-help-step-copy {
+  min-width: 0;
+}
+
+#view-help .dp-help-step-title {
+  margin-bottom: 3px;
+  color: var(--dp-text-primary);
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+#view-help .dp-help-copy--lead p,
+#view-help .dp-help-copy--after p,
+#view-help .dp-help-prose p,
+#view-help .dp-help-prose ul,
+#view-help .dp-help-accordion-body p {
+  margin: 0;
+}
+
+#view-help .dp-help-prose {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#view-help .dp-help-prose h3 {
+  margin: 3px 0 -4px;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+
+#view-help .dp-help-prose ul {
+  padding-left: 20px;
+}
+
+#view-help .dp-help-prose li + li {
+  margin-top: 5px;
+}
+
+/* The six-step flow is one composed group: every row shares the same three
+   columns, the description column has a readable measure rather than the
+   card's whole width, and the group is as wide as that content and centred
+   in the card. It never grows past the card, and narrow screens stack each
+   row (below). */
+#view-help .dp-help-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+#view-help .dp-help-pipeline-row {
+  display: grid;
+  grid-template-columns: 168px 18px minmax(0, 68ch);
+  gap: 10px;
+  align-items: center;
+}
+
+#view-help .dp-help-pipeline-node {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-sm);
+  background: var(--dp-surface-2);
+  color: var(--dp-text-primary);
+  font-size: 12px;
+  line-height: 1.25;
+  font-weight: 650;
+  text-align: center;
+}
+
+#view-help .dp-help-pipeline-row.is-active .dp-help-pipeline-node {
+  color: var(--dp-accent-purple-bright);
+}
+
+#view-help .dp-help-pipeline-row.is-success .dp-help-pipeline-node {
+  color: var(--dp-state-success);
+}
+
+#view-help .dp-help-pipeline-arrow {
+  color: var(--dp-text-muted);
+  text-align: center;
+}
+
+#view-help .dp-help-integration-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+#view-help .dp-help-inset {
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-md);
+  background: color-mix(in srgb, var(--dp-surface-2) 76%, transparent);
+}
+
+#view-help .dp-help-inset h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+#view-help .dp-help-accordion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+#view-help .dp-help-accordion {
+  border: 1px solid var(--dp-border-default);
+  border-radius: var(--dp-radius-md);
+  background: color-mix(in srgb, var(--dp-surface-2) 74%, transparent);
+  overflow: hidden;
+}
+
+#view-help .dp-help-accordion > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  color: var(--dp-text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+#view-help .dp-help-accordion > summary::-webkit-details-marker {
+  display: none;
+}
+
+#view-help .dp-help-accordion > summary::before {
+  content: '›';
+  width: 16px;
+  flex: 0 0 16px;
+  color: var(--dp-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform .14s ease;
+}
+
+#view-help .dp-help-accordion[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+#view-help .dp-help-accordion[open] > summary {
+  border-bottom: 1px solid var(--dp-divider);
+}
+
+#view-help .dp-help-accordion-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px 14px 40px;
+}
+
+/* The warranty statement closes the licence introduction: bold, centred, and
+   set a little apart from the paragraphs above it. */
+#view-help .dp-help-license-warranty {
+  margin-top: 4px;
+  text-align: center;
+}
+
+#view-help .dp-help-license-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#view-help .dp-help-license-note {
+  margin: 0;
+  color: var(--dp-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+#view-help .dp-help-license-note p:last-child {
+  color: var(--dp-text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 650;
+  text-align: center;
+  letter-spacing: .005em;
+}
+
+@media (max-width: 1180px) {
+  #view-help .dp-help-title-icon {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+  }
+}
+
+@media (max-width: 900px) {
+  #view-help .dp-help-panels {
+    padding: 14px;
+  }
+}
+
+
+@media (max-width: 779px) {
+  /* The handheld header is one row, as from 780px: the identity -- as much of
+     it as leaves the section navigator whole (ui-section-nav.js: shorter
+     approved wordings, then no hint, no artwork, none) -- and the navigator,
+     centred in the whole header while the identity fits beside it, else right
+     after it, and centred again with no identity at all. */
+  #view-help .dp-help-master-header {
+    min-height: 0;
+    flex-wrap: nowrap;
+  }
+
+  #view-help .dp-help-header-subtitle {
+    white-space: nowrap;
+  }
+
+  #view-help .dp-help-master-header[data-dp-identity~='quiet'] .dp-help-header-subtitle,
+  #view-help .dp-help-master-header[data-dp-identity~='bare'] .dp-help-title-icon,
+  #view-help .dp-help-master-header[data-dp-identity='none'] .dp-help-header-copy,
+  #view-help .dp-help-master-header[data-dp-identity='none']::after {
+    display: none;
+  }
+
+  #view-help .dp-help-pipeline-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  #view-help .dp-help-pipeline-arrow {
+    display: none;
+  }
+
+  #view-help .dp-help-integration-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #view-help .dp-help-accordion-body {
+    padding-left: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #view-help .dp-help-accordion > summary::before {
+    transition: none;
+  }
+}
+
+
+/* Canonical Help master icon glow. */
+#view-help .dp-help-title-icon {
+  --dp-feature-icon-glow: #4c8fff;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--dp-feature-icon-glow) 62%, transparent))
+          drop-shadow(0 0 11px color-mix(in srgb, var(--dp-feature-icon-glow) 27%, transparent));
+}
+body.light #view-help .dp-help-title-icon {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--dp-feature-icon-glow) 70%, transparent))
+          drop-shadow(0 0 15px color-mix(in srgb, var(--dp-feature-icon-glow) 32%, transparent));
+}
+
+/* Help view: tabs always visible, content scrolls below (DP 1.0.12 canonical
+   flattening: migrated from the retired ui-legacy-foundation.css) */
+#view-help { display: none !important; }
+#view-help:is(.active, [data-dp-motion-outgoing]) { display: flex !important; flex-direction: column; height: 100%; }
+#help-tabs { flex-shrink: 0; margin-bottom: 0; overflow-x: auto; scrollbar-width: none; }
+#help-tabs::-webkit-scrollbar { display: none; }
+.help-panel { display: none; }
+.help-panel.active { display: block; }

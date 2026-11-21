@@ -1,0 +1,578 @@
+"""
+Discord webhook notifications with rich embeds.
+
+Features:
+- Structured embeds with fields instead of raw text
+- Clear color coding per event type
+- Separate webhook URL for transfer-added events
+- Deduplication: same message within 10s is suppressed (keyed on url+title+description)
+- Rate limiting: minimum 2s between messages per URL
+- Discord 429 handling with retry_after
+- Lazy asyncio.Lock (compatible with IsolatedAsyncioTestCase)
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import re
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
+
+import aiohttp
+from core.branding import APP_SHORT_NAME, REPOSITORY_URL
+from core.logging_utils import sanitize_exception
+from core.version import read_version
+from core.localization import CodedRuntimeError
+
+logger = logging.getLogger("downloadpulse.notify")
+
+APP_NAME    = APP_SHORT_NAME
+APP_VERSION = read_version()
+REPO_URL    = REPOSITORY_URL
+# Default logo — overridden at runtime by discord_avatar_url from settings
+# No SVG default — Discord only accepts PNG/JPG/WEBP for avatar_url
+
+
+def _get_discord_identity() -> tuple[str, str]:
+    """Returns (username, avatar_url) from settings.
+    Returns empty string for avatar if not set, if a data URI is stored,
+    or if a SVG URL is stored (Discord only accepts PNG/JPG/WEBP).
+    """
+    try:
+        from core.config import get_settings
+        cfg = get_settings()
+        name   = (getattr(cfg, "discord_username",   "") or APP_NAME).strip() or APP_NAME
+        avatar = (getattr(cfg, "discord_avatar_url", "") or "").strip()
+        # Discord only accepts PNG/JPG/WEBP — reject data URIs and SVG
+        if not avatar or avatar.startswith("data:") or avatar.lower().endswith(".svg"):
+            avatar = ""
+        return name, avatar
+    except Exception:
+        return APP_NAME, ""
+
+def _is_discord_url(url: str) -> bool:
+    """Returns True if the URL looks like a Discord webhook."""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ""
+        return "discord" in host or "discordapp" in host
+    except Exception:
+        return False
+
+
+# The Discord-owned hosts that serve the webhook API (stable, canary and PTB
+# clients use the same endpoint shape on each).
+DISCORD_WEBHOOK_HOSTS = frozenset({
+    "discord.com", "canary.discord.com", "ptb.discord.com",
+    "discordapp.com", "canary.discordapp.com", "ptb.discordapp.com",
+})
+_DISCORD_WEBHOOK_PATH = re.compile(r"/api(?:/v\d{1,2})?/webhooks/\d{1,25}/[A-Za-z0-9_-]{1,200}")
+
+
+def is_discord_webhook_url(url: str) -> bool:
+    """Whether ``url`` is exactly a Discord webhook endpoint.
+
+    The narrow destination rule for account-owned (User) notifications:
+    HTTPS on a Discord-owned host, the canonical ``/api/webhooks/{id}/{token}``
+    path, and nothing else -- no userinfo, no explicit port, no query and no
+    fragment. ``_is_discord_url`` above stays the global dialect heuristic; it
+    is not an admission rule.
+    """
+    raw = str(url or "")
+    if not raw or raw != raw.strip() or len(raw) > 512 or not raw.isascii():
+        return False
+    if any(ord(ch) < 0x21 or ch in "\\<>\"{}|^`" for ch in raw):
+        return False
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return False
+    return (parts.scheme == "https" and port is None and not parts.username and parts.password is None
+            and "@" not in parts.netloc and parts.netloc.lower() == (parts.hostname or "")
+            and parts.hostname in DISCORD_WEBHOOK_HOSTS and not parts.query and not parts.fragment
+            and _DISCORD_WEBHOOK_PATH.fullmatch(parts.path) is not None)
+
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+COLOR_INFO    = 0x3B82F6   # Blue    — general
+COLOR_SUCCESS = 0x22C55E   # Green   — completed
+COLOR_WARNING = 0xF59E0B   # Yellow  — warning / partial
+COLOR_ERROR   = 0xEF4444   # Red     — error
+COLOR_ADDED   = 0x8B5CF6   # Purple  — transfer added
+COLOR_PARTIAL = 0xF97316   # Orange  — filtered files
+
+# ── Throttling ────────────────────────────────────────────────────────────────
+_RATE_LIMIT_SECONDS   = 2.0
+_DEDUP_WINDOW_SECONDS = 10.0  # Reduced from 30s — prevents suppressing different transfers with same name
+
+
+def _fmt_bytes(b: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if b < 1024:
+            return f"{b:.1f} {unit}"
+        b /= 1024
+    return f"{b:.1f} TB"
+
+
+def _now_utc() -> str:
+    """Human-readable UTC time for field values."""
+    return datetime.now(timezone.utc).strftime("%d.%m.%Y, %H:%M UTC")
+
+
+def _discord_timestamp() -> str:
+    """ISO 8601 for Discord embed timestamp field — renders in user's local timezone."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _source_label(source: str) -> str:
+    """Maps internal source identifiers to readable labels."""
+    return {
+        "manual":             "Manual (UI)",
+        # Channel only: this label has no access to the canonical request kind.
+        "manual_file":        "Uploaded file (UI)",
+        "direct_link":        "Direct link (UI)",
+        "inventory": "Provider inventory",
+        "api":                "API",
+    }.get(source, source)
+
+
+class NotificationService:
+    # Class-level state — shared across all instances
+    _last_sent_at: Dict[str, float] = {}
+    _sent_hashes:  Dict[str, float] = {}
+    _throttle_lock: Optional[asyncio.Lock] = None  # lazy — created per event loop
+
+    def __init__(self, webhook_url: str = "", added_webhook_url: str = "", *,
+                 identity: Optional[tuple[str, str]] = None, discord_only: bool = False,
+                 dedup: bool = True):
+        self.webhook_url       = (webhook_url or "").strip()
+        # Separate channel for added events; falls back to main webhook if not set
+        self.added_webhook_url = (added_webhook_url or "").strip() or self.webhook_url
+        # An account-owned client carries its OWN sender identity and admits
+        # only exact Discord webhook endpoints, posted to without following
+        # redirects. The defaults are the global client, unchanged.
+        self.identity = identity
+        self.discord_only = bool(discord_only)
+        # Content dedup guards the global path against near-identical repeats;
+        # an account-owned client's sends are already once per claimed event,
+        # and two Users choosing the same webhook still get one message each.
+        self.dedup = bool(dedup)
+
+    # ── Lock (lazy, safe for test isolation) ─────────────────────────────────
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        if cls._throttle_lock is None:
+            cls._throttle_lock = asyncio.Lock()
+        return cls._throttle_lock
+
+    # ── Public event methods ──────────────────────────────────────────────────
+
+    async def send_added(
+        self,
+        name: str,
+        source: str = "manual",
+        transfer_id: str = "",
+        extra_fields: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """Transfer accepted for processing."""
+        if not self.added_webhook_url:
+            return
+        fields: List[Dict[str, Any]] = [
+            {"name": "Source",  "value": _source_label(source),      "inline": True},
+            {"name": "Status",  "value": "Accepted",       "inline": True},
+            {"name": "Time",    "value": _now_utc(),                  "inline": True},
+        ]
+        if transfer_id:
+            fields.append({"name": "Transfer ID", "value": str(transfer_id), "inline": True})
+        if extra_fields:
+            fields.extend(extra_fields)
+        await self._send(
+            url=self.added_webhook_url,
+            title="📥 Transfer Added",
+            description=f"**{name}**",
+            color=COLOR_ADDED,
+            fields=fields,
+        )
+
+    async def send_complete(
+        self,
+        name: str,
+        file_count: int = 0,
+        size_bytes: int = 0,
+        destination: str = "",
+        download_client: str = "",
+    ) -> None:
+        """Download fully completed."""
+        if not self.webhook_url:
+            return
+        fields: List[Dict[str, Any]] = []
+        if file_count:
+            fields.append({"name": "Files",       "value": str(file_count),       "inline": True})
+        if size_bytes:
+            fields.append({"name": "Size",        "value": _fmt_bytes(size_bytes), "inline": True})
+        if download_client:
+            fields.append({"name": "Client",      "value": download_client,        "inline": True})
+        if destination:
+            fields.append({"name": "Destination", "value": f"`{destination}`",     "inline": False})
+        fields.append(    {"name": "Time",        "value": _now_utc(),              "inline": True})
+        await self._send(
+            url=self.webhook_url,
+            title="✅ Download Complete",
+            description=f"**{name}**",
+            color=COLOR_SUCCESS,
+            fields=fields,
+        )
+
+    async def send_error(
+        self,
+        name: str,
+        reason: str = "",
+        context: str = "",
+        source: str = "",
+        provider: str = "",
+        transfer_id: str = "",
+        category: str = "",
+    ) -> None:
+        """Error during processing or download."""
+        if not self.webhook_url:
+            return
+        fields: List[Dict[str, Any]] = []
+        if source:
+            fields.append({"name": "Source", "value": source[:200], "inline": True})
+        if provider:
+            fields.append({"name": "Provider", "value": provider[:200], "inline": True})
+        if transfer_id:
+            fields.append({"name": "Transfer ID", "value": str(transfer_id)[:200], "inline": True})
+        if category:
+            fields.append({"name": "Category", "value": str(category)[:200], "inline": True})
+        if reason:
+            fields.append({"name": "Reason",  "value": reason[:1000],  "inline": False})
+        if context:
+            fields.append({"name": "Context", "value": context[:500],   "inline": False})
+        fields.append(    {"name": "Time",    "value": _now_utc(),       "inline": True})
+        await self._send(
+            url=self.webhook_url,
+            title="❌ Error",
+            description=f"**{name}**",
+            color=COLOR_ERROR,
+            fields=fields,
+        )
+
+    async def send_partial(
+        self,
+        name: str,
+        total_files: int,
+        downloaded_files: int,
+        blocked_files: int,
+        total_size: int = 0,
+        downloaded_size: int = 0,
+    ) -> None:
+        """Partial download — some files were blocked by filters."""
+        if not self.webhook_url:
+            return
+        fields: List[Dict[str, Any]] = [
+            {"name": "Total",        "value": str(total_files),          "inline": True},
+            {"name": "Downloaded",   "value": str(downloaded_files),     "inline": True},
+            {"name": "Filtered",     "value": str(blocked_files),        "inline": True},
+        ]
+        if total_size:
+            fields.append({"name": "Total Size",      "value": _fmt_bytes(total_size),       "inline": True})
+        if downloaded_size:
+            fields.append({"name": "Downloaded Size", "value": _fmt_bytes(downloaded_size),  "inline": True})
+        fields.append(    {"name": "Time",            "value": _now_utc(),                   "inline": True})
+        await self._send(
+            url=self.webhook_url,
+            title="⚠️ Partial Download",
+            description=f"**{name}**\nSome files were filtered",
+            color=COLOR_PARTIAL,
+            fields=fields,
+        )
+
+    async def send(self, title: str, description: str, color: int = COLOR_INFO, *,
+                   fields: Optional[List[Dict[str, Any]]] = None,
+                   bypass_dedup: bool = False) -> bool:
+        """The neutral message every caller outside this module sends through.
+
+        ``fields`` is the same neutral ``{name, value, inline}`` structure every
+        event method above already builds, so a caller with structured content
+        -- a statistics report, say -- needs no transport of its own and this
+        transport needs to know nothing about what that content means. Dialect
+        selection, payload shaping, dedup, rate limiting, retry and failure
+        sanitisation all stay here, once.
+        """
+        if not self.webhook_url:
+            return False
+        return bool(await self._send(
+            url=self.webhook_url,
+            title=title,
+            description=description,
+            color=color,
+            fields=fields or None,
+            bypass_dedup=bypass_dedup,
+        ))
+
+    async def send_extract_complete(
+        self,
+        name: str,
+        archive_count: int = 0,
+        dest: str = "",
+    ) -> None:
+        """Notify that archives were extracted successfully after download."""
+        if not self.webhook_url:
+            return
+        fields: List[Dict[str, Any]] = []
+        if archive_count:
+            fields.append({"name": "Archives extracted", "value": str(archive_count), "inline": True})
+        if dest:
+            fields.append({"name": "Destination", "value": f"`{dest}`", "inline": False})
+        fields.append({"name": "Time", "value": _now_utc(), "inline": True})
+        await self._send(
+            url=self.webhook_url,
+            title="📦 Extraction Complete",
+            description=f"**{name[:100]}**",
+            color=COLOR_SUCCESS,
+            fields=fields or None,
+        )
+
+    async def send_extract_failed(
+        self,
+        name: str,
+        reason: str = "",
+    ) -> None:
+        """Notify that archive extraction failed."""
+        if not self.webhook_url:
+            return
+        fields: List[Dict[str, Any]] = []
+        if reason:
+            fields.append({"name": "Error", "value": reason[:300], "inline": False})
+        await self._send(
+            url=self.webhook_url,
+            title="❌ Extraction Failed",
+            description=f"**{name[:100]}**",
+            color=COLOR_ERROR,
+            fields=fields or None,
+        )
+
+
+
+    async def send_update(
+        self,
+        current_version: str,
+        latest_version: str,
+        release_url: str = "",
+        release_notes: str = "",
+    ) -> None:
+        """Notify that a new DownloadPulse version is available."""
+        from core.config import get_settings
+        cfg = get_settings()
+        if not getattr(cfg, "discord_notify_update", True):
+            return
+        url = self.webhook_url
+        if not url:
+            return False
+        desc = (
+            f"**{APP_NAME} {latest_version}** is available.\n"
+            f"You are running **{current_version}**."
+        )
+        fields: List[Dict[str, Any]] = []
+        if release_url:
+            fields.append({"name": "Release", "value": "[View on GitHub](" + release_url + ")", "inline": False})
+        if release_notes:
+            notes = release_notes[:900] + ("…" if len(release_notes) > 900 else "")
+            fields.append({"name": "Release Notes", "value": notes, "inline": False})
+        await self._send(
+            url=url,
+            title="📦 New version available",
+            description=desc,
+            color=COLOR_INFO,
+            fields=fields or None,
+        )
+
+    async def test(self, *, strict: bool = False) -> bool:
+        """Send a test message to this destination, in its own dialect.
+
+        The ONE test sender for every destination: a Discord webhook gets the
+        Discord embed and anything else gets the generic shape, decided in
+        ``_send`` like every other message. ``strict`` propagates the delivery
+        failure so an operator-initiated Test can report what actually went
+        wrong instead of only that nothing was sent.
+        """
+        if not self.webhook_url:
+            return False
+        return await self._send(
+            url=self.webhook_url,
+            title="🔔 Test Notification",
+            description=f"**{APP_NAME}** is connected and ready.",
+            color=COLOR_INFO,
+            fields=[
+                {"name": "Version", "value": APP_VERSION, "inline": True},
+                {"name": "Time",    "value": _now_utc(),  "inline": True},
+            ],
+            bypass_dedup=True,  # Test button should always reach the destination
+            strict=strict,
+        )
+
+    # ── Internal implementation ───────────────────────────────────────────────
+
+    def _identity(self) -> tuple[str, str]:
+        """The sender identity: the account's own, or the global one."""
+        if self.identity is None:
+            return _get_discord_identity()
+        name, avatar = (str(item or "").strip() for item in self.identity)
+        if not avatar.startswith("https://") or avatar.lower().endswith(".svg"):
+            avatar = ""
+        return name or APP_NAME, avatar
+
+    async def _send(
+        self,
+        url: str,
+        title: str,
+        description: str,
+        color: int = COLOR_INFO,
+        fields: Optional[List[Dict[str, Any]]] = None,
+        bypass_dedup: bool = False,
+        strict: bool = False,
+    ) -> bool:
+        """Send a webhook message. Returns True if sent, False if deduplicated or failed.
+
+        ``strict`` decides who owns the failure. A lifecycle event is
+        fire-and-forget: it is logged and swallowed, because nothing is waiting
+        to be told and a webhook outage must not fail a download. An operator
+        pressed Test and IS waiting, so that caller asks for the reason -- the
+        same reason this method already derives, sanitised here rather than
+        rebuilt by a second sender.
+        """
+        if not url:
+            return
+        if self.discord_only and not is_discord_webhook_url(url):
+            # Fail closed: an account-owned destination is a Discord webhook or
+            # nothing. Admission refuses anything else; this is the last word.
+            logger.error("Discord notification refused (%s): not a Discord webhook endpoint", title[:60])
+            if strict:
+                raise CodedRuntimeError("The destination is not a Discord webhook URL", code="notifications.not_discord_webhook")
+            return False
+
+        # Deduplication: same content within 30s → skip
+        # Key includes description to avoid suppressing different transfers with same event type
+        dedup_key = hashlib.md5(
+            f"{url}|{title}|{description[:200]}".encode(),
+            usedforsecurity=False,
+        ).hexdigest()
+
+        async with self._get_lock():
+            now = time.monotonic()
+
+            last_hash = self._sent_hashes.get(dedup_key, 0.0)
+            if self.dedup and not bypass_dedup and now - last_hash < _DEDUP_WINDOW_SECONDS:
+                logger.debug("Discord: duplicate suppressed (%s)", title)
+                return False
+
+            # Rate limiting
+            wait = max(0.0, _RATE_LIMIT_SECONDS - (now - self._last_sent_at.get(url, 0.0)))
+            if wait > 0:
+                await asyncio.sleep(wait)
+
+            self._last_sent_at[url] = time.monotonic()
+            self._sent_hashes[dedup_key] = time.monotonic()
+
+            # Clean up old entries (> 5 minutes)
+            cutoff = time.monotonic() - 300
+            self._sent_hashes = {k: v for k, v in self._sent_hashes.items() if v > cutoff}
+
+        _bot_name, _bot_avatar = self._identity()
+        embed: Dict[str, Any] = {
+            "title":       title[:256],
+            "description": description[:4096],
+            "color":       color,
+            "timestamp":   _discord_timestamp(),
+            "url":         REPO_URL,
+            "author": {
+                "name": APP_NAME,
+                "url": REPO_URL,
+            },
+            "footer": {
+                "text":     f"{APP_NAME} v{APP_VERSION}",
+                "icon_url": _bot_avatar,
+            },
+        }
+        if fields:
+            embed["fields"] = [
+                {
+                    "name":   f.get("name", "")[:256],
+                    "value":  f.get("value", "—")[:1024],
+                    "inline": bool(f.get("inline", True)),
+                }
+                for f in fields[:25]
+            ]
+
+        if _is_discord_url(url):
+            payload = {
+                "username": _bot_name,
+                "embeds":   [embed],
+            }
+            if _bot_avatar:
+                payload["avatar_url"] = _bot_avatar
+        else:
+            # Generic webhook: send a simple flat JSON payload
+            payload = {
+                "event":       embed.get("title", ""),
+                "event_key":   title.lower().replace(" ", "_"),
+                "severity":    (
+                    "error" if color == COLOR_ERROR else
+                    "warning" if color in (COLOR_WARNING, COLOR_PARTIAL) else
+                    "success" if color in (COLOR_SUCCESS, COLOR_ADDED) else
+                    "info"
+                ),
+                "app": {
+                    "name": APP_NAME,
+                    "version": APP_VERSION,
+                    "repository": REPO_URL,
+                },
+                "description": embed.get("description", ""),
+                "color":       embed.get("color", 0),
+                "fields":      {f["name"]: f["value"] for f in (embed.get("fields") or [])},
+                "timestamp":   embed.get("timestamp", ""),
+                "embed":       embed,
+            }
+
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as session:
+                # An account-owned destination is posted to exactly; a redirect
+                # is a refusal (any non-2xx status fails below), never followed.
+                post = {"allow_redirects": False} if self.discord_only else {}
+                async with session.post(url, json=payload, **post) as resp:
+                    if resp.status == 429:
+                        data = await resp.json(content_type=None)
+                        retry_after = float(data.get("retry_after", 5))
+                        if self.discord_only:
+                            retry_after = max(0.0, min(retry_after, 10.0))
+                        logger.warning("Discord rate limit — waiting %.1fs", retry_after)
+                        await asyncio.sleep(retry_after)
+                        async with session.post(url, json=payload, **post) as resp2:
+                            if resp2.status not in (200, 204):
+                                body2 = await resp2.text()
+                                raise Exception(f"Discord webhook {resp2.status} after retry: {body2[:200]}")
+                    elif resp.status not in (200, 204):
+                        body = await resp.text()
+                        raise Exception(f"Discord webhook {resp.status}: {body[:200]}")
+            logger.debug("Discord notification sent: %s", title[:60])
+            return True
+        except Exception as exc:
+            detail = sanitize_exception(exc, max_length=240)
+            logger.error(
+                "Discord notification failed (%s) [%s]: %s",
+                title[:60],
+                exc.__class__.__name__,
+                detail,
+            )
+            if strict:
+                # Already sanitised: the destination is never part of it.
+                raise RuntimeError(detail) from None
+            return False

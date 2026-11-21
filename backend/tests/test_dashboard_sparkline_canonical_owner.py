@@ -1,0 +1,135 @@
+from pathlib import Path
+import re
+
+STATIC = Path(__file__).resolve().parents[2] / "frontend" / "static"
+
+
+def test_dashboard_sparkline_surface_is_static_base_markup():
+    """Each card has one line -- the signal drawn as a brush stroke -- resting as
+    the flat ribbon of the baseline, painted by its own pixel-space gradient; no
+    second pulse path is drawn over it. Beneath it one glow fill, the area under
+    the signal, masked by the same gradient."""
+    html = (STATIC / "index.html").read_text()
+    assert html.count('class="dp-card-spark" viewBox="0 0 100 29.42"') == 6
+    for i in range(6):
+        assert (f'<path class="dp-card-spark-line" fill="url(#dp-card-spark-signal-{i})" '
+                'd="M 0 15.38 H 100 V 16.62 H 0 Z"></path>') in html
+        assert f'<linearGradient id="dp-card-spark-signal-{i}" gradientUnits="userSpaceOnUse"' in html
+        assert (f'<path class="dp-card-spark-fill" fill="url(#dp-card-spark-glow-{i})" mask="url(#dp-card-spark-glow-mask-{i})" '
+                'd="M 0 16 H 100 V 29.42 H 0 Z"></path>') in html
+        # Masked by the line's own gradient, sheared about the baseline so the
+        # glow's edge slants back to the right as it falls away.
+        assert (f'<rect x="-100000" y="-100" width="200000" height="200" transform="matrix(1 0 1.5 1 -24 0)" '
+                f'fill="url(#dp-card-spark-signal-{i})"></rect>') in html
+    assert html.count('<stop class="dp-card-spark-rest" offset="0"></stop>') == 6
+    assert html.count('class="dp-card-spark-fill"') == 6
+    for retired in ("dp-card-spark-pulse", "dp-card-spark-point", "pathLength"):
+        assert retired not in html
+    assert '<polyline class="dp-card-spark-line"' not in html
+
+
+def test_dashboard_heartbeat_is_one_angular_ecg_complex_on_the_baseline():
+    """Straight segments only: a 48 px PQRST complex rising to y=2 and dropping
+    to y=23 from the y=16 baseline, starting and ending on it."""
+    app = (STATIC / "app.js").read_text()
+    block = app[app.index("const DASHBOARD_HEARTBEAT_COMPLEX = ["):app.index("const DASHBOARD_HEARTBEAT_WIDTH = 48;")]
+    points = [(float(x), float(y)) for x, y in re.findall(r"\[(-?[\d.]+), (-?[\d.]+)\]", block)]
+    assert points[0] == (0, 16) and points[-1] == (48, 16)
+    assert [x for x, _ in points] == sorted(x for x, _ in points)
+    assert min(y for _, y in points) == 2 and max(y for _, y in points) == 23
+
+
+def test_dashboard_sparklines_have_no_metric_history_owner():
+    app = (STATIC / "app.js").read_text()
+    for retired in ("metric-history", "recordDashboardMetricHistory", "renderDashboardMetricHistory",
+                    "DASHBOARD_HERO_METRICS", "dashboardMonotoneSparkPath", "dashboardCumulativeDeltas",
+                    "sample interval"):
+        assert retired not in app
+    assert not (STATIC / "ui-runtime.js").exists()
+
+
+def test_dashboard_kpi_hover_copy_describes_the_numbers():
+    html = (STATIC / "index.html").read_text()
+    # The hover copy is the card's DP tooltip (ui-tooltip.js), never a native title.
+    # (Each names its catalog key beside it, 1.0.14 localization.)
+    titles = re.findall(r'<div class="dash-hero-stat"[^\n]*? data-tooltip="([^"]+)" data-i18n-attr="data-tooltip:dashboard\.kpi\.\w+\.tooltip">\n', html)
+    assert len(titles) == 6
+    assert not re.findall(r'<div class="dash-hero-stat"[^\n]*? title="', html)
+    assert not any(word in title.lower() for title in titles for word in ("trend", "sample", "recent"))
+
+
+def test_dashboard_pulse_owner_is_lifecycle_bound():
+    app = (STATIC / "app.js").read_text()
+    assert "const DASHBOARD_HEARTBEAT_BPM = [3.5, 90];" in app       # idle floor 3.5 BPM: one heartbeat per 17,143 ms
+    assert "const DASHBOARD_HEARTBEAT_SETTLE_MS = 700;" in app
+    assert "const DASHBOARD_HEARTBEAT_TRAIL = 416;" in app
+    assert "const DASHBOARD_HEARTBEAT_EASE_MS = 4000;" in app
+    assert "const DASHBOARD_HEARTBEAT_SPEED = 0.24;" in app
+    assert "setDashboardHeartbeatThroughput(data.download_bytes_per_second, data.sustained_peak_bytes_per_second);" in app
+    assert "matchMedia('(prefers-reduced-motion: reduce)')" in app
+    assert app.count("syncDashboardSparkPulses();") == 2  # nav() and boot
+    assert "document.addEventListener('visibilitychange', syncDashboardSparkPulses);" in app
+    assert "new ResizeObserver(remeasureDashboardHeartbeat).observe(document.getElementById('dash-hero'));" in app
+    assert app.count("setTimeout(dashboardHeartbeat,") == 1  # one timer chain, scheduled in one place
+    assert app.count("requestAnimationFrame(dashboardHeartbeatFrame)") == 2
+    # Global Pause All reaches the owner from one place: loadStats, after it reads /stats.
+    assert app.count("processingPaused = !!s.paused;\n      syncDashboardHeartbeatPause();") == 1
+    assert app.count("syncDashboardHeartbeatPause()") == 3   # loadStats, the held-timer guard, its definition
+
+
+def test_a_hidden_document_keeps_the_strip_by_birthing_due_heartbeats_on_time():
+    app = (STATIC / "app.js").read_text()
+    advance = app[app.index("function advanceDashboardHeartbeat(now) {"):app.index("function easeDashboardHeartbeat(now) {")]
+    # While hidden (timer suspended) each heartbeat due is born at its own instant, from the
+    # scheduler's own rule -- no timer, no frame, nothing else as a source.
+    assert "if (state.suspended && !state.held) {" in advance
+    assert "const due = state.advancedAt + dashboardHeartbeatWait(state.advancedAt, born);" in advance
+    # Every due instant is stepped through exactly; only one that can still be on the strip is kept and
+    # given its complex, and the strip is pruned once, after the next one is timed.
+    assert "if (due >= kept) state.beats.push({born: due, shape: dashboardHeartbeatShape()});" in advance
+    assert advance.count("dashboardHeartbeatShape()") == 1 and advance.count("liveDashboardHeartbeats(") == 1
+    assert advance.index("state.nextAt = due; break;") < advance.index("liveDashboardHeartbeats(now)")
+    for absent in ("setTimeout", "requestAnimationFrame", "api(", "fetch("):
+        assert absent not in advance, absent
+    assert app.count("const wait = dashboardHeartbeatWait(now);") == 1   # the one scheduler rule, also used above
+    # The return no longer drops the heartbeats due while hidden.
+    assert "state.phase %= 1;" not in app
+    sync = app[app.index("function syncDashboardSparkPulses() {"):app.index("function remeasureDashboardHeartbeat() {")]
+    assert "} else if (state.suspended) {\n    advanceDashboardHeartbeat(now);" in sync
+    # A hold is never crossed by a birth: due ones are born before it, none while held.
+    pause = app[app.index("function syncDashboardHeartbeatPause() {"):app.index("function dashboardHeartbeatTargetBpm() {")]
+    assert pause.index("if (held && state.suspended) advanceDashboardHeartbeat(performance.now());") < pause.index("state.held = held;")
+    assert "easeDashboardHeartbeat(now);                  // none was due while held" in pause
+
+
+def test_dashboard_sparkline_is_the_page_titles_brush_stroke():
+    """The line is a filled brush outline around the signal (the page title's
+    calligraphic stroke), its widths eased so it never pinches or folds; the
+    glow stays the area under the signal itself."""
+    css = (STATIC / "ui-dashboard.css").read_text()
+    assert ".dp-card-spark .dp-card-spark-line {\n  stroke: none;" in css
+    assert "stroke-linecap" not in css[css.index(".dp-card-spark .dp-card-spark-line {"):][:200]
+    app = (STATIC / "app.js").read_text()
+    render = app[app.index("function renderDashboardHeartbeat(now) {"):app.index("function dashboardHeartbeatFrame(now) {")]
+    assert "card.line.setAttribute('d', dashboardBrushOutline(signal, card.height / DASHBOARD_HEARTBEAT_VIEW_HEIGHT));" in render
+    assert "card.fill.setAttribute('d', `${d} V ${DASHBOARD_HEARTBEAT_VIEW_HEIGHT} H ${start} Z`);" in render
+    brush = app[app.index("function dashboardBrushOutline(points, scale) {"):app.index("function renderDashboardHeartbeat(now) {")]
+    assert "for (let j = Math.max(0, i - ease); j <= Math.min(at.length - 1, i + ease); j++)" in brush
+
+
+def test_global_pause_all_settles_the_signal_where_it_stands_then_the_red_flatline():
+    app = (STATIC / "app.js").read_text()
+    pause = app[app.index("function syncDashboardHeartbeatPause() {"):app.index("function dashboardHeartbeatTargetBpm() {")]
+    # The authoritative hold settles it flat from where it stands; a release turns it back from where it is.
+    assert "settleDashboardHeartbeat(performance.now(), 0);" in pause and "settleDashboardHeartbeat(now, 1);" in pause
+    # Height is drawn from time alone (no timer, no animation callback that could fire stale), applied to
+    # every complex's deflection from the baseline -- the route, the travel and the trails are unchanged.
+    height = app[app.index("function dashboardHeartbeatHeight(now) {"):app.index("function settleDashboardHeartbeat(")]
+    assert "setTimeout" not in height and "requestAnimationFrame" not in height
+    assert "fmt(16 + (y - 16) * height)" in app
+    # Flat: the strip is cleared in the frame that reaches it, so the existing red flatline follows (never before).
+    frame = app[app.index("function dashboardHeartbeatFrame(now) {"):app.index("/* Run the heartbeat clock up to `now`")]
+    assert "if (settle.to === 0) { state.beats = []; renderDashboardHeartbeat(now); }" in frame
+    assert frame.index("state.beats = []") < frame.index("syncDashboardHeartbeatFlatline();")
+    assert app.count("dash-hero--flatline") == 1                    # the one flatline owner (syncDashboardHeartbeatFlatline)
+    assert "settle: null" in app[app.index("if (_dashboardSparkReducedMotion.matches) {"):]

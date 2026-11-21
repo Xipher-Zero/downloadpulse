@@ -1,0 +1,510 @@
+"""1.0.13 settings follow-up: source-level ownership contracts.
+
+Geometry itself is proven in the browser (``frontend/browser/*.spec.js``);
+these assert the ONE-owner properties a rendered measurement cannot:
+that a correction lives in its canonical file and nowhere else, and that a
+retired control really is gone rather than merely superseded.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import re
+
+from i18n_node import english, says
+
+STATIC = Path(__file__).resolve().parents[2] / "frontend" / "static"
+
+
+def read(name: str) -> str:
+    return (STATIC / name).read_text(encoding="utf-8")
+
+
+SETTINGS = read("ui-settings-page.js")
+TRANSFER_CONTRACT = read("ui-transfer-contract.css")
+PROVIDER_SHELL = read("ui-shell-provider-status.css")
+FORM_LAYOUT = read("ui-settings-form-layout.css")
+CARD_ICONS = read("ui-settings-card-icons.css")
+UNIVERSAL = read("ui-universal-language.css")
+USENET_CSS = read("ui-settings-usenet-servers.css")
+PROVIDER_STATUS = read("ui-provider-status.js")
+
+
+def body(source: str, name: str) -> str:
+    """One top-level function body, by name, without its neighbours.
+
+    The parameter list is skipped before the brace scan begins: a destructured
+    parameter carries braces of its own, which would otherwise terminate the
+    body at the end of the signature.
+    """
+    start = source.index(f"function {name}(")
+    depth, cursor = 0, source.index("(", start)
+    for index in range(cursor, len(source)):
+        if source[index] == "(":
+            depth += 1
+        elif source[index] == ")":
+            depth -= 1
+            if depth == 0:
+                cursor = index
+                break
+    depth = 0
+    for index in range(source.index("{", cursor), len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unterminated function {name}")
+
+
+# --- A. Route History: one shared provenance column ---------------------------
+
+def test_route_rows_share_one_column_definition():
+    assert ".dp-detail-route-list {" in TRANSFER_CONTRACT
+    listing = TRANSFER_CONTRACT[TRANSFER_CONTRACT.index(".dp-detail-route-list {"):]
+    listing = listing[:listing.index("}")]
+    assert "grid-template-columns" in listing, \
+        "the route list does not own the column tracks, so rows cannot share them"
+    row = TRANSFER_CONTRACT[TRANSFER_CONTRACT.index(".dp-detail-route-row {"):]
+    row = row[:row.index("\n}")]
+    assert "subgrid" in row, "route rows still size their own trailing columns"
+
+
+def test_route_mobile_stacking_is_preserved():
+    assert "@media (max-width:779px)" in TRANSFER_CONTRACT
+    mobile = TRANSFER_CONTRACT[TRANSFER_CONTRACT.index("@media (max-width:779px)"):]
+    assert ".dp-detail-route-row { grid-template-columns:24px minmax(0,1fr); }" in mobile
+
+
+def test_route_markup_is_unchanged_semantics():
+    app = read("app.js")
+    for element in ("dp-detail-route-order", "dp-detail-route-provider", "dp-detail-route-identity",
+                    "dp-detail-route-relation", "dp-detail-route-outcome"):
+        assert app.count(f'class="{element}"') == 1
+
+
+# --- B. Provider Status tier labels -------------------------------------------
+
+def test_tier_label_centring_has_exactly_one_owner():
+    rule = PROVIDER_SHELL[PROVIDER_SHELL.index(".sidebar-footer .dp-provider-status-tier-label {"):]
+    rule = rule[:rule.index("}")]
+    assert "text-align: center" in rule
+    others = [name for name in ("ui-provider-state.css", "ui-settings-page.css", "style.css")
+              if "dp-provider-status-tier-label" in read(name)]
+    assert others == [], f"a second tier-label style owner appeared: {others}"
+
+
+def test_provider_rows_are_not_centred_with_the_tier_label():
+    assert ".dp-provider-status-row" not in PROVIDER_SHELL[
+        PROVIDER_SHELL.index(".dp-provider-status-tier-label"):
+        PROVIDER_SHELL.index(".dp-provider-status-tier-label") + 400]
+
+
+# --- C. one Settings field spine ----------------------------------------------
+
+def test_the_field_spine_targets_the_control_left_edge_not_its_text():
+    """The frozen invariant is ``label.left == control.left``.
+
+    A previous revision of this pass moved the datum to the control's TEXT
+    edge, indenting every label and hint by the control's border plus padding.
+    That changes the requirement rather than meeting it, so the datum is
+    pinned here: the one owner zeroes the inline offsets and introduces none.
+    """
+    block = FORM_LAYOUT[FORM_LAYOUT.index("#view-settings .dp-settings-field > .form-label"):]
+    block = block[:block.index("}") + 1]
+    assert "margin-inline-start: 0" in block
+    assert "padding-inline-start: 0" in block
+    assert "--dp-field-text-inset" not in FORM_LAYOUT
+    assert "--dp-settings-field-spine" not in FORM_LAYOUT
+
+
+def test_the_field_datum_has_exactly_one_owner():
+    stylesheets = [path.name for path in STATIC.glob("ui-*.css")]
+    owners = [name for name in stylesheets
+              if re.search(r"\.dp-settings-field > \.form-label[^{]*\{[^}]*padding-inline-start",
+                           read(name), flags=re.S)]
+    assert owners == ["ui-settings-form-layout.css"], \
+        f"the Settings field datum has more than one owner: {owners}"
+
+
+def test_no_per_tab_label_or_hint_nudge_survives():
+    offenders = []
+    for path in STATIC.glob("ui-settings-*.css"):
+        if path.name == "ui-settings-form-layout.css":
+            continue
+        for match in re.finditer(r"\.form-(?:label|hint)[^{]*\{([^}]*)\}", read(path.name)):
+            block = match.group(1)
+            for declaration in ("inset-inline-start", "margin-left", "padding-left"):
+                if re.search(rf"{declaration}\s*:\s*(?!0)", block):
+                    offenders.append((path.name, declaration))
+    assert offenders == [], f"per-tab label/hint nudges reappeared: {offenders}"
+
+
+# --- D. Usenet clear-password row ---------------------------------------------
+
+def test_clear_password_is_inside_the_password_field():
+    """DP 1.0.14: the explicit destructive Clear is inside the Password
+    field's own border -- the shared compound field (.dp-action-field), which
+    centres it vertically at the trailing edge -- not a group beside it."""
+    assert ".dp-usenet-clear-password" not in USENET_CSS
+    assert ".dp-usenet-field--password .dp-action-field" in USENET_CSS
+    rule = USENET_CSS[USENET_CSS.index(".dp-usenet-field--password .dp-action-field"):]
+    rule = rule[:rule.index("}")]
+    for banned in ("position: absolute", "transform", "margin-left"):
+        assert banned not in rule, banned
+
+
+# --- E. Network Sources master -------------------------------------------------
+
+def test_the_group_master_uses_a_generic_control_identity():
+    assert "data-integration-group-enabled" in SETTINGS
+    assert "groupEnableChanged" in SETTINGS
+
+
+def test_the_group_master_is_derived_from_presentation_metadata():
+    panel = body(SETTINGS, "sourcesPanel")
+    assert "status_group" in panel, \
+        "the group identity is not taken from integration presentation metadata"
+    assert "'direct_sources'" not in panel and '"direct_sources"' not in panel, \
+        "a group id was hardcoded in the UI"
+
+
+def test_the_group_master_mutation_is_immediate_and_scoped():
+    handler = body(SETTINGS, "groupEnableChanged")
+    assert "'PATCH', `/integration-groups/" in handler
+    assert "input.disabled = true" in handler, "the control is not disabled in flight"
+    assert "renderGroupState" in handler, "failure does not roll back to canonical state"
+
+
+def test_the_broad_settings_payload_never_carries_the_group_namespace():
+    # The writable whole-settings document has one owner (settingsDocument),
+    # used by the single-field settings-document commit, so the canonical
+    # namespaces are stripped in exactly one place.
+    document = body(SETTINGS, "settingsDocument")
+    assert "delete document.integration_groups;" in document, \
+        "a whole-settings write could replay a stale group master"
+    assert "delete document.integrations;" in document
+    assert "delete document.transfer_policy;" in document
+    # That owner is applied to FRESHLY read canonical truth, never to the page,
+    # and there is no page-level payload left that could reach it.
+    assert "settingsDocument(canonical)" in body(SETTINGS, "writeSettingsDocument")
+    assert "settingsDocument(state.settings)" not in SETTINGS
+    assert "nonAuthPayload" not in SETTINGS
+
+
+def test_provider_status_composes_the_gate_with_the_existing_health_model():
+    aggregate = body(PROVIDER_STATUS, "aggregateState")
+    assert "disabled" in aggregate and "mixed" in aggregate and "healthy" in aggregate, \
+        "the health model was reduced to a toggle calculator"
+    assert re.search(r"function aggregateState\(entries,\s*\w+", PROVIDER_STATUS), \
+        "the group gate does not reach the aggregate state"
+    assert "groupEnabled" in PROVIDER_STATUS, \
+        "the renderer never learns the group master state"
+    assert "general" not in PROVIDER_STATUS.lower().replace("generation", ""), \
+        "the status renderer names an integration family"
+
+
+# --- F. AllDebrid Test relocation ---------------------------------------------
+
+def test_the_alldebrid_test_action_exists_exactly_once_and_there_is_no_footer():
+    # The control's MARKUP is declared once, by the shared provider-level Test
+    # grammar; the panel names the action it asks that grammar for.
+    assert SETTINGS.count("providerTestAction('test-alldebrid')") == 1
+    assert SETTINGS.count('${attribute}="${html(action)}"') == 1
+    # The Settings footer it was relocated out of no longer exists at all, so
+    # nothing can be routed back into one.
+    assert "dp-settings-master-footer" not in SETTINGS
+    assert "Test AllDebrid" not in SETTINGS
+    assert SETTINGS.count("testConnection('alldebrid'") == 1, \
+        "a second AllDebrid connection test implementation exists"
+
+
+def test_every_provider_level_test_uses_one_declared_control_grammar():
+    """DP 1.0.13: Usenet is a provider-level Test exactly like AllDebrid's, so
+    it renders the SAME control from the SAME declaration, in the same header
+    slot. No Usenet-specific button styling exists."""
+    grammar = body(SETTINGS, "providerTestAction")
+    assert "dp-settings-action-chip" in grammar and "flask-conical.svg" in grammar
+    assert "<span${keyed(say('settings.test'))}>${html(t('settings.test'))}</span>" in grammar and english("settings.test") == "Test"
+    panel = body(SETTINGS, "sourcesPanel")
+    assert "providerTestAction('test-alldebrid')" in panel
+    assert "providerTestAction('test-usenet')" in panel
+    assert "dp-settings-usenet-test" not in SETTINGS, "Usenet grew its own Test styling"
+
+
+def test_the_relocated_test_button_lives_in_the_alldebrid_header_rail():
+    panel = body(SETTINGS, "sourcesPanel")
+    assert "headerAction: providerTest" in panel, \
+        "the AllDebrid test control is not rendered in the provider card header rail"
+
+
+# --- G. protocol iconography ---------------------------------------------------
+
+PROTOCOL_COLOURS = {"globe": "#3B82F6", "arrow-up-down": "#2DD4BF", "newspaper": "#C547FF",
+                    "network-services": "#D657FF"}
+
+
+def test_the_lucide_protocol_assets_are_vendored_locally():
+    for glyph in PROTOCOL_COLOURS:
+        asset = STATIC / "icons" / "lucide" / f"{glyph}.svg"
+        assert asset.exists(), f"{glyph}.svg is not vendored"
+        markup = asset.read_text(encoding="utf-8")
+        assert 'viewBox="0 0 24 24"' in markup
+        assert PROTOCOL_COLOURS[glyph].lower() in markup.lower(), \
+            f"{glyph}.svg does not carry its frozen protocol colour"
+    assert "cdn" not in CARD_ICONS.lower()
+
+
+def test_one_protocol_chip_primitive_carries_the_whole_treatment():
+    """DP 1.0.13 Revision 3: the protocol identity is a CHIP, declared once.
+
+    The previous shape glued the identity onto the naked inner-card icon
+    rules, so it rendered as a free-floating glowing SVG with no container.
+    The chip now owns its own geometry, border, surface and dimensional
+    treatment -- and each protocol contributes nothing but a colour.
+    """
+    assert ".dp-settings-protocol-chip {" in CARD_ICONS
+    assert ".dp-settings-protocol-icon" not in CARD_ICONS, "the superseded class survives"
+    # It no longer borrows the naked inner-card icon's geometry or glow.
+    for rule in re.findall(r"([^{}]*)\{[^{}]*\}", CARD_ICONS):
+        if "dp-settings-inner-card-icon" in rule:
+            assert "protocol" not in rule, f"the chip shares an owner with the naked icon: {rule.strip()[:80]}"
+
+    chip = CARD_ICONS[CARD_ICONS.index(".dp-settings-protocol-chip {"):]
+    chip = chip[:chip.index("}")]
+    for property_ in ("border:", "border-radius:", "background:", "box-shadow:"):
+        assert property_ in chip, f"the chip has no {property_.strip(':')}"
+    assert "--dp-protocol-color" in chip, "the treatment is not derived from one datum"
+
+
+def test_a_protocol_contributes_only_its_colour():
+    """No six hand-maintained copies of the same border/surface/glow."""
+    blocks = re.findall(r"\[data-(?:protocol|section)='[a-z_]+'\][^{]*\{([^}]*)\}", CARD_ICONS)
+    blocks = [block for block in blocks if "--dp-protocol-color" in block]
+    assert len(blocks) >= 3, "the per-protocol colour data went missing"
+    for block in blocks:
+        declarations = {line.split(":")[0].strip() for line in block.split(";") if line.strip()}
+        assert declarations == {"--dp-protocol-color"}, \
+            f"a protocol block declares more than its colour: {sorted(declarations)}"
+    tokens = read("design-tokens.css")
+    for colour in PROTOCOL_COLOURS.values():
+        assert colour in CARD_ICONS or colour in tokens, f"{colour} has no canonical colour datum"
+
+
+def test_the_chip_glow_is_declared_once_per_theme_not_per_protocol():
+    glows = re.findall(r"([^{}]*protocol-chip img[^{}]*)\{([^{}]*)\}", CARD_ICONS)
+    assert len(glows) == 2, f"the chip glyph glow is declared {len(glows)} times, expected dark + light"
+    for selector, body in glows:
+        assert "drop-shadow" in body
+        assert "--dp-protocol-color" in body, "the glow does not derive from the protocol colour"
+
+
+def test_every_protocol_identity_uses_the_same_block():
+    """One composer emits every Settings identity chip, and it is the only emitter:
+    a protocol through protocolIcon(), a Settings family identity through
+    familyIcon(), both through identityChip().
+
+    Which six places render one is proven where it is visible, in
+    frontend/browser/settings-protocol-icons.spec.js.
+    """
+    assert SETTINGS.count('class="dp-settings-protocol-chip') == 1, \
+        "an identity chip is emitted somewhere other than identityChip()"
+    assert SETTINGS.count("identityChip(") == 3                     # the emitter and its two callers
+    # The one protocol glyph table lives with the transfer identity owner, which
+    # Settings reads it from.
+    assert "const PROTOCOL_GLYPHS = window.DPTransferSourcePresentation.PROTOCOL_GLYPHS;" in SETTINGS
+    owner = read("ui-transfer-source-presentation.js")
+    table = owner[owner.index("const PROTOCOL_GLYPHS"):]
+    table = table[:table.index("});")]
+    for protocol, glyph in (("direct_sources", "network-services"), ("general_http", "globe"),
+                            ("general_ftp", "arrow-up-down"), ("usenet", "newspaper")):
+        assert f"{protocol}: '{glyph}'" in table, f"{protocol} has no frozen glyph"
+    # One composer plus its call sites. The two Network Sources members each
+    # render their chip through the ONE protocol-box composer rather than
+    # through a call site of their own, so adding a member adds no call site.
+    assert SETTINGS.count("protocolIcon(") == 5
+
+
+# --- H. Downloads terminology --------------------------------------------------
+
+def _without_comments(source: str) -> str:
+    """Source with its comments removed.
+
+    A comment is not operator-facing, and the invariant under test is that no
+    visible alias survives -- not that the word never appears in prose.
+    """
+    source = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return re.sub(r"^\s*//.*$", "", source, flags=re.M)
+
+
+def test_no_operator_facing_direct_transfers_or_direct_sources_title_remains():
+    code = _without_comments(SETTINGS)
+    for alias in ("Direct Transfers", "Direct Sources", "Global Sources"):
+        assert not says(code, alias), f"visible alias {alias!r} survives"
+    assert "executorTuningCard('direct', say('integration.group.direct_sources')" in code
+    assert english("integration.group.direct_sources") == "Network Sources"
+
+
+def test_downloads_tuning_cards_carry_the_same_protocol_identity():
+    """Downloads renders the identity through the SAME composer as Sources.
+
+    That the two renderings are pixel-identical is proven in the browser;
+    what is proven here is that there is no second Downloads-only identity.
+    """
+    assert "executorTuningCard('direct', say('integration.group.direct_sources')," in SETTINGS
+    # (each card then names its own Help topic.)
+    assert "directTransfersTuning(s), 'direct_sources', 'tuning-direct')" in SETTINGS
+    assert "usenetTuning(s), 'usenet', 'tuning-usenet')" in SETTINGS
+    tuning = body(SETTINGS, "executorTuningCard")
+    assert "protocolIcon(protocol)" in tuning
+    assert "dp-settings-protocol-icon" not in tuning, \
+        "Downloads builds its own identity markup instead of using the composer"
+
+
+# --- G. Services final corrective pass (Defects 1, 2, 4, 5) --------
+#
+# Expansion is LOCAL PRESENTATION STATE. Enabled state, configured state and
+# verified state are canonical truth about the provider; none of them is an
+# opinion about whether a card is open. These contracts hold the separation at
+# the source, where a rendered measurement cannot prove "and nowhere else".
+
+
+def test_a_provider_card_never_derives_its_disclosure_from_canonical_state():
+    card = body(SETTINGS, "providerCard")
+    assert "settingsDisclosure(bodyId, false," in card, \
+        "the card still opens itself from canonical state"
+    assert "${enabled ? '' : ' hidden'}" not in card, \
+        "the card body visibility is still a projection of enabled state"
+    assert "!headerOnly && !enabled" not in card
+
+
+def test_the_state_renderer_no_longer_owns_ordinary_disclosure_state():
+    renderer = body(SETTINGS, "renderIntegrationState")
+    assert "if (enabled) setDisclosureExpanded(disclosure, true);" not in renderer, \
+        "an accepted enable still expands the card on every render"
+
+
+def test_the_only_automatic_expansion_is_an_accepted_enable_of_an_unconfigured_provider():
+    handler = body(SETTINGS, "providerEnableChanged")
+    assert "setDisclosureExpanded(" in handler, \
+        "enabling an unconfigured provider no longer opens it for configuration"
+    assert ".configured" in handler, \
+        "the expansion is not conditioned on the provider being unconfigured"
+    # It follows the ACCEPTED canonical state, never the operator's click.
+    assert "state.settings?.integrations?.[identity]" in handler
+
+
+def test_general_sources_uses_the_one_canonical_disclosure_primitive():
+    group = body(SETTINGS, "groupCard")
+    assert "settingsDisclosure(" in group, \
+        "the group card grew its own disclosure markup"
+    assert SETTINGS.count("function settingsDisclosure(") == 1
+    assert SETTINGS.count("function setDisclosureExpanded(") == 1
+    panel = body(SETTINGS, "sourcesPanel")
+    general = panel[panel.index("const generalSources = groupCard("):]
+    assert "collapsible: true" in general[:general.index(");")], \
+        "Network Sources is not collapsible through the canonical primitive"
+    external = panel[panel.index("const premiumServices = groupCard("):]
+    assert "collapsible" not in external[:external.index(");")], \
+        "Premium Services was made collapsible by this pass"
+
+
+def test_network_sources_opens_closed_and_settings_keeps_one_workspace_from_780px():
+    """DP 1.0.14: Network Sources is closed on first arrival (the remembered
+    choice still wins afterwards), its row is measured as it opens, and the
+    Settings workspace, its bounded Services and Extraction chains, its card
+    headers and the topbar's speed badge change mode only at the shell's
+    780px boundary -- no Settings rule switches at 900/901px."""
+    panel = body(SETTINGS, "sourcesPanel")
+    general = panel[panel.index("const generalSources = groupCard("):]
+    general = general[:general.index("});")]
+    assert "expanded: false," in general and "expanded: true" not in general
+    assert "disclosureOpen(persistKey, options.expanded)" in body(SETTINGS, "groupCard")
+    opening = body(SETTINGS, "setDisclosureExpanded")
+    assert "body.matches(SERVICES_LISTS.networkTop)" in opening
+    assert opening.index("servicesRowFit?.()") < opening.index("window.DPMotion.disclose(")
+    assert "if (row && !network.getAnimations().length) {" in body(SETTINGS, "fitServicesRows")
+
+    for name in ("ui-settings-page.css", "ui-settings-form-layout.css", "ui-settings-archive-passwords.css",
+                 "ui-settings-downloads-completion.css", "ui-settings-authentication.css",
+                 "ui-settings-notifications.css", "ui-settings-maintenance-wipe.css"):
+        css = read(name)
+        assert "(max-width: 900px)" not in css and "(min-width: 901px)" not in css, name
+    page = read("ui-settings-page.css")
+    # The bounded workspace holds at every width (1.0.14 mobile master cards);
+    # the bounded Services deck stays a 780px-and-wider layout.
+    assert "\n#content:has(#view-settings.active) {\n  overflow-y: hidden;" in page
+    assert "@media (min-width: 780px) {\n  #view-settings .dp-settings-scroll:has([data-panel=\"sources\"]:not([hidden]))" in page
+    assert "#view-settings.dp-settings-clean-view.active {\n    height: auto;" not in page
+    assert "@media (min-width: 780px) {\n  /* The Extraction panel owns" in FORM_LAYOUT
+    # A centred second-row copy is bounded to the header it sits in.
+    assert "max-width: calc(200cqi - 100%);" in page
+
+    # The badge leaves the topbar only with the handheld one (below 780px).
+    assert ("@media (max-width: 899px) {\n  #page-title { font-size: 21px; }\n"
+            "  #topbar-actions .btn { padding-inline: 9px; }\n}") in read("ui-shell.css")
+    assert "@media (min-width: 780px) and (max-width: 1050px) {\n  .dp-page-heading { min-width: 0; }" in read("ui-shell-structural.css")
+
+
+def test_the_provider_header_reports_exactly_the_three_configuration_states():
+    status = body(SETTINGS, "providerStatus")
+    # 1.0.14: by their catalog keys; the words unchanged.
+    for state, words in (("unconfigured", "Unconfigured"), ("unverified", "Unverified"), ("verified", "Verified")):
+        assert f"say('settings.status.{state}')" in status and english(f"settings.status.{state}") == words
+    # Saved is not proven: the middle state says which of the two it is.
+    assert "'Configured'" not in status
+    for redundant in ("'Enabled'", "'Disabled'", "Provider configured", "Configuration required"):
+        assert redundant not in status, f"the header still repeats {redundant}"
+    # Verified is read from canonical truth, never remembered locally.
+    card = body(SETTINGS, "providerCard")
+    assert "entry.verified" in card
+    for forbidden in ("localStorage", "sessionStorage"):
+        assert forbidden not in SETTINGS, f"{forbidden} became a verification authority"
+
+
+def test_the_three_states_use_the_canonical_state_colour_variables():
+    provider_state = read("ui-provider-state.css")
+    assert 'data-tone="error"' in provider_state and "var(--dp-state-error)" in provider_state
+    assert 'data-tone="warning"' in provider_state and "var(--dp-state-caution)" in provider_state
+    assert 'data-tone="success"' in provider_state and "var(--dp-state-success)" in provider_state
+
+
+def test_an_accepted_scoped_mutation_publishes_through_the_one_synchronisation_owner():
+    """Defect 4: the acceptance helpers wrote only ``state.settings``, so the
+    provider-status renderer -- which reads ``settingsData`` -- kept serving
+    pre-mutation state until an unrelated Apply Settings performed a fresh GET."""
+    for helper in ("adoptIntegration", "adoptIntegrationGroup", "adoptTransferPolicy"):
+        source = body(SETTINGS, helper)
+        assert "syncGlobalSettings(" in source, f"{helper} bypasses the one settings owner"
+        assert "state.settings = " not in source, f"{helper} still writes a second cache"
+    assert SETTINGS.count("function syncGlobalSettings(") == 1
+    # And no compensating re-read was introduced to paper over it.
+    handler = body(SETTINGS, "providerEnableChanged")
+    assert "GET" not in handler, "a compensating settings GET was added after the toggle"
+
+
+def test_one_neutral_acceptance_seam_serves_every_owner_of_provider_configuration():
+    """Usenet server cards are their own canonical writer; the header must
+    converge with no Apply Settings, no reload and no poll."""
+    usenet = read("ui-settings-usenet-servers.js")
+    assert "downloadpulse:integration-accepted" in usenet
+    assert "downloadpulse:integration-accepted" in SETTINGS
+    assert usenet.count("dispatchEvent") == 1, "more than one publication seam exists"
+    # Convergence is published, never polled. (ui-settings-page.js keeps one
+    # pre-existing interval, the OIDC sign-in popup watcher; this pass adds none.)
+    assert "setInterval" not in usenet
+    assert SETTINGS.count("setInterval") == 1
+    # Neutral: the seam carries the identity the response states.
+    assert "integration_id" in usenet
+
+
+def test_an_open_gate_with_no_participating_member_is_reported_as_red():
+    """Defect 5: ``mixed`` told the operator that some members still
+    participate. None do. It must read red -- without pretending the master
+    itself is off, which is a different and still-meaningful state."""
+    aggregate = body(PROVIDER_STATUS, "aggregateState")
+    assert "if (!enabled.length) return 'mixed';" not in aggregate
+    assert "'unavailable'" in aggregate, "no neutral zero-participant state exists"
+    dot = body(PROVIDER_STATUS, "dotClass")
+    assert "unavailable:'error'" in dot.replace(" ", ""), \
+        "the zero-participant state is not mapped to the existing red presentation"

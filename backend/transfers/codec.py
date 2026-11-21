@@ -1,0 +1,153 @@
+"""Versionable persistence encoding; opaque adapter contexts are not interpreted."""
+from __future__ import annotations
+
+import base64
+from dataclasses import fields, is_dataclass
+from enum import Enum
+import json
+from typing import Mapping
+
+from transfers.errors import NormalizedError
+from transfers.input_required import SubmittedInput
+from transfers.staged_input import StagedPayload
+from transfers.models import (
+    ArtifactFingerprint, CachePresence, DeliveryKind, Endpoint, ExecutionHandle, FingerprintKind, InputMethod,
+    IntegrityMetadata, MaterializationKind, MaterializationResult, MaterializedEntry, Ownership, ProviderResource,
+    ResolverArtifactIdentityEvidence, TransferCandidate, TransferRequest, SourceEntry, SourceIdentity,
+)
+
+
+def _value(value):
+    if isinstance(value, SubmittedInput):
+        raise TypeError("Transient input cannot be persisted")
+    if isinstance(value, Endpoint) and value.transient:
+        # The ONE persistence rule for transient execution material: only the
+        # fact that the endpoint exists and must be regenerated is durable --
+        # never its address or headers, whatever row or summary it is part of.
+        return {"scheme": value.scheme, "address": "", "headers": {}, "transient": True}
+    if isinstance(value, NormalizedError):
+        return _value(value.as_dict(diagnostics=True))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, StagedPayload):
+        # A durable reference, not the payload: three scalars, always bounded.
+        return {"$staged": value.as_context()}
+    if isinstance(value, bytes):
+        return {"$bytes": base64.b64encode(value).decode("ascii")}
+    if is_dataclass(value):
+        return {item.name: _value(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_value(item) for item in value]
+    return value
+
+
+def dump(value) -> str:
+    return json.dumps(_value(value), separators=(",", ":"), sort_keys=True, allow_nan=False)
+
+
+def load(value: str | None, default=None):
+    return json.loads(value) if value else default
+
+
+def request(value: dict) -> TransferRequest:
+    data = dict(value)
+    payload = data["payload"]
+    if isinstance(payload, dict) and "$staged" in payload:
+        data["payload"] = StagedPayload.from_context(payload["$staged"])
+    elif isinstance(payload, dict) and "$bytes" in payload:
+        data["payload"] = base64.b64decode(payload["$bytes"], validate=True)
+    return TransferRequest(**data)
+
+
+def optional_request(value: dict | None) -> TransferRequest | None:
+    return request(value) if value else None
+
+
+def resource(value: dict | None) -> ProviderResource | None:
+    if value is None:
+        return None
+    data = dict(value)
+    data["ownership"] = Ownership(data["ownership"])
+    return ProviderResource(**data)
+
+
+def candidate(value: dict) -> TransferCandidate:
+    data = dict(value)
+    data["endpoints"] = tuple(Endpoint(**item) for item in data["endpoints"])
+    data["integrity"] = tuple(IntegrityMetadata(**item) for item in data.get("integrity", []))
+    data["resource"] = resource(data.get("resource"))
+    if data.get("source_identity"):
+        data["source_identity"] = SourceIdentity(**data["source_identity"])
+    if data.get("resolver_identity_evidence"):
+        data["resolver_identity_evidence"] = ResolverArtifactIdentityEvidence(**data["resolver_identity_evidence"])
+    if data.get("refresh_request"):
+        data["refresh_request"] = request(data["refresh_request"])
+    if data.get("content_evidence"):
+        evidence = dict(data["content_evidence"])
+        evidence["kind"] = FingerprintKind(evidence["kind"])
+        data["content_evidence"] = ArtifactFingerprint(**evidence)
+    if "delivery" in data:
+        data["delivery"] = DeliveryKind(data["delivery"])
+    if "materialization" in data:
+        data["materialization"] = MaterializationKind(data["materialization"])
+    methods = data.get("accepted_input_methods")
+    context = dict(data.get("context") or {})
+    if "accepted_input_methods" in context:
+        # One-way decode of candidates persisted before the typed field
+        # existed (1.0.12 General HTTP rows): the opaque entry terminates at the
+        # canonical typed field and is never written back.
+        legacy = context.pop("accepted_input_methods")
+        data["context"] = context
+        if methods is None:
+            methods = legacy
+    data["accepted_input_methods"] = tuple(InputMethod(item) for item in (methods or ()))
+    return TransferCandidate(**data)
+
+
+def cache_presence(value) -> CachePresence:
+    """Decode a durable cache-presence value. A row persisted before the fact
+    existed (absent/None) or carrying an unrecognised value is ``UNKNOWN`` --
+    never guessed, never migrated."""
+    try:
+        return CachePresence(value)
+    except (ValueError, TypeError):
+        return CachePresence.UNKNOWN
+
+
+_HANDLE_FIELDS = frozenset({"executor_id", "attempt_id", "correlation", "native"})
+
+
+def handle(value: dict | None) -> ExecutionHandle | None:
+    """Decode the canonical handle layout only. Rows written in the historical
+    single-context layout are rewritten once at initialization
+    (``db.database._migrate_execution_identity``) and never decoded here."""
+    if not value:
+        return None
+    if set(value) != _HANDLE_FIELDS:
+        raise TypeError("Execution handle is not in the canonical layout")
+    return ExecutionHandle(value["executor_id"], value["attempt_id"], value["correlation"], value["native"])
+
+
+def materialization(value: str | None) -> MaterializationResult | None:
+    data = load(value)
+    if not data:
+        return None
+    return MaterializationResult(MaterializationKind(data["kind"]), tuple(
+        MaterializedEntry(item["relative_path"], item.get("bytes")) for item in data["entries"]))
+
+
+def entry(value: dict | None) -> SourceEntry | None:
+    if not value:
+        return None
+    return SourceEntry(value["name"], value["expected_bytes"], value["relative_path"], request(value["request"]),
+                       tuple(request(item) for item in value.get("alternates") or ()),
+                       tuple(IntegrityMetadata(**item) for item in value.get("integrity") or ()),
+                       # A row written before the fact existed is a collection
+                       # member, exactly as it was placed then.
+                       bool(value.get("whole_resource", False)))
+
+
+def error(value: str | None) -> NormalizedError | None:
+    return NormalizedError.from_dict(load(value)) if value else None
