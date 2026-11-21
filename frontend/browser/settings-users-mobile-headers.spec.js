@@ -99,8 +99,9 @@ const LADDER = {
 const expected = (name, fit) => LADDER[name][fit >= 3 ? 2 : fit === 2 ? 1 : 0];
 
 test('every header is one row, its title on at most two lines, its labels the step\'s, and narrowing and widening agree', async ({browser}) => {
-  // Up to 39.6s on a hosted runner, near the 45s default: twice that budget.
-  test.setTimeout(90_000);
+  // About 150 widths each way, measured at every one: it has passed 90s on a
+  // hosted runner (1.0.14 and 1.0.0 alike), so a budget well clear of that.
+  test.setTimeout(240_000);
   const {context, page} = await open(browser);
   const widths = [];
   for (let width = 779; width >= 320; width -= 3) widths.push(width);

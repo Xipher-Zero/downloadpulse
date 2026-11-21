@@ -262,6 +262,17 @@ jobs:
             Invoke-WebRequest -Uri $url -OutFile $dest
             if ((Get-FileHash $dest -Algorithm SHA256).Hash.ToLower() -ne $digest) { throw "$name does not match official.sha256" }
           }
+          # Upstream rsync's tarball, fetched here so an outage of download.samba.org cannot fail the
+          # build: its own host first, then the rsync project's GitHub release of the same file.
+          # build-windows.sh takes it from the recipe and makepkg verifies it against the PKGBUILD's
+          # own sha256sums wherever it came from.
+          $tarball = "$s\recipe\rsync-3.5.2.tar.gz"
+          foreach ($u in @('https://download.samba.org/pub/rsync/src/rsync-3.5.2.tar.gz',
+                           'https://github.com/RsyncProject/rsync/releases/download/v3.5.2/rsync-3.5.2.tar.gz')) {
+            try { Invoke-WebRequest -Uri $u -OutFile $tarball -TimeoutSec 180; break }
+            catch { Write-Host "rsync source unavailable at ${u}: $_"; Remove-Item -Force -ErrorAction SilentlyContinue $tarball }
+          }
+          if (-not (Test-Path $tarball)) { throw "rsync-3.5.2.tar.gz could not be fetched from either source" }
           & tar.exe -xf "$s\msys2-base-x86_64-20260927.tar.xz" -C $s
           # HOME inside this MSYS2 root before its first start (the recipe requires it).
           $env:HOME = "$m\home\runner"; $env:MSYSTEM = 'MSYS'; $env:CHERE_INVOKING = '1'; $env:MSYS2_PATH_TYPE = 'minimal'
