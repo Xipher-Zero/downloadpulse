@@ -60,7 +60,7 @@ jaraco.functools==4.6.0
 jaraco.collections==5.0.0
 jaraco.text==3.8.1  # Newer version introduces irrelevant extra dependencies
 jaraco.classes==3.4.0
-jaraco.context==4.3.0
+jaraco.context==6.1.2
 more-itertools==11.1.0
 zc.lockfile==4.0
 tempora==5.8.1

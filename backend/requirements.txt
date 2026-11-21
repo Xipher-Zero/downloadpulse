@@ -1074,9 +1074,9 @@ jaraco-collections==5.0.0 \
     # via
     #   -r requirements.in
     #   cherrypy
-jaraco-context==4.3.0 \
-    --hash=sha256:4dad2404540b936a20acedec53355bdaea223acb88fd329fa6de9261c941566e \
-    --hash=sha256:5d9e95ca0faa78943ed66f6bc658dd637430f16125d86988e77844c741ff2f11
+jaraco-context==6.1.2 \
+    --hash=sha256:bf8150b79a2d5d91ae48629d8b427a8f7ba0e1097dd6202a9059f29a36379535 \
+    --hash=sha256:f1a6c9d391e661cc5b8d39861ff077a7dc24dc23833ccee564b234b81c82dfe3
     # via
     #   -r requirements.in
     #   jaraco-text

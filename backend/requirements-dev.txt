@@ -113,7 +113,7 @@ jaraco-collections==5.0.0
     # via
     #   -r requirements.in
     #   cherrypy
-jaraco-context==4.3.0
+jaraco-context==6.1.2
     # via
     #   -r requirements.in
     #   jaraco-text
