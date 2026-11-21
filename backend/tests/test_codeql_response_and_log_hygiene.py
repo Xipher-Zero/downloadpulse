@@ -63,3 +63,12 @@ def test_notification_failure_reason_is_one_log_line(monkeypatch, caplog):
     failures = [r.getMessage() for r in caplog.records if "notification failed" in r.getMessage()]
     assert failures and all("\n" not in line and "\r" not in line for line in failures)
     assert "\\n2026-01-01" in failures[0]
+
+
+def test_log_values_never_carry_a_line_break():
+    from core.logging_utils import sanitize_exception, sanitize_log_value
+
+    forged = "name\r\n2026-11-21 ERROR forged record"
+    assert "\n" not in sanitize_log_value(forged) and "\r" not in sanitize_log_value(forged)
+    assert sanitize_log_value(forged) == "name\\r\\n2026-11-21 ERROR forged record"
+    assert "\n" not in sanitize_exception(RuntimeError(forged))

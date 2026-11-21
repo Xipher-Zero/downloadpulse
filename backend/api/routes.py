@@ -1616,7 +1616,7 @@ async def _save_where_chosen(name: str, write) -> dict:
     try:
         await asyncio.to_thread(write, path)
     except OSError:
-        logger.exception("desktop save of %s failed", name)
+        logger.exception("desktop save of %s failed", sanitize_log_value(name, max_length=120))
         raise DisplayError(500, "The file could not be saved", code="desktop.save_failed") from None
     return {"saved": True, "name": Path(path).name}
 

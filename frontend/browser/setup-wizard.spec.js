@@ -1,4 +1,6 @@
 const { test, expect } = require('@playwright/test');
+const fs = require('fs');
+const nodePath = require('path');
 
 /* DP 1.0.14 setup wizard, WS2: the wizard's presentation owner
  * (ui-setup-wizard.js) and My Account's Setup Wizard section (auth.js).
@@ -486,8 +488,15 @@ test('W10: Test First-Run Wizard previews the first-run pages of Standalone and 
 test('W11: Test First-Run Wizard is hidden by default and offered only on a development build\'s explicit opt-in', async ({page}) => {
   await load(page, {preview: false});
   await page.evaluate(() => window.downloadPulseAuth.fetch('/api/setup/rerun', {method: 'DELETE'}));
-  // This source tree is a development build, started without the opt-in: the server offers no preview.
-  expect(await state(page)).toMatchObject({development_build: true, setup_preview: false});
+  // Started without the opt-in, the server offers no preview, whatever this
+  // source tree's release identity (its VERSION's CHANGELOG entry titled
+  // Development or not, as core.version.development_entry_title reads it).
+  const root = nodePath.resolve(__dirname, '..', '..');
+  const version = fs.readFileSync(nodePath.join(root, 'VERSION'), 'utf8').trim();
+  const heading = fs.readFileSync(nodePath.join(root, 'CHANGELOG.md'), 'utf8')
+    .match(new RegExp(`^## \\[${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\][^\\n]*`, 'm'));
+  const development = !!heading && heading[0].toLowerCase().includes('development');
+  expect(await state(page)).toMatchObject({development_build: development, setup_preview: false});
   let answer = null;
   await page.route(url => url.pathname === '/api/setup/state', async route => {
     const response = await route.fetch();

@@ -442,5 +442,8 @@ async def test_restart_reconciliation_looks_up_every_artifact_by_index(p2, monke
     with sqlite3.connect(database.DB_PATH) as plain:
         scans = {sql: steps for sql, params in lookups
                  if (steps := [row[3] for row in plain.execute("EXPLAIN QUERY PLAN " + sql, params)
-                               if row[3].startswith("SCAN")])}
+                               # Reading a subquery's own result rows is not a
+                               # table scan; SQLite reports it as "SCAN (subquery-N)".
+                               if row[3].startswith("SCAN")
+                               and not row[3].startswith(("SCAN (subquery-", "SCAN SUBQUERY"))])}
     assert scans == {}

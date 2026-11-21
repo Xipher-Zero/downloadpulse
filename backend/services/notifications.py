@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 from core.branding import APP_SHORT_NAME, REPOSITORY_URL
-from core.logging_utils import sanitize_exception
+from core.logging_utils import sanitize_exception, sanitize_log_value
 from core.version import read_version
 from core.localization import CodedRuntimeError
 
@@ -452,7 +452,7 @@ class NotificationService:
         if self.discord_only and not is_discord_webhook_url(url):
             # Fail closed: an account-owned destination is a Discord webhook or
             # nothing. Admission refuses anything else; this is the last word.
-            logger.error("Discord notification refused (%s): not a Discord webhook endpoint", title[:60])
+            logger.error("Discord notification refused (%s): not a Discord webhook endpoint", sanitize_log_value(title, max_length=60))
             if strict:
                 raise CodedRuntimeError("The destination is not a Discord webhook URL", code="notifications.not_discord_webhook")
             return False
@@ -562,13 +562,13 @@ class NotificationService:
                     elif resp.status not in (200, 204):
                         body = await resp.text()
                         raise Exception(f"Discord webhook {resp.status}: {body[:200]}")
-            logger.debug("Discord notification sent: %s", title[:60])
+            logger.debug("Discord notification sent: %s", sanitize_log_value(title, max_length=60))
             return True
         except Exception as exc:
             detail = sanitize_exception(exc, max_length=240)
             logger.error(
                 "Discord notification failed (%s) [%s]: %s",
-                title[:60],
+                sanitize_log_value(title, max_length=60),
                 exc.__class__.__name__,
                 # The reason may carry the remote endpoint's response text:
                 # one log line, never a forged second one.

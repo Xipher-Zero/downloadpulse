@@ -46,6 +46,8 @@ def sanitize_log_value(value: Any, max_length: int = 300) -> str:
     msg = _MAGNET_RE.sub(_magnet_hint, msg)
     msg = _SENSITIVE_QUERY_RE.sub(r"\1<redacted>", msg)
     msg = _LONG_URL_RE.sub("<url>", msg)
+    # One log line per record: an embedded line break could forge another.
+    msg = msg.replace("\r", "\\r").replace("\n", "\\n")
     return (msg[:max_length] + "...") if len(msg) > max_length else msg
 
 
