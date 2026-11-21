@@ -32,7 +32,7 @@ const PLACEHOLDERS = ['Paste a link, magnet, or other supported resource…\nAdd
 const WIDTHS = [779, 680, 600, 560, 520, 480, 440, 430, 414, 390, 375, 360, 320];
 
 // CI's fallback fonts by default; DP_WEB_FONTS=1 loads Outfit (the product's own face) for the same assertions.
-const noFonts = page => process.env.DP_WEB_FONTS ? Promise.resolve() : page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+const noFonts = page => process.env.DP_WEB_FONTS ? Promise.resolve() : page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
 const noPulse = page => page.route('**/api/events/stream', () => {});
 
 async function open(page, {width = 390, paused = false, totals = null} = {}) {

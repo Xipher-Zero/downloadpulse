@@ -67,7 +67,7 @@ const UNIFORM = Array.from({length: 60}, (_, k) => row(9800 + k, downloading({na
 
 // CI's fallback fonts by default; DP_WEB_FONTS=1 loads Outfit (the product's own face) for the same assertions.
 async function open(page, items, {readOnly = false, width = 390, height = 844, view = 'torrents', log = {gets: 0, moves: []}} = {}) {
-  if (!process.env.DP_WEB_FONTS) await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+  if (!process.env.DP_WEB_FONTS) await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   await page.route('**/api/events/stream', () => {});
   if (readOnly) {
     const readonly = authority => ({...authority, role: 'readonly', capabilities: ['interface', 'session', 'statistics.read', 'statistics.summary', 'transfers.read']});

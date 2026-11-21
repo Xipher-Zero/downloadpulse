@@ -189,7 +189,7 @@ one explicit chain:
 packaging/aria2/  (Debian source version, patch, build configuration, base)
         |  aria2 Package workflow: native amd64 + arm64 builds, qualified
         v
-ghcr.io/xipher-zero/debridpulse-aria2@sha256:<multi-arch manifest digest>
+ghcr.io/xipher-zero/downloadpulse-aria2@sha256:<multi-arch manifest digest>
         |  application Dockerfile: FROM ...@sha256 AS aria2-packages
         v
 DownloadPulse image digest  (Image -> Container Security -> Candidate
@@ -289,7 +289,7 @@ as its own immutable supply-chain artifact:
 packaging/ffmpeg/  (Debian source version, build configuration, base)
         |  FFmpeg Package workflow: native amd64 + arm64 builds, qualified
         v
-ghcr.io/xipher-zero/debridpulse-ffmpeg@sha256:<multi-arch manifest digest>
+ghcr.io/xipher-zero/downloadpulse-ffmpeg@sha256:<multi-arch manifest digest>
         |  application Dockerfile: FROM ...@sha256 AS ffmpeg-packages
         v
 DownloadPulse image digest  (Image -> Container Security -> Candidate

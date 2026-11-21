@@ -14,7 +14,7 @@ const LIGHT = ['DownloadPulse (Default)', 'Catppuccin Latte', 'Nord Light', 'Gru
 // Retired in 1.0.14's catalog diversification: never offered, never accepted.
 const RETIRED = {dark: ['nord-dark', 'solarized-dark', 'tokyo-night'], light: ['solarized-light', 'tokyo-night-day']};
 
-const noFonts = page => page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+const noFonts = page => page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
 const token = (page, name) => page.evaluate(n => getComputedStyle(document.body).getPropertyValue(n).trim(), name);
 const state = page => page.evaluate(() => {
   const read = key => { try { return localStorage.getItem(key); } catch (_) { return 'unavailable'; } };

@@ -12,7 +12,7 @@ const ADMIN = {username: 'browser', password: 'browser-secret'};
 const run = Date.now().toString(36);
 const adminSession = require('./acl-admin-session');
 
-const noFonts = page => page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+const noFonts = page => page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
 const noPulse = page => page.route('**/api/events/stream', () => {});
 // The view region's slide (DPMotion) has ended: no surface in flight, and no
 // sheet still closing (a page chosen while More is drawn opens once More has

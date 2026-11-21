@@ -5,14 +5,14 @@
 # multi-arch manifest DIGEST (tag 1.37.0-debian-3-dp2 is only a human alias).
 # This build never compiles aria2; only the two packages, their version and the
 # one feature verifier are taken from it.
-FROM ghcr.io/xipher-zero/debridpulse-aria2@sha256:3734be43479c98b54419f821509a8fe142eb2a7fae0812ca7ccc79fda1cb44e5 AS aria2-packages
+FROM ghcr.io/xipher-zero/downloadpulse-aria2@sha256:e9c4020d9e62cd71435684565f859a3e631b319ef693caf44a010976ffb6dee7 AS aria2-packages
 
 # FFmpeg is likewise DownloadPulse's own qualified package artifact (section 4b):
 # Debian's ffmpeg 7:7.1.5-0+deb13u1 source rebuilt by packaging/ffmpeg/ for
 # local stream copy only (file/pipe protocols, no encoder, device, network
 # protocol or external library), consumed by its multi-arch manifest DIGEST
 # (tag 7.1.5-0-deb13u1-dp1 is only a human alias). This build never compiles it.
-FROM ghcr.io/xipher-zero/debridpulse-ffmpeg@sha256:af2347255f46674e8259253d4f2b406b0d4c87b0ff848e2f0014666c9843a005 AS ffmpeg-packages
+FROM ghcr.io/xipher-zero/downloadpulse-ffmpeg@sha256:0cb904cd4a3bff92afd4d3d2f3161d40a16d86e1c87ff838f4a802a1ead21d8b AS ffmpeg-packages
 
 FROM python:3.12.14-slim-trixie@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 

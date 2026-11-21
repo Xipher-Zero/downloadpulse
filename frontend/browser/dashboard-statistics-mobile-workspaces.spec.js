@@ -34,7 +34,7 @@ function event(id) {
 }
 
 async function boot(page, {width = 1440, height = 900, stats = {}} = {}) {
-  if (!WEB_FONTS) await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+  if (!WEB_FONTS) await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   await page.setViewportSize({width, height});
   const detail = [];
   await page.route(url => url.pathname === '/api/stats', async route => {

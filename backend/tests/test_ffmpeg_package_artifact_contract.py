@@ -103,14 +103,14 @@ def test_the_package_image_is_built_natively_and_published_write_once() -> None:
 
 def test_the_image_and_the_runtime_layer_install_the_one_published_package() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    (image,) = re.findall(r"^FROM (ghcr\.io/xipher-zero/(?:downloadpulse|debridpulse)-ffmpeg@sha256:[0-9a-f]{64}) AS ffmpeg-packages$",
+    (image,) = re.findall(r"^FROM (ghcr\.io/xipher-zero/downloadpulse-ffmpeg@sha256:[0-9a-f]{64}) AS ffmpeg-packages$",
                           dockerfile, re.M)
     assert "ARG FFMPEG_PACKAGE_VERSION=7:7.1.5-0+deb13u1+dp1" in dockerfile
     workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
     # The runtime layer takes the package from the digest the Dockerfile pins,
     # verifies it as the image does, and never installs the archive's FFmpeg
     # (or any other finalizer).
-    assert re.search(r"(?:downloadpulse|debridpulse)-ffmpeg@sha256", workflow.split("AS ffmpeg-packages")[0])
+    assert "downloadpulse-ffmpeg@sha256" in workflow.split("AS ffmpeg-packages")[0]
     assert '"$RUNNER_TEMP"/ffmpeg/ffmpeg_*.deb' in workflow
     assert 'bash "$GITHUB_WORKSPACE/packaging/ffmpeg/verify-features.sh" "$FFMPEG_PACKAGE_VERSION"' in workflow
     assert not re.search(r"apt-get install[^\n]*\s(ffmpeg|mkvtoolnix)(\s|$)", workflow, re.M)

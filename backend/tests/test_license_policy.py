@@ -190,9 +190,9 @@ def test_container_runtime_declares_trixie_and_rar_codec_notices():
     # never by a tag (SUPPLY_CHAIN_POLICY 4a, 4b).
     stages = re.findall(r"^FROM (\S+)(?: AS (\S+))?$", dockerfile, re.M)
     assert len(stages) == 3
-    assert re.fullmatch(r"ghcr\.io/xipher-zero/(?:downloadpulse|debridpulse)-aria2@sha256:[0-9a-f]{64}", stages[0][0])
+    assert re.fullmatch(r"ghcr\.io/xipher-zero/downloadpulse-aria2@sha256:[0-9a-f]{64}", stages[0][0])
     assert stages[0][1] == "aria2-packages"
-    assert re.fullmatch(r"ghcr\.io/xipher-zero/(?:downloadpulse|debridpulse)-ffmpeg@sha256:[0-9a-f]{64}", stages[1][0])
+    assert re.fullmatch(r"ghcr\.io/xipher-zero/downloadpulse-ffmpeg@sha256:[0-9a-f]{64}", stages[1][0])
     assert stages[1][1] == "ffmpeg-packages"
     assert re.fullmatch(r"python:3\.12\.14-slim-trixie@sha256:[0-9a-f]{64}", stages[2][0])
     assert stages[2][1] == ""

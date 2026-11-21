@@ -212,8 +212,8 @@ named in `docs/UI_FRONTEND_ARCHITECTURE.md` as the one mapping owner):
 
 One runtime stage — `FROM python:3.12.14-slim-trixie@sha256:…` — preceded by two
 package-only stages that are consumed by digest, never compiled here:
-`ghcr.io/xipher-zero/debridpulse-aria2@sha256:…` (aria2 1.37.0+debian-3+dp2, BitTorrent
-compiled out; built by `aria2-package.yml`) and `ghcr.io/xipher-zero/debridpulse-ffmpeg@sha256:…`
+`ghcr.io/xipher-zero/downloadpulse-aria2@sha256:…` (aria2 1.37.0+debian-3+dp2, BitTorrent
+compiled out; built by `aria2-package.yml`) and `ghcr.io/xipher-zero/downloadpulse-ffmpeg@sha256:…`
 (stream-copy-only FFmpeg; built by `ffmpeg-package.yml`); see `docs/SUPPLY_CHAIN_POLICY.md`
 §4a/§4b. Ordered layers:
 

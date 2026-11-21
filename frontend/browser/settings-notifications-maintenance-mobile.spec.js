@@ -189,7 +189,7 @@ test('two subsections draw their short titles below 780px, their full titles sta
       await resize(page, width);
       expect(await drawn(), `${card} @${width}`).toBe(words);
       await expect(title).toHaveText(full);
-      await expect(page.locator(`${card} .dp-settings-subsection .dp-settings-disclosure`)).toHaveAccessibleName(new RegExp(full.replace(/[&]/g, '\\&')));
+      await expect(page.locator(`${card} .dp-settings-subsection .dp-settings-disclosure`)).toHaveAccessibleName(new RegExp(full.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
     // The disclosure still opens and closes.
     await resize(page, 390);

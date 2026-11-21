@@ -39,7 +39,7 @@ async function open(page, {width = 390, height = 844, startOff = false} = {}) {
   if (startOff) await page.addInitScript(() => {
     if (sessionStorage.getItem('dp-activity-auto-refresh') === null) sessionStorage.setItem('dp-activity-auto-refresh', 'off');
   });
-  if (!WEB_FONTS) await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+  if (!WEB_FONTS) await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   await page.route('**/api/events/stream', route => route.abort());
   const log = journal(), requests = [];
   await page.route('**/api/events?**', route => {

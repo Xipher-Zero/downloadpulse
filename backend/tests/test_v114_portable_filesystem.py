@@ -282,6 +282,17 @@ def test_a_no_follow_write_never_writes_through_a_link(tmp_path):
     assert created.read_bytes() == b"short"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_no_follow_create_without_a_mode_is_owner_only(tmp_path):
+    created = tmp_path / "default-mode.bin"
+    previous = os.umask(0)
+    try:
+        os.close(filesystem.open_no_follow(created, os.O_WRONLY | os.O_CREAT | os.O_EXCL))
+    finally:
+        os.umask(previous)
+    assert created.stat().st_mode & 0o777 == 0o600
+
+
 def test_a_checkpoint_flushes_a_regular_payload_and_reports_its_identity(tmp_path):
     path = _payload(tmp_path)
     facts = filesystem.flush_payload(str(path))

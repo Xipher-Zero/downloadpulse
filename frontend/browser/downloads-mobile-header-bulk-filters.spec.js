@@ -44,7 +44,7 @@ const ITEMS = [row(9801), row(9802), row(9803, DONE), row(9804, {access: {destro
 
 async function open(page, {role = 'admin', count = 618, width = 390, height = 844} = {}) {
   const state = {count, requests: [], bulk: [], tops: []};
-  if (!process.env.DP_WEB_FONTS) await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+  if (!process.env.DP_WEB_FONTS) await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   await page.route('**/api/events/stream', () => {});
   if (role !== 'admin') {
     const user = authority => ({...authority, role: 'user',

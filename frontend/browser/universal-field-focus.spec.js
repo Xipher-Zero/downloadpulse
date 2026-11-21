@@ -12,7 +12,7 @@ const { test, expect } = require('@playwright/test');
 const TRANSPARENT = 'rgba(0, 0, 0, 0)';
 
 async function open(page) {
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+  await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   await page.route('**/api/events/stream', () => {});
   await page.setViewportSize({width: 1440, height: 900});
   await page.goto('/');

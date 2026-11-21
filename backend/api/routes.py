@@ -601,7 +601,9 @@ async def version_check():
         return result
     except Exception as exc:
         logger.warning("Version check failed: %s", sanitize_exception(exc))
-        return {"current": current, "latest": None, "update_available": False, "error": sanitize_exception(exc)}
+        # The reason stays in the server log; the response names the failure only.
+        return {"current": current, "latest": None, "update_available": False,
+                "error": "The latest release could not be checked"}
 
 
 class SettingsUpdate(AppSettings):
@@ -866,7 +868,8 @@ async def aria2_runtime_status( application: ApplicationService = Depends(get_ap
             diagnostics = await application.integration_admin("aria2").memory_diagnostics()
             speed_stat  = await application.integration_admin("aria2").get_global_stat()
     except Exception as exc:
-        diagnostics = {"error": sanitize_exception(exc)}
+        logger.warning("Runtime diagnostics unavailable: %s", sanitize_exception(exc))
+        diagnostics = {"error": "Diagnostics are unavailable"}
     return {**status, "diagnostics": diagnostics, **speed_stat}
 
 

@@ -67,9 +67,10 @@ def _is_link_info(info: os.stat_result) -> bool:
     return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
 
 
-def open_no_follow(path, flags: int, mode: int = 0o777) -> int:
+def open_no_follow(path, flags: int, mode: int = 0o600) -> int:
     """``os.open`` that never follows a link at the final component and fails
-    with ``ELOOP`` instead (``O_NOFOLLOW``). On Windows a native open of the
+    with ``ELOOP`` instead (``O_NOFOLLOW``). A file it creates is owner-only
+    unless the caller names a wider ``mode``. On Windows a native open of the
     entry itself, refused when it is a reparse point (symlink, junction or
     any other) before anything is read, written or truncated, always binary,
     never inherited by a child process, and sharing read, write and delete

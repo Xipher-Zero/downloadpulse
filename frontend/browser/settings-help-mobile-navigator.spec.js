@@ -22,7 +22,7 @@ const PAGES = {
 };
 
 async function open(page, name, width) {
-  if (!WEB_FONTS) await page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+  if (!WEB_FONTS) await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
   await page.route('**/api/events/stream', route => route.abort());
   // Every frame in which a navigator window or content viewport slides: its direction.
   await page.addInitScript(() => {

@@ -201,7 +201,7 @@ jobs:
           # finalizer: the exact package the image ships, taken from the same
           # published package image by the same digest the Dockerfile pins
           # (docs/SUPPLY_CHAIN_POLICY.md section 4b), never rebuilt here.
-          ffmpeg_image="$(sed -n 's/^FROM \(ghcr\.io\/xipher-zero\/debridpulse-ffmpeg@sha256:[0-9a-f]*\) AS ffmpeg-packages$/\1/p' "$GITHUB_WORKSPACE/Dockerfile")"
+          ffmpeg_image="$(sed -n 's/^FROM \(ghcr\.io\/xipher-zero\/downloadpulse-ffmpeg@sha256:[0-9a-f]*\) AS ffmpeg-packages$/\1/p' "$GITHUB_WORKSPACE/Dockerfile")"
           test -n "$ffmpeg_image"
           carrier="$(docker create --platform linux/amd64 "$ffmpeg_image" /carrier)"
           docker cp "$carrier:/packages" "$RUNNER_TEMP/ffmpeg"

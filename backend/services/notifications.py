@@ -570,7 +570,9 @@ class NotificationService:
                 "Discord notification failed (%s) [%s]: %s",
                 title[:60],
                 exc.__class__.__name__,
-                detail,
+                # The reason may carry the remote endpoint's response text:
+                # one log line, never a forged second one.
+                detail.replace("\r", "\\r").replace("\n", "\\n"),
             )
             if strict:
                 # Already sanitised: the destination is never part of it.

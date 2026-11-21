@@ -10,7 +10,7 @@ const { test, expect } = require('@playwright/test');
  * every frame from the request until the sheet is no longer drawn. */
 
 const AUTH = process.env.DP_AUTH_BASE_URL;
-const noFonts = page => page.route(/fonts\.(googleapis|gstatic)\.com/, route => route.abort());
+const noFonts = page => page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
 const noPulse = page => page.route('**/api/events/stream', () => {});
 const SHEETS = {
   more: {open: '#shell-dock .dp-shell-dock-more', box: '#shell-more', panel: '#shell-more .dp-shell-sheet-panel', toward: 1},
