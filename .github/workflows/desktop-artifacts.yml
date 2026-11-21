@@ -547,7 +547,7 @@ jobs:
       # readable by anyone signed in to GitHub until the cleanup job deletes it at the end of the run).
       - name: Hand the smoke-tested outputs to the combined handover (approved commit only)
         if: success() && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-intermediate-${{ matrix.name }}-${{ github.sha }}
           retention-days: 1
@@ -722,7 +722,7 @@ jobs:
       # this repository is public, so anyone signed in to GitHub can download them).
       - name: Publish macOS
         if: steps.passed.outputs.macos == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}-macos
           retention-days: 14
@@ -730,7 +730,7 @@ jobs:
           path: ${{ runner.temp }}/sets/macos/
       - name: Publish Windows
         if: steps.passed.outputs.windows == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}-windows
           retention-days: 14
@@ -738,7 +738,7 @@ jobs:
           path: ${{ runner.temp }}/sets/windows/
       - name: Publish Linux
         if: steps.passed.outputs.linux == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}-linux
           retention-days: 14
@@ -746,7 +746,7 @@ jobs:
           path: ${{ runner.temp }}/sets/linux/
       - name: Publish the complete set (all three passed in this run)
         if: steps.passed.outputs.complete == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}
           retention-days: 14
