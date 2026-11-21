@@ -12,6 +12,10 @@ const { test, expect } = require('@playwright/test');
 
 const RAIL_WIDTHS = [1600, 1440, 1300, 1180, 800];
 
+// A session read the page started may still be in flight when a test ends:
+// the routes are lifted without failing on it.
+test.afterEach(async ({page}) => { await page.unrouteAll({behavior: 'ignoreErrors'}); });
+
 async function open(page, {authenticated = false} = {}) {
   await page.route('https://fonts.googleapis.com/**', route =>
     route.fulfill({status: 200, contentType: 'text/css', body: ''}));

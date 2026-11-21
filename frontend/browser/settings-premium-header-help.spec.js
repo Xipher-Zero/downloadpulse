@@ -424,11 +424,14 @@ test('lent Help, disclosure, Test and toggle stay operable by pointer and keyboa
   expect(await collisions(page)).toEqual([]);
 
   // The header's Test is a plain action (it opens nothing); the toggle is the
-  // element at its centre.
+  // element at its centre once the card that opened again has come to rest,
+  // read in the middle of the view (clear of the sticky section tabs a
+  // scrolled card can pass under).
   const head = debridlink.locator(':scope > .card-header');
   await expect(head.locator('.dp-settings-provider-test')).not.toHaveAttribute('popovertarget', /.*/);
   await expect(head.locator('[popover]')).toHaveCount(0);
-  expect(await head.locator('.dp-settings-header-test-group .toggle').evaluate(n => {
+  await head.locator('.dp-settings-header-test-group .toggle').evaluate(n => n.scrollIntoView({block: 'center'}));
+  await expect.poll(() => head.locator('.dp-settings-header-test-group .toggle').evaluate(n => {
     const b = n.getBoundingClientRect();
     return n.contains(document.elementFromPoint((b.left + b.right) / 2, (b.top + b.bottom) / 2));
   })).toBe(true);
