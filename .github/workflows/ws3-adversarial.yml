@@ -42,7 +42,7 @@ jobs:
 
       - name: Upload WS3 P1 adversarial qualification output
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ws3p1-adversarial-${{ github.sha }}
           path: ${{ runner.temp }}/ws3p1-adversarial.log

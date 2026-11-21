@@ -112,7 +112,7 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload qualification metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-qualification-metadata-${{ github.sha }}-${{ env.SHARD_ID }}
           path: ${{ runner.temp }}/qualification/qualification-metadata.json
@@ -479,7 +479,7 @@ jobs:
 
       - name: Upload browser qualification diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-qualification-${{ github.sha }}-${{ env.SHARD_ID }}
           path: |
@@ -492,7 +492,7 @@ jobs:
 
       - name: Upload the cases this shard ran
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-executed-${{ github.sha }}-${{ env.SHARD_ID }}-attempt-${{ github.run_attempt }}
           path: |
@@ -505,7 +505,7 @@ jobs:
 
       - name: Upload browser classification evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-classification-${{ github.sha }}-${{ env.SHARD_ID }}
           path: |
@@ -518,7 +518,7 @@ jobs:
 
       - name: Upload two-provider checkpoint visual verification
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: two-provider-visual-verification-${{ github.sha }}-${{ env.SHARD_ID }}
           path: frontend/browser/test-results/checkpoint-*.png

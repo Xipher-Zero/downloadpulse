@@ -134,7 +134,7 @@ jobs:
             --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload qualification metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-qualification-metadata-${{ github.sha }}-${{ env.LAYER_ID }}
           path: ${{ runner.temp }}/qualification/qualification-metadata.json
@@ -302,7 +302,7 @@ jobs:
 
       - name: Upload the test inventory
         if: matrix.static
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-inventory-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/inventory/manifest.json
@@ -432,7 +432,7 @@ jobs:
 
       - name: Upload pytest qualification output
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-qualification-${{ github.sha }}-${{ env.LAYER_ID }}
           path: ${{ runner.temp }}/pytest.log
@@ -441,7 +441,7 @@ jobs:
 
       - name: Upload the tests this shard ran
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-executed-${{ github.sha }}-${{ env.LAYER_ID }}-attempt-${{ github.run_attempt }}
           path: |
@@ -452,7 +452,7 @@ jobs:
 
       - name: Upload pytest classification evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-classification-${{ github.sha }}-${{ env.LAYER_ID }}
           path: |
