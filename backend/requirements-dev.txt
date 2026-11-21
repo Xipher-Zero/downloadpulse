@@ -211,7 +211,7 @@ requests==2.34.2
     #   requests-oauthlib
 requests-oauthlib==2.0.0
     # via apprise
-sabctools==9.6.3
+sabctools==10.0.0
     # via -r requirements.in
 sgmllib3k==1.0.0
     # via
