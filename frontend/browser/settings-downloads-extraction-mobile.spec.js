@@ -245,10 +245,15 @@ test('a fitted island is stable: no mark changes once laid out, and its controls
   }
   await resize(page, 320);
   // The toggle's own track is still its hit target, and the number takes input.
+  // The toggle saves at once and every write here is refused, so the refused
+  // save puts it back: what the click proves is that it reached the checkbox
+  // (its change), and the save it asked for.
   const remove = page.locator('[data-setting="extract_delete_archive"]');
-  const before = await remove.isChecked();
+  await remove.evaluate(node => { node.__changes = 0; node.addEventListener('change', () => { node.__changes += 1; }); });
+  const writes = page.__writes.length;
   await page.locator('.dp-settings-extraction-behavior .dp-settings-inline-toggle .ttrack').click();
-  await expect(remove).toBeChecked({checked: !before});
+  await expect.poll(() => remove.evaluate(node => node.__changes)).toBe(1);
+  await expect.poll(() => page.__writes.length).toBeGreaterThan(writes);
   const count = page.locator('[data-setting="extract_max_concurrent"]');
   await count.fill('3');
   await expect(count).toHaveValue('3');

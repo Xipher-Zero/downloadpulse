@@ -1323,8 +1323,12 @@ test('Sidebar: the page heading moves with the main region and never names a pag
       expect(frame.heading).toBe(leavingHalf ? from : destination);
       if (headingY(frame) !== 0) expect(Math.sign(headingY(frame))).toBe(leavingHalf ? sign : -sign);
     }
-    // Once one name has left, the other arrives -- never the first again.
-    expect(frames.findIndex(frame => frame.heading === destination)).toBeGreaterThan(frames.findLastIndex(frame => frame.heading === from));
+    // Once one name has left, the other arrives -- never the first again. An
+    // engine that draws few frames may record none of the arriving half (the
+    // destination at rest is read below); any it records come after the last
+    // frame that named the page it left.
+    const arrived = frames.findIndex(frame => frame.heading === destination);
+    if (arrived >= 0) expect(arrived).toBeGreaterThan(frames.findLastIndex(frame => frame.heading === from));
     // It is at rest, as its owner drew it, when the slide is done.
     await expect(page.locator('#topbar .dp-page-heading')).not.toHaveAttribute('data-dp-motion-companion', /.*/);
     expect(await page.locator('#topbar .dp-page-heading').evaluate(node => getComputedStyle(node).transform)).toBe('none');
