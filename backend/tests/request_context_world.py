@@ -31,7 +31,8 @@ from transfers.models import SubmissionDemand, TransferRequest  # noqa: E402
 from transfers.policy import TransferPolicy  # noqa: E402
 from transfers.recovery_repository import TransferRepository  # noqa: E402
 from transfers.registry import IntegrationRegistry  # noqa: E402
-from transfers.request_context import CAPACITY, ContextCapacity, RequestContext, request_contexts  # noqa: E402
+from transfers.request_context import (  # noqa: E402
+    CAPACITY, OWNER_CAPACITY, ContextCapacity, RequestContext, request_contexts)
 
 VALUE = "held-value-for-one-job"
 CONTEXT = RequestContext.from_submission([{"name": "SID", "value": VALUE, "domain": ".video.test"}],
@@ -90,10 +91,18 @@ async def main() -> None:
     report: dict = {"unknown transfer": await request_contexts.for_transfer(999)}
 
     if scenario == "capacity":
-        for index in range(CAPACITY):
-            request_contexts.register(f"d-{index}", CONTEXT, owner="a", valid=never)
+        # One owner fills only its own share; then every owner together fills the rest.
+        for index in range(OWNER_CAPACITY):
+            request_contexts.register(f"a-{index}", CONTEXT, owner="a", valid=never)
         try:
-            request_contexts.register("one-more", CONTEXT, owner="a", valid=never)
+            request_contexts.register("a-one-more", CONTEXT, owner="a", valid=never)
+            report["one owner over its share"] = "accepted"
+        except ContextCapacity:
+            report["one owner over its share"] = "refused"
+        for index in range(CAPACITY - OWNER_CAPACITY):
+            request_contexts.register(f"d-{index}", CONTEXT, owner=f"owner-{index}", valid=never)
+        try:
+            request_contexts.register("one-more", CONTEXT, owner="someone-new", valid=never)
             report["over capacity"] = "accepted"
         except ContextCapacity:
             report["over capacity"] = "refused"
@@ -119,6 +128,8 @@ async def main() -> None:
     report["execution was handed it"] = executor.seen
     stored = (await repository.requests(transfer.id))[0].request
     report["the stored request carries none"] = stored.context is None
+    # Core settles its own holder every resolution cycle (an ended grant is gone by now).
+    report["held after the cycle"] = request_contexts.held(demand.id)
     report["settled while running"] = await request_contexts.settle()
     if scenario == "one":
         await engine.withdraw_demand([demand.id], by=una)

@@ -737,7 +737,7 @@ class Aria2Executor:
 
     async def discover(self, subject, submitted: SubmittedInput | None = None, *,
                        depth: DiscoveryDepth = DiscoveryDepth.CURRENT, limits: DiscoveryLimits = DiscoveryLimits(),
-                       content_limit: int | None = None):
+                       content_limit: int | None = None, request_context=None):
         """Read-only classification of one FTP or SFTP path before any candidate exists.
 
         The same destination validation, egress route and access decisions
@@ -760,7 +760,8 @@ class Aria2Executor:
                                           or depth != DiscoveryDepth.CURRENT or limits != DiscoveryLimits()):
             raise self._failure(Category.UNSUPPORTED_CAPABILITY, Stage.RESOLUTION, domain=Domain.REQUEST)
         if endpoint.scheme in SAMPLED_FINGERPRINT_SCHEMES:
-            result = await self._http_discovery(candidate, endpoint, submitted, depth, limits, content_limit)
+            result = await self._http_discovery(candidate, endpoint, submitted, depth, limits, content_limit,
+                                                request_context)
             return result if isinstance(result, InputRequirement) else self._discovered(result)
         if depth != DiscoveryDepth.CURRENT or limits != DiscoveryLimits() or endpoint.scheme not in {"ftp", "sftp"}:
             raise self._failure(Category.UNSUPPORTED_CAPABILITY, Stage.RESOLUTION, domain=Domain.REQUEST)
@@ -801,7 +802,8 @@ class Aria2Executor:
         return self._discovered(result)
 
     async def _http_discovery(self, candidate, endpoint, submitted: SubmittedInput | None, depth: DiscoveryDepth,
-                              limits: DiscoveryLimits = DiscoveryLimits(), content_limit: int | None = None):
+                              limits: DiscoveryLimits = DiscoveryLimits(), content_limit: int | None = None,
+                              context=None):
         """HTTP(S) classification and listing through WebDAV, read-only -- or,
         with ``content_limit``, the complete content of one file
         (``http_content``), never more than that many bytes.
@@ -824,7 +826,9 @@ class Aria2Executor:
         access = dict(
             username=username, password=password,
             credential_scope=(submitted.scope or auth_scope(endpoint.address)) if submitted is not None else None,
-            on_authenticated=_acceptance(submitted), **self._granted_at(candidate, endpoint.address, start))
+            on_authenticated=_acceptance(submitted), **self._granted_at(candidate, endpoint.address, start),
+            # The submission's sign-in and referrer core handed this read (transfers.request_context).
+            context=context)
         if content_limit is not None:
             result = await http_content(start, max_bytes=content_limit, **access)
         else:

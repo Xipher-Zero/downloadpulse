@@ -37,7 +37,7 @@ from providers.realdebrid.client import RealDebridAPIError
 from providers.realdebrid.provider import RealDebridProvider
 from providers.torbox.provider import TorBoxProvider
 from transfers.applicability import HostClaim, HostClaimScope, ProviderApplicability
-from transfers.contracts import speculative_preparation
+from dataclasses import replace as _replace
 from transfers.errors import TransferError
 from transfers.models import ActiveCapacity, Ownership, TransferRequest
 from transfers.registry import IntegrationRegistry
@@ -240,8 +240,8 @@ async def test_a_backups_plan_refusal_never_contracts_alldebrid_or_realdebrid():
     rd = RDClient(add_magnet=RealDebridAPIError(9, "permission_denied", 403))
     for provider in (AllDebridProvider(client=ad_client), RealDebridProvider(rd)):
         provider.account = SimpleNamespace(contract=AsyncMock())
-        with speculative_preparation(), pytest.raises(TransferError):
-            await provider.resolve(MAGNET)
+        with pytest.raises(TransferError):     # a speculative backup says so on its request
+            await provider.resolve(_replace(MAGNET, speculative=True))
         provider.account.contract.assert_not_awaited()
         rd.responses["add_magnet"] = RealDebridAPIError(9, "permission_denied", 403)
         with pytest.raises(TransferError):                     # the same refusal of a primary still does

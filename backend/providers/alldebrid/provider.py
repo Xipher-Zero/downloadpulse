@@ -15,7 +15,6 @@ from providers.alldebrid.translation import (
     native_members, observation_from_native, resource_from_native, translate_error,
 )
 from transfers.applicability import ProviderApplicability
-from transfers.contracts import speculative_attempt
 from transfers.entitlement import AccountServiceClass, ProviderEntitlements
 from transfers.errors import Category, Domain, NormalizedError, Origin, Retryability, Stage, TransferError
 from transfers.models import (
@@ -182,7 +181,7 @@ class AllDebridProvider:
             # A speculative backup's refusal never contracts anything: it
             # says only that the backup could not be made now.
             family, owner = refused_family(exc.error.native_code, request.kind), getattr(self, "account", None)
-            if family and owner is not None and not speculative_attempt():
+            if family and owner is not None and not request.speculative:
                 await owner.contract(family)
             raise
         if native is None:

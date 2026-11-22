@@ -869,7 +869,7 @@ async def webdav_discovery(address: str, *, depth: DiscoveryDepth, username: str
                            credential_scope: AuthScope | None = None,
                            timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS, on_authenticated: Accepted = None,
                            private_lan: bool = False, max_files: int | None = None,
-                           scan_timeout_seconds: float | None = None,
+                           scan_timeout_seconds: float | None = None, context=None,
                            ) -> Listing | RemoteFile | Opaque | ListingRefused | AccessRequired:
     """Classify one HTTP(S) path through WebDAV, read-only, and list it.
 
@@ -918,7 +918,8 @@ async def webdav_discovery(address: str, *, depth: DiscoveryDepth, username: str
         nonlocal accepted
         response, reason, answered = await _guarded_request(
             session, uri, dict(_PROPFIND_HEADERS), method="PROPFIND", data=_PROPFIND_BODY, carried=_PROPFIND_CARRIED,
-            private_lan=bool(granted_host) and _origin(uri)[1] == granted_host, credential=credential)
+            private_lan=bool(granted_host) and _origin(uri)[1] == granted_host, credential=credential,
+            context=context)
         if response is None:
             raise _SessionRefused(ListingRefused(
                 reason if reason in {"dns_failure", "destination_rejected"} else "unsupported_listing"))
@@ -1037,7 +1038,7 @@ async def webdav_discovery(address: str, *, depth: DiscoveryDepth, username: str
 async def http_content(address: str, *, max_bytes: int, username: str = "", password: str = "",
                        credential_scope: AuthScope | None = None,
                        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS, on_authenticated: Accepted = None,
-                       private_lan: bool = False) -> RemoteFile | ListingRefused | AccessRequired:
+                       private_lan: bool = False, context=None) -> RemoteFile | ListingRefused | AccessRequired:
     """Read the complete content of one small HTTP(S) resource, read-only.
 
     One ``GET`` through the one guarded request owner (``_guarded_request``):
@@ -1067,7 +1068,7 @@ async def http_content(address: str, *, max_bytes: int, username: str = "", pass
     try:
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             response, reason, answered = await _guarded_request(
-                session, validated, {}, private_lan=bool(granted_host), credential=credential)
+                session, validated, {}, private_lan=bool(granted_host), credential=credential, context=context)
             if response is None:
                 return ListingRefused(reason if reason in {"dns_failure", "destination_rejected"}
                                       else "unsupported_listing")

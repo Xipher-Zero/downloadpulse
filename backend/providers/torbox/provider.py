@@ -28,7 +28,6 @@ from providers.torbox.translation import (
 )
 from services.network_safety import validate_provider_download_url
 from transfers.applicability import ApplicabilityReadiness, ProviderApplicability
-from transfers.contracts import speculative_attempt
 from transfers.errors import (
     Category, Domain, NormalizedError, Origin, Retryability, Stage, TransferError,
 )
@@ -143,14 +142,14 @@ class TorBoxProvider:
         owner = getattr(self, "account", None)
         return owner.entitlements if owner is not None else None
 
-    async def _refused(self, exc: Exception, kind: str) -> None:
+    async def _refused(self, exc: Exception, request: TransferRequest) -> None:
         """A creation TorBox refused because the plan excludes the feature
         contracts exactly that family for this account; any other refusal is
         an ordinary failure. A speculative backup's refusal never contracts
         anything: it says only that the backup could not be made now."""
-        family = refused_family(exc, kind)
+        family = refused_family(exc, request.kind)
         owner = getattr(self, "account", None)
-        if family and owner is not None and not speculative_attempt():
+        if family and owner is not None and not request.speculative:
             await owner.contract(family)
 
     async def _call(self, operation, *args, stage=Stage.RESOLUTION, **kwargs):
@@ -181,7 +180,7 @@ class TorBoxProvider:
             # The refusal still fails this route the ordinary way (provider
             # exhaustion and failover are the core's); it only also tells the
             # account owner what this plan excludes.
-            await self._refused(exc, request.kind)
+            await self._refused(exc, request)
             if request.kind in BITTORRENT_REQUEST_KINDS:
                 raise TransferError(creation_error(exc, secrets=self.client.secrets())) from None
             raise
@@ -273,7 +272,7 @@ class TorBoxProvider:
         try:
             native_id = await self.client.create_webdl(link, cached_only=True)
         except TorBoxAPIError as exc:
-            await self._refused(exc, request.kind)
+            await self._refused(exc, request)
             raise
         if native_id is None:
             return None

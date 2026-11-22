@@ -219,21 +219,29 @@ class EvidenceContext:
         """Bind the deciding request's authentication-input matcher."""
         self._auth = auth
 
-    async def _context(self):
+    async def _context(self, candidate):
         """The submission context core holds for the deciding request's transfer
-        (``transfers.request_context``), asked once per decision; None unbound."""
-        if self._auth is None:
+        (``transfers.request_context``), asked once per decision -- for one of that
+        request's OWN candidates only. A peer's candidate never uses this lineage's
+        sign-in, exactly as it never uses its input material; None unbound."""
+        if self._auth is None or not self._auth.owns(candidate):
             return None
         if self._request_context is None:
             self._request_context = (await self._auth.request_context(),)
         return self._request_context[0]
 
+    async def _held(self, subject) -> dict:
+        """``{"request_context": ...}`` for a read of the deciding request's own candidate when core
+        holds its submission's context; else nothing, so the call is exactly what it always was."""
+        held = await self._context(subject.candidate)
+        return {"request_context": held} if held else {}
+
     async def _sample(self, executor, subject):
-        """One sample, with the context core hands every read of this decision."""
-        return await executor.fingerprint(subject, request_context=await self._context())
+        """One sample, with the context core hands a read of the deciding request's own candidate."""
+        return await executor.fingerprint(subject, **await self._held(subject))
 
     async def _sample_with_input(self, executor, subject, submitted):
-        return await executor.fingerprint_with_input(subject, submitted, request_context=await self._context())
+        return await executor.fingerprint_with_input(subject, submitted, **await self._held(subject))
 
     async def material(self, candidate):
         """``candidate`` itself, or -- when its durable form holds only the

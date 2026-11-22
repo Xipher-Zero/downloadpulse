@@ -9,6 +9,7 @@ from typing import Mapping
 
 from transfers.errors import NormalizedError
 from transfers.input_required import SubmittedInput
+from transfers.request_context import RequestContext
 from transfers.staged_input import StagedPayload
 from transfers.models import (
     ArtifactFingerprint, CachePresence, DeliveryKind, Endpoint, ExecutionHandle, FingerprintKind, InputMethod,
@@ -20,6 +21,11 @@ from transfers.models import (
 def _value(value):
     if isinstance(value, SubmittedInput):
         raise TypeError("Transient input cannot be persisted")
+    if isinstance(value, RequestContext):
+        # A submission's sign-in and referrer (transfers.request_context) live only in
+        # memory: whatever carries one -- a request, a candidate's refresh request, an
+        # interpretation -- is written without it, never with any of its values.
+        return None
     if isinstance(value, Endpoint) and value.transient:
         # The ONE persistence rule for transient execution material: only the
         # fact that the endpoint exists and must be regenerated is durable --
@@ -35,7 +41,10 @@ def _value(value):
     if isinstance(value, bytes):
         return {"$bytes": base64.b64encode(value).decode("ascii")}
     if is_dataclass(value):
-        return {item.name: _value(getattr(value, item.name)) for item in fields(value)}
+        # A call-scoped field (``metadata["call_scoped"]``: what core attaches to a request
+        # for one call) is never written, whatever carries the dataclass.
+        return {item.name: _value(getattr(value, item.name)) for item in fields(value)
+                if not item.metadata.get("call_scoped")}
     if isinstance(value, Mapping):
         return {str(key): _value(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
@@ -53,6 +62,10 @@ def load(value: str | None, default=None):
 
 def request(value: dict) -> TransferRequest:
     data = dict(value)
+    # Never restored from storage (``_value`` writes none): a request's context is
+    # attached by core, in memory, for one call.
+    data.pop("context", None)
+    data.pop("speculative", None)
     payload = data["payload"]
     if isinstance(payload, dict) and "$staged" in payload:
         data["payload"] = StagedPayload.from_context(payload["$staged"])

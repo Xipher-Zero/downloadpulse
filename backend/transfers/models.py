@@ -366,11 +366,17 @@ class TransferRequest:
     # names in its path); a name DownloadPulse made up is not. Recorded at
     # admission, never inferred later; not identity.
     name_supplied: bool = False
-    # The submission's sign-in and referrer (``transfers.request_context``), which
-    # core attaches -- scoped to this request's transfer -- immediately before a
-    # provider resolves or refreshes it. Process memory only: never persisted,
-    # never identity, never compared, never shown.
-    context: RequestContext | None = field(default=None, repr=False, compare=False)
+    # Call-scoped facts core attaches to the copy of a request it hands a provider for
+    # ONE call -- never persisted (``codec`` writes no field marked ``call_scoped``),
+    # never identity, never compared, never shown:
+    # the submission's sign-in and referrer (``transfers.request_context``), scoped to
+    # this request's transfer, immediately before a provider resolves or refreshes it;
+    context: RequestContext | None = field(default=None, repr=False, compare=False,
+                                           metadata={"call_scoped": True})
+    # and whether this call is a speculative backup preparation: its refusals say only
+    # that the backup could not be made now, so a provider must not contract the
+    # account's entitlement, or record any other lasting account fact, from them.
+    speculative: bool = field(default=False, compare=False, metadata={"call_scoped": True})
 
 
 # BitTorrent-class request kinds: a magnet URI, or a torrent metainfo upload
@@ -1136,7 +1142,8 @@ class ExecutionRequest:
     # (``transfers.request_context``), attached by core; an executor uses only
     # ``context.for_address(address)`` / ``headers(address)`` for the address it
     # fetches. Process memory only: never persisted, never compared, never shown.
-    context: RequestContext | None = field(default=None, repr=False, compare=False)
+    context: RequestContext | None = field(default=None, repr=False, compare=False,
+                                           metadata={"call_scoped": True})
 
     def __post_init__(self):
         # One attempt identity, never two. Once a request exists its attempt is

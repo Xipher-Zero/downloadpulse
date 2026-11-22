@@ -2600,6 +2600,12 @@ class TransferRepository:
             JOIN transfer_demands d ON d.transfer_id=ac.source_transfer_id AND d.withdrawn_at IS NULL
         WHERE f.torrent_id=:t"""
 
+    @classmethod
+    async def affected_demand_in(cls, db, transfer_id: int) -> list[dict]:
+        """Every outstanding demand ``transfer_id``'s work serves (consolidated demand
+        included), read on ``db``: the one definition, for a reader inside core."""
+        return await db.fetchall(cls._AFFECTED_DEMAND_SQL, {"t": int(transfer_id)})
+
     async def hold_demand(self, db, transfer_id: int, expected) -> bool:
         """Inside a destructive transaction: whether the transfer's affected
         outstanding demand is still within ``expected``, the demand the act

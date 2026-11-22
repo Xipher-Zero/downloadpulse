@@ -82,11 +82,11 @@ async def test_only_this_process_drives_the_daemon_and_its_session_never_outlive
         added = await _rpc(port, runtime_module.RPC_SECRET, "aria2.addUri",
                            ["https://files.example.invalid/x?token=SIGNED-ADDRESS"], JOB)
         assert "result" in added
-        await _rpc(port, runtime_module.RPC_SECRET, "aria2.saveSession")
-        # While it runs, what aria2 saved sits in a folder private to this
-        # account (aria2 replaces the file itself with its own mode).
+        # 1.0.2: no session is ever saved -- it would put every job's options (signed
+        # addresses, credentials, a submission's cookies) on disk. Asked to, aria2 refuses.
+        assert "error" in await _rpc(port, runtime_module.RPC_SECRET, "aria2.saveSession")
         assert stat.S_IMODE(session.parent.stat().st_mode) == 0o700
-        assert all(secret in session.read_text() for secret in SECRETS)
+        assert not any(secret in session.read_text() for secret in SECRETS)
 
         # A restart in this process keeps the one authority.
         assert (await runtime.restart())["rpc_ok"] is True

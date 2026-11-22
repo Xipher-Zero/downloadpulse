@@ -338,8 +338,10 @@ class Aria2Runtime:
             f"--rpc-secret={RPC_SECRET}",
             "--rpc-allow-origin-all=false",
             f"--dir={download_dir}",
-            f"--save-session={session_file}",
-            "--save-session-interval=30",
+            # No saved session: it would hold every unfinished job's options -- signed
+            # addresses, credentials, a submission's cookies -- on disk, and DownloadPulse
+            # never loads it (the database is the source of truth). The control files
+            # (.aria2) that resume a partial download are still saved.
             "--auto-save-interval=30",
             f"--log={log_file}",
             "--log-level=notice",

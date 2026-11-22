@@ -31,7 +31,7 @@ def test_the_owner_s_own_transfer_is_handed_it_in_resolution_and_execution_until
     assert report["resolution was handed it"] == [True]
     assert report["execution was handed it"] == [True]
     assert report["the stored request carries none"] is True
-    assert report["settled while running"] == 0
+    assert report["settled while running"] == 0 and report["held after the cycle"] is True
     assert report["settled after withdrawal"] == 1 and report["held"] is False
     assert report["after withdrawal"] is None
 
@@ -44,9 +44,10 @@ def test_a_shared_transfer_a_revoked_grant_or_no_registration_is_handed_none(tmp
     if scenario == "merged":
         assert report["merged into the same transfer"] is True
     if scenario == "revoked":
-        assert report["settled while running"] == 1
+        # Released by core's own cycle, before any edge's maintenance pass.
+        assert report["held after the cycle"] is False
 
 
 def test_capacity_refuses_rather_than_drops_and_entries_no_grant_stands_behind_are_released(tmp_path):
-    assert run("capacity", tmp_path) == {"unknown transfer": None, "over capacity": "refused",
-                                         "settled": 64, "held after settle": 0}
+    assert run("capacity", tmp_path) == {"unknown transfer": None, "one owner over its share": "refused",
+                                         "over capacity": "refused", "settled": 64, "held after settle": 0}

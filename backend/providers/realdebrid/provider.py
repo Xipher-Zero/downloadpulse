@@ -18,7 +18,6 @@ from providers.realdebrid.translation import (
 )
 from services.network_safety import validate_provider_download_url
 from transfers.applicability import ApplicabilityReadiness, ProviderApplicability
-from transfers.contracts import speculative_attempt
 from transfers.errors import (
     Category, Domain, EvidenceBasis, NormalizedError, Origin, Permanence, Retryability, Stage, TransferError,
 )
@@ -191,7 +190,7 @@ class RealDebridProvider:
                 # route the ordinary way; it only also tells the account owner.
                 # A speculative backup's refusal never contracts anything.
                 family, owner = refused_family(exc, request.kind), getattr(self, "account", None)
-                if family and owner is not None and not speculative_attempt():
+                if family and owner is not None and not request.speculative:
                     await owner.contract(family)
                 raise TransferError(creation_error(exc, secrets=self._secrets())) from None
             resource = await self._already_active(request, exc)

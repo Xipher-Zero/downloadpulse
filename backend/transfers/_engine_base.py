@@ -358,8 +358,10 @@ class _EvidenceAuth:
         provider = self.engine.registry.providers.get(candidate.provider_id)
         if candidate.refresh_request is None or not isinstance(provider, CandidateRefresh):
             return None
-        return await self.engine._issued_material(
-            candidate, await self.engine._with_context(self.transfer_id, candidate.refresh_request))
+        # Only this lineage's own candidate is issued with its submission's sign-in; a peer's never.
+        request = (await self.engine._with_context(self.transfer_id, candidate.refresh_request)
+                   if self.owns(candidate) else candidate.refresh_request)
+        return await self.engine._issued_material(candidate, request)
 
     async def end_proof_lease(self, submitted, *, rejected: bool):
         transition = await self.engine.inputs.end_proof_lease(submitted, rejected=rejected)
@@ -589,12 +591,26 @@ class TransferEngine:
             candidates.append(replace(
                 candidate, provider_id=provider_id, resource=authoritative_resource(candidate.resource),
                 request_kind=str(request_kind), private_network_grant=cls._lan_granted(candidate, lan_host),
+                # The context core handed this call (transfers.request_context) never outlives it:
+                # a provider that keeps the request it was given gets it back without.
+                refresh_request=cls._without_context(candidate.refresh_request),
             ))
 
         observation = result.observation
         if observation is not None:
             observation = replace(observation, resource=authoritative_resource(observation.resource))
-        return replace(result, candidates=tuple(candidates), observation=observation)
+        discovery = result.discovery
+        if discovery is not None and getattr(discovery, "alternate", None) is not None:
+            discovery = replace(discovery, alternate=cls._without_context(discovery.alternate))
+        return replace(result, candidates=tuple(candidates), observation=observation, discovery=discovery)
+
+    @staticmethod
+    def _without_context(request):
+        """``request`` without the call-scoped facts core attached for one call
+        (its submission context, the speculative flag)."""
+        if isinstance(request, TransferRequest) and (request.context or request.speculative):
+            return replace(request, context=None, speculative=False)
+        return request
 
     @staticmethod
     def _lan_granted(candidate: TransferCandidate, lan_host: str) -> bool:
@@ -703,6 +719,9 @@ class TransferEngine:
         async with self._resolution_cycle_lock:
             await self._cleanup_pending()
             await self.settle_withdrawn_demand()
+            # Core's own: a submission context whose transfer has ended is released here,
+            # whichever edge registered it (transfers.request_context).
+            await request_contexts.settle()
             cycle = self._resolution_cycle = _ResolutionCycle()
             try:
                 while cycle.failure is None:
@@ -2226,6 +2245,11 @@ class TransferEngine:
             tree["limits"] = request.limits
         if request.content_limit is not None:
             tree["content_limit"] = request.content_limit
+        # The request's own submission context (transfers.request_context), only when core holds one,
+        # so a discovery with none is exactly the call it always was.
+        held = await self._request_context(record.transfer_id)
+        if held:
+            tree["request_context"] = held
         try:
             for _attempt in range(EvidenceContext._MATCH_ATTEMPTS):
                 used = submitted

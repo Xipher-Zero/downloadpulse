@@ -46,18 +46,47 @@ def test_an_address_gets_only_the_cookies_a_browser_would_send_it():
 
 
 def test_headers_are_the_cookie_and_referer_lines_for_that_address():
-    held = context(cookie("A", "1", path="/"), cookie("B", "2", path="/pub"), referrer="https://example.test/list#top")
+    held = context(cookie("A", "1", path="/"), cookie("B", "2", path="/pub"),
+                   referrer="https://files.example.test/list?q=private#top")
     headers = held.headers(LINK)
-    # Longer paths first, as a browser orders them; the fragment never travels.
-    assert headers == {"Cookie": "B=2; A=1", "Referer": "https://example.test/list"}
-    assert held.headers("https://example.org/x") == {"Referer": "https://example.test/list"}
+    # Longer paths first, as a browser orders them; the referrer in full to its own origin,
+    # never its fragment.
+    assert headers == {"Cookie": "B=2; A=1", "Referer": "https://files.example.test/list?q=private"}
+    # Any other origin (another host, a debrid CDN, a redirect target) gets its origin only.
+    assert held.headers("https://example.org/x") == {"Referer": "https://files.example.test/"}
+    assert held.headers("https://cdn.example.test/x")["Referer"] == "https://files.example.test/"
+    assert held.headers("https://files.example.test:8443/x")["Referer"] == "https://files.example.test/"
 
 
 def test_an_https_referrer_never_goes_to_plain_http():
     held = context(referrer="https://example.test/page")
     assert held.headers("http://files.example.test/x") == {}
+    assert context(referrer="http://files.example.test/page").headers("http://files.example.test/x") == {
+        "Referer": "http://files.example.test/page"}
     assert context(referrer="http://example.test/page").headers("http://files.example.test/x") == {
-        "Referer": "http://example.test/page"}
+        "Referer": "http://example.test/"}
+
+
+def test_an_omitted_host_only_and_an_address_host_keep_a_cookie_on_its_own_host():
+    item = {k: v for k, v in cookie("SID", domain="files.example.test").items() if k != "host_only"}
+    held = RequestContext.from_submission([item], None, [LINK])
+    assert names(held.for_address(LINK)) == {"SID"}
+    assert not held.for_address("https://sub.files.example.test/x")
+    # A "domain" made of an address's last digits is refused: it would match other addresses.
+    with pytest.raises(ContextRefused, match="does not match"):
+        RequestContext.from_submission([cookie("SID", domain="113.5")], None, ["https://203.0.113.5/a.zip"])
+    by_address = RequestContext.from_submission([cookie("SID", domain="203.0.113.5", host_only=False)], None,
+                                                ["https://203.0.113.5/a.zip"])
+    assert by_address.cookies[0].host_only is True
+    assert names(by_address.for_address("https://203.0.113.5/a.zip")) == {"SID"}
+
+
+def test_values_are_printable_ascii_only():
+    for value in ("caf\u00e9", "a\u0085b"):
+        with pytest.raises(ContextRefused, match="valid cookie value"):
+            context(cookie(value=value))
+    with pytest.raises(ContextRefused, match="referrer"):
+        context(referrer="https://example.test/\u00e9")
 
 
 def test_a_cookie_jar_is_the_site_s_cookies_whatever_their_path():
@@ -120,3 +149,79 @@ def test_only_core_and_the_registering_intake_touch_the_holder():
                        and any(name in path.read_text() for name in ("served_transfer(", "_SERVED_TRANSFER",
                                                                      "session_cookies", "browser_cookies")))
     assert leftovers == []
+
+
+# -- never persisted, never a peer's (review of 487095e, 2026-11-22) --------------------
+
+SECRET = "only-in-memory-7f3a"
+
+
+def _held():
+    return RequestContext.from_submission([cookie("SID", SECRET, domain="files.example.test")],
+                                          "https://files.example.test/page-" + SECRET, [LINK])
+
+
+def test_nothing_that_carries_a_request_writes_its_call_scoped_facts():
+    """A provider may keep the request it was handed (a debrid candidate's refresh_request, an
+    interpretation): whatever carries it, the codec writes neither the context nor the
+    speculative flag, and a stored row never brings one back."""
+    from dataclasses import replace
+    from transfers import codec
+    from transfers.models import Endpoint, ResolutionResult, ResourceState, TransferCandidate, TransferRequest
+    request = replace(TransferRequest("https", LINK, name="archive.zip"), context=_held(), speculative=True)
+    candidate = TransferCandidate("archive.zip", (Endpoint("https", "https://cdn.example.test/x"),),
+                                  refresh_request=request)
+    assert '"context"' not in codec.dump(request)       # (a candidate has its own provider context map)
+    for value in (request, candidate, ResolutionResult(ResourceState.AVAILABLE, (candidate,))):
+        written = codec.dump(value)
+        assert SECRET not in written and '"speculative"' not in written
+    loaded = codec.request({**codec.load(codec.dump(request)), "context": {"cookies": []}, "speculative": True})
+    assert loaded.context is None and loaded.speculative is False
+
+
+def test_core_strips_what_it_attached_from_everything_a_provider_returns():
+    from dataclasses import replace
+    from transfers._engine_base import TransferEngine as Base
+    from transfers.models import (DiscoveryRequest, Endpoint, ResolutionResult, ResourceState, TransferCandidate,
+                                  TransferRequest)
+    request = replace(TransferRequest("https", LINK), context=_held(), speculative=True)
+    kept = TransferCandidate("a", (Endpoint("https", "https://cdn.example.test/x"),), refresh_request=request)
+    result = Base._authoritative_provider_result("p", ResolutionResult(ResourceState.AVAILABLE, (kept,)),
+                                                 request_kind="https")
+    assert result.candidates[0].refresh_request.context is None
+    assert result.candidates[0].refresh_request.speculative is False
+    discovery = ResolutionResult(ResourceState.PREPARING, discovery=DiscoveryRequest(
+        Endpoint("https", "https://files.example.test/dir/"), alternate=request))
+    assert Base._authoritative_provider_result("p", discovery, request_kind="https").discovery.alternate.context is None
+
+
+@pytest.mark.asyncio
+async def test_a_decision_samples_only_its_own_candidates_with_the_sign_in():
+    """A peer's candidate (another transfer's, maybe another account's) is never read with this
+    lineage's sign-in, exactly as it is never read with its input material."""
+    from transfers.mirrors import EvidenceContext
+    from transfers.models import Endpoint, TransferCandidate
+    own = TransferCandidate("own", (Endpoint("https", LINK),))
+    peer = TransferCandidate("peer", (Endpoint("https", "https://files.example.test/other"),))
+    seen = {}
+
+    class Auth:
+        def owns(self, candidate):
+            return candidate.id == own.id
+
+        async def request_context(self):
+            return _held()
+
+    class Sampler:
+        class capabilities:
+            transient_input = False
+
+        async def fingerprint(self, subject, **kwargs):
+            seen[subject.candidate.name] = kwargs.get("request_context")
+            return None
+
+    decision = EvidenceContext()
+    decision.bind(Auth())
+    await decision.fingerprint(Sampler(), own)
+    await decision.fingerprint(Sampler(), peer)
+    assert seen["own"] is not None and seen["peer"] is None

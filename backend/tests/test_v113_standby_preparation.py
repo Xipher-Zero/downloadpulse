@@ -17,6 +17,8 @@ to end.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -32,7 +34,6 @@ from db.database import get_db
 from providers.torbox.client import TORRENT, TorBoxAPIError
 from providers.torbox.provider import TorBoxProvider
 from services import transfer_trace
-from transfers.contracts import speculative_attempt
 from transfers.convergence_engine import TransferEngine
 from transfers.models import (
     Capability,
@@ -70,7 +71,7 @@ class Primary:
         self.observed = 0
 
     async def resolve(self, request):
-        assert not speculative_attempt()                 # a primary call is never speculative
+        assert not request.speculative                   # a primary call is never speculative
         self.resolved.append(str(request.payload))
         resource = ProviderResource(self.descriptor.id, {"n": len(self.resolved)}, Ownership.CREATED,
                                     id=f"{self.descriptor.id}:{len(self.resolved)}")
@@ -364,8 +365,13 @@ async def test_p3_7_a_limit_class_refusal_is_non_contracting(tmp_path, monkeypat
 
 async def test_p3_7_the_same_refusal_on_a_primary_still_contracts():
     backup = torbox(FakeClient())
-    await backup._refused(TorBoxAPIError("PLAN_RESTRICTED_FEATURE", "", 403), "magnet")
+    primary_call = TransferRequest("magnet", "magnet:?xt=urn:btih:" + "a" * 40)
+    await backup._refused(TorBoxAPIError("PLAN_RESTRICTED_FEATURE", "", 403), primary_call)
     backup.account.contract.assert_awaited_once()
+    # The same refusal on a speculative backup's call (it says so on its request) never contracts.
+    backup.account.contract.reset_mock()
+    await backup._refused(TorBoxAPIError("PLAN_RESTRICTED_FEATURE", "", 403), replace(primary_call, speculative=True))
+    backup.account.contract.assert_not_awaited()
 
 
 async def test_p3_7_a_deferred_backup_backs_off_within_the_existing_retry_policy(tmp_path, monkeypatch):

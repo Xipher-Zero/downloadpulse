@@ -735,7 +735,7 @@ class RsyncExecutor:
 
     async def discover(self, subject, submitted: SubmittedInput | None = None, *,
                        depth: DiscoveryDepth = DiscoveryDepth.CURRENT, limits: DiscoveryLimits = DiscoveryLimits(),
-                       content_limit: int | None = None):
+                       content_limit: int | None = None, request_context=None):
         """Read-only classification of one rsync path before any candidate
         exists, through exactly the preparation execution uses. A regular file
         is one file; a directory is its regular files within the neutral

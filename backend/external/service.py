@@ -1702,6 +1702,7 @@ class ExternalClients:
         recovered_retirements = await self._settle_pending_retirements()
         refreshed = await self._refresh_unsettled()
         retired = await self._retire_acknowledged_folders()
+        # Core settles its own holder every resolution cycle; this is only a second, harmless pass.
         cookies_released = await request_contexts.settle()
         return {"accepted": len(pending), "forgotten": forgotten, "recovered": recovered, "released": released,
                 "refreshed": refreshed, "retired": retired, "profile_retirements": recovered_retirements,

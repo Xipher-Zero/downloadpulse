@@ -24,7 +24,6 @@ from transfers._engine_recovery import TransferEngine as _RecoveryTransferEngine
 from transfers.applicability import ApplicabilityUnresolved
 from transfers.contracts import (
     ActiveCapacitySource, CachedResolution, Inventory, Manifest, ResourceLookup, UpstreamSelection,
-    speculative_preparation,
 )
 from transfers.errors import (
     Category, Domain, MutationOutcome, Origin, Recovery, Retryability, Stage, TransferError, unknown_failure,
@@ -730,8 +729,10 @@ class TransferEngine(_RecoveryTransferEngine):
         defers the backup; any other failure ends only this backup."""
         try:
             async with self._resolution_slot():
-                with speculative_preparation():
-                    result = await provider.resolve(await self._with_context(record.transfer_id, record.resolvable))
+                # A speculative backup preparation says so on the request it hands the provider
+                # (``TransferRequest.speculative``), never through ambient state.
+                result = await provider.resolve(replace(
+                    await self._with_context(record.transfer_id, record.resolvable), speculative=True))
             result = self._authoritative_provider_result(provider.descriptor.id, result,
                                                          request_kind=record.resolvable.kind)
             observation = result.observation
