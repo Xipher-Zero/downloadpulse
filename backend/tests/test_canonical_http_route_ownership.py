@@ -7,6 +7,7 @@ list to make ownership come out right. These tests fail closed if either the
 legacy declaration or the route-list mutation is reintroduced, and they cover
 the externally visible behavior of both collections.
 """
+from transfers import downloads_read_model
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -171,6 +172,7 @@ def _torrent_row(transfer_id):
 async def _list_torrents(monkeypatch, **kwargs):
     db = _FakeDb([_torrent_row(1)])
     monkeypatch.setattr(downloads, "get_db", lambda: _fake_db(db))
+    monkeypatch.setattr(downloads_read_model, "get_db", lambda: _fake_db(db))   # the page is read in core
     application = SimpleNamespace(repository=object(), definitions=[])
     result = await downloads.list_operational_torrents(application=application, **kwargs)
     return db, result
@@ -199,16 +201,16 @@ async def test_torrents_search_is_one_parameterized_plan_predicate(monkeypatch):
     db, _ = await _list_torrents(
         monkeypatch, status=None, search="Ex%_ample 580", limit=0, offset=0
     )
-    assert db.calls[0] == ("create_function", downloads._DOWNLOADS_MATCH, 9)
+    assert db.calls[0] == ("create_function", downloads_read_model._DOWNLOADS_MATCH, 9)
     evaluate_sql, evaluate_params = next((sql, values) for kind, sql, values in db.calls[1:]
                                          if kind == "execute" and sql.startswith("INSERT"))
     # The text is a bound, folded parameter -- never SQL text, never a LIKE pattern.
     assert "Ex%_ample" not in evaluate_sql and " LIKE ?" not in evaluate_sql
-    assert downloads._DOWNLOADS_MATCH in evaluate_sql and evaluate_params[-1] == "ex%_ample 580"
+    assert downloads_read_model._DOWNLOADS_MATCH in evaluate_sql and evaluate_params[-1] == "ex%_ample 580"
     # Evaluated once; the page and its total both read that one result.
     reads = [sql for kind, sql, _values in db.calls if kind in ("fetchall", "fetchone")]
-    assert len(reads) == 2 and all(f"temp.{downloads._DOWNLOADS_HITS}" in sql for sql in reads)
-    assert not any(downloads._DOWNLOADS_MATCH in sql for sql in reads)
+    assert len(reads) == 2 and all(f"temp.{downloads_read_model._DOWNLOADS_HITS}" in sql for sql in reads)
+    assert not any(downloads_read_model._DOWNLOADS_MATCH in sql for sql in reads)
 
 
 @pytest.mark.asyncio

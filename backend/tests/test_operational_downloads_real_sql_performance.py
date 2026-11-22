@@ -29,6 +29,8 @@ torrents with realistic recovery state and unrelated event-stream volume.
 """
 from __future__ import annotations
 
+from transfers import downloads_read_model
+
 import json
 import sqlite3
 import time
@@ -211,13 +213,13 @@ async def test_query_no_longer_contains_pathological_per_artifact_correlated_for
             conn.fetchall = fetchall
             yield conn
 
-    downloads.get_db = capturing_get_db
+    downloads_read_model.get_db = capturing_get_db
     try:
         await downloads.list_operational_torrents(
             status=None, search=None, limit=25, offset=0, application=application,
         )
     finally:
-        downloads.get_db = real_get_db
+        downloads_read_model.get_db = real_get_db
 
     sql = captured_sql["sql"]
     assert _PATHOLOGICAL_CORRELATED_FORM not in sql
@@ -266,13 +268,13 @@ async def test_explain_query_plan_proves_indexed_set_oriented_path(real_sql_down
             conn.fetchall = fetchall
             yield conn
 
-    downloads.get_db = capturing_get_db
+    downloads_read_model.get_db = capturing_get_db
     try:
         await downloads.list_operational_torrents(
             status=None, search=None, limit=25, offset=0, application=application,
         )
     finally:
-        downloads.get_db = real_get_db
+        downloads_read_model.get_db = real_get_db
 
     conn = sqlite3.connect(real_sql_downloads_fixture)
     try:

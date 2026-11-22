@@ -1,6 +1,8 @@
 """Regression coverage for populated legacy Downloads read scaling."""
 from __future__ import annotations
 
+from transfers import downloads_read_model
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sqlite3
@@ -54,6 +56,8 @@ async def test_operational_list_releases_query_session_and_bounds_projection(mon
             )
 
     monkeypatch.setattr(operational_downloads, "get_db", fake_get_db)
+
+    monkeypatch.setattr(downloads_read_model, "get_db", fake_get_db)
     monkeypatch.setattr(
         operational_downloads,
         "_public_transfer_presentation",

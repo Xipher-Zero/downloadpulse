@@ -2657,6 +2657,27 @@ class TransferRepository:
                     WHERE f.torrent_id=:t AND ac.source_transfer_id<>:t
                    ORDER BY created_at, id""", {"t": int(transfer_id)})
 
+    async def serving_transfer(self, transfer_id: int) -> int:
+        """The transfer whose work serves ``transfer_id``'s demand NOW: the transfer
+        itself, or -- consolidated onto another transfer's canonical file that is not
+        yet complete -- that transfer (followed if it was consolidated in turn). Once
+        every file it was consolidated onto is complete, the transfer itself again:
+        nothing is left to serve. Core's one answer for every edge that shows or
+        controls a consolidated transfer (1.0.2, operator 2026-11-22)."""
+        current, seen = int(transfer_id), set()
+        async with get_db() as db:
+            while current not in seen:
+                seen.add(current)
+                row = await db.fetchone(
+                    """SELECT f.torrent_id FROM artifact_consolidations ac
+                           JOIN download_files f ON f.id=ac.canonical_artifact_id
+                       WHERE ac.source_transfer_id=? AND f.torrent_id<>? AND f.status<>'completed'
+                       ORDER BY f.torrent_id LIMIT 1""", (current, current))
+                if row is None:
+                    break
+                current = int(row["torrent_id"])
+        return current if current != int(transfer_id) else int(transfer_id)
+
     async def outstanding_demand(self, transfer_id: int) -> list[dict]:
         """Every outstanding demand that the transfer's work serves."""
         async with get_db() as db:

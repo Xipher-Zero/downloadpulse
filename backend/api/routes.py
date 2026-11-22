@@ -42,7 +42,6 @@ from transfers.requests import (
 )
 from core.config_validator import validate_and_sanitise
 from integrations.definition import IntegrationSettings
-from transfers.read_models import canonical_artifact_membership_sql
 from transfers.runtime_limits import ExecutionRuntimeLimits
 from transfers.models import SubmissionDemand
 from transfers.read_models import DemandChanged
@@ -152,19 +151,9 @@ def _refused(exc: ValidationError) -> HTTPException:
 
 
 # ── SQL dialect helpers ────────────────────────────────────────────────────────
-def _sql_now_minus(interval: str) -> str:
-    parts = interval.split()
-    n, unit = parts[0], parts[1]
-    return f"datetime('now','-{n} {unit}')"
-
-
-def _sql_strftime(fmt: str, field: str) -> str:
-    # SQLite stores canonical UTC clock values; calendar buckets are operator-local.
-    return f"strftime('{fmt}', {field}, 'localtime')"
-
-
-def _sql_date(field: str) -> str:
-    return f"DATE({field}, 'localtime')"
+from transfers.statistics import (  # noqa: E402,F401 -- core's statistics read model
+    sql_date as _sql_date, sql_now_minus as _sql_now_minus, sql_strftime as _sql_strftime,
+)
 
 from application import dispatch_admission
 from application.dependencies import get_application
@@ -1325,22 +1314,8 @@ async def import_existing( application: ApplicationService = Depends(get_applica
 @router.get("/torrents/diagnose")
 async def diagnose_torrents():
     """Return a full count breakdown of all local torrent statuses."""
-    async with get_db() as db:
-        all_counts = await (await db.execute(
-            """SELECT status, COUNT(*) AS cnt FROM torrents
-               GROUP BY status ORDER BY cnt DESC"""
-        )).fetchall()
-        non_terminal = await (await db.execute(
-            """SELECT t.id, t.name, t.status,
-                      (SELECT COUNT(*) FROM download_files f WHERE f.torrent_id=t.id AND f.blocked=0) AS file_count
-               FROM torrents t
-               WHERE t.status NOT IN ('completed', 'deleted')
-               ORDER BY t.id DESC LIMIT 20"""
-        )).fetchall()
-    return {
-        "status_counts": [dict(r) for r in all_counts],
-        "sample_non_terminal": [dict(r) for r in non_terminal],
-    }
+    from transfers import statistics
+    return await statistics.status_breakdown()
 
 
 @router.post("/torrents/recover-all")
@@ -1805,46 +1780,8 @@ async def performance_diagnostics( application: ApplicationService = Depends(get
 @router.get("/stats")
 async def get_stats(application: ApplicationService = Depends(get_application)):
     started = time.monotonic()
-    async with get_db() as db:
-        by_status_rows = await db.fetchall(
-            "SELECT status, COUNT(*) as count FROM torrents GROUP BY status"
-        )
-        by_status = {r["status"]: r["count"] for r in by_status_rows}
-
-        last_24h_expr = _sql_now_minus("1 day")
-        last_7d_expr = _sql_now_minus("7 days")
-        aggregate = await db.fetchone(
-            f"""SELECT
-                   COALESCE(SUM(CASE WHEN status='completed' THEN size_bytes ELSE 0 END), 0)
-                       AS total_completed_bytes,
-                   SUM(CASE WHEN status IN ('downloading','processing','uploading','paused')
-                            THEN 1 ELSE 0 END) AS active_downloads,
-                   SUM(CASE WHEN COALESCE(extraction_status,'')='extracting'
-                            THEN 1 ELSE 0 END) AS extracting_count,
-                   SUM(CASE WHEN status IN ('ready','queued') THEN 1 ELSE 0 END)
-                       AS queued_downloads,
-                   SUM(CASE WHEN status='downloading' THEN 1 ELSE 0 END)
-                       AS operator_active_downloads,
-                   AVG(CASE WHEN status='downloading' THEN COALESCE(progress, 0)
-                            ELSE NULL END) AS operator_active_progress_pct,
-                   SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error_count,
-                   SUM(CASE WHEN status='completed' AND COALESCE(extraction_status,'')!='extracting' THEN 1 ELSE 0 END) AS completed_count,
-                   SUM(CASE WHEN completed_at >= {last_24h_expr}
-                                AND COALESCE(extraction_status,'')!='extracting' THEN 1 ELSE 0 END)
-                       AS completed_last_24h,
-                   SUM(CASE WHEN completed_at >= {last_7d_expr}
-                                AND COALESCE(extraction_status,'')!='extracting' THEN 1 ELSE 0 END)
-                       AS completed_last_7d,
-                   AVG(CASE
-                       WHEN completed_at IS NOT NULL AND created_at IS NOT NULL
-                       THEN CAST((julianday(completed_at)-julianday(created_at))*86400 AS INTEGER)
-                       ELSE NULL END) AS avg_download_duration_seconds,
-                   AVG(CASE WHEN status='completed' AND size_bytes>0 THEN size_bytes
-                            ELSE NULL END) AS avg_torrent_size_bytes,
-                   (SELECT COUNT(*) FROM download_files WHERE blocked=1)
-                       AS total_blocked_files
-               FROM torrents"""
-        ) or {}
+    from transfers import statistics
+    by_status, aggregate = await statistics.overview()
 
     operator_active = int(aggregate.get("operator_active_downloads") or 0)
     operator_progress = None
@@ -1906,87 +1843,24 @@ def _completion_family_members(definitions) -> dict[str, list[str]]:
             for family, field, value in _COMPLETION_FAMILIES}
 
 
-async def _completion_buckets(db, bucket_sql: str, since_sql: str, definitions) -> list[dict]:
-    """Completed transfers per bucket since ``since_sql``: ``count`` as it has
-    always been counted and how many of them each source family delivered.
-
-    A completion belongs to a family only when every one of its current
-    canonical artifacts was delivered -- by its latest delivered execution
-    (``execution_attempt_provenance.delivered``, written by the one completion
-    funnel; earlier failed or replaced attempts never count) -- through a
-    provider of that same family. A completion whose material came through
-    both families, or any part of which has no recorded delivering provider
-    (history from before provenance, an adopted payload), is unattributed and
-    stays in ``count``: ``count == premium + network + unattributed``."""
-    members = _completion_family_members(definitions)
-    family_sql = " ".join(
-        f"WHEN p.provider_id IN ({', '.join('?' for _ in ids) or 'NULL'}) THEN '{family}'"
-        for family, ids in members.items())
-    rows = await db.fetchall(f"""
-        WITH done AS (
-            SELECT id, {bucket_sql} AS date FROM torrents WHERE completed_at >= {since_sql} AND status='completed'
-        ),
-        artifact AS (
-            SELECT f.torrent_id AS transfer_id,
-                   (SELECT CASE {family_sql} END FROM execution_attempt_provenance p
-                    WHERE p.artifact_id = f.id AND p.delivered = 1 ORDER BY p.ordinal DESC LIMIT 1) AS family
-            FROM download_files f JOIN done ON done.id = f.torrent_id
-            WHERE {canonical_artifact_membership_sql("f")}
-        ),
-        attributed AS (
-            SELECT transfer_id,
-                   CASE WHEN COUNT(*) = COUNT(family) AND MIN(family) = MAX(family) THEN MIN(family) END AS family
-            FROM artifact GROUP BY transfer_id
-        )
-        SELECT done.date AS date, COUNT(*) AS count,
-               COUNT(CASE WHEN attributed.family = 'premium' THEN 1 END) AS premium,
-               COUNT(CASE WHEN attributed.family = 'network' THEN 1 END) AS network
-        FROM done LEFT JOIN attributed ON attributed.transfer_id = done.id
-        GROUP BY done.date ORDER BY done.date ASC""", [provider for ids in members.values() for provider in ids])
-    return [{**row, "unattributed": int(row["count"]) - int(row["premium"]) - int(row["network"])} for row in rows]
+async def _completion_buckets(bucket_sql: str, since_sql: str, definitions) -> list[dict]:
+    """Completed transfers per bucket, by source family (core's ``completion_buckets``,
+    over the families the integrations' own metadata declares)."""
+    from transfers import statistics
+    return await statistics.completion_buckets(bucket_sql, since_sql, _completion_family_members(definitions))
 
 
-async def _transfer_methods(db, where_sql: str, definitions) -> list[dict]:
-    """Statistics -> Transfer Methods: how DownloadPulse actually acquired the
-    transfers added in the period, ranked, at most ten rows.
-
-    A transfer counts ONCE under each acquisition method that delivered any of
-    its current canonical artifacts -- by that artifact's latest delivered
-    execution (``execution_attempt_provenance.delivered``, the same delivery
-    truth the Completions families read; failed, replaced or standby attempts
-    never count). The method is the one the delivering integration declares
-    (``IntegrationPresentation.acquisition_method``), so three debrid services
-    are one "Debrid" and a transfer that also took material over HTTP(S)
-    counts there too. What was submitted (a magnet, an NZB, a Metalink) is
-    never a method. A transfer that completed with no delivery attributable to
-    any declared method -- history from before provenance, an adopted payload
-    -- is "Unattributed", never guessed into one."""
+async def _transfer_methods(where_sql: str, definitions) -> list[dict]:
+    """Statistics -> Transfer Methods (core's ``transfer_methods``): the method is the one
+    the delivering integration declares (``IntegrationPresentation.acquisition_method``),
+    so three debrid services are one "Debrid"; what was submitted is never a method."""
+    from transfers import statistics
     methods: dict[str, list[str]] = {}
     for definition in definitions:
         method = getattr(definition.presentation, "acquisition_method", None)
         if method:
             methods.setdefault(method, []).append(definition.id)
-    method_sql = " ".join(
-        f"WHEN p.provider_id IN ({', '.join('?' for _ in ids)}) THEN ?" for ids in methods.values()) or "WHEN 0 THEN NULL"
-    parameters = [value for method, ids in methods.items() for value in (*ids, method)]
-    return await db.fetchall(f"""
-        WITH scope AS (
-            SELECT id, completed_at FROM torrents {where_sql}
-        ),
-        delivered AS (
-            SELECT DISTINCT f.torrent_id AS transfer_id,
-                   (SELECT CASE {method_sql} END FROM execution_attempt_provenance p
-                    WHERE p.artifact_id = f.id AND p.delivered = 1 ORDER BY p.ordinal DESC LIMIT 1) AS method
-            FROM download_files f JOIN scope ON scope.id = f.torrent_id
-            WHERE {canonical_artifact_membership_sql("f")}
-        ),
-        attributed AS (SELECT transfer_id, method FROM delivered WHERE method IS NOT NULL)
-        SELECT method, COUNT(*) AS count FROM attributed GROUP BY method
-        UNION ALL
-        SELECT 'Unattributed', COUNT(*) FROM scope
-        WHERE completed_at IS NOT NULL AND id NOT IN (SELECT transfer_id FROM attributed)
-        HAVING COUNT(*) > 0
-        ORDER BY count DESC, method ASC LIMIT 10""", parameters)
+    return await statistics.transfer_methods(where_sql, methods)
 
 
 @router.get("/stats/detail")
@@ -2005,88 +1879,41 @@ async def get_stats_detail(period: str = "all", application: ApplicationService 
     }
     entry = period_map.get(period, period_map["all"])
     cutoff, period_label, date_fmt, _ = entry
-    where_ts   = f"WHERE created_at >= {cutoff}"    if cutoff else ""
-    where_done = f"WHERE completed_at >= {cutoff}"   if cutoff else ""
-    where_comp = (
-        f"WHERE status='completed' AND COALESCE(extraction_status,'')!='extracting' AND completed_at >= {cutoff}"
-        if cutoff
-        else "WHERE status='completed' AND COALESCE(extraction_status,'')!='extracting'"
-    )
-
+    from transfers import statistics
+    period_facts = await statistics.period_totals(cutoff)
+    totals, torrent_status, file_status = (period_facts["totals"], period_facts["torrent_status"],
+                                           period_facts["file_status"])
+    from db.event_journal import severity_counts
+    event_since = (time.time() - {"1h": 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400,
+                                  "1y": 365 * 86400}[period_label]) if cutoff else None
     async with get_db() as db:
-        # ── Totals (period-filtered) ─────────────────────────────────────────
-        totals_row = await db.fetchone(
-            f"SELECT COUNT(*) as torrent_total, COALESCE(SUM(size_bytes),0) as torrent_size_total "
-            f"FROM torrents {where_ts}"
-        ) or {}
-        totals = dict(totals_row)
-
-        completed_count = (await db.fetchone(
-            f"SELECT COUNT(*) as c FROM torrents {where_comp}") or {}).get("c", 0)
-        error_count = (await db.fetchone(
-            f"SELECT COUNT(*) as c FROM torrents WHERE status='error'"
-            + (f" AND created_at >= {cutoff}" if cutoff else "")) or {}).get("c", 0)
-        terminal = completed_count + error_count
-        totals["success_rate_pct"] = round(completed_count / terminal * 100, 1) if terminal > 0 else None
-
-        completed_size_row = await db.fetchone(
-            f"SELECT COALESCE(SUM(size_bytes),0) as v FROM torrents {where_comp}")
-        totals["completed_size"]  = completed_size_row["v"] if completed_size_row else 0
-        totals["completed_count"] = completed_count
-
-        partial_row = await db.fetchone(
-            "SELECT COUNT(*) as c FROM torrents "
-            "WHERE (status IN ('processing','downloading','dispatched','partial') OR COALESCE(extraction_status,'')='extracting')"
-            + (f" AND created_at >= {cutoff}" if cutoff else ""))
-        totals["partial_total"] = partial_row["c"] if partial_row else 0
-
-        # ── Breakdowns ───────────────────────────────────────────────────────
-        # Transfer Disposition: each retained transfer at its current SETTLED
-        # status, at most once; anything still active, pending or extracting
-        # (the in-progress KPI's own rule) has no disposition yet. Remove
-        # persists `deleted`, so there is no separate Removed to count.
-        from api.operational_downloads import _SETTLED_RAW_STATUSES
-        torrent_status = await db.fetchall(
-            f"SELECT status, COUNT(*) as count FROM torrents "
-            f"WHERE status IN ({','.join('?' * len(_SETTLED_RAW_STATUSES))}) "
-            f"AND COALESCE(extraction_status,'')!='extracting'"
-            + (f" AND created_at >= {cutoff}" if cutoff else "")
-            + " GROUP BY status ORDER BY count DESC", _SETTLED_RAW_STATUSES)
-        where_files = (f"WHERE updated_at >= {cutoff}" if cutoff else "")
-        file_status = await db.fetchall(
-            f"SELECT status, COUNT(*) as count, COALESCE(SUM(size_bytes),0) as size_bytes "
-            f"FROM download_files {where_files} GROUP BY status ORDER BY count DESC")
-        from db.event_journal import severity_counts
-        event_since = (time.time() - {"1h": 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400,
-                                      "1y": 365 * 86400}[period_label]) if cutoff else None
         event_levels = [{"level": level, "count": count}
                         for level, count in (await severity_counts(db, event_since)).items()]
-        transfer_methods = await _transfer_methods(db, where_ts, application.definitions)
+    transfer_methods = await _transfer_methods(period_facts["where_ts"], application.definitions)
+    # ── Chart data (period-aware grouping) ───────────────────────────────
+    _cutoff_90d = _sql_now_minus("90 days")
+    if period == "1h":
+        _grp, _since = _sql_strftime("%H:%M", "completed_at"), cutoff
+    elif period == "24h":
+        # Group and label by hour -- both SELECT and GROUP BY use the same expression
+        _grp, _since = _sql_strftime("%H:00", "completed_at"), cutoff
+    elif period in ("7d", "30d"):
+        _grp, _since = _sql_date("completed_at"), cutoff
+    elif period == "1y":
+        _grp, _since = _sql_strftime("%Y-%m", "completed_at"), cutoff
+    else:  # all -- last 90 days grouped by day
+        _grp, _since = _sql_date("completed_at"), _cutoff_90d
+    daily_completions = await _completion_buckets(_grp, _since, application.definitions)
 
-        # ── Chart data (period-aware grouping) ───────────────────────────────
-        _cutoff_90d = _sql_now_minus("90 days")
-        if period == "1h":
-            _grp, _since = _sql_strftime("%H:%M", "completed_at"), cutoff
-        elif period == "24h":
-            # Group and label by hour -- both SELECT and GROUP BY use the same expression
-            _grp, _since = _sql_strftime("%H:00", "completed_at"), cutoff
-        elif period in ("7d", "30d"):
-            _grp, _since = _sql_date("completed_at"), cutoff
-        elif period == "1y":
-            _grp, _since = _sql_strftime("%Y-%m", "completed_at"), cutoff
-        else:  # all -- last 90 days grouped by day
-            _grp, _since = _sql_date("completed_at"), _cutoff_90d
-        daily_completions = await _completion_buckets(db, _grp, _since, application.definitions)
-
-        return {
-            "period":             period_label,
-            "totals":             totals,
-            "torrent_status":     torrent_status,
-            "file_status":        file_status,
-            "event_levels":       event_levels,
-            "daily_completions":  daily_completions,
-            "transfer_methods":   transfer_methods,
-        }
+    return {
+        "period":             period_label,
+        "totals":             totals,
+        "torrent_status":     torrent_status,
+        "file_status":        file_status,
+        "event_levels":       event_levels,
+        "daily_completions":  daily_completions,
+        "transfer_methods":   transfer_methods,
+    }
 
 
 # ── Processing control ─────────────────────────────────────────────────────────
@@ -2240,12 +2067,8 @@ async def drop_page_cache_ep():
     from pathlib import Path
 
     try:
-        async with get_db() as db:
-            rows = await (await db.execute(
-                "SELECT local_path FROM download_files "
-                "WHERE status='completed' AND local_path IS NOT NULL"
-            )).fetchall()
-        paths = [r["local_path"] for r in rows if r["local_path"]]
+        from transfers import statistics
+        paths = await statistics.completed_local_paths()
         dropped = sum(1 for p in paths if drop_page_cache_for_file(p))
         return {
             "ok": True,
@@ -3142,24 +2965,10 @@ async def prometheus_metrics():
     except ImportError:
         raise DisplayError(503, "prometheus-client is not installed. Add it to requirements.txt and rebuild.", code="metrics.client_missing",)
 
-    async with get_db() as db:
-        # Torrent counts by status
-        rows = await db.fetchall(
-            "SELECT status, COUNT(*) AS c FROM torrents GROUP BY status"
-        )
-        by_status = {r["status"]: int(r["c"]) for r in rows}
-
-        # Download file counts by status
-        frows = await db.fetchall(
-            "SELECT status, COUNT(*) AS c FROM download_files GROUP BY status"
-        )
-        by_file_status = {r["status"]: int(r["c"]) for r in frows}
-
-        # Total size downloaded (bytes)
-        size_row = await db.fetchone(
-            "SELECT COALESCE(SUM(size_bytes),0) AS total FROM torrents WHERE status='completed'"
-        )
-        total_bytes = int((size_row["total"] if size_row else 0) or 0)
+    from transfers import statistics
+    counts = await statistics.metric_counts()
+    by_status, by_file_status, total_bytes = (counts["transfers_by_status"], counts["files_by_status"],
+                                              counts["completed_bytes"])
 
     # Build output manually to avoid global registry side-effects on repeated scrapes
     lines: list[str] = []

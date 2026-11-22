@@ -26,6 +26,8 @@ is a thin wrapper over the existing per-file canonical candidate sets.
 """
 from __future__ import annotations
 
+from transfers import downloads_read_model
+
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -480,12 +482,12 @@ async def test_group_summary_keeps_the_list_bounded(group_db):
             conn.fetchall, conn.fetchone = fetchall, fetchone
             yield conn
 
-    token = downloads.get_db
-    downloads.get_db = counting
+    token = downloads_read_model.get_db
+    downloads_read_model.get_db = counting
     try:
         result = await _list()
     finally:
-        downloads.get_db = token
+        downloads_read_model.get_db = token
 
     assert calls == ["fetchall", "fetchone"]
     assert all(row["common_candidate_count"] == 2 for row in result["items"])

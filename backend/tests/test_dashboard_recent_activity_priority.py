@@ -18,6 +18,8 @@ required boundedness properties from the finishing-pass task (Section 4):
 """
 from __future__ import annotations
 
+from transfers import downloads_read_model
+
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -189,6 +191,8 @@ def _capture_fetchall_sql(monkeypatch):
             yield conn
 
     monkeypatch.setattr(downloads, "get_db", capturing_get_db)
+
+    monkeypatch.setattr(downloads_read_model, "get_db", capturing_get_db)
     return captured
 
 
@@ -227,7 +231,7 @@ async def test_activity_mode_sql_statement_count_and_candidate_bound_stay_fixed_
     # raw status (9) + one SEEK per settled raw status only if room remains
     # (7) + 1 main projection fetchall + 1 total-count fetchone = 18 fixed
     # statements, independent of table size.
-    expected = ["fetchall"] * (len(downloads._ACTIVITY_LIVE_RAW_STATUSES) + len(downloads._SETTLED_RAW_STATUSES) + 1) + ["fetchone"]
+    expected = ["fetchall"] * (len(downloads_read_model._ACTIVITY_LIVE_RAW_STATUSES) + len(downloads_read_model._SETTLED_RAW_STATUSES) + 1) + ["fetchone"]
     assert small_calls == expected
     assert big_calls == small_calls
     assert big_result["total"] == small_result["total"] + len(big_rows)
@@ -255,7 +259,7 @@ async def test_activity_cohort_queries_use_indexed_seek_never_a_scan(activity_db
         status=None, search=None, limit=10, offset=0, order="activity", application=_application(),
     )
 
-    live_count = len(downloads._ACTIVITY_LIVE_RAW_STATUSES)
+    live_count = len(downloads_read_model._ACTIVITY_LIVE_RAW_STATUSES)
     live_status_queries = captured[:live_count]
     assert len(live_status_queries) == live_count
 
@@ -310,7 +314,7 @@ async def test_candidate_acquisition_time_does_not_grow_with_history_size(activi
         _seed(db_path, rows)
         start = time.perf_counter()
         for _ in range(10):
-            ids = await downloads._activity_cohort_candidate_ids(
+            ids = await downloads_read_model._activity_cohort_candidate_ids(
                 ["t.status NOT IN ('deleted', 'consolidated')"], [], 5
             )
         elapsed = (time.perf_counter() - start) / 10

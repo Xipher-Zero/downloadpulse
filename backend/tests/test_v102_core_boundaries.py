@@ -139,3 +139,35 @@ def test_neutral_code_names_no_concrete_integration():
     # Legacy settings keys translated into universal fields (never branched on).
     found = [item for item in found if not item[1].startswith("aria2_")]
     assert found == []
+
+
+# The transfer core's own tables. An edge asks core (the application service, a
+# ``transfers.read_models`` name) -- e.g. ``serving_transfer`` for which transfer serves a
+# consolidated one -- and never derives a core decision from these tables itself.
+CORE_TABLES = frozenset({
+    "torrents", "download_files", "artifact_consolidations", "artifact_material_state", "artifact_recovery_state",
+    "canonical_candidate_bindings", "canonical_candidate_origins", "execution_attempt_provenance",
+    "execution_attempts", "pending_provider_choices", "postprocess_attempts", "provider_quota_holds",
+    "provider_resources", "resolution_attempts", "route_attempt_provenance", "standby_resources",
+    "transfer_controls", "transfer_demands", "transfer_file_manifest_entries", "transfer_file_manifests",
+    "transfer_file_selection_entries", "transfer_file_selection_intent_entries", "transfer_file_selection_intents",
+    "transfer_file_selections", "transfer_input_challenges", "transfer_outcomes", "transfer_pause_intents",
+    "transfer_requests"})
+
+# 1.0.2 (operator, 2026-11-22): the direct reads that predated this rule -- the
+# Downloads read model, the statistics routes and the External API's job projection --
+# now live in core (transfers.downloads_read_model, transfers.statistics,
+# transfers.demand_fulfilment). No edge holds any; none may come back.
+CORE_TABLE_DEBT: dict[str, int] = {}
+
+
+def test_no_edge_queries_a_core_table_beyond_its_recorded_debt():
+    import re
+    statement = re.compile(r"\b(?:FROM|JOIN|UPDATE|INTO)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
+    found = {}
+    for path in _files("api", "external", "auth"):
+        count = sum(1 for table in statement.findall(path.read_text(encoding="utf-8"))
+                    if table.lower() in CORE_TABLES)
+        if count:
+            found[_rel(path)] = count
+    assert {name: count for name, count in found.items() if count > CORE_TABLE_DEBT.get(name, 0)} == {}

@@ -48,7 +48,9 @@ def test_the_details_projection_derives_the_distinct_root_request_kinds():
 
 
 def test_the_bounded_list_projection_derives_the_same_neutral_field_without_a_per_row_query():
-    source = (BACKEND / "api" / "operational_downloads.py").read_text(encoding="utf-8")
+    # The route shapes the field; core's Downloads read model derives it (1.0.2).
+    source = ((BACKEND / "api" / "operational_downloads.py").read_text(encoding="utf-8")
+              + (BACKEND / "transfers" / "downloads_read_model.py").read_text(encoding="utf-8"))
     assert '"request_kinds"' in source
     assert "root_request_kinds AS (" in source
     # Derived inside the ONE bounded projection SQL, aggregated over the page.

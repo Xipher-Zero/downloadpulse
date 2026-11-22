@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 import api.routes as routes
 import main
+from transfers import statistics
 
 
 class _MetricsDb:
@@ -39,7 +40,8 @@ def scrape(monkeypatch):
     async def fake_db():
         yield _MetricsDb()
 
-    monkeypatch.setattr(routes, "get_db", fake_db)
+    # The scrape reads core's statistics read model (transfers.statistics).
+    monkeypatch.setattr(statistics, "get_db", fake_db)
     monkeypatch.setattr(routes, "_sse_subscribers", [object(), object()])
 
     async def go() -> str:
@@ -115,7 +117,8 @@ def test_scrape_endpoint_keeps_its_path_and_prometheus_text_format(monkeypatch):
     async def fake_db():
         yield _MetricsDb()
 
-    monkeypatch.setattr(routes, "get_db", fake_db)
+    # The scrape reads core's statistics read model (transfers.statistics).
+    monkeypatch.setattr(statistics, "get_db", fake_db)
     response = TestClient(main.app).get("/api/metrics")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; version=0.0.4")

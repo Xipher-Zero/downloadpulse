@@ -134,8 +134,11 @@ def _browser_projection(world, tmp_path, monkeypatch):
     repository, engine, _executor, _now = world
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     config.apply_settings(config.AppSettings(download_folder=str(tmp_path / "payloads")))
+    from application.service import ApplicationService
     external = ExternalClients(SimpleNamespace(engine=engine, repository=repository,
-                                               integrations_starting=lambda: False))
+                                               integrations_starting=lambda: False,
+                                               serving_transfer=lambda transfer_id: ApplicationService.serving_transfer(
+                                                   SimpleNamespace(repository=repository), transfer_id)))
 
     async def projection(transfer_id):
         async with database.get_db() as db:
@@ -166,6 +169,7 @@ async def test_the_joining_browser_job_follows_the_shared_download_until_it_is_d
     # consolidated transfer (operator, 2026-11-22: "This download has already finished").
     assert await view.control_target(second.id) == first.id
     assert await view.control_target(first.id) == first.id
+    assert await repository.serving_transfer(second.id) == first.id         # core's own answer
     # Paused again by its owner: the joined job says so, it is not done.
     await engine.pause(first.id)
     assert (await view(second.id))["reason"] == "paused"

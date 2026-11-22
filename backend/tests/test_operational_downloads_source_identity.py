@@ -1,3 +1,4 @@
+from transfers import downloads_read_model
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -70,6 +71,8 @@ def _run(monkeypatch, rows):
         yield db
 
     monkeypatch.setattr(downloads, "get_db", fake_get_db)
+
+    monkeypatch.setattr(downloads_read_model, "get_db", fake_get_db)
     application = SimpleNamespace(repository=_ExplodingRepository(), definitions=[])
     result = asyncio.run(downloads.list_operational_torrents(
         status=None,

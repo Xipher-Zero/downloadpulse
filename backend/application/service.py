@@ -966,6 +966,12 @@ class ApplicationService:
             await self._publish(int(transfer_id))
             return {"ok": True}
 
+    async def serving_transfer(self, transfer_id: int) -> int:
+        """The transfer whose work serves ``transfer_id``'s demand now (core's answer,
+        ``TransferRepository.serving_transfer``): itself, or the shared transfer it was
+        consolidated onto while that file is unfinished."""
+        return await self.repository.serving_transfer(int(transfer_id))
+
     async def owned_executions(self):
         """Every durable execution attempt this application still owns: the durable
         live set, each made OURS by the canonical authorization fence."""

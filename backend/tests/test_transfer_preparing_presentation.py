@@ -18,6 +18,8 @@ provider-resource state) they can never derive a contradictory processing truth.
 """
 from __future__ import annotations
 
+from transfers import downloads_read_model
+
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
@@ -482,6 +484,8 @@ async def test_bounded_projection_stays_one_read_with_recovery_facts_present(run
             yield conn
 
     monkeypatch.setattr(downloads, "get_db", counting_get_db)
+
+    monkeypatch.setattr(downloads_read_model, "get_db", counting_get_db)
 
     class _ExplodingRepository:
         async def presentation(self, *_a, **_k):  # pragma: no cover - must never run

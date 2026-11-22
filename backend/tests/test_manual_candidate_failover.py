@@ -632,7 +632,7 @@ def test_switch_eligible_lifecycle_states_delegate_to_the_canonical_owner():
     consumer actually IMPORTS and re-exports the one canonical frozenset
     rather than declaring its own copy -- true delegation, the leveling
     requirement, not merely a currently-true equality."""
-    import api.operational_downloads as listed
+    import transfers.downloads_read_model as listed   # the Downloads read model (core, 1.0.2)
     import transfers.presentation_repository as details
     import transfers.repository as repository
     from transfers.manual_failover import switch_eligible, switch_eligible_sql

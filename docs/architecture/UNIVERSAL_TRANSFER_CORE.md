@@ -357,6 +357,25 @@ arrive on the request core passes (``TransferRequest.context``/``.speculative``,
 ``ExecutionRequest.context``), never through ambient state. ``tests/test_v102_core_boundaries.py``
 enforces this.
 
+## What core lends edges
+
+An edge (``api/``, ``external/``, ``auth/``) shows and controls core state through core's
+own read models and the application service; it never queries core's tables
+(``tests/test_v102_core_boundaries.py`` holds every edge at zero):
+
+* ``transfers.downloads_read_model`` -- the Downloads collection's bounded page (filters,
+  text search, orderings, every list-only enrichment), read once per request.
+* ``transfers.statistics`` -- the Dashboard, Statistics, diagnostics and metrics counts.
+  Which providers form a source family or an acquisition method is the edge's to say
+  (integration metadata); core counts deliveries by the provider ids it is given.
+* ``transfers.demand_fulfilment`` -- what fulfils a demand: whether it is registered or
+  withdrawn, whether its transfer's work is open, the artifacts that fulfil it, and the
+  facts a delivery is proven from. Predicates are composed into the edge's own statement
+  on its own table; core defines what they mean.
+* ``ApplicationService.serving_transfer`` -- the transfer whose work serves another now
+  (itself, or the shared transfer it was consolidated onto while that file is unfinished):
+  what a consolidated job shows and what its pause and resume act on.
+
 ## One exact object, one acquisition
 
 A later transfer's claim on a file another transfer is already acquiring (proven the same

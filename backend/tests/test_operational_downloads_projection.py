@@ -1,3 +1,4 @@
+from transfers import downloads_read_model
 import asyncio
 import json
 import uuid
@@ -90,6 +91,8 @@ def _run_list(monkeypatch, row_count: int, rows=None):
         yield db
 
     monkeypatch.setattr(downloads, "get_db", fake_get_db)
+
+    monkeypatch.setattr(downloads_read_model, "get_db", fake_get_db)
     application = SimpleNamespace(
         repository=_ExplodingRepository(),
         definitions=[],
@@ -312,7 +315,7 @@ def test_projection_group_summary_is_derived_from_canonical_bindings(monkeypatch
     # failure) and a timed retry backoff count as remaining work, but a
     # non-completed status outside it (e.g. 'cancelled', 'input_required')
     # does not.
-    from api.operational_downloads import _SWITCHABLE_SQL
+    from transfers.downloads_read_model import _SWITCHABLE_SQL
     assert "f.status AS status" in group_block
     assert "group_remaining_counts AS" in group_block
     assert _SWITCHABLE_SQL in group_block
@@ -740,12 +743,12 @@ async def _tracking_db():
             conn.fetchone = fetchone
             yield conn
 
-    token = downloads.get_db
-    downloads.get_db = counting
+    token = downloads_read_model.get_db
+    downloads_read_model.get_db = counting
     try:
         yield tracker
     finally:
-        downloads.get_db = token
+        downloads_read_model.get_db = token
 
 
 @pytest.mark.asyncio

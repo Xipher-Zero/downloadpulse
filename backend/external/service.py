@@ -40,6 +40,7 @@ from core.logging_utils import sanitize_exception
 from db.database import get_db
 from db.event_journal import JournalEvent, record
 from external import intake as intake_owner
+from transfers import demand_fulfilment as fulfilled
 from transfers.request_context import ContextCapacity, ContextRefused, RequestContext, request_contexts
 from core.settings_constraints import path_within
 from external.profiles import DeliveryProfile, category_key, client_flavor, confined_to
@@ -77,7 +78,7 @@ _FOLDER_RETIREMENT_CURSOR: tuple[float, str, int] | None = None
 # only (``ExternalClients._settle_pending_retirements``).
 _RETIREMENT_SETTLEMENT_CURSOR: int | None = None
 _KEY_LIMIT = 200
-_TERMINAL = frozenset({"completed", "consolidated", "cancelled", "deleted"})
+_TERMINAL = frozenset(fulfilled.SETTLED_TRANSFER_STATES)   # core's settled transfer states
 _PHASES = ("accepted", "queued", "processing", "completed", "failed", "withdrawn")
 
 # Mutations (submit, withdraw, control, acknowledge) per client per minute.
@@ -575,9 +576,7 @@ class ExternalClients:
             f"""SELECT j.id, j.client_id, j.demand_id, j.reserved_demand_id, j.profile_id FROM external_jobs j
                 WHERE j.profile_id=?
                 AND (j.demand_id IS NULL OR COALESCE(json_extract(j.projection,'$.settled'),0)=0)
-                AND NOT EXISTS (SELECT 1 FROM transfer_demands d
-                                WHERE d.id=COALESCE(j.demand_id, j.reserved_demand_id)
-                                  AND d.withdrawn_at IS NOT NULL){where}
+                AND NOT {fulfilled.demand_withdrawn_sql("COALESCE(j.demand_id, j.reserved_demand_id)")}{where}
                 ORDER BY j.created_at, j.id""",
             (str(profile_id), *(clients or ())))
 
@@ -697,8 +696,8 @@ class ExternalClients:
         async with get_db() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
-                """DELETE FROM external_jobs WHERE id=? AND demand_id IS NULL AND NOT EXISTS
-                   (SELECT 1 FROM transfer_demands d WHERE d.id=external_jobs.reserved_demand_id)""", (job["id"],))
+                f"""DELETE FROM external_jobs WHERE id=? AND demand_id IS NULL
+                   AND NOT {fulfilled.demand_registered_sql("external_jobs.reserved_demand_id")}""", (job["id"],))
             await db.commit()
 
     async def _accept(self, job: dict) -> dict:
@@ -733,8 +732,8 @@ class ExternalClients:
     async def _retired(self, job_id: str) -> bool:
         async with get_db() as db:
             row = await db.fetchone(
-                """SELECT 1 FROM external_jobs j JOIN transfer_demands d ON d.id=j.demand_id
-                   WHERE j.id=? AND d.withdrawn_by=?""", (str(job_id), PROFILE_RETIRED))
+                f"""SELECT 1 FROM external_jobs j
+                   WHERE j.id=? AND {fulfilled.demand_withdrawn_by_sql("j.demand_id")}""", (str(job_id), PROFILE_RETIRED))
         return row is not None
 
     # ── reads ───────────────────────────────────────────────────────────────
@@ -1124,8 +1123,7 @@ class ExternalClients:
 
     @staticmethod
     async def _status(transfer_id: int) -> str | None:
-        async with get_db() as db:
-            row = await db.fetchone("SELECT status FROM torrents WHERE id=?", (int(transfer_id),))
+        row = await fulfilled.transfer_fact(transfer_id)
         return None if row is None else str(row["status"])
 
     async def _reconcile_controls(self, *, job_id: str | None = None, limit: int = 200) -> int:
@@ -1249,8 +1247,7 @@ class ExternalClients:
             if demand is None or demand["withdrawn_at"] is not None:
                 return
             transfer_id = int(demand["transfer_id"])
-            async with get_db() as db:
-                transfer = await db.fetchone("SELECT status FROM torrents WHERE id=?", (transfer_id,))
+            transfer = await fulfilled.transfer_fact(transfer_id)
             if transfer is None or transfer["status"] != "completed":
                 return
             if (await self._members(transfer_id, "completed"))["foreign"]:
@@ -1397,10 +1394,7 @@ class ExternalClients:
             return _Plan({"phase": "failed", "reason": "demand_missing", "actionability": "operator",
                           "progress": None})
         transfer_id = int(demand["transfer_id"])
-        async with get_db() as db:
-            transfer = await db.fetchone(
-                "SELECT id, status, progress, extraction_status, normalized_error FROM torrents WHERE id=?",
-                (transfer_id,))
+        transfer = await self._transfer_row(transfer_id)
         status = str(transfer["status"]) if transfer else "deleted"
         plan = _Plan({"phase": "processing", "reason": status, "actionability": "wait", "progress": None},
                      transfer_id=transfer_id)
@@ -1421,10 +1415,11 @@ class ExternalClients:
         members = await self._members(transfer_id, status)
         if _kind(job) == BROWSER and status == "consolidated":
             # 1.0.2 (operator, 2026-11-22): a browser job consolidated onto another
-            # transfer's file is that file's download -- it follows the shared transfer's
-            # state and progress, and is done only when that file is, never at the moment
-            # it joined.
-            shared = await self._shared_transfer(members)
+            # transfer's file is that file's download -- it follows the transfer core
+            # says serves it now (``serving_transfer``), and is done only when nothing
+            # is left to serve, never at the moment it joined.
+            serving = await self.application.serving_transfer(transfer_id)
+            shared = await self._transfer_row(serving) if serving != transfer_id else None
             if shared is not None:
                 transfer, status = shared, str(shared["status"])
                 if status == "consolidated":
@@ -1490,52 +1485,19 @@ class ExternalClients:
                                   await self.repository.verified_material(int(transfer["id"])))
 
     async def _control_target(self, transfer_id: int) -> int:
-        """The transfer a job's pause and resume act on: its own, or -- consolidated onto
-        another transfer's unfinished file (1.0.2, operator 2026-11-22) -- that shared
-        transfer, under the same rules (a pause still needs this job to be its only
-        requester; a resume releases only this job's own hold)."""
-        if await self._status(transfer_id) != "consolidated":
-            return transfer_id
-        shared = await self._shared_transfer(await self._members(transfer_id, "consolidated"))
-        return int(shared["id"]) if shared is not None else transfer_id
+        """The transfer a job's pause and resume act on: the one core says serves it now
+        (``serving_transfer``) -- its own, or the shared transfer it was consolidated
+        onto (1.0.2, operator 2026-11-22) -- under the same rules (a pause still needs
+        this job to be its only requester; a resume releases only this job's own hold)."""
+        return await self.application.serving_transfer(int(transfer_id))
 
-    async def _shared_transfer(self, members: dict):
-        """The transfer whose unfinished file a consolidated job waits on, or ``None``
-        when every file it was consolidated onto is complete (the job is then done)."""
-        waiting = sorted({int(row["torrent_id"]) for row in members["foreign"] if row["status"] != "completed"})
-        if not waiting:
-            return None
-        async with get_db() as db:
-            return await db.fetchone(
-                "SELECT id, status, progress, extraction_status, normalized_error FROM torrents WHERE id=?",
-                (waiting[0],))
+    @staticmethod
+    async def _transfer_row(transfer_id: int):
+        return await fulfilled.transfer_fact(transfer_id)
 
     async def _members(self, transfer_id: int, status: str) -> dict:
-        """The artifacts that fulfil the job's transfer: its own canonical
-        members (unless it was consolidated away) and every canonical artifact
-        of another transfer one of its requests was consolidated into, or is
-        terminally associated with."""
-        from transfers.read_models import canonical_artifact_membership_sql
-
-        async with get_db() as db:
-            own = [] if status == "consolidated" else await db.fetchall(
-                f"SELECT f.id, f.torrent_id, f.status FROM download_files f WHERE f.torrent_id=? "
-                f"AND {canonical_artifact_membership_sql('f')}", (transfer_id,))
-            foreign = await db.fetchall(
-                """SELECT f.id, f.torrent_id, f.status, f.withdrawn_attempt, f.execution_attempt_id,
-                       t.status AS owner_status, MAX(m.consolidated) AS consolidated FROM (
-                       SELECT canonical_artifact_id AS id, 1 AS consolidated FROM artifact_consolidations
-                           WHERE source_transfer_id=:t
-                       UNION SELECT r.equivalence_target_artifact_id, 0 FROM transfer_requests r
-                           WHERE r.transfer_id=:t AND r.equivalence_disposition='unverified'
-                           AND r.equivalence_target_artifact_id IS NOT NULL) m
-                   JOIN download_files f ON f.id=m.id JOIN torrents t ON t.id=f.torrent_id
-                   WHERE f.torrent_id<>:t GROUP BY f.id""", {"t": int(transfer_id)})
-        if status == "completed":
-            own = [row for row in own if row["status"] == "completed"]
-        rows = [*own, *foreign]
-        return {"rows": rows, "total": len(rows), "completed": sum(row["status"] == "completed" for row in rows),
-                "foreign": foreign}
+        """The artifacts that fulfil the job's transfer (core's ``fulfilment``)."""
+        return await fulfilled.fulfilment(transfer_id, status)
 
     async def _deliverable(self, job: dict, transfer_id: int, status: str, members: dict, plan: _Plan) -> None:
         from transfers.cohorts import artifact_withdrawn
@@ -1571,13 +1533,9 @@ class ExternalClients:
             return blocked("profile_root_outside_downloads")
         owners = {int(transfer_id) if status == "completed" else None,
                   *(int(row["torrent_id"]) for row in members["foreign"])} - {None}
-        async with get_db() as db:
-            marks = ",".join("?" * len(owners))
-            finalization = {int(row["id"]): str(row["extraction_status"] or "") for row in await db.fetchall(
-                f"SELECT id, extraction_status FROM torrents WHERE id IN ({marks})", tuple(owners))}
-            generations = {int(row["artifact_id"]): int(row["material_generation"]) for row in await db.fetchall(
-                f"SELECT artifact_id, material_generation FROM artifact_material_state WHERE artifact_id IN "
-                f"({','.join('?' * len(members['rows']))})", tuple(int(row["id"]) for row in members["rows"]))}
+        finalization = {owner: str(row["extraction_status"] or "")
+                        for owner, row in (await fulfilled.transfer_facts(owners)).items()}
+        generations = await fulfilled.material_generations(int(row["id"]) for row in members["rows"])
         if "error" in finalization.values():
             return blocked("finalization_failed")
         if self.application.integrations_starting():
@@ -1614,33 +1572,12 @@ class ExternalClients:
 
     @staticmethod
     async def _finalized_outputs(transfer_id: int) -> list[str] | None:
-        """The final file set a finished post-processing recorded for the
-        transfer, or ``None`` when a successful post-processor recorded none
-        (an outcome written before outputs were recorded)."""
-        async with get_db() as db:
-            rows = await db.fetchall("SELECT outcome FROM postprocess_attempts WHERE transfer_id=? "
-                                     "AND state='finished'", (int(transfer_id),))
-        outputs: set[str] = set()
-        recorded = False
-        for row in rows:
-            outcome = json.loads(row["outcome"]) if row["outcome"] else {}
-            if outcome.get("kind") != "success":
-                continue
-            if not isinstance(outcome.get("outputs"), list):
-                return None
-            recorded = True
-            outputs.update(str(item) for item in outcome["outputs"])
-        return sorted(outputs) if recorded else None
+        """The final file set a finished post-processing recorded (core's ``finalized_outputs``)."""
+        return await fulfilled.finalized_outputs(transfer_id)
 
     @staticmethod
     async def _covers_owner(owner: int, rows) -> bool:
-        from transfers.read_models import canonical_artifact_membership_sql
-
-        async with get_db() as db:
-            members = await db.fetchall(
-                f"SELECT f.id FROM download_files f WHERE f.torrent_id=? AND f.status='completed' "
-                f"AND {canonical_artifact_membership_sql('f')}", (int(owner),))
-        return {int(row["id"]) for row in members} <= {int(row["id"]) for row in rows}
+        return await fulfilled.completed_canonical_artifact_ids(owner) <= {int(row["id"]) for row in rows}
 
     async def _verified_files(self, entries, profile: DeliveryProfile, generations) -> list | str:
         """Every delivered file verified now beneath the profile's root: an
@@ -1696,12 +1633,9 @@ class ExternalClients:
                     AND COALESCE(json_extract(projection,'$.settled'),0)=0
                     {'AND client_id=?' if client_id else ''}
                     AND (COALESCE(json_extract(projection,'$.phase'),'')<>'completed' OR refreshed_at<?
-                         OR EXISTS (SELECT 1 FROM transfer_demands d JOIN torrents t ON t.id=d.transfer_id
-                                    WHERE d.id=external_jobs.demand_id
-                                    AND t.status NOT IN ({','.join('?' * len(_TERMINAL))})))
+                         OR {fulfilled.demand_work_open_sql("external_jobs.demand_id")})
                     ORDER BY refreshed_at LIMIT ?""",
-                ((client_id,) if client_id else ()) + (now - DELIVERY_RECHECK_SECONDS, *sorted(_TERMINAL),
-                                                       int(budget)))
+                ((client_id,) if client_id else ()) + (now - DELIVERY_RECHECK_SECONDS, int(budget)))
         for row in rows:
             try:
                 await self._refresh(row["id"])
@@ -1716,15 +1650,15 @@ class ExternalClients:
         now = _now()
         async with get_db() as db:
             pending = await db.fetchall(
-                """SELECT j.* FROM external_jobs j JOIN transfer_demands d ON d.id=j.reserved_demand_id
-                   WHERE j.demand_id IS NULL LIMIT 200""")
+                f"""SELECT j.* FROM external_jobs j
+                   WHERE j.demand_id IS NULL AND {fulfilled.demand_registered_sql("j.reserved_demand_id")} LIMIT 200""")
         for job in pending:
             await self._accept(job)
         async with get_db() as db:
             await db.execute("BEGIN IMMEDIATE")
             cursor = await db.execute(
-                """DELETE FROM external_jobs WHERE demand_id IS NULL AND created_at<?
-                   AND NOT EXISTS (SELECT 1 FROM transfer_demands d WHERE d.id=external_jobs.reserved_demand_id)""",
+                f"""DELETE FROM external_jobs WHERE demand_id IS NULL AND created_at<?
+                   AND NOT {fulfilled.demand_registered_sql("external_jobs.reserved_demand_id")}""",
                 (now - RESERVATION_TTL_SECONDS,))
             forgotten = cursor.rowcount
             await db.commit()
@@ -1778,8 +1712,9 @@ class ExternalClients:
             try:
                 async with get_db() as db:
                     jobs = await db.fetchall(
-                        """SELECT j.id FROM external_jobs j JOIN transfer_demands d ON d.id=j.demand_id
-                           WHERE d.transfer_id=? AND d.withdrawn_by=?""", (row["transfer_id"], PROFILE_RETIRED))
+                        f"""SELECT j.id FROM external_jobs j
+                           WHERE {fulfilled.demand_withdrawn_by_sql("j.demand_id", of_transfer=True)}""",
+                        (row["transfer_id"], PROFILE_RETIRED))
             except Exception as exc:  # noqa: BLE001 - _refresh_unsettled converges them
                 logger.warning("retired jobs of transfer %s not refreshed: %s", row["transfer_id"],
                                sanitize_exception(exc))

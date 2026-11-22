@@ -158,7 +158,7 @@ def test_provider_status_checking_is_pulsing_amber():
 
 
 def test_transfer_methods_counts_downloads():
-    routes = _source("backend/api/routes.py")
+    routes = _source("backend/transfers/statistics.py")    # core's statistics read model (1.0.2)
     assert "A transfer counts ONCE under each acquisition method" in routes
     everyday = _panel("usingPanel")
     assert "<b>Transfer Methods</b> counts finished downloads" in everyday

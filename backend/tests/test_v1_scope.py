@@ -208,9 +208,11 @@ def test_operator_tab_title_uses_short_active_identity_and_queue_average():
     assert "document.title = `DownloadPulse | (${active} Active)" not in frontend
     assert "renderOperatorTitle();" in frontend
 
-    assert "AVG(CASE WHEN status='downloading' THEN COALESCE(progress, 0)" in routes
-    assert "AS operator_active_progress_pct" in routes
-    assert "AS weighted_progress" not in routes
+    # The aggregate is core's statistics read model (1.0.2); the route reads it.
+    statistics = (REPO_ROOT / "backend/transfers/statistics.py").read_text()
+    assert "AVG(CASE WHEN status='downloading' THEN COALESCE(progress, 0)" in statistics
+    assert "AS operator_active_progress_pct" in statistics
+    assert "AS weighted_progress" not in statistics + routes
 
 
 def test_dashboard_recent_activity_exposes_pause_resume_but_not_remove():
