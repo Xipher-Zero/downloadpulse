@@ -20,6 +20,9 @@
   its own transfer and request, and the first transfer's history records that another
   account's request resumed it. A global pause, or an external client's own pause, is never
   lifted by it.
+- **A browser download that joined another shows its real progress.** A download sent from the
+  browser that joined one already in progress showed as done at once; it now shows the shared
+  download's state and progress, and is done when that file is.
 
 ### Changed
 

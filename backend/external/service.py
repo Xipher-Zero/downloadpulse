@@ -1419,6 +1419,16 @@ class ExternalClients:
                 else "withdrawn"))
             return plan
         members = await self._members(transfer_id, status)
+        if _kind(job) == BROWSER and status == "consolidated":
+            # 1.0.2 (operator, 2026-11-22): a browser job consolidated onto another
+            # transfer's file is that file's download -- it follows the shared transfer's
+            # state and progress, and is done only when that file is, never at the moment
+            # it joined.
+            shared = await self._shared_transfer(members)
+            if shared is not None:
+                transfer, status = shared, str(shared["status"])
+                if status == "consolidated":
+                    status = "processing"
         if members["total"]:
             projection["progress"] = {"basis": "members", "completed_members": members["completed"],
                                       "total_members": members["total"],
@@ -1456,7 +1466,7 @@ class ExternalClients:
         projection.update(phase=phase, reason=reason, actionability=actionability)
         if status == "paused":
             active = await self._active_pause(job["id"])
-            hold = await self.repository.pause_hold(transfer_id)
+            hold = await self.repository.pause_hold(int(transfer["id"]) if transfer else transfer_id)
             projection["paused_by"] = (
                 "client" if _owns(active, hold)
                 else "administrator" if await self.repository.globally_paused() else "operator")
@@ -1478,6 +1488,17 @@ class ExternalClients:
         return effective_progress(transfer["status"], transfer["progress"], *active_execution_projection(row),
                                   active_execution_bytes(row),
                                   await self.repository.verified_material(int(transfer["id"])))
+
+    async def _shared_transfer(self, members: dict):
+        """The transfer whose unfinished file a consolidated job waits on, or ``None``
+        when every file it was consolidated onto is complete (the job is then done)."""
+        waiting = sorted({int(row["torrent_id"]) for row in members["foreign"] if row["status"] != "completed"})
+        if not waiting:
+            return None
+        async with get_db() as db:
+            return await db.fetchone(
+                "SELECT id, status, progress, extraction_status, normalized_error FROM torrents WHERE id=?",
+                (waiting[0],))
 
     async def _members(self, transfer_id: int, status: str) -> dict:
         """The artifacts that fulfil the job's transfer: its own canonical

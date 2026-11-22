@@ -122,3 +122,49 @@ def test_an_http_link_s_coordinate_is_its_exact_request_target(address, coordina
 
 def test_different_query_strings_are_different_objects():
     assert remote_object_coordinate("https://h.example/dl?id=1") != remote_object_coordinate("https://h.example/dl?id=2")
+
+
+def _browser_projection(world, tmp_path, monkeypatch):
+    """The browser's view of one transfer's own job (``ExternalClients._plan``, kind browser)."""
+    from types import SimpleNamespace
+
+    import core.config as config
+    from external.service import ExternalClients
+
+    repository, engine, _executor, _now = world
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    config.apply_settings(config.AppSettings(download_folder=str(tmp_path / "payloads")))
+    external = ExternalClients(SimpleNamespace(engine=engine, repository=repository,
+                                               integrations_starting=lambda: False))
+
+    async def projection(transfer_id):
+        async with database.get_db() as db:
+            demand = await db.fetchone("SELECT id FROM transfer_demands WHERE transfer_id=?", (int(transfer_id),))
+        plan = await external._plan({"id": "job", "demand_id": demand["id"], "client_id": "c", "kind": "browser"})
+        return plan.projection
+
+    return projection
+
+
+async def test_the_joining_browser_job_follows_the_shared_download_until_it_is_done(world, tmp_path, monkeypatch):
+    """Operator, 2026-11-22: the second send showed Done (100%) the moment it joined.
+    A browser job consolidated onto another transfer's file is that file's download:
+    its phase and reason are the shared transfer's, and it is complete only when the
+    shared file is."""
+    repository, engine, executor, now = world
+    view = _browser_projection(world, tmp_path, monkeypatch)
+    first, _artifact = await _first_started(world, account="una")
+    await engine.pause(first.id)
+    await _ticks(engine, now, 3)
+    second = await _send(engine, account="bo")
+    await _ticks(engine, now, 12)
+    assert (await repository.get(second.id)).state == TransferState.CONSOLIDATED
+    joined = await view(second.id)
+    assert joined["phase"] == "processing" and joined["reason"] != "completed", joined
+    # Paused again by its owner: the joined job says so, it is not done.
+    await engine.pause(first.id)
+    assert (await view(second.id))["reason"] == "paused"
+    await engine.resume(first.id)
+    executor.finish_all()
+    assert await _until(engine, now, lambda: _completed(repository, first.id), finishing=executor)
+    assert (await view(second.id))["phase"] == "completed"
