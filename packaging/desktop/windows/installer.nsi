@@ -58,6 +58,7 @@ Unicode true
 !define VCREDIST_DOWNLOAD "https://aka.ms/vc14/vc_redist.x64.exe"
 !define WEBVIEW2_CLIENT "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DownloadPulse"
+!define AUMID_KEY "Software\Classes\AppUserModelId\net.downloadpulse.desktop"
 
 Name "DownloadPulse"
 OutFile "${OUTFILE}"
@@ -361,6 +362,10 @@ Section "DownloadPulse" SecMain
     Abort "Program files could not be written."
   ${EndIf}
   CreateShortcut "$SMPROGRAMS\DownloadPulse.lnk" "$INSTDIR\app\runtime\python\pythonw.exe" '-I "$INSTDIR\app\desktop\supervisor.py"' "$INSTDIR\app\desktop\shell\resources\icons\app.ico"
+  ; DownloadPulse's notification identity (desktop/supervisor.py windows_notice): the name and
+  ; icon Windows shows on its notices, for the application ID they are sent under.
+  WriteRegStr HKCU "${AUMID_KEY}" "DisplayName" "DownloadPulse"
+  WriteRegStr HKCU "${AUMID_KEY}" "IconUri" "$INSTDIR\app\desktop\shell\resources\icons\app.png"
 SectionEnd
 
 Function WriteUninstallEntry
@@ -388,5 +393,6 @@ Section "Uninstall"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
+  DeleteRegKey HKCU "${AUMID_KEY}"
   ; %LOCALAPPDATA%\DownloadPulse (settings, database, logs) and every download stay.
 SectionEnd

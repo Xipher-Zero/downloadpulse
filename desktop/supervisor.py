@@ -35,6 +35,7 @@ done.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -671,6 +672,10 @@ class Shell:
             self._tray_reported, self.tray_shown = True, False
 
     async def notice(self, title: str, body: str) -> None:
+        # Windows: a toast under DownloadPulse's own application ID (its name and icon),
+        # not Neutralino's tray balloon (the shell's file name and a generic info icon).
+        if sys.platform == "win32" and await windows_notice(title, body):
+            return
         try:
             await self.call("os.showNotification", {"title": title, "content": body or title})
         except NativeError as exc:
@@ -1492,6 +1497,61 @@ def colorref(value: str) -> int:
     """``#rrggbb`` as Windows' COLORREF (0x00bbggrr)."""
     red, green, blue = (int(value[index:index + 2], 16) for index in (1, 3, 5))
     return blue << 16 | green << 8 | red
+
+
+# Windows notices: a toast sent under DownloadPulse's application ID, which the installer
+# registers (HKCU\Software\Classes\AppUserModelId\net.downloadpulse.desktop: DisplayName,
+# IconUri), so Windows names it DownloadPulse with its icon. The title and body reach the
+# script only as environment values and become XML text nodes: nothing is parsed from them.
+WINDOWS_TOAST_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+$null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual></toast>')
+$texts = $xml.GetElementsByTagName('text')
+$null = $texts.Item(0).AppendChild($xml.CreateTextNode($env:DP_NOTICE_TITLE))
+$null = $texts.Item(1).AppendChild($xml.CreateTextNode($env:DP_NOTICE_BODY))
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:DP_NOTICE_APP).Show(
+    [Windows.UI.Notifications.ToastNotification]::new($xml))
+"""
+WINDOWS_NOTICE_SECONDS = 20
+
+
+def windows_notice_command(title: str, body: str, environ=None) -> tuple[list[str], dict[str, str]]:
+    """The Windows PowerShell 5.1 command (by its absolute path) and environment
+    that show one notice."""
+    environ = dict(os.environ if environ is None else environ)
+    root = environ.get("SystemRoot") or environ.get("SYSTEMROOT") or r"C:\Windows"
+    powershell = rf"{root}\System32\WindowsPowerShell\v1.0\powershell.exe"
+    encoded = base64.b64encode(WINDOWS_TOAST_SCRIPT.encode("utf-16-le")).decode("ascii")
+    argv = [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden", "-EncodedCommand", encoded]
+    environ.update(DP_NOTICE_APP=APP_ID, DP_NOTICE_TITLE=title, DP_NOTICE_BODY=body or "")
+    return argv, environ
+
+
+async def windows_notice(title: str, body: str) -> bool:
+    """Show one Windows notice; whether Windows accepted it (False falls back
+    to the shell's own)."""
+    argv, environ = windows_notice_command(title, body)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv, env=environ, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE, creationflags=0x08000000)          # CREATE_NO_WINDOW
+        _out, err = await asyncio.wait_for(process.communicate(), WINDOWS_NOTICE_SECONDS)
+    except OSError as exc:
+        logger.error("a Windows notice was not shown: %s", exc)
+        return False
+    except asyncio.TimeoutError:
+        process.kill()
+        logger.error("a Windows notice was not shown: no answer in %s seconds", WINDOWS_NOTICE_SECONDS)
+        return False
+    if process.returncode != 0:
+        reason = " ".join(err.decode("utf-8", "replace").split())[:300]
+        logger.error("a Windows notice was not shown (exit %s): %s", process.returncode, reason)
+        return False
+    return True
 
 
 def windows_frame(binary: str, caption: str, text: str, dark: bool) -> int:

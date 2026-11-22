@@ -269,6 +269,12 @@ async def test_switching_to_an_rsync_over_ssh_source_reconstructs_without_a_chal
         assert len(asked) - before_switch <= 1
         plan = attempts[-1][2]
         assert plan["strategy"] == ContinuationStrategy.DESTINATION_AWARE.value
-        assert [tuple(item) for item in plan["retained"]] == list(paused_valid)
+        # paused_valid was read while aria2 was still writing: the switch retains what was
+        # valid when it stopped aria2, which holds everything read before and may hold more
+        # -- never less, and never the whole file (the rest is reconstructed over rsync).
+        retained = [tuple(item) for item in plan["retained"]]
+        assert all(any(start <= a and b <= end for start, end in retained) for a, b in paused_valid), \
+            (retained, paused_valid)
+        assert mat.total(retained) < len(BODY)
     finally:
         await runtime.close()

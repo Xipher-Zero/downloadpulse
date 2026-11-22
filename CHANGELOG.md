@@ -7,6 +7,9 @@
 - **macOS notifications carry DownloadPulse's name and icon.** The desktop app's window process now
   runs from the application bundle's own code folder, so macOS delivers its notifications as
   DownloadPulse's instead of through Script Editor.
+- **Windows notifications carry DownloadPulse's name and icon.** They are Windows notifications under
+  DownloadPulse's own application identity, which the installer registers (and the uninstaller
+  removes), instead of a tray balloon naming `downloadpulse-shell.exe` with a generic information icon.
 
 ### Changed
 

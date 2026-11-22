@@ -1045,3 +1045,33 @@ def test_the_macos_build_moves_the_shell_into_contents_macos_and_signs_it():
     assert ('mv "$app/Contents/Resources/app/desktop/shell/downloadpulse-shell" '
             '"$app/Contents/MacOS/downloadpulse-shell"') in script
     assert '-s "$identity" "$app/Contents/MacOS/downloadpulse-shell"' in script
+
+
+# ── Windows: notices are DownloadPulse's (its application ID, name and icon) ──
+
+def test_a_windows_notice_is_a_toast_under_downloadpulses_application_id():
+    import base64 as b64
+    argv, env = supervisor.windows_notice_command("Transfer resumed", "ubuntu.iso", {"SystemRoot": r"C:\Windows"})
+    assert argv[0] == r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    assert argv[1:7] == ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden"]
+    assert argv[7] == "-EncodedCommand"
+    script = b64.b64decode(argv[8]).decode("utf-16-le")
+    assert script == supervisor.WINDOWS_TOAST_SCRIPT
+    assert "CreateToastNotifier($env:DP_NOTICE_APP)" in script
+    # The text reaches the script only as values, made into text nodes: nothing in it is parsed.
+    assert "CreateTextNode($env:DP_NOTICE_TITLE)" in script and "CreateTextNode($env:DP_NOTICE_BODY)" in script
+    assert (env["DP_NOTICE_APP"], env["DP_NOTICE_TITLE"], env["DP_NOTICE_BODY"]) == \
+        (supervisor.APP_ID, "Transfer resumed", "ubuntu.iso")
+    hostile = "<toast>&'\"$(calc)"
+    argv, env = supervisor.windows_notice_command(hostile, "", {"SystemRoot": r"C:\Windows"})
+    assert hostile not in b64.b64decode(argv[8]).decode("utf-16-le") and env["DP_NOTICE_TITLE"] == hostile
+    assert env["DP_NOTICE_BODY"] == ""
+
+
+def test_the_windows_installer_registers_and_removes_the_notification_identity():
+    nsi = (Path(__file__).resolve().parents[2] / "packaging/desktop/windows/installer.nsi").read_text(encoding="utf-8")
+    assert '!define AUMID_KEY "Software\\Classes\\AppUserModelId\\net.downloadpulse.desktop"' in nsi
+    assert 'WriteRegStr HKCU "${AUMID_KEY}" "DisplayName" "DownloadPulse"' in nsi
+    assert 'WriteRegStr HKCU "${AUMID_KEY}" "IconUri" "$INSTDIR\\app\\desktop\\shell\\resources\\icons\\app.png"' in nsi
+    assert 'DeleteRegKey HKCU "${AUMID_KEY}"' in nsi
+    assert supervisor.APP_ID == "net.downloadpulse.desktop"
