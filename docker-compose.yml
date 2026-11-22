@@ -3,7 +3,7 @@
 
 services:
   downloadpulse:
-    image: ghcr.io/xipher-zero/downloadpulse:v1.0.0
+    image: ghcr.io/xipher-zero/downloadpulse:v1.0.1
     build: .
     container_name: downloadpulse
     restart: unless-stopped
