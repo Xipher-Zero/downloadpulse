@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterable, Iterator
 
-from core.config import get_settings
 from transfers.filesystem import is_link, open_no_follow
 
 # The longest path the filesystem can create (Linux ``PATH_MAX``): a member
@@ -68,8 +67,30 @@ def job_limits(remaining: ExtractionLimits) -> Iterator[None]:
         _JOB_LIMITS.reset(token)
 
 
+# The settings one extraction run was given by its owner (the archive post-processor,
+# built by composition with a settings reader): set inside that run's own worker
+# thread (``run_settings``) and read only by this run -- never the application's
+# global settings. Outside a run: the defaults below.
+_RUN_SETTINGS: ContextVar[object | None] = ContextVar("extraction_run_settings", default=None)
+
+
+@contextmanager
+def run_settings(settings) -> Iterator[None]:
+    """The settings of one extraction run, for everything it does in this thread."""
+    token = _RUN_SETTINGS.set(settings)
+    try:
+        yield
+    finally:
+        _RUN_SETTINGS.reset(token)
+
+
+def run_setting(name: str, default=None):
+    """One setting of the extraction run in progress (``default`` outside one)."""
+    return getattr(_RUN_SETTINGS.get(), name, default)
+
+
 def configured_limits() -> ExtractionLimits:
-    cfg = get_settings()
+    cfg = _RUN_SETTINGS.get()
     max_files = max(1, int(getattr(cfg, "extract_max_files", 20_000) or 20_000))
     max_gb = max(0.001, float(getattr(cfg, "extract_max_expanded_gb", 250.0) or 250.0))
     max_ratio = max(1.0, float(getattr(cfg, "extract_max_compression_ratio", 1000.0) or 1000.0))

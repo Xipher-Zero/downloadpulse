@@ -38,8 +38,8 @@ def test_runtime_diagnostics_failure_names_no_exception_text(monkeypatch, caplog
     async def diagnostics():
         raise RuntimeError(SECRET)
 
-    monkeypatch.setattr(routes.aria2_runtime, "status", status)
-    application = SimpleNamespace(integration_admin=lambda _id: SimpleNamespace(memory_diagnostics=diagnostics))
+    application = SimpleNamespace(integration_admin=lambda _id: SimpleNamespace(memory_diagnostics=diagnostics,
+                                                                                runtime_status=status))
     with caplog.at_level(logging.WARNING, logger="downloadpulse.routes"):
         result = asyncio.run(routes.aria2_runtime_status(application))
     assert result["diagnostics"] == {"error": "Diagnostics are unavailable"}

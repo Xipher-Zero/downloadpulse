@@ -410,7 +410,8 @@ class TransferEngine:
         # input -- integrations are handed only a reader.
         self.staged_input = staged_input
         self.registry = registry
-        self.canonical = CanonicalOwnership(repository, material_present=self._material_present)
+        self.canonical = CanonicalOwnership(repository, material_present=self._material_present,
+                                            on_claimed=self._resume_for_new_claim)
         self.challenges = InputChallengeStore(clock=clock, on_retired=self._question_retired)
         self.inputs = EphemeralInputBroker(clock=clock)
         self.root = str(Path(download_root).resolve())
@@ -623,6 +624,39 @@ class TransferEngine:
     def _lan_granted(candidate: TransferCandidate, lan_host: str) -> bool:
         return bool(lan_host) and candidate.delivery == DeliveryKind.DIRECT and bool(candidate.endpoints) and all(
             direct_link_host(endpoint.address) == lan_host for endpoint in candidate.endpoints)
+
+    async def _resume_for_new_claim(self, owner_id: int, claimant_id: int) -> None:
+        """A later transfer's claim on an exact object another transfer is already
+        acquiring has committed (``CanonicalOwnership.on_claimed``). One object is
+        never acquired twice, and never left parked while someone wants it: an
+        operator-paused owner is resumed -- its material continues from where it
+        stopped. When the claim is another account's, the owner's own account
+        paused it, so the journal records on the owner that another account's
+        request resumed it (provenance; the people can settle it between them).
+        A global pause, or an external client's advisory hold (its own protocol),
+        is left as it is: the claimant waits on the one acquisition, never a second."""
+        if int(owner_id) == int(claimant_id):
+            return
+        try:
+            owner = await self.repository.get(int(owner_id))
+            if owner is None or owner.state != TransferState.PAUSED or await self.repository.globally_paused():
+                return
+            reader = getattr(self.repository, "pause_hold", None)
+            hold = await reader(int(owner_id)) if reader is not None else None
+            if hold is not None and hold.get("holder"):
+                return
+            owners = {row.get("account_id") for row in await self.repository.own_demand(int(owner_id))}
+            claimants = {row.get("account_id") for row in await self.repository.own_demand(int(claimant_id))}
+            other = bool(claimants - owners)
+            await self.resume(int(owner_id))
+            from db.event_journal import record_now
+            from transfers import journal_events as je
+            await record_now(je.consolidation(
+                "resumed_for_other_account" if other else "resumed_for_claim", transfer_id=int(owner_id),
+                related_transfer_id=int(claimant_id),
+                detail=f"Transfer {int(claimant_id)} requested the same file"))
+        except Exception:  # noqa: BLE001 - the claim stands; the next attachment or the operator resumes
+            logger.warning("Resuming transfer %s for a new claim failed", owner_id, exc_info=True)
 
     @staticmethod
     async def _request_context(transfer_id: int | None) -> RequestContext | None:

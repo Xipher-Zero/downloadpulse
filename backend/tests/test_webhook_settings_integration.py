@@ -89,8 +89,7 @@ class SettingsSaveTests(unittest.IsolatedAsyncioTestCase):
         # is still corrected at load by ``validate_and_sanitise``.)
         with patch("api.routes.save_settings", side_effect=fake_save), \
              patch("api.routes.apply_settings", side_effect=fake_apply), \
-             patch.object(routes.aria2_runtime, "ensure_started", AsyncMock()), \
-             patch.object(routes.aria2_runtime, "restart", AsyncMock()):
+             patch("api.routes._apply_aria2_settings", AsyncMock(return_value={"running": False})):
             with self.assertRaises(HTTPException) as refused:
                 await routes.update_settings(
                     routes.SettingsUpdate(discord_avatar_url="data:image/png;base64,abc123"), application=SimpleNamespace(definitions=(), configuration_admission=lambda: _fake_db_context(None), validate_configuration=AsyncMock(), configure=MagicMock(), integration_admin=MagicMock())
@@ -112,8 +111,7 @@ class SettingsSaveTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("api.routes.save_settings", side_effect=fake_save), \
              patch("api.routes.apply_settings", side_effect=fake_apply), \
-             patch.object(routes.aria2_runtime, "ensure_started", AsyncMock()), \
-             patch.object(routes.aria2_runtime, "restart", AsyncMock()):
+             patch("api.routes._apply_aria2_settings", AsyncMock(return_value={"running": False})):
             result = await routes.update_settings(
                 routes.SettingsUpdate(
                     stats_report_interval_hours=12,

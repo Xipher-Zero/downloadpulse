@@ -38,9 +38,12 @@ from db import event_journal
 from db.database import get_db
 from transfers import codec
 from transfers import file_selection as fs
-from transfers._repository_base import (
-    _ENDED_ROUTE_STATES, _MUTATING_EXECUTION_STATES, _QUEUE_MEMBER_SQL, active_execution_progress_sql,
-    active_execution_projection, canonical_artifact_membership_sql,
+from transfers.read_models import (
+    CAPACITY_WAIT_PRESENTATION as _CAPACITY_WAIT_PRESENTATION, ENDED_ROUTE_STATES as _ENDED_ROUTE_STATES,
+    MUTATING_EXECUTION_STATES as _MUTATING_EXECUTION_STATES, QUEUE_MEMBER_SQL as _QUEUE_MEMBER_SQL,
+    RAW_PRESENTATION as _RAW_PRESENTATION, TERMINAL_PRESENTATION as _TERMINAL_PRESENTATION,
+    WAIT_PRESENTATION as _WAIT_PRESENTATION, active_execution_progress_sql, active_execution_projection,
+    canonical_artifact_membership_sql, root_route_facts_by_root_in,
 )
 from transfers.display_name import normalized_transfer_display_name
 from transfers.runtime_telemetry import acquisition_eta_payload
@@ -50,10 +53,6 @@ from transfers.input_required import public_challenge
 from transfers.manual_failover import DiscardConfirmationRequired
 from transfers.presentation_repository import (
     ARTIFACT_PRESENTATION_SNAPSHOT_KEYS,
-    _CAPACITY_WAIT_PRESENTATION,
-    _RAW_PRESENTATION,
-    _TERMINAL_PRESENTATION,
-    _WAIT_PRESENTATION,
     effective_presentation,
     candidate_inputs_sql,
     public_source_identity,
@@ -1979,7 +1978,7 @@ async def list_operational_torrents(
         registry = getattr(getattr(application, "engine", None), "registry", None)
         routed = [int(row["id"]) for row in rows if registry is not None or (
             len(kinds := _bounded_request_kinds(row)) == 1 and kinds[0] in BITTORRENT_REQUEST_KINDS)]
-        route_roots = await application.repository._root_route_facts_by_root(db, routed) if routed else {}
+        route_roots = await root_route_facts_by_root_in(application.repository, db, routed) if routed else {}
 
     # Section 9: read once for the whole page, never per row. This is a
     # plain passthrough to the execution-admission owner's own positive

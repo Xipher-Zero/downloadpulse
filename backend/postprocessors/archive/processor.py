@@ -3,7 +3,6 @@ import os
 import stat
 from pathlib import Path
 
-from core.config import get_settings
 from postprocessors.archive.secure import get_secure_extractor
 from postprocessors.archive.sources import _archive_source_paths, _canonical_archive_entries, _cleanup_successful_sources
 from transfers.errors import Category, Domain, NormalizedError, Retryability, Stage, safe_diagnostic
@@ -23,11 +22,27 @@ def _final_files(paths) -> tuple[str, ...]:
     return tuple(sorted(kept))
 
 
+class _Defaults:
+    """Extraction without operator settings (a post-processor built with no reader)."""
+    extract_max_concurrent = 1
+    extract_delete_archive = False
+    extraction_password = ""
+
+
 class ArchivePostProcessor:
     descriptor = IntegrationDescriptor("archive", "Archive extraction", frozenset())
 
+    def __init__(self, settings=None):
+        # A reader of the operator's extraction settings, handed in by composition
+        # (concurrency, archive deletion, passwords, limits): this post-processor
+        # never reads the application's global settings itself.
+        self._settings = settings
+
+    def _current(self):
+        return self._settings() if callable(self._settings) else _Defaults()
+
     async def process(self, transfer_id, paths):
-        cfg = get_settings()
+        cfg = self._current()
         archives = _canonical_archive_entries(paths)
         if not archives:
             return TransferOutcome(OutcomeKind.SKIPPED, detail="No supported archives")
@@ -37,7 +52,7 @@ class ArchivePostProcessor:
         extractor.update_max_concurrent(max(1, cfg.extract_max_concurrent))
         # Clean up only confirmed successes and only the core-supplied paths.
         created: list[Path] = []
-        results = await extractor.extract_archives(archives, delete_after=False, created=created)
+        results = await extractor.extract_archives(archives, delete_after=False, created=created, settings=cfg)
         successes = [Path(path) for path, ok, _message in results if ok]
         failures = [str(message) for _path, ok, message in results if not ok]
         if len(results) != len(archives):

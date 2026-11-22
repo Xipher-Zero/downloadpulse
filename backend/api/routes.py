@@ -42,10 +42,10 @@ from transfers.requests import (
 )
 from core.config_validator import validate_and_sanitise
 from integrations.definition import IntegrationSettings
-from transfers._repository_base import canonical_artifact_membership_sql
+from transfers.read_models import canonical_artifact_membership_sql
 from transfers.runtime_limits import ExecutionRuntimeLimits
 from transfers.models import SubmissionDemand
-from transfers._repository_base import DemandChanged
+from transfers.read_models import DemandChanged
 from transfers.manual_queue_move import QueueMoveRefused, RestartConfirmationRequired
 from transfers.manual_route_switch import root_switches
 from transfers.settings import TransferSettings
@@ -170,7 +170,7 @@ from application import dispatch_admission
 from application.dependencies import get_application
 from transfers import codec
 from application.service import AcquisitionScopeRequired, ApplicationService, LocalNetworkConfirmationRequired
-from executors.aria2.runtime import runtime as aria2_runtime, _canonical_aria2_options
+from executors.aria2.runtime import _canonical_aria2_options
 from services.event_bus import bind_publisher
 from services import transfer_trace
 from api.serializers import (
@@ -683,8 +683,13 @@ async def _apply_aria2_settings(application: ApplicationService, *, strict: bool
     from executors.aria2.runtime import OPTION_REFUSED_EXIT_CODE
     from integrations.configuration_mutation import NativeConfigurationRefused
 
-    status = await aria2_runtime.ensure_started()
-    if strict and not status.get("process_running") and aria2_runtime.last_exit_code == OPTION_REFUSED_EXIT_CODE:
+    try:
+        aria2 = application.integration_admin("aria2")
+    except CodedValueError:
+        # No aria2 administered in this application: nothing runs, nothing to apply.
+        return {"running": False, "applied": False, "pending_restart": False}
+    status = await aria2.runtime_ensure_started()
+    if strict and not status.get("process_running") and aria2.runtime_last_exit_code == OPTION_REFUSED_EXIT_CODE:
         raise NativeConfigurationRefused(f"aria2 refused this configuration: {status.get('last_error') or 'exit 28'}", code="aria2.configuration_refused", params={"reason": str(status.get('last_error') or 'exit 28')})
     applied = False
     if status.get("process_running"):
@@ -698,7 +703,7 @@ async def _apply_aria2_settings(application: ApplicationService, *, strict: bool
         except Exception as exc:
             logger.warning("Could not apply aria2 memory settings immediately: %s", sanitize_exception(exc))
     return {"running": bool(status.get("process_running")), "applied": applied,
-            "pending_restart": aria2_runtime.pending_restart()}
+            "pending_restart": aria2.runtime_pending_restart()}
 
 
 @router.put("/settings")
@@ -860,7 +865,7 @@ async def run_aria2_housekeeping_ep( application: ApplicationService = Depends(g
 
 @router.get("/aria2/runtime")
 async def aria2_runtime_status( application: ApplicationService = Depends(get_application)):
-    status = await aria2_runtime.status()
+    status = await application.integration_admin("aria2").runtime_status()
     diagnostics = {}
     speed_stat = {"download_speed": 0, "upload_speed": 0, "active": 0}
     try:
@@ -881,21 +886,21 @@ async def aria2_global_stat( application: ApplicationService = Depends(get_appli
 
 @router.post("/aria2/runtime/start")
 async def aria2_runtime_start( application: ApplicationService = Depends(get_application)):
-    status = await aria2_runtime.start()
+    status = await application.integration_admin("aria2").runtime_start()
     application.configure()
     return status
 
 
 @router.post("/aria2/runtime/stop")
 async def aria2_runtime_stop( application: ApplicationService = Depends(get_application)):
-    status = await aria2_runtime.stop()
+    status = await application.integration_admin("aria2").runtime_stop()
     application.configure()
     return status
 
 
 @router.post("/aria2/runtime/restart")
 async def aria2_runtime_restart( application: ApplicationService = Depends(get_application)):
-    status = await aria2_runtime.restart()
+    status = await application.integration_admin("aria2").runtime_restart()
     application.configure()
     return status
 
@@ -903,7 +908,7 @@ async def aria2_runtime_restart( application: ApplicationService = Depends(get_a
 @router.post("/aria2/runtime/apply")
 async def aria2_runtime_apply( application: ApplicationService = Depends(get_application)):
     try:
-        await aria2_runtime.apply_options()
+        await application.integration_admin("aria2").runtime_apply_options()
         result = await application.integration_admin("aria2").housekeeping()
         return {"ok": True, **result}
     except Exception as e:
@@ -1722,7 +1727,10 @@ class LabelUpdate(BaseModel):
 
 @router.put("/torrents/{torrent_id}/label")
 async def set_torrent_label(torrent_id: int, body: LabelUpdate, application: ApplicationService = Depends(get_application)):
-    await application.repository.update_metadata(torrent_id, label=body.label.strip(), priority=body.priority)
+    try:
+        await application.set_metadata(torrent_id, label=body.label.strip(), priority=body.priority)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
     return {"ok": True}
 
 
@@ -1764,7 +1772,7 @@ async def bulk_action(body: BulkAction, request: Request, application: Applicati
             elif body.action == "resume":
                 await application.resume(tid)
             elif body.action == "remove_label":
-                await application.repository.update_metadata(tid, label="")
+                await application.set_metadata(tid, label="")
             ok += 1
             results.append({"id": tid, "outcome": "applied"})
         except Exception:
@@ -3248,7 +3256,7 @@ async def set_torrent_priority(torrent_id: int, body: dict, application: Applica
     if not await application.repository.get(torrent_id):
         raise DisplayError(404, "Transfer not found", code="transfer.not_found")
     if position.priority is not None:
-        await application.repository.update_metadata(torrent_id, priority=position.priority)
+        await application.set_metadata(torrent_id, priority=position.priority)
         await _sse_broadcast("torrent_updated", {"torrent_id": torrent_id, "priority": position.priority})
         return {"ok": True, "torrent_id": torrent_id, "priority": position.priority}
     try:
@@ -3299,8 +3307,7 @@ async def run_recovery( application: ApplicationService = Depends(get_applicatio
 @router.post("/admin/cleanup-alldebrid-orphans")
 async def cleanup_alldebrid_orphans_endpoint( application: ApplicationService = Depends(get_application)):
     """Compatibility URL for retrying already-authorized canonical cleanup."""
-    async with application.application_operation():
-        await application.engine.cleanup_pending()
+    await application.retry_pending_cleanup()
     return {"ok": True}
 
 

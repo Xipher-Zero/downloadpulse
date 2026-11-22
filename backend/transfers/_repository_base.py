@@ -2662,6 +2662,13 @@ class TransferRepository:
         async with get_db() as db:
             return await db.fetchall(self._AFFECTED_DEMAND_SQL, {"t": int(transfer_id)})
 
+    async def own_demand(self, transfer_id: int) -> list[dict]:
+        """The transfer's OWN outstanding demand (its submitters), without any demand
+        consolidated into its artifacts from other transfers."""
+        async with get_db() as db:
+            return await db.fetchall("SELECT * FROM transfer_demands WHERE transfer_id=? AND withdrawn_at IS NULL",
+                                     (int(transfer_id),))
+
     async def demand(self, demand_id: str) -> dict | None:
         async with get_db() as db:
             return await db.fetchone("SELECT * FROM transfer_demands WHERE id=?", (str(demand_id),))
@@ -2683,6 +2690,31 @@ class TransferRepository:
                     FROM transfer_demands d JOIN torrents t ON t.id=d.transfer_id {where}
                     ORDER BY d.created_at DESC, d.id LIMIT ?""",
                 (*params, max(1, min(int(limit), 1000))))
+
+    async def unsettled_withdrawals(self, by: str, *, after: int = 0, limit: int = 50) -> list[dict]:
+        """Transfers one of whose demands ``by`` withdrew (the durable intent) that
+        no outstanding demand still needs -- their own or one consolidated into
+        their artifacts, the core's ``unwanted_transfers`` rule -- and that have not
+        reached their end: ``[{transfer_id, demand_id}]`` in id order after
+        ``after``, at most ``limit``. The ONE definition; an edge settles each
+        through ``ApplicationService.withdraw_demand``."""
+        async with get_db() as db:
+            rows = await db.fetchall(
+                """SELECT t.id AS transfer_id,
+                          (SELECT d2.id FROM transfer_demands d2 WHERE d2.transfer_id=t.id AND d2.withdrawn_by=?
+                           ORDER BY d2.id LIMIT 1) AS demand_id
+                   FROM torrents t
+                   WHERE t.id > ? AND t.status NOT IN ('completed','consolidated','deleted')
+                     AND EXISTS (SELECT 1 FROM transfer_demands d WHERE d.transfer_id=t.id AND d.withdrawn_by=?)
+                     AND NOT EXISTS (SELECT 1 FROM transfer_demands d
+                                     WHERE d.transfer_id=t.id AND d.withdrawn_at IS NULL)
+                     AND NOT EXISTS (SELECT 1 FROM artifact_consolidations ac
+                                     JOIN download_files f ON f.id=ac.canonical_artifact_id
+                                     JOIN transfer_demands d ON d.transfer_id=ac.source_transfer_id
+                                          AND d.withdrawn_at IS NULL
+                                     WHERE f.torrent_id=t.id)
+                   ORDER BY t.id LIMIT ?""", (str(by), int(after or 0), str(by), int(limit)))
+        return [dict(row) for row in rows]
 
     @staticmethod
     async def withdraw_demand_in(db, *, demand_ids=(), account_id: str | None = None, by: str) -> list[int]:
@@ -3770,10 +3802,14 @@ class TransferRepository:
         except (TypeError, ValueError, AttributeError):
             target = None
         host = None
-        if isinstance(target, str) and target.lower().startswith(("http://", "https://", "ftp://", "sftp://")):
-            from urllib.parse import urlsplit
+        from urllib.parse import urlsplit
+        from transfers.requests import DIRECT_LINK_SCHEMES
+        # Every direct-link transport the request owner knows (its one scheme set), not a hand-kept subset.
+        if isinstance(target, str):
             try:
-                host = safe_public_host(urlsplit(target).hostname)
+                parts = urlsplit(target)
+                if parts.scheme.lower() in DIRECT_LINK_SCHEMES:
+                    host = safe_public_host(parts.hostname)
             except ValueError:
                 host = None
         position = f"source {int(row['ordinal']) + 1}" if row["parent_id"] is None else None

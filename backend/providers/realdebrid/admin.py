@@ -116,26 +116,18 @@ async def poll_authorization(*, service: RealDebridService | None = None, clock=
 
 # -- persistence of a rotated refresh token ------------------------------------
 
-async def persist_refreshed_credential(credential: Credential) -> None:
-    """Write a refresh token Real-Debrid rotated into the saved namespace.
+def rotated_credential_persister(persist_option):
+    """How a refresh token Real-Debrid rotated is kept: through the configuration
+    owner's guarded write (``IntegrationEnvironment.persist_option``), only while
+    the credential is still the saved one -- never a settings write of this
+    provider's own. ``None`` without one: the token lives for this process only."""
+    if persist_option is None:
+        return None
 
-    Only for the credential that is still the saved one (a disconnect or a new
-    connection in between wins), through the one settings owner under its
-    write lock. It is the same grant -- no ownership or verification material
-    changed -- so nothing is rebuilt."""
-    from core.config import apply_settings, config_write_lock, load_settings, save_settings
-
-    async with config_write_lock():
-        settings = load_settings()
-        entry = (settings.integrations or {}).get(INTEGRATION_ID)
-        options = dict(getattr(entry, "options", None) or {})
-        if entry is None or options.get("client_id") != credential.client_id:
-            return
-        options["refresh_token"] = credential.refresh_token
-        updated = settings.model_copy(update={"integrations": {
-            **settings.integrations, INTEGRATION_ID: entry.model_copy(update={"options": options})}})
-        save_settings(updated)
-        apply_settings(updated)
+    async def persist(credential: Credential) -> None:
+        await persist_option(INTEGRATION_ID, guard=("client_id", credential.client_id),
+                             key="refresh_token", value=credential.refresh_token)
+    return persist
 
 
 # -- account truth ---------------------------------------------------------------
@@ -161,7 +153,7 @@ def account_facts(user: dict, *, entitlements=None, offered=PREMIUM, clock=time.
     }
 
 
-async def verify(options) -> dict:
+async def verify(options, persist_option=None) -> dict:
     """Prove the SAVED credential: a fresh client refreshes it and reads /user.
 
     A fresh client, not the live one, so a still-valid cached access token can
@@ -170,7 +162,7 @@ async def verify(options) -> dict:
     client = RealDebridService(credential, rate_limit_per_minute=options.rate_limit_per_minute,
                                request_timeout_seconds=options.request_timeout_seconds,
                                upload_timeout_seconds=options.torrent_upload_timeout_seconds,
-                               on_refresh=persist_refreshed_credential)
+                               on_refresh=rotated_credential_persister(persist_option))
     return account_facts(await client.user())
 
 

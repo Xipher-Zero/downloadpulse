@@ -57,13 +57,11 @@ def test_zip_preflight_rejects_file_count_budget(tmp_path, monkeypatch):
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("one.txt", b"1")
         zf.writestr("two.txt", b"2")
-    monkeypatch.setattr(
-        safety, "get_settings",
-        lambda: SimpleNamespace(
+    monkeypatch.setattr(safety, "_RUN_SETTINGS", _run_settings_default(SimpleNamespace(
             extract_max_files=1,
             extract_max_expanded_gb=1,
             extract_max_compression_ratio=1000,
-        ),
+        )),
     )
     dest = tmp_path / "out"
     dest.mkdir()
@@ -79,13 +77,11 @@ def test_external_staging_rejects_symlink_output(tmp_path, monkeypatch):
     archive.write_bytes(b"archive")
     dest = tmp_path / "dest"
     dest.mkdir()
-    monkeypatch.setattr(
-        safety, "get_settings",
-        lambda: SimpleNamespace(
+    monkeypatch.setattr(safety, "_RUN_SETTINGS", _run_settings_default(SimpleNamespace(
             extract_max_files=100,
             extract_max_expanded_gb=1,
             extract_max_compression_ratio=1000,
-        ),
+        )),
     )
 
     def malicious(stage):
@@ -101,13 +97,11 @@ def test_7z_listing_budget_is_validated_before_extraction(tmp_path, monkeypatch)
 
     archive = tmp_path / "archive.7z"
     archive.write_bytes(b"x" * 100)
-    monkeypatch.setattr(
-        safety, "get_settings",
-        lambda: SimpleNamespace(
+    monkeypatch.setattr(safety, "_RUN_SETTINGS", _run_settings_default(SimpleNamespace(
             extract_max_files=1,
             extract_max_expanded_gb=1,
             extract_max_compression_ratio=1000,
-        ),
+        )),
     )
     listing = "Header\n----------\nPath = one\nSize = 1\nAttributes = A\n\nPath = two\nSize = 1\nAttributes = A\n"
     with pytest.raises(ValueError, match="files"):
@@ -230,3 +224,8 @@ def test_recovery_route_survives_without_transitional_wrapper():
     assert not (root / "services" / "recovery.py").exists()
 
 
+def _run_settings_default(settings):
+    """Extraction settings for every run in this test (``extraction_safety._RUN_SETTINGS``):
+    the post-processor's injected reader, as the extractor sees it -- never a global read."""
+    from contextvars import ContextVar
+    return ContextVar("extraction_run_settings", default=settings)

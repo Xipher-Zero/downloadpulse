@@ -11,6 +11,16 @@
   the browser. They are held only in memory for that download, used only for the addresses
   they belong to, and never stored or logged.
 
+### Fixed
+
+- **The same file is never downloaded twice.** Sending a direct link that DownloadPulse is
+  already downloading -- or has paused -- started a second download from scratch. The same link
+  now joins the existing download once its content is confirmed to be the same, and a paused one
+  resumes from what it already has. When the second request is another account's, each keeps
+  its own transfer and request, and the first transfer's history records that another
+  account's request resumed it. A global pause, or an external client's own pause, is never
+  lifted by it.
+
 ### Changed
 
 - **One sign-in path for every download.** The video sign-in 1.0.14 introduced is now the same

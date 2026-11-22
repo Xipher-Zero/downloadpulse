@@ -591,10 +591,10 @@ class ExternalClients:
         withdrawal means for the work (cancelled only if nobody else needs
         it) is the core's, after commit (``settle_retired``), and recovered
         by maintenance if that never runs. Returns the jobs retired."""
-        from transfers._repository_base import TransferRepository as _Repository
+        from application.service import ApplicationService
 
         demand_ids = [str(job["demand_id"] or job["reserved_demand_id"]) for job in jobs]
-        await _Repository.withdraw_demand_in(db, demand_ids=demand_ids, by=PROFILE_RETIRED)
+        await ApplicationService.withdraw_demand_in(db, demand_ids=demand_ids, by=PROFILE_RETIRED)
         for job in jobs:
             await _audit(db, "external_job_retired", "External job retired with its delivery profile", job,
                          outcome="retired")
@@ -1264,7 +1264,7 @@ class ExternalClients:
             # The same proof is made again inside the removal's own
             # transaction: a newer, unacknowledged generation committed in
             # between keeps the folder.
-            await self.application.engine.retire_vacated_collection(
+            await self.application.retire_vacated_collection(
                 transfer_id, expected_demand=outstanding,
                 settled=lambda db: _claims_settled(db, outstanding))
         except Exception:  # noqa: BLE001 - an empty folder is never worth a refused acknowledgement
@@ -1470,7 +1470,7 @@ class ExternalClients:
         return plan
 
     async def _effective_progress(self, transfer) -> dict:
-        from transfers._repository_base import (
+        from transfers.read_models import (
             active_execution_bytes, active_execution_progress_sql, active_execution_projection, effective_progress)
 
         async with get_db() as db:
@@ -1484,7 +1484,7 @@ class ExternalClients:
         members (unless it was consolidated away) and every canonical artifact
         of another transfer one of its requests was consolidated into, or is
         terminally associated with."""
-        from transfers._repository_base import canonical_artifact_membership_sql
+        from transfers.read_models import canonical_artifact_membership_sql
 
         async with get_db() as db:
             own = [] if status == "consolidated" else await db.fetchall(
@@ -1603,7 +1603,7 @@ class ExternalClients:
 
     @staticmethod
     async def _covers_owner(owner: int, rows) -> bool:
-        from transfers._repository_base import canonical_artifact_membership_sql
+        from transfers.read_models import canonical_artifact_membership_sql
 
         async with get_db() as db:
             members = await db.fetchall(
@@ -1729,24 +1729,10 @@ class ExternalClients:
         is attempted again on every walk and never holds the others back; a
         restart begins the walk again. Returns how many were offered."""
         global _RETIREMENT_SETTLEMENT_CURSOR
-        terminal = ("completed", "consolidated", "deleted")
-        async with get_db() as db:
-            rows = await db.fetchall(
-                """SELECT t.id AS transfer_id,
-                          (SELECT d2.id FROM transfer_demands d2 WHERE d2.transfer_id=t.id AND d2.withdrawn_by=?
-                           ORDER BY d2.id LIMIT 1) AS demand_id
-                   FROM torrents t
-                   WHERE t.id > ? AND t.status NOT IN (?,?,?)
-                     AND EXISTS (SELECT 1 FROM transfer_demands d WHERE d.transfer_id=t.id AND d.withdrawn_by=?)
-                     AND NOT EXISTS (SELECT 1 FROM transfer_demands d
-                                     WHERE d.transfer_id=t.id AND d.withdrawn_at IS NULL)
-                     AND NOT EXISTS (SELECT 1 FROM artifact_consolidations ac
-                                     JOIN download_files f ON f.id=ac.canonical_artifact_id
-                                     JOIN transfer_demands d ON d.transfer_id=ac.source_transfer_id
-                                          AND d.withdrawn_at IS NULL
-                                     WHERE f.torrent_id=t.id)
-                   ORDER BY t.id LIMIT ?""",
-                (PROFILE_RETIRED, int(_RETIREMENT_SETTLEMENT_CURSOR or 0), *terminal, PROFILE_RETIRED, int(budget)))
+        # Which transfers qualify is the core's rule (``unsettled_withdrawals``); this
+        # edge keeps only its walk's cursor.
+        rows = await self.application.unsettled_withdrawals(
+            PROFILE_RETIRED, after=int(_RETIREMENT_SETTLEMENT_CURSOR or 0), limit=int(budget))
         # The end of the walk: the next pass starts over from the lowest.
         _RETIREMENT_SETTLEMENT_CURSOR = int(rows[-1]["transfer_id"]) if len(rows) == int(budget) else None
         for row in rows:

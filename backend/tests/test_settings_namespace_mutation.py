@@ -38,7 +38,10 @@ DEFINITIONS = (alldebrid_definition, general_http_definition, aria2_definition)
 def _application(current, *, validate_configuration=None, aria2_admin=None):
     # A single stable admin object (not a fresh one per ``integration_admin``
     # call) so tests can assert on its ``apply_memory_tuning`` mock.
-    admin = aria2_admin if aria2_admin is not None else SimpleNamespace(apply_memory_tuning=AsyncMock())
+    admin = aria2_admin if aria2_admin is not None else SimpleNamespace(
+        apply_memory_tuning=AsyncMock(), runtime_ensure_started=AsyncMock(return_value={"process_running": False}),
+        runtime_restart=AsyncMock(), runtime_stop=AsyncMock(), runtime_last_exit_code=None,
+        runtime_pending_restart=lambda: [])
     exclusive = []
     return SimpleNamespace(
         definitions=DEFINITIONS,
@@ -414,9 +417,8 @@ async def test_aria2_settings_carry_no_daemon_topology_and_tuning_round_trips():
          patch("api.routes.load_settings", return_value=current), \
          patch("api.routes.save_settings", side_effect=lambda cfg: saved.__setitem__("cfg", cfg)), \
          patch("api.routes.apply_settings"), \
-         patch("api.routes.aria2_runtime", SimpleNamespace(ensure_started=AsyncMock(return_value={"process_running": True}),
-                                                          restart=AsyncMock(), stop=AsyncMock(), last_exit_code=None,
-                                                          pending_restart=lambda: [])):
+         patch.object(application.integration_admin("aria2"), "runtime_ensure_started",
+                      AsyncMock(return_value={"process_running": True})):
         result = await routes.patch_integration_configuration(
             "aria2", routes.IntegrationConfigurationUpdate(options={"split": 8, "disk_cache": "32M"}),
             application=application,
@@ -572,9 +574,7 @@ async def test_stale_whole_settings_put_does_not_clobber_a_newer_runtime_limit_p
     with patch("api.routes.get_settings", side_effect=fake_load), \
          patch("api.routes.load_settings", side_effect=fake_load), \
          patch("api.routes.save_settings", side_effect=fake_save), \
-         patch("api.routes.apply_settings"), \
-         patch.object(routes.aria2_runtime, "ensure_started", AsyncMock()), \
-         patch.object(routes.aria2_runtime, "restart", AsyncMock()):
+         patch("api.routes.apply_settings"):
         # Browser B: scoped PATCH raises the canonical runtime limit.
         await routes.patch_execution_runtime_limits(
             {"max_download_bytes_per_second": 10_000_000}, application=application,

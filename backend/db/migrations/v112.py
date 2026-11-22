@@ -276,7 +276,8 @@ async def migrate(*, globally_paused: bool = False) -> dict:
                 unresolved = not candidate or (source and source == str(file.get("download_url") or ""))
                 candidates = () if unresolved else (candidate,)
                 attempt_id = _identity("execution", file["id"])
-                handle = legacy_handle(file, attempt_id, candidate)
+                from core.config import get_settings
+                handle = legacy_handle(file, attempt_id, candidate, download_folder=get_settings().download_folder)
                 state = str(file.get("status") or "queued")
                 if state in {"pending", "waiting", "ready"}:
                     state = "queued"

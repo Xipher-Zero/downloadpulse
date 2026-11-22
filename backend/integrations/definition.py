@@ -170,6 +170,10 @@ class IntegrationEnvironment:
     # .preferred_subtitle_language``): owned by the global Downloads settings,
     # only ever READ by an integration that acquires subtitled media.
     preferred_subtitle_language: str = "en"
+    # The configuration owner's guarded write of ONE option an integration's service
+    # rotated (``integrations.configuration_mutation.persist_rotated_option``): how a
+    # rotated credential is kept -- no integration writes or applies settings itself.
+    persist_option: object = None
 
 
 @runtime_checkable

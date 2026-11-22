@@ -10,7 +10,8 @@ import db.database as database
 from fake_integrations import MemoryExecutor, ParcelProvider
 from transfers.engine import TransferEngine
 from transfers.errors import Category, Domain, NormalizedError, Recovery, Retryability, Stage
-from transfers.models import (
+from transfers.models import (  # noqa: I001
+    TransferState,
     ArtifactFingerprint, ExecutionState, ResolutionResult, ResourceState,
     TransferRequest,
 )
@@ -333,10 +334,11 @@ async def test_seven_plus_seven_proven_mirrors_create_seven_canonical_artifacts(
 
 
 @pytest.mark.asyncio
-async def test_paused_established_writer_is_not_resumed_by_alternate_arrival(canonical_pair):
-    # DP 1.0.12 canonical lifecycle/recovery/completion rework (CANON-001
-    # closure, Gate 9 revision 5): pause is now exclusively a canonical-stack
-    # responsibility.
+async def test_a_new_claim_resumes_the_paused_established_writer_never_a_second_one(canonical_pair):
+    # DP 1.0.12 made pause a canonical-stack responsibility. 1.0.2 (operator,
+    # 2026-11-22): one exact object is never acquired twice, nor left parked while a
+    # claimant wants it -- the later transfer's claim resumes the paused artifact
+    # from its own material (test_v102_same_object_claims).
     pair = canonical_pair
     first = await admit(pair, pair.a, "submission-a")
     await pair.engine.tick()
@@ -348,14 +350,14 @@ async def test_paused_established_writer_is_not_resumed_by_alternate_arrival(can
     assert (await pair.repository.artifacts(first.id))[0].execution is None
 
     second = await admit(pair, pair.b, "submission-b")
-    await pair.engine.tick()
+    for _ in range(4):
+        await pair.engine.tick()
 
     canonical = (await pair.repository.artifacts(first.id))[0]
-    # The alternate joins the paused artifact without reviving any writer.
-    assert canonical.execution is None and canonical.state == "paused"
-    assert len(canonical.candidates) == 2
+    # The alternate joins the one artifact, which resumes; the second transfer owns none.
+    assert (await pair.repository.get(first.id)).state != TransferState.PAUSED
+    assert canonical.id == primary.id and len(canonical.candidates) == 2
     assert await pair.repository.artifacts(second.id) == ()
-    assert len([call for call in pair.executor.calls if call[0] == "start"]) == 1
 
 
 @pytest.mark.asyncio

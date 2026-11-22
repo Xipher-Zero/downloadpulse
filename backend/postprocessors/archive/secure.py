@@ -24,7 +24,7 @@ from services.extraction_safety import (
     staged_external_extract,
     validate_tar_members,
 )
-from postprocessors.archive.extractor import Extractor, _extract_into_directory, _extract_job_sync, _suffix
+from postprocessors.archive.extractor import Extractor, _extract_into_directory, _extract_job_sync, _suffix, _with_run_settings
 from core.processes import WINDOWLESS
 
 logger = logging.getLogger("downloadpulse.extractor_secure")
@@ -124,6 +124,7 @@ class SecureExtractor(Extractor):
         *,
         delete_after: bool = True,
         created: Optional[List[Path]] = None,
+        settings=None,
     ) -> Tuple[bool, str]:
         async with self._sem:
             loop = asyncio.get_running_loop()
@@ -143,7 +144,8 @@ class SecureExtractor(Extractor):
                     created_files = await loop.run_in_executor(
                         self._executor,
                         functools.partial(
-                            _extract_job_sync, archive, dest,
+                            # Under the settings the post-processor's owner gave this run.
+                            _with_run_settings, settings, _extract_job_sync, archive, dest,
                             extract_into=_extract_secure_into, extract_child=_extract_secure_sync,
                             delete_nested=delete_after,
                         ),

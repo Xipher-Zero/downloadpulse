@@ -38,7 +38,10 @@ async def _open():
 
 
 def _application():
-    admin = SimpleNamespace(apply_memory_tuning=AsyncMock())
+    admin = SimpleNamespace(
+        apply_memory_tuning=AsyncMock(), runtime_ensure_started=AsyncMock(return_value={"process_running": False}),
+        runtime_restart=AsyncMock(), runtime_stop=AsyncMock(), runtime_last_exit_code=None,
+        runtime_pending_restart=lambda: [])
     return SimpleNamespace(
         definitions=definitions,
         application_operation=lambda: _open(),
@@ -72,10 +75,7 @@ async def _put(body: dict):
     saved = {}
     with patch("api.routes.get_settings", return_value=current), \
          patch("api.routes.save_settings", side_effect=lambda cfg: saved.__setitem__("cfg", cfg)), \
-         patch("api.routes.apply_settings"), \
-         patch("api.routes.aria2_runtime.ensure_started", AsyncMock()), \
-         patch("api.routes.aria2_runtime.restart", AsyncMock()), \
-         patch("api.routes.aria2_runtime.stop", AsyncMock()):
+         patch("api.routes.apply_settings"):
         response = await routes.update_settings(routes.SettingsUpdate(**body), application=_application())
     return current, saved["cfg"], response
 

@@ -48,10 +48,11 @@ def administration(*, enabled: bool, running: bool, live_work=frozenset(), clien
 
     async def live():
         return frozenset(live_work)
-    repository = SimpleNamespace(executors_with_live_work=live)
+    from transfers.integration_grants import ExecutionGrants
+    repository = ExecutionGrants(SimpleNamespace(executors_with_live_work=live))
     client = (client_for or (lambda runtime: TestingSab(runtime)))(runtime)
     admin = SabnzbdAdministration(client, UsenetOptions(servers=[UsenetServer(host="news.a.net")]),
-                                  "/download", runtime, executor, repository=repository)
+                                  "/download", runtime, executor, executions=repository)
 
     async def applied():
         return None

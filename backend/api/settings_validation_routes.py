@@ -670,7 +670,8 @@ async def _prove_realdebrid(application: ApplicationService):
     options = realdebrid_canonical_options(get_settings())
     fingerprint = verification_fingerprint(realdebrid_credential_material(options))
     try:
-        account = await realdebrid_admin.verify(options)
+        from integrations.configuration_mutation import persist_rotated_option
+        account = await realdebrid_admin.verify(options, persist_rotated_option)
     except Exception as exc:
         accepted = await _record_verification_outcome(application, REALDEBRID_NAMESPACE, fingerprint, False)
         return {}, accepted, _safe_failure(exc)

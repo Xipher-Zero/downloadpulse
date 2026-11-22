@@ -99,9 +99,10 @@ class ContextCookie:
 
     def matches(self, scheme: str, host: str, path: str, now: float) -> bool:
         """Whether a browser would send this cookie to ``scheme://host/path`` (RFC 6265 5.4)."""
+        from transfers.requests import SECURE_WEB_SCHEME, WEB_SCHEMES  # noqa: F401 -- lazy: models imports this module
         if self.expires is not None and self.expires <= now:
             return False
-        if self.secure and scheme != "https":
+        if self.secure and scheme != SECURE_WEB_SCHEME:
             return False
         bare = self.domain.lower().lstrip(".")
         if self.host_only:
@@ -155,15 +156,16 @@ class RequestContext:
         (strict-origin-when-cross-origin): in full to its own origin, only its
         origin to any other, and nothing from HTTPS to plain HTTP. Nothing for
         anything but HTTP(S)."""
+        from transfers.requests import SECURE_WEB_SCHEME, WEB_SCHEMES  # noqa: F401 -- lazy: models imports this module
         scheme, host, path = _parts(address)
-        if scheme not in {"http", "https"} or not host:
+        if scheme not in WEB_SCHEMES or not host:
             return RequestContext()
         now = time.time()
         cookies = tuple(cookie for cookie in self.cookies if cookie.matches(scheme, host, path, now))
         referrer = self.referrer
         if referrer:
             source = _origin(referrer)
-            if source[0] == "https" and scheme != "https":
+            if source[0] == SECURE_WEB_SCHEME and scheme != SECURE_WEB_SCHEME:
                 referrer = ""
             elif source != _origin(address):
                 referrer = f"{source[0]}://{urlsplit(referrer).netloc.rsplit('@', 1)[-1]}/"
@@ -175,12 +177,13 @@ class RequestContext:
         request itself (a page reader that makes many requests to that site):
         every unexpired cookie whose domain matches the host. Nothing for
         anything but HTTP(S)."""
+        from transfers.requests import SECURE_WEB_SCHEME, WEB_SCHEMES  # noqa: F401 -- lazy: models imports this module
         scheme, host, _path = _parts(address)
-        if scheme not in {"http", "https"} or not host:
+        if scheme not in WEB_SCHEMES or not host:
             return ()
         now = time.time()
         return tuple(cookie for cookie in self.cookies
-                     if cookie.matches("https", host, cookie.path or "/", now))
+                     if cookie.matches(SECURE_WEB_SCHEME, host, cookie.path or "/", now))
 
     def headers(self, address: str) -> dict[str, str]:
         """``for_address(address)`` as HTTP request headers (``Cookie``, ``Referer``)."""
@@ -199,6 +202,7 @@ class RequestContext:
         """A submission's ``cookies`` and ``referrer``, validated: each cookie's
         domain matches one of the submitted ``addresses`` (a cookie for any other
         site is refused), within the bounds. ``None`` for either is none."""
+        from transfers.requests import SECURE_WEB_SCHEME, WEB_SCHEMES  # noqa: F401 -- lazy: models imports this module
         hosts = {host for host in (_parts(address)[1] for address in addresses) if host}
         parsed, size = [], 0
         if cookies is not None:
@@ -242,7 +246,7 @@ class RequestContext:
         kept = ""
         if referrer is not None:
             if (not isinstance(referrer, str) or not referrer or len(referrer) > MAX_REFERRER
-                    or _UNSAFE_REFERRER.search(referrer) or _parts(referrer)[0] not in {"http", "https"}
+                    or _UNSAFE_REFERRER.search(referrer) or _parts(referrer)[0] not in WEB_SCHEMES
                     or not _parts(referrer)[1]):
                 raise ContextRefused(f"referrer is an http(s) address of at most {MAX_REFERRER} characters")
             try:

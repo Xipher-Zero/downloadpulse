@@ -24,7 +24,7 @@ from transfers.errors import (
 )
 from transfers.filesystem import safe_name
 from transfers.manual_queue_move import move_in_queue
-from transfers._repository_base import DemandChanged
+from transfers.read_models import DemandChanged
 from transfers.models import TransferRequest, TransferState
 from transfers.runtime_telemetry import acquisition_eta_payload
 from transfers.requests import (
@@ -701,7 +701,7 @@ class ApplicationService:
         it: the Multimeta provider reads it during resolution. The stream is
         staged straight through the neutral durable-input owner."""
         selection_mode = file_selection.normalize_selection_mode(selection_mode)
-        name = str(filename or "").rsplit(".", 1)[0] or "Multimeta"
+        name = str(filename or "").rsplit(".", 1)[0] or "metalink-download"
         if self.staged_input is None:
             raise CodedValueError("Durable input storage is unavailable", code="submit.staging_unavailable")
         try:
@@ -950,6 +950,88 @@ class ApplicationService:
                     await self._publish(member)
             return moved
 
+    async def set_metadata(self, transfer_id, *, label: str | None = None, priority: int | None = None):
+        """An operator's label and/or queue priority for one transfer, on the same
+        serialized operator-control boundary as every queue move. A priority is a
+        dispatch-authority change (it clears a preemption), so dispatch is woken
+        and the change published -- never a bare repository write from an edge."""
+        async with self.operator_controls, self.application_operation():
+            await self.require(transfer_id)
+            changes = {key: value for key, value in (("label", label), ("priority", priority)) if value is not None}
+            if changes:
+                await self.repository.update_metadata(int(transfer_id), **changes)
+            if priority is not None:
+                self.resolution_wakeup.set()
+                self.execution_wakeup.set()
+            await self._publish(int(transfer_id))
+            return {"ok": True}
+
+    async def owned_executions(self):
+        """Every durable execution attempt this application still owns: the durable
+        live set, each made OURS by the canonical authorization fence."""
+        owned = []
+        for attempt in await self.repository.live_executions():
+            if await self.repository.authorize_execution(attempt.handle, "observe"):
+                owned.append(attempt)
+        return owned
+
+    async def observe_executions(self, attempts) -> list[dict]:
+        """For each owned attempt: its executor (None: integration unavailable), the
+        executor's neutral observation (one batch per executor; a failing batch
+        answers UNKNOWN for its own handles only), the controls legal for it RIGHT
+        NOW, and its measured rate -- core's facts, decided here, never by an edge."""
+        grouped: dict[str, list] = {}
+        for attempt in attempts:
+            grouped.setdefault(attempt.handle.executor_id, []).append(attempt)
+        results = []
+        for owned in grouped.values():
+            executor = self.engine.registry.executor_for_handle(owned[0].handle)
+            if executor is None:
+                results.extend({"attempt": attempt, "executor": None, "observation": None, "controls": [],
+                                "cancellable": False, "rate": None} for attempt in owned)
+                continue
+            snapshot = await self.engine.observe_existing(executor, tuple(item.handle for item in owned))
+            for attempt, observation in zip(owned, snapshot.observations):
+                cancellable = await self.repository.authorize_execution(attempt.handle, "cancel")
+                results.append({"attempt": attempt, "executor": executor, "observation": observation,
+                                "cancellable": cancellable,
+                                "controls": self.execution_controls(observation, cancellable=cancellable),
+                                "rate": self.engine.throughput.rate(attempt.handle.attempt_id)})
+        return results
+
+    def aggregate_rate(self) -> int:
+        """The one aggregate throughput (core runtime telemetry), counted once per execution."""
+        return int(self.engine.throughput.current())
+
+    @staticmethod
+    def execution_controls(observation, *, cancellable: bool) -> list[str]:
+        """The controls legal for one execution RIGHT NOW: Pause and Resume are the
+        executor's own neutral answer (``ExecutionObservation.controls``); Cancel only
+        where DownloadPulse owns a canonical cancellation path for this attempt."""
+        from transfers.models import ExecutionControl
+        controls = []
+        if ExecutionControl.PAUSE in observation.controls:
+            controls.append("pause")
+        if ExecutionControl.RESUME in observation.controls:
+            controls.append("resume")
+        if cancellable and not observation.stopped:
+            controls.append("cancel")
+        return controls
+
+    async def retry_pending_cleanup(self):
+        """Retry already-authorized canonical cleanup (the engine's own), admitted as
+        an application operation."""
+        async with self.application_operation():
+            await self.engine.cleanup_pending()
+
+    async def retire_vacated_collection(self, transfer_id, *, expected_demand, settled):
+        """Retire a collection whose every claimant acknowledged its delivery: the
+        edge states its claims settled (``settled(db)``), core re-proves it and the
+        demand inside its own transaction."""
+        async with self.application_operation():
+            return await self.engine.retire_vacated_collection(transfer_id, expected_demand=expected_demand,
+                                                               settled=settled)
+
     @staticmethod
     def _control_result(errors):
         if errors:
@@ -994,6 +1076,18 @@ class ApplicationService:
             self.resolution_wakeup.set()
             self.execution_wakeup.set()
             return {"ok": True, **await self._publish(transfer_id)}
+
+    @staticmethod
+    async def withdraw_demand_in(db, *, demand_ids=(), account_id: str | None = None, by: str) -> list[int]:
+        """Withdraw demand inside the CALLER's transaction (an edge whose own write must
+        commit atomically with it), through the transfer owner; the caller settles
+        the consequences after commit (``withdraw_demand`` / ``settle_withdrawn_demand``)."""
+        from transfers.repository import TransferRepository
+        return await TransferRepository.withdraw_demand_in(db, demand_ids=demand_ids, account_id=account_id, by=by)
+
+    async def unsettled_withdrawals(self, by: str, *, after: int = 0, limit: int = 50) -> list[dict]:
+        """The transfers ``by``'s withdrawals left for the owner to settle (the core's rule)."""
+        return await self.repository.unsettled_withdrawals(by, after=after, limit=limit)
 
     async def withdraw_demand(self, demand_ids, *, by: str, retire_unclaimed: bool = False) -> dict:
         """Withdraw submitter demand through the canonical engine, which

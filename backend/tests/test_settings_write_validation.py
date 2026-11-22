@@ -61,8 +61,6 @@ def _world(stack: ExitStack):
     from test_settings_namespace_mutation import _application, _noop
     application = _application(config.get_settings())
     application.configuration_admission = lambda: _noop()
-    stack.enter_context(patch.object(routes.aria2_runtime, "ensure_started",
-                                     AsyncMock(return_value={"process_running": False})))
     stack.enter_context(patch("api.routes.journal_configuration_change", AsyncMock()))
     return application
 

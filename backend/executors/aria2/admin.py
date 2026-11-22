@@ -46,8 +46,14 @@ class Aria2Administration:
     async def get_all(self, *args, **kwargs):
         return await self.client.get_all(*args, **kwargs)
 
+    def _bound(self, attempts):
+        """This daemon's own attempts: its handles' correlation names the binding it
+        runs under (this executor's opaque identity, read only here)."""
+        binding = self.executor.binding
+        return tuple(attempt for attempt in attempts if attempt.handle.correlation.get("binding") == binding)
+
     async def _owned(self):
-        attempts = await self.executions.attempts_of(self.executor.descriptor.id, self.executor.binding)
+        attempts = self._bound(await self.executions.attempts_of(self.executor.descriptor.id))
         # Every candidate is authorized by the core's own decision, read for
         # all of them at once rather than one query per historical attempt.
         authorized = await self.executions.authorize_many([attempt.handle for attempt in attempts], "observe")
@@ -169,7 +175,7 @@ class Aria2Administration:
         """This daemon's live executions and, for each, whether the core
         authorizes it as the CURRENT one (``converge_job_tuning``)."""
         executor = self.executor
-        attempts = await self.executions.attempts_of(executor.descriptor.id, executor.binding, live=True)
+        attempts = self._bound(await self.executions.attempts_of(executor.descriptor.id, live=True))
         return attempts, await self.executions.authorize_many([attempt.handle for attempt in attempts], "pause")
 
     async def apply_memory_tuning(self):
@@ -180,6 +186,33 @@ class Aria2Administration:
     async def housekeeping(self):
         await self.apply_memory_tuning()
         return {"ok": True, "reason": "Execution result history retained", "diagnostics": await self.memory_diagnostics()}
+
+    # The managed daemon's own operations, for aria2's administration routes: through
+    # this surface (the integration's ownership boundary), never the runtime singleton.
+    async def runtime_status(self):
+        return await self.runtime.status()
+
+    async def runtime_ensure_started(self):
+        return await self.runtime.ensure_started()
+
+    async def runtime_start(self):
+        return await self.runtime.start()
+
+    async def runtime_stop(self):
+        return await self.runtime.stop()
+
+    async def runtime_restart(self):
+        return await self.runtime.restart()
+
+    async def runtime_apply_options(self):
+        return await self.runtime.apply_options()
+
+    @property
+    def runtime_last_exit_code(self):
+        return self.runtime.last_exit_code
+
+    def runtime_pending_restart(self):
+        return self.runtime.pending_restart()
 
     async def start(self):
         await self.runtime.ensure_started()

@@ -8,7 +8,7 @@ import re
 from typing import Iterable
 from urllib.parse import urlsplit
 
-from transfers.models import TransferRequest
+from transfers.models import BITTORRENT_REQUEST_KINDS, TransferRequest
 from core.localization import CodedValueError
 
 
@@ -274,7 +274,7 @@ def assess_provider_applicability(
     if not inputs:
         return ApplicabilityAssessment()
 
-    if request.kind in {"magnet", "torrent"}:
+    if request.kind in BITTORRENT_REQUEST_KINDS:
         return ApplicabilityAssessment(tuple(
             ApplicabilityMatch(item.provider_id, ApplicabilityClass.STATIC)
             for item in inputs

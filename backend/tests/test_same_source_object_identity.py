@@ -177,7 +177,8 @@ async def test_insufficient_same_source_identity_is_never_merged_by_host_name_or
     ("sftp://files.example/pub/./file.bin", ""),    # dot segments are never normalized by guessing
     ("sftp://files.example/pub/", ""),              # a directory is not an object coordinate
     ("ftp://files.example/pub/file.bin?type=i", ""),
-    ("https://files.example/pub/file.bin", ""),     # only the remote file transports state one
+    # 1.0.2: an HTTP(S) link states its exact request target (test_v102_same_object_claims).
+    ("https://files.example/pub/file.bin", "https://files.example:443/pub/file.bin"),
 ])
 def test_the_coordinate_is_canonical_or_absent(address, coordinate):
     assert remote_object_coordinate(address) == coordinate

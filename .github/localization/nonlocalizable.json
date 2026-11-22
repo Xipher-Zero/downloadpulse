@@ -3951,6 +3951,76 @@
    "owner": "backend/application/desktop_control.py",
    "english": "the desktop control channel cannot be used: {0}",
    "reason": "Raised at the installed desktop backend's startup (application.desktop_control) when its supervisor's private control channel is absent or not two pipes: the backend refuses to start and the supervisor reports the failure. Outside any request; server-log diagnostic only, never a response detail."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "cookies must be a non-empty list",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "cookies holds at most {0} entries",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "each cookie is an object of name, value, domain, path, secure, http_only, ",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "a cookie's name is not a valid cookie name",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "a cookie's value is not a valid cookie value",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "a cookie's domain is not valid",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "a cookie's path is not valid",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "a cookie's domain does not match the submitted link",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "secure, http_only and host_only are true or false",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "a cookie's expires is whole seconds, or null",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "cookies hold at most {0} bytes",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "referrer is an http(s) address of at most {0} characters",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "referrer is not a valid address",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
+  },
+  {
+   "owner": "backend/transfers/request_context.py",
+   "english": "referrer may not carry a user name or password",
+   "reason": "External delivery API (/external/v1, the browser extension): a submission's cookies/referrer refused; external/service.py carries it under that API's own machine code `invalid_request` for programmatic callers, and no first-party interface shows it. Programmatic API contract: English for API clients, kept apart from interface text."
   }
  ]
 }

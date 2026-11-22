@@ -284,6 +284,32 @@ def auth_scope(address) -> AuthScope | None:
 # The remote-file transports whose resources a provider can address by one
 # canonical coordinate within a server scope (``remote_object_coordinate``).
 _REMOTE_OBJECT_FAMILIES = frozenset({"ftp", "ssh", "rsync"})
+# HTTP(S): a resource is named by its whole request target -- path AND query (a
+# download link's query is often what selects the file) -- so its coordinate is
+# that exact target on its server scope, never a decoded or guessed form of it.
+_WEB_OBJECT_FAMILIES = frozenset({"http", "https"})
+# The web's own request schemes, and its secure one: where a browser's sign-in
+# (cookies) and page (referrer) mean anything (``transfers.request_context``).
+WEB_SCHEMES = _WEB_OBJECT_FAMILIES
+SECURE_WEB_SCHEME = "https"
+
+
+def _web_object_coordinate(address, scope) -> str:
+    """The coordinate of an HTTP(S) resource: its exact request target (path and
+    query, never the fragment or user information) on its server scope. Two
+    addresses share one only when they ask the server for exactly the same thing;
+    that makes them pairable for material proof, never equivalent by itself."""
+    try:
+        parts = urlsplit(str(address))
+    except ValueError:
+        return ""
+    if parts.username is not None or parts.password is not None:
+        return ""
+    raw = parts.path or "/"
+    if not raw.startswith("/") or any(ch in raw + parts.query for ch in " \t\r\n"):
+        return ""
+    host = f"[{scope.host}]" if ":" in scope.host else scope.host
+    return f"{scope.family}://{host}:{scope.port}{raw}" + (f"?{parts.query}" if parts.query else "")
 
 
 def remote_object_coordinate(address) -> str:
@@ -299,6 +325,8 @@ def remote_object_coordinate(address) -> str:
     provider states this at candidate construction; nothing reconstructs it
     later, and it never names an object across two server scopes."""
     scope = auth_scope(address)
+    if scope is not None and scope.family in _WEB_OBJECT_FAMILIES and scope.port is not None:
+        return _web_object_coordinate(address, scope)
     if scope is None or scope.family not in _REMOTE_OBJECT_FAMILIES or scope.port is None:
         return ""
     parts = urlsplit(str(address))
@@ -408,11 +436,11 @@ def direct_link_filename(url: str, fallback_index: int = 1) -> str:
         leading_query_part = raw_query.split("&", 1)[0].strip()
         query_token = unquote(leading_query_part).strip()
         if query_token and "=" not in query_token and "&" not in query_token:
-            candidate = f"{parsed.hostname or 'debrid-link'} - {query_token}"
+            candidate = f"{parsed.hostname or 'link'} - {query_token}"
         else:
-            candidate = parsed.hostname or f"debrid-link-{fallback_index}"
+            candidate = parsed.hostname or f"link-{fallback_index}"
     candidate = safe_name(candidate)
-    return candidate or f"debrid-link-{fallback_index}"
+    return candidate or f"link-{fallback_index}"
 
 
 
@@ -447,7 +475,7 @@ def direct_link_collection_name(
     ]
 
     if total <= 0:
-        return "Debrid links"
+        return "Links"
 
     if total == 1:
         return (

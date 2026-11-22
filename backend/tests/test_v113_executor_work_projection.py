@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio
 
 import db.database as database
+from application.service import ApplicationService
 from api import executor_work
 from executor_fakes import LedgerExecutor, LedgerProvider, ledger_capabilities
 from fake_integrations import MemoryExecutor, ParcelProvider
@@ -53,6 +54,12 @@ class Commands:
     async def cancel_artifact(self, transfer_id, artifact_id):
         self.calls.append(("cancel_artifact", transfer_id, artifact_id))
         return {"ok": True}
+
+    # Core's execution read model, exactly as the application decides it.
+    owned_executions = ApplicationService.owned_executions
+    observe_executions = ApplicationService.observe_executions
+    aggregate_rate = ApplicationService.aggregate_rate
+    execution_controls = staticmethod(ApplicationService.execution_controls)
 
 
 @pytest_asyncio.fixture

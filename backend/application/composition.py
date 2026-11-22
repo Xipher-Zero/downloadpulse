@@ -17,6 +17,7 @@ from transfers.convergence_engine import TransferEngine
 from transfers.policy import TransferPolicy
 from transfers.registry import IntegrationRegistry
 from transfers.recovery_repository import TransferRepository
+from integrations.configuration_mutation import persist_rotated_option
 from transfers.integration_grants import ExecutionGrants, IntegrationCommands
 from transfers.staged_input import StagedInputReader, StagedInputStore
 from transfers.storage import DiskCapacity, register_storage_health
@@ -55,6 +56,7 @@ def configure(application):
     register(registry, settings, IntegrationEnvironment(ExecutionGrants(application.repository),
                                                         settings.download_folder,
                                                         commands=IntegrationCommands(application),
+                                                        persist_option=persist_rotated_option,
                                                         staged_input=StagedInputReader(application.staged_input),
                                                         preferred_subtitle_language=(
                                                             settings.preferred_subtitle_language)))
@@ -102,7 +104,7 @@ def configure(application):
     application.engine.dispatch_permitted = capacity.application_storage_permitted and not initial_health["active"]
     application.execution_poll_interval = policy.execution_poll_interval_seconds
     from postprocessors.archive.processor import ArchivePostProcessor
-    application.engine.postprocessors = (ArchivePostProcessor(),) if settings.extract_enabled else ()
+    application.engine.postprocessors = (ArchivePostProcessor(settings=get_settings),) if settings.extract_enabled else ()
     from transfers.runtime_limits import ExecutionRuntimeLimits
     # The canonical global runtime limit is injected into its one core owner;
     # executors receive only the ceiling that owner assigns them.

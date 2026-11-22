@@ -25,11 +25,18 @@ from postprocessors.archive.secure import SecureExtractor
 from services.extraction_safety import ExtractionBudgetExceeded, validate_7z_listing, validate_tar_members
 
 
+def _run_settings_default(settings):
+    """Extraction settings for every run in this test (``extraction_safety._RUN_SETTINGS``):
+    the post-processor's injected reader, as the extractor sees it -- never a global read."""
+    from contextvars import ContextVar
+    return ContextVar("extraction_run_settings", default=settings)
+
+
 @pytest.fixture
 def limited(monkeypatch):
     def apply(files=12, gib=0.01, ratio=2000.0):
-        monkeypatch.setattr(safety, "get_settings", lambda: SimpleNamespace(
-            extract_max_files=files, extract_max_expanded_gb=gib, extract_max_compression_ratio=ratio))
+        monkeypatch.setattr(safety, "_RUN_SETTINGS", _run_settings_default(SimpleNamespace(
+            extract_max_files=files, extract_max_expanded_gb=gib, extract_max_compression_ratio=ratio)))
     monkeypatch.setattr(extractor, "_get_extraction_passwords", lambda: [])
     apply()
     return apply

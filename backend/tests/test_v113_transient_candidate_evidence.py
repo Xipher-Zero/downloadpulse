@@ -248,6 +248,9 @@ async def test_transient_material_never_turns_a_sample_into_an_operator_question
         def owns(self, candidate):
             return True
 
+        async def request_context(self):
+            return None
+
     executor = Asking(lambda *_: True, {})
     context = EvidenceContext()
     context.bind(Auth())

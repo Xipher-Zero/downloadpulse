@@ -5,10 +5,10 @@ from transfers.applicability import ProviderApplicability
 from transfers.errors import Category, Confidence, Domain, EvidenceBasis, NormalizedError, Retryability, Stage, TransferError
 from transfers.filesystem import safe_name
 from transfers.models import (
-    Capability, Endpoint, InputMethod, IntegrationDescriptor, ResolutionResult, ResourceState,
-    SourceIdentity, TransferCandidate, TransferRequest,
+    Capability, Endpoint, InputMethod, IntegrationDescriptor, ResolutionResult, ResolverArtifactIdentityEvidence,
+    ResourceState, SourceIdentity, TransferCandidate, TransferRequest,
 )
-from transfers.requests import direct_link_filename
+from transfers.requests import direct_link_filename, remote_object_coordinate
 
 
 class GeneralHttpProvider:
@@ -54,5 +54,10 @@ class GeneralHttpProvider:
             provider_id=self.descriptor.id,
             accepted_input_methods=(InputMethod.USERNAME_PASSWORD,),
             source_identity=SourceIdentity("host", host),
+            # The exact resource this address asks its server for: the same link sent
+            # again (another transfer) is then PAIRABLE with this one for ordinary
+            # material proof -- never equivalent by the address alone.
+            resolver_identity_evidence=ResolverArtifactIdentityEvidence(
+                "", 0, object_coordinate=remote_object_coordinate(address)),
         )
         return ResolutionResult(ResourceState.AVAILABLE, (candidate,))

@@ -37,15 +37,15 @@ class ExecutionGrants:
     async def authorize_many(self, handles, action: str) -> tuple[bool, ...]:
         return await self._repository.authorize_executions(list(handles), action)
 
-    async def attempts_of(self, executor_id: str, binding=None, *, live: bool = False) -> tuple:
-        """The execution attempts of ONE executor identity (and, given, one native
-        binding) -- ``live`` only those of unfinished transfers -- each WITHOUT its
-        candidate: an integration needs the handle and the transfer/artifact it
-        serves, never another integration's addresses or headers."""
+    async def attempts_of(self, executor_id: str, *, live: bool = False) -> tuple:
+        """The execution attempts of ONE executor identity -- ``live`` only those of
+        unfinished transfers -- each WITHOUT its candidate: an integration needs the
+        handle and the transfer/artifact it serves, never another integration's
+        addresses or headers. Its own handles' opaque correlation is the executor's
+        to read; core never parses it."""
         attempts = await (self._repository.live_executions() if live else self._repository.executions())
         return tuple(replace(attempt, candidate=None) if is_dataclass(attempt) else attempt for attempt in attempts
-                     if attempt.handle.executor_id == executor_id
-                     and (binding is None or attempt.handle.correlation.get("binding") == binding))
+                     if attempt.handle.executor_id == executor_id)
 
     async def has_live_work(self, executor_id: str) -> bool:
         """Whether core still holds live work for this executor identity."""

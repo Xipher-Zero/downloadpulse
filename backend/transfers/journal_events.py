@@ -255,6 +255,8 @@ def consolidation(event: str, *, transfer_id, related_transfer_id=None, detail=N
         "reopened": "Consolidated transfer reopened",
         "ownership_converged": "Collection member ownership converged",
         "source_merged": "Equivalent source merged as an alternate for a file",
+        "resumed_for_claim": "Resumed: the same file was requested again",
+        "resumed_for_other_account": "Resumed: another account requested the same file",
     }[event]
     return JournalEvent("consolidation", f"consolidation.{event}", "info", message, "transfer",
                         subject_id=transfer_id, transfer_id=transfer_id, related_transfer_id=related_transfer_id,

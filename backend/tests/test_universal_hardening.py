@@ -1,4 +1,6 @@
 """Recovery, settings and archive behavior exercised at canonical boundaries."""
+
+from core.config import get_settings as _extraction_settings  # the reader composition gives it
 import asyncio
 from dataclasses import replace
 from pathlib import Path
@@ -133,8 +135,8 @@ async def test_real_zip_postprocessing_preserves_transfer_success_and_retention(
     payload = archive.read_bytes()
     candidate = replace(core.provider.candidate("fixture.zip"), expected_bytes=len(payload))
     core.provider.responses = [ResolutionResult(ResourceState.AVAILABLE, (candidate,))]
-    core.engine.postprocessors = (ArchivePostProcessor(),)
-    monkeypatch.setattr("postprocessors.archive.processor.get_settings", lambda: SimpleNamespace(extract_max_concurrent=1, extract_delete_archive=delete_archive))
+    core.engine.postprocessors = (ArchivePostProcessor(settings=lambda: SimpleNamespace(
+        extract_max_concurrent=1, extract_delete_archive=delete_archive)),)
     transfer = await submit(core, name="fixture.zip")
     await core.engine.tick()
     artifact = (await core.repository.artifacts(transfer.id))[0]
@@ -161,7 +163,7 @@ async def test_real_zip_postprocessing_preserves_transfer_success_and_retention(
 @pytest.mark.asyncio
 async def test_no_archive_skips_postprocessing_without_false_extraction_success(core):
     from postprocessors.archive.processor import ArchivePostProcessor
-    core.engine.postprocessors = (ArchivePostProcessor(),)
+    core.engine.postprocessors = (ArchivePostProcessor(settings=_extraction_settings),)
     transfer = await submit(core)
     await core.engine.tick()
     artifact = (await core.repository.artifacts(transfer.id))[0]
@@ -175,7 +177,7 @@ async def test_no_archive_skips_postprocessing_without_false_extraction_success(
 @pytest.mark.asyncio
 async def test_invalid_archive_retains_payload_and_reports_postprocessing_failure(core):
     from postprocessors.archive.processor import ArchivePostProcessor
-    core.engine.postprocessors = (ArchivePostProcessor(),)
+    core.engine.postprocessors = (ArchivePostProcessor(settings=_extraction_settings),)
     transfer = await submit(core, name="invalid.zip")
     await core.engine.tick()
     artifact = (await core.repository.artifacts(transfer.id))[0]
@@ -339,7 +341,7 @@ async def test_payload_disappearing_during_its_own_verification_is_rejected_neve
 async def test_extraction_notification_flag_is_independent_of_download_notifications(core, monkeypatch):
     from application.observability import Observability
     from postprocessors.archive.processor import ArchivePostProcessor
-    core.engine.postprocessors = (ArchivePostProcessor(),)
+    core.engine.postprocessors = (ArchivePostProcessor(settings=_extraction_settings),)
     transfer = await submit(core, name="invalid.zip")
     await core.engine.tick()
     core.executor.finish((await core.repository.artifacts(transfer.id))[0].execution)
@@ -363,7 +365,7 @@ async def test_only_the_claimed_lifecycle_event_is_published_as_that_event(core,
     (``test_the_extraction_failure_toast_is_shown_only_for_its_announcement``)."""
     from application.observability import Observability
     from postprocessors.archive.processor import ArchivePostProcessor
-    core.engine.postprocessors = (ArchivePostProcessor(),)
+    core.engine.postprocessors = (ArchivePostProcessor(settings=_extraction_settings),)
     transfer = await submit(core, name="invalid.zip")
     await core.engine.tick()
     core.executor.finish((await core.repository.artifacts(transfer.id))[0].execution)

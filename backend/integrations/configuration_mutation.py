@@ -226,3 +226,29 @@ async def mutate_integration_configuration(
         async with application.application_operation():
             await application.refresh_account_entitlement(integration_id)
     return MutationResult(clean, entry, applied, native, previous)
+
+
+async def persist_rotated_option(integration_id: str, *, guard: tuple[str, str], key: str, value) -> bool:
+    """Persist ONE option an integration's own service rotated (a refresh token a
+    provider was issued), through the one settings owner under its write lock --
+    only while ``guard`` (an option's name and value: the grant it belongs to) is
+    still what is saved, so a disconnect or a newer connection in between wins.
+    The same grant, so nothing is rebuilt or re-verified. Whether it was written.
+
+    Handed to integrations as ``IntegrationEnvironment.persist_option``: no
+    integration writes or applies settings itself."""
+    from core.config import apply_settings, config_write_lock, load_settings, save_settings
+
+    guard_key, guard_value = guard
+    async with config_write_lock():
+        settings = load_settings()
+        entry = (settings.integrations or {}).get(integration_id)
+        options = dict(getattr(entry, "options", None) or {})
+        if entry is None or options.get(guard_key) != guard_value:
+            return False
+        options[key] = value
+        updated = settings.model_copy(update={"integrations": {
+            **settings.integrations, integration_id: entry.model_copy(update={"options": options})}})
+        save_settings(updated)
+        apply_settings(updated)
+        return True

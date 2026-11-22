@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+
+from transfers.request_context import MAX_REFERRER
 import os
 import re
 import socket
@@ -220,7 +222,8 @@ async def test_a_browser_pairs_on_approval_and_collects_its_token_exactly_once(w
                 "account": {"display_name": "Administrator"},
                 "capabilities": {"sources": ["links", "magnet", "metalink", "nzb", "nzb_link", "torrent"],
                                  "controls": ["pause", "resume"], "withdraw": True, "estimate": True,
-                                 "cookies": {"max_count": 300, "max_bytes": 32768, "sources": ["links"]}},
+                                 "cookies": {"max_count": 300, "max_bytes": 32768, "sources": ["links"]},
+                                 "referrer": {"max_length": MAX_REFERRER, "sources": ["links"]}},
                 "appearance": {"mode": "dark", "dark_palette": "downloadpulse-dark", "light_palette": "downloadpulse-light"}}
         # The person's appearance is its owner's answer: a change there is the extension's next read.
         status, changed = await owner.call("PATCH", "/api/account/appearance",

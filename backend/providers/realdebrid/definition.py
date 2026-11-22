@@ -57,7 +57,7 @@ def build(options, environment):
     from integrations.account_entitlement import AccountEntitlementMaintenance
     from integrations.runtime_state import ProviderRuntimeStateStore, ScopedRuntimeStateStore, credential_scope
     from providers.realdebrid.account import RealDebridAccountTranslation
-    from providers.realdebrid.admin import persist_refreshed_credential
+    from providers.realdebrid.admin import rotated_credential_persister
     from providers.realdebrid.client import Credential, RealDebridService
     from providers.realdebrid.host_runtime import RealDebridHostMaintenance
     from providers.realdebrid.provider import RealDebridProvider
@@ -67,7 +67,7 @@ def build(options, environment):
                                rate_limit_per_minute=options.rate_limit_per_minute,
                                request_timeout_seconds=options.request_timeout_seconds,
                                upload_timeout_seconds=options.torrent_upload_timeout_seconds,
-                               on_refresh=persist_refreshed_credential)
+                               on_refresh=rotated_credential_persister(getattr(environment, "persist_option", None)))
     provider = RealDebridProvider(client, prepare_backup_torrents=options.prepare_backup_torrents,
                                   max_active_torrents=options.max_active_torrents)
     commands = getattr(environment, "commands", None)

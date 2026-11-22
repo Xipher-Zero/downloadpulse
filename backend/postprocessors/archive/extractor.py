@@ -36,6 +36,8 @@ from services.extraction_safety import (
     ExtractionBudgetExceeded,
     ExtractionLimits,
     configured_limits,
+    run_setting,
+    run_settings,
     copy_limited,
     is_tar,
     job_byte_limit,
@@ -302,8 +304,7 @@ def _extract_xz_single(archive: Path, dest: Path) -> None:
 def _get_extraction_passwords() -> list[str]:
     """Return list of extraction passwords from config (newline-separated field)."""
     try:
-        from core.config import get_settings
-        raw = str(getattr(get_settings(), "extraction_password", "") or "").strip()
+        raw = str(run_setting("extraction_password", "") or "").strip()
         return [p.strip() for p in raw.split("\n") if p.strip()]
     except Exception:
         return []
@@ -526,6 +527,15 @@ def _extract_sync(archive: Path, dest: Path) -> list[Path]:
     )
 
 
+def _with_run_settings(settings, job, *args, **kwargs):
+    """Run ``job`` in this worker thread under the settings its owner gave the run
+    (none given: whatever the extraction settings are outside a run)."""
+    if settings is None:
+        return job(*args, **kwargs)
+    with run_settings(settings):
+        return job(*args, **kwargs)
+
+
 def _extract_job_sync(
     archive: Path,
     dest: Path,
@@ -623,6 +633,7 @@ class Extractor:
         *,
         delete_after: bool = True,
         created: Optional[List[Path]] = None,
+        settings=None,
     ) -> Tuple[bool, str]:
         """
         Extract *archive* into *dest* (async, respects concurrency semaphore).
@@ -648,7 +659,7 @@ class Extractor:
                     created_files = await loop.run_in_executor(
                         self._executor,
                         functools.partial(
-                            _extract_job_sync, archive, dest,
+                            _with_run_settings, settings, _extract_job_sync, archive, dest,
                             extract_into=_extract_into_directory, extract_child=_extract_sync,
                             delete_nested=delete_after,
                         ),
@@ -712,6 +723,7 @@ class Extractor:
         *,
         delete_after: bool = True,
         created: Optional[List[Path]] = None,
+        settings=None,
     ) -> List[Tuple[Path, bool, str]]:
         """Extract a known archive list without walking the filesystem.
         ``created``, when given, collects every output of each extraction:
@@ -735,7 +747,8 @@ class Extractor:
 
         tasks = [
             asyncio.create_task(
-                self.extract_archive(archive, archive.parent, delete_after=delete_after, created=created)
+                self.extract_archive(archive, archive.parent, delete_after=delete_after, created=created,
+                                     settings=settings)
             )
             for archive in scheduled
         ]

@@ -11,6 +11,7 @@ retention, crash/restart reconciliation and bounded polling.
 """
 from __future__ import annotations
 
+
 import asyncio
 import json
 import os
@@ -714,9 +715,8 @@ async def test_a_real_extraction_delivers_exactly_its_recorded_final_file_set(wo
     payload = source.read_bytes()
     candidate = replace(world.provider.candidate("fixture.zip"), expected_bytes=len(payload))
     world.provider.responses = [ResolutionResult(ResourceState.AVAILABLE, (candidate,))]
-    world.engine.postprocessors = (ArchivePostProcessor(),)
-    monkeypatch.setattr("postprocessors.archive.processor.get_settings", lambda: SimpleNamespace(
-        extract_max_concurrent=1, extract_delete_archive=delete_archive))
+    world.engine.postprocessors = (ArchivePostProcessor(settings=lambda: SimpleNamespace(
+        extract_max_concurrent=1, extract_delete_archive=delete_archive)),)
     (world.payloads / "unrelated.bin").write_bytes(b"someone else's")
     job, _ = await world.external.submit(world.clients.a, body("k-1"))
     transfer_id = await transfer_of(job["id"])
@@ -763,9 +763,8 @@ async def test_a_reacquired_extraction_redelivers_its_final_file_set_without_rew
     payload = source.read_bytes()
     candidate = replace(world.provider.candidate("fixture.zip"), expected_bytes=len(payload))
     world.provider.responses = [ResolutionResult(ResourceState.AVAILABLE, (candidate,))]
-    world.engine.postprocessors = (ArchivePostProcessor(),)
-    monkeypatch.setattr("postprocessors.archive.processor.get_settings", lambda: SimpleNamespace(
-        extract_max_concurrent=1, extract_delete_archive=False))
+    world.engine.postprocessors = (ArchivePostProcessor(settings=lambda: SimpleNamespace(
+        extract_max_concurrent=1, extract_delete_archive=False)),)
     job, _ = await world.external.submit(world.clients.a, body("k-1"))
     transfer_id = await transfer_of(job["id"])
     await world.engine.tick()

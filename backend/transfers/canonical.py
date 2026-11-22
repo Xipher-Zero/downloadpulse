@@ -68,12 +68,16 @@ class CandidateOrigin:
 class CanonicalOwnership:
     """Canonical ownership, P1 migration, candidate provenance and consolidation."""
 
-    def __init__(self, repository, *, on_attached=None, material_present=None):
+    def __init__(self, repository, *, on_attached=None, material_present=None, on_claimed=None):
         self.repository = repository
         # Injected by the composition root: awaited with the source transfer id
         # only after ``attach`` has durably committed (never on a refusal or a
         # rollback), so a semantic event can only follow a real consolidation.
         self.on_attached = on_attached
+        # Told ``(owner transfer, claimant transfer)`` once a later transfer's claim on an
+        # existing canonical file has committed: the engine's rule that one exact object
+        # is never acquired twice nor left parked while a claimant wants it.
+        self.on_claimed = on_claimed
         # Injected by the engine: THE current material verification of a
         # completed artifact (``_engine_base.TransferEngine._delivered_paths``,
         # the delivery-time re-verification). A completed row is history; only
@@ -933,6 +937,8 @@ class CanonicalOwnership:
             await db.commit()
         if self.on_attached is not None:
             await self.on_attached(later_transfer_id)
+        if self.on_claimed is not None:
+            await self.on_claimed(owner_transfer_id, later_transfer_id)
         return True
 
     async def lower_materializing(self, record: RequestRecord):
@@ -1130,6 +1136,8 @@ class CanonicalOwnership:
             await db.commit()
         if self.on_attached is not None:
             await self.on_attached(record.transfer_id)
+        if self.on_claimed is not None:
+            await self.on_claimed(int(primary.transfer_id), int(record.transfer_id))
         return True
 
     async def _bound_origin(self, db, canonical_artifact_id: int, candidate: TransferCandidate, *,

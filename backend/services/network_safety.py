@@ -170,7 +170,7 @@ def reject_non_public_resolution(addresses: Iterable[str], *, host: str, private
 async def validate_resolved_public_destination(
     uri: str, *, schemes: frozenset[str] = PUBLIC_DESTINATION_SCHEMES, private_lan: bool = False,
 ) -> str:
-    validated = validate_provider_download_url(uri, context="aria2 download link", schemes=schemes,
+    validated = validate_provider_download_url(uri, context="download link", schemes=schemes,
                                                private_lan=private_lan)
     parsed = urlsplit(validated)
     host = str(parsed.hostname or "").rstrip(".").casefold()

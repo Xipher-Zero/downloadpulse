@@ -41,7 +41,7 @@ from fastapi import APIRouter, Depends
 
 from application.dependencies import get_application
 from application.service import ApplicationService
-from transfers.models import ExecutionControl, ExecutionState
+from transfers.models import ExecutionState
 from core.localization import DisplayError
 
 router = APIRouter()
@@ -76,11 +76,7 @@ async def _owned_attempts(application: ApplicationService):
     executor its handle names, and its stored handle is byte-identical to the
     one being presented.
     """
-    owned = []
-    for attempt in await application.repository.live_executions():
-        if await application.repository.authorize_execution(attempt.handle, "observe"):
-            owned.append(attempt)
-    return owned
+    return await application.owned_executions()
 
 
 async def _display_names(application: ApplicationService, attempts) -> dict[int, str]:
@@ -104,14 +100,7 @@ def _controls(observation, *, cancellable: bool) -> list[str]:
     cancellation path for this exact attempt, which the caller has already
     asked the authorization fence.
     """
-    controls = []
-    if ExecutionControl.PAUSE in observation.controls:
-        controls.append(PAUSE)
-    if ExecutionControl.RESUME in observation.controls:
-        controls.append(RESUME)
-    if cancellable and not observation.stopped:
-        controls.append(CANCEL)
-    return controls
+    return ApplicationService.execution_controls(observation, cancellable=cancellable)
 
 
 def _row(attempt, observation, executor, name: str, *, cancellable: bool, rate: int) -> dict:
@@ -176,34 +165,24 @@ def _unobservable_row(attempt, name: str) -> dict:
 @router.get("/executor-work")
 async def list_executor_work(application: ApplicationService = Depends(get_application)):
     """Every execution DownloadPulse currently owns, as neutral rows."""
-    engine = application.engine
     attempts = await _owned_attempts(application)
     names = await _display_names(application, attempts)
 
-    grouped: dict[str, list] = {}
-    for attempt in attempts:
-        grouped.setdefault(attempt.handle.executor_id, []).append(attempt)
-
+    # Observation, legality and rates are the application's (one batch per
+    # executor; an unreachable one answers UNKNOWN for its own work only).
     rows: list[dict] = []
-    for executor_id, owned in grouped.items():
-        executor = engine.registry.executor_for_handle(owned[0].handle)
-        if executor is None:
-            rows.extend(_unobservable_row(attempt, names.get(attempt.artifact_id, "")) for attempt in owned)
+    for item in await application.observe_executions(attempts):
+        attempt = item["attempt"]
+        if item["executor"] is None:
+            rows.append(_unobservable_row(attempt, names.get(attempt.artifact_id, "")))
             continue
-        # One batch per executor. A batch that fails answers UNKNOWN for its own
-        # handles and nothing else, so one executor being unreachable can never
-        # make another executor's work look absent.
-        snapshot = await engine.observe_existing(executor, tuple(item.handle for item in owned))
-        for attempt, observation in zip(owned, snapshot.observations):
-            cancellable = await application.repository.authorize_execution(attempt.handle, "cancel")
-            rows.append(_row(attempt, observation, executor,
-                             names.get(attempt.artifact_id, ""), cancellable=cancellable,
-                             rate=engine.throughput.rate(attempt.handle.attempt_id)))
+        rows.append(_row(attempt, item["observation"], item["executor"], names.get(attempt.artifact_id, ""),
+                         cancellable=item["cancellable"], rate=item["rate"]))
 
     # Aggregate throughput has one owner: the core runtime telemetry meter,
     # which counts each execution exactly once by its attempt identity -- the
     # same per-execution rates the rows above carry, never re-derived here.
-    speed = int(engine.throughput.current())
+    speed = application.aggregate_rate()
     # A total is stated only when EVERY row knows its own. A partial sum would
     # read as complete truth while being smaller than reality.
     known = [row["remaining_bytes"] for row in rows]
@@ -242,14 +221,10 @@ async def control_executor_work(attempt_id: str, action: str,
         # answer: this request is about work this application does not own now.
         raise DisplayError(409, "That execution is no longer owned by this application", code="execution.not_owned")
 
-    executor = application.engine.registry.executor_for_handle(attempt.handle)
-    if executor is None:
+    [item] = await application.observe_executions((attempt,))
+    if item["executor"] is None:
         raise DisplayError(503, "That execution's integration is not available", code="execution.integration_unavailable")
-
-    snapshot = await application.engine.observe_existing(executor, (attempt.handle,))
-    observation = snapshot.observations[0]
-    cancellable = await application.repository.authorize_execution(attempt.handle, "cancel")
-    if action not in _controls(observation, cancellable=cancellable):
+    if action not in item["controls"]:
         raise DisplayError(409, "That action is not currently available for this execution", code="execution.action_unavailable")
 
     if action == PAUSE:

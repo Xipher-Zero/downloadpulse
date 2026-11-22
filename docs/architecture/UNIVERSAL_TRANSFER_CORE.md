@@ -343,6 +343,31 @@ input challenge, and integrations never reach for it:
   stands and within 24 hours; released by `settle` (from durable state), a withdrawal or a
   refused admission. A restart loses it: the transfer proceeds without.
 
+## What core lends integrations
+
+An integration never holds core itself. ``IntegrationEnvironment`` carries only:
+``executions`` (``transfers.integration_grants.ExecutionGrants``: core's authorize decisions
+and ONE executor's own attempts, without candidates), ``commands``
+(``IntegrationCommands``: pause, resume, cancel one artifact, the status signal),
+``staged_input`` (a read-only ``StagedInputReader``; core stages a provider's inline payload
+for the kinds it declares in ``staged_request_kinds`` and converges an executor's declared
+``obsolete_inline_input`` itself), ``persist_option`` (the configuration owner's guarded write
+of one rotated option) and plain facts (download root, subtitle language). Per-call facts
+arrive on the request core passes (``TransferRequest.context``/``.speculative``,
+``ExecutionRequest.context``), never through ambient state. ``tests/test_v102_core_boundaries.py``
+enforces this.
+
+## One exact object, one acquisition
+
+A later transfer's claim on a file another transfer is already acquiring (proven the same
+object by the ordinary evidence; the General HTTP(S) provider states the exact request target
+as its object coordinate, so the same link is pairable) attaches to it. If that transfer is
+paused by its operator, core resumes it (``CanonicalOwnership.on_claimed`` ->
+``TransferEngine._resume_for_new_claim``): material continues from where it stopped. A claim
+from another account is recorded on the resumed transfer's journal
+(``consolidation.resumed_for_other_account``). A global pause or an external client's advisory
+hold is never lifted by a claim.
+
 ## Universal evidence acquisition
 
 The invariant is: **provider facts → access establishment → neutral evidence →

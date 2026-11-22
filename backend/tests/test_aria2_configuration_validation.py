@@ -170,17 +170,50 @@ def test_a_backup_document_holding_an_invalid_value_is_refused_not_rewritten():
 
 # ── the scoped write ────────────────────────────────────────────────────────
 
+class _AdminWithRuntime:
+    """aria2's administration surface as the routes reach it (1.0.2): the managed
+    daemon's operations through ``runtime_*`` of the surface, never the singleton."""
+
+    def __init__(self, inner, runtime):
+        self._inner, self._runtime = inner, runtime
+
+    def __getattr__(self, name):
+        if name == "runtime_last_exit_code":
+            return self._runtime.last_exit_code
+        if name.startswith("runtime_"):
+            return getattr(self._runtime, name[len("runtime_"):])
+        return getattr(self._inner, name)
+
+
+def _with_runtime(application, runtime):
+    """The routes reach the daemon through the admin surface: whatever admin double a
+    test installs (now or later) is given this runtime's operations, at call time."""
+    application._aria2_runtime = runtime
+    return application
+
+
+def _admitted(application):
+    runtime = getattr(application, "_aria2_runtime", None)
+    original = application.integration_admin
+    if runtime is not None and not getattr(original, "_wraps_runtime", False):
+        def wrapped(identity):
+            inner = original(identity)
+            return inner if isinstance(inner, _AdminWithRuntime) else _AdminWithRuntime(inner, runtime)
+        wrapped._wraps_runtime = True
+        application.integration_admin = wrapped
+    return application
+
+
 def _route_world(current, runtime):
     from test_settings_namespace_mutation import _application
 
     saved = []
-    application = _application(current)
+    application = _with_runtime(_application(current), runtime)
     patches = (patch("api.routes.get_settings", return_value=current),
                # Like the settings owner, a load builds a fresh document.
                patch("api.routes.load_settings", side_effect=lambda: current.model_copy(deep=True)),
                patch("api.routes.save_settings", side_effect=saved.append),
-               patch("api.routes.apply_settings"),
-               patch("api.routes.aria2_runtime", runtime))
+               patch("api.routes.apply_settings"))
     return application, saved, patches
 
 
@@ -193,7 +226,7 @@ async def _patch(application, patches, options):
         item.start()
     try:
         return await routes.patch_integration_configuration(
-            "aria2", routes.IntegrationConfigurationUpdate(options=options), application=application)
+            "aria2", routes.IntegrationConfigurationUpdate(options=options), application=_admitted(application))
     except HTTPException as exc:
         return exc
     finally:
@@ -376,12 +409,12 @@ async def test_a_save_restoring_values_another_save_changed_meanwhile_reaches_th
         return {"selected": 1, "applied": 1}
 
     application, _saved, _patches = _route_world(_current(), _fake_runtime())
-    application.integration_admin = lambda _id: SimpleNamespace(apply_memory_tuning=AsyncMock(),
-                                                                converge_job_tuning=converge)
+    application.integration_admin = lambda _id: _AdminWithRuntime(
+        SimpleNamespace(apply_memory_tuning=AsyncMock(), converge_job_tuning=converge), _fake_runtime())
     patches = (patch("api.routes.get_settings", side_effect=lambda: state["settings"]),
                patch("api.routes.load_settings", side_effect=lambda: state["settings"].model_copy(deep=True)),
                patch("api.routes.save_settings", side_effect=lambda settings: state.update(settings=settings)),
-               patch("api.routes.apply_settings"), patch("api.routes.aria2_runtime", _fake_runtime()),
+               patch("api.routes.apply_settings"),
                patch("api.routes.config_write_lock", gate))
     native["split"] = Aria2Options(**state["settings"].integrations["aria2"].options).split
     assert native["split"] == 16

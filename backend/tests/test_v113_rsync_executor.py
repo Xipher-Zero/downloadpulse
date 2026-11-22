@@ -291,12 +291,12 @@ def test_every_reconfiguration_builds_a_new_executor_on_the_same_runs(tmp_path, 
     from executors.rsync.definition import RsyncOptions, build
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
     environment = SimpleNamespace(download_root=str(tmp_path / "downloads"),
-                                  repository=SimpleNamespace(authorize_execution=None))
+                                  executions=SimpleNamespace(authorize=None))
     first, second = build(RsyncOptions(), environment), build(RsyncOptions(compression=True), environment)
     assert first is not second and first.binding == second.binding
     assert first._runs is second._runs and first._finished is second._finished
     other = build(RsyncOptions(), SimpleNamespace(download_root=str(tmp_path / "elsewhere"),
-                                                  repository=SimpleNamespace(authorize_execution=None)))
+                                                  executions=SimpleNamespace(authorize=None)))
     assert other.binding != first.binding and other._runs is not first._runs
 
 
