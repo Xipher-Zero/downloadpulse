@@ -36,7 +36,7 @@
 # notarization or physical-hardware qualification. Nothing is signed (the DMG
 # is ad hoc signed only) and no secret is used.
 #
-# Runs on every push to 1.0.1 that touches the desktop, its recipes or its
+# Runs on every push to 1.0.2 that touches the desktop, its recipes or its
 # legal files. Each platform builds and smoke-tests its own final installer on
 # its own runner and reports the build identity, hashes and results in its job
 # summary. The Actions cache carries only shareable build inputs
@@ -71,7 +71,7 @@ name: Desktop Artifacts
 on:
   push:
     branches:
-      - '1.0.1'
+      - '1.0.2'
     paths:
       - 'desktop/**'
       - 'packaging/desktop/**'

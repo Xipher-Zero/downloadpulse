@@ -1,14 +1,14 @@
 name: Testing Alias
 
-# Moves the rolling development alias ghcr.io/xipher-zero/downloadpulse:1.0.1-testing
+# Moves the rolling development alias ghcr.io/xipher-zero/downloadpulse:1.0.2-testing
 # to the immutable sha-<commit> index that Image has just published, when
-# that commit is still the 1.0.1 tip (.github/qualification/testing_alias.py
+# that commit is still the 1.0.2 tip (.github/qualification/testing_alias.py
 # decides). Not a qualification or release target: the six required workflows
 # stay independently authoritative, latest, v* and internal-v* stay Release
 # Promotion's, and nothing is ever built or re-tagged per architecture.
 #
 # Called only as Image's last job, after its publication succeeded, on a
-# 1.0.1 push (a re-run included). A workflow that exists only on 1.0.1 can be
+# 1.0.2 push (a re-run included). A workflow that exists only on 1.0.2 can be
 # started by nothing else: GitHub runs workflow_dispatch, workflow_run,
 # repository_dispatch and schedule workflows only from the default branch.
 #
@@ -18,7 +18,7 @@ name: Testing Alias
 # No two registry writes overlap, and a commit that is no longer the tip never
 # writes -- a newer commit's own publication does.
 #
-# The outcome is the commit status "1.0.1-testing" on the published commit:
+# The outcome is the commit status "1.0.2-testing" on the published commit:
 # success (the alias is this commit's image), pending (superseded: no write) or
 # failure (a fault, naming the retry). It never changes Image's verdict:
 # every step continues on error.
@@ -29,22 +29,22 @@ permissions: {}
 
 env:
   IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse
-  BRANCH: "1.0.1"
-  ALIAS_TAG: "1.0.1-testing"
+  BRANCH: "1.0.2"
+  ALIAS_TAG: "1.0.2-testing"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   alias:
-    name: Move 1.0.1-testing to this commit's image
+    name: Move 1.0.2-testing to this commit's image
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/1.0.1'
+      github.event_name == 'push' && github.ref == 'refs/heads/1.0.2'
       && github.repository == 'Xipher-Zero/downloadpulse'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # The one alias writer (a literal, never github.workflow, which a called
     # workflow shares with its caller).
     concurrency:
-      group: dp-1.0.1-testing-alias-writer
+      group: dp-1.0.2-testing-alias-writer
       cancel-in-progress: false
       queue: max
     permissions:
@@ -203,12 +203,12 @@ jobs:
           # The one authoritative outcome, on the published commit, apart from Image's verdict.
           python3 .github/qualification/testing_alias.py --outcome decision.json --write "${WRITE:-}" \
             --previous "${PREVIOUS:-}" > status.json \
-            || echo '{"state": "failure", "description": "1.0.1-testing state UNKNOWN: outcome unreadable, inspect the tag. Reconcile: re-run the Testing alias job."}' > status.json
+            || echo '{"state": "failure", "description": "1.0.2-testing state UNKNOWN: outcome unreadable, inspect the tag. Reconcile: re-run the Testing alias job."}' > status.json
           state="$(jq -r .state status.json)"; description="$(jq -r .description status.json)"
           {
             echo "## ${IMAGE_NAME}:${ALIAS_TAG}"
             if [ -s decision.json ]; then
-              jq -r '"- Commit: `\(.commit)` (1.0.1 tip: `\(.tip // "unread")`)", "- Source: `\(.source_tag // "—")`",
+              jq -r '"- Commit: `\(.commit)` (1.0.2 tip: `\(.tip // "unread")`)", "- Source: `\(.source_tag // "—")`",
                      "- Index digest: `\(.digest // "—")`", "- amd64: `\(.platforms.amd64 // "—")`",
                      "- arm64: `\(.platforms.arm64 // "—")`", "- Alias before: `\(.previous_alias_digest // "none")`",
                      "- Decision: **\(.action)** — \(.reason)"' decision.json

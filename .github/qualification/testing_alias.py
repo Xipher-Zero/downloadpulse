@@ -1,7 +1,7 @@
-"""The one decision behind ``ghcr.io/xipher-zero/downloadpulse:1.0.1-testing``.
+"""The one decision behind ``ghcr.io/xipher-zero/downloadpulse:1.0.2-testing``.
 
-``1.0.1-testing`` is a rolling development alias: it follows the newest
-1.0.1 commit whose Image run has published its complete multi-architecture
+``1.0.2-testing`` is a rolling development alias: it follows the newest
+1.0.2 commit whose Image run has published its complete multi-architecture
 image. It is not a qualification or release target -- the six required
 workflows stay independently authoritative, and ``latest`` and the release
 tags stay Release Promotion's.
@@ -21,8 +21,8 @@ import re
 import sys
 from pathlib import Path
 
-BRANCH = "1.0.1"
-ALIAS = "1.0.1-testing"
+BRANCH = "1.0.2"
+ALIAS = "1.0.2-testing"
 IMAGE = "ghcr.io/xipher-zero/downloadpulse"
 PLATFORMS = ("amd64", "arm64")
 REVISION = "org.opencontainers.image.revision"
@@ -100,7 +100,7 @@ def _status(head: str, detail: str = "", tail: str = "") -> str:
 
 
 def outcome(decision, *, write: str | None = None, previous: str | None = None) -> tuple[str, str]:
-    """The ``1.0.1-testing`` commit status for one evaluation: ``(state,
+    """The ``1.0.2-testing`` commit status for one evaluation: ``(state,
     description)``, every description within ``STATUS_LIMIT``.
 
     ``success`` only when the registry was observed holding this commit's

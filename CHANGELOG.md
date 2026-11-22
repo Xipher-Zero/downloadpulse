@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.0.2] — Development
+
 ## [1.0.1] — Native notifications and dependency updates
 
 ### Fixed
