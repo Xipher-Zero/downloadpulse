@@ -40,7 +40,7 @@ from core.logging_utils import sanitize_exception
 from db.database import get_db
 from db.event_journal import JournalEvent, record
 from external import intake as intake_owner
-from external.browser_cookies import CookieCapacity, CookieRefused, browser_cookies, parse as parse_cookies
+from transfers.request_context import ContextCapacity, ContextRefused, RequestContext, request_contexts
 from core.settings_constraints import path_within
 from external.profiles import DeliveryProfile, category_key, client_flavor, confined_to
 from transfers.filesystem import member_payload
@@ -94,6 +94,20 @@ REFUSAL_CODES = (
     "profile_root_outside_downloads", "cookie_capacity",
 )
 
+
+
+def _browser_grant(credential_id: str, demand_id: str):
+    """The registrant's grant for a browser submission's context
+    (``RequestContexts.register``): its token is not revoked, and its job's
+    reservation still exists (before admission, that is what it may become)."""
+    async def valid() -> bool:
+        async with get_db() as db:
+            token = await db.fetchone("SELECT revoked_at FROM account_tokens WHERE id=?", (str(credential_id),))
+            if token is None or token["revoked_at"] is not None:
+                return False
+            return await db.fetchone("SELECT 1 FROM external_jobs WHERE reserved_demand_id=?",
+                                     (str(demand_id),)) is not None
+    return valid
 
 class ExternalRefused(Exception):
     def __init__(self, code: str, message: str, *, status: int = 422, retryable: bool = False, **extra):
@@ -323,7 +337,8 @@ class ExternalClients:
             raise ExternalRefused("invalid_request", "display_name is at most 256 characters")
         if reference is not None and (not isinstance(reference, str) or len(reference) > 256):
             raise ExternalRefused("invalid_request", "client_reference is at most 256 characters")
-        unknown = set(body) - {"source", "display_name", "client_reference", "idempotency_key", "cookies"}
+        unknown = set(body) - {"source", "display_name", "client_reference", "idempotency_key", "cookies",
+                               "referrer"}
         if unknown:
             raise ExternalRefused("invalid_request", f"Unknown field(s): {', '.join(sorted(unknown))}")
         try:
@@ -332,20 +347,22 @@ class ExternalClients:
             raise ExternalRefused(exc.code, exc.message, status=exc.status) from None
         if source.kind not in BROWSER_SOURCE_KINDS:
             raise ExternalRefused("source_kind_not_permitted", "A browser may not submit that source kind")
-        # A video's sign-in (external.browser_cookies): links only, each cookie for a sent link's
-        # own site. Never part of the request's identity: not in the digest, never replayed.
-        cookies: tuple = ()
-        if "cookies" in body:
+        # The links' sign-in and referrer (transfers.request_context): links only, each cookie
+        # for a sent link's own site. Core holds them for this submission; never part of the
+        # request's identity: not in the digest, never replayed.
+        context = RequestContext()
+        if "cookies" in body or "referrer" in body:
             if source.kind != "links":
-                raise ExternalRefused("invalid_request", "cookies go only with links")
+                raise ExternalRefused("invalid_request", "cookies and referrer go only with links")
             try:
-                cookies = parse_cookies(body["cookies"], list(source.links))
-            except CookieRefused as exc:
-                raise ExternalRefused(exc.code, str(exc)) from None
+                context = RequestContext.from_submission(body.get("cookies"), body.get("referrer"),
+                                                         list(source.links))
+            except ContextRefused as exc:
+                raise ExternalRefused("invalid_request", str(exc)) from None
         digest = intake_owner.intent_digest(source, profile_id="", category_key=BROWSER,
                                             display_name=display_name.strip(), client_reference=reference)
         return {"source": source, "digest": digest, "category": "", "profile": None,
-                "display_name": display_name.strip(), "reference": reference, "cookies": cookies}
+                "display_name": display_name.strip(), "reference": reference, "context": context}
 
     async def submit_live(self, principal: Principal, body: dict) -> tuple[dict, bool]:
         """Submit for a client protocol whose caller supplies no request
@@ -463,20 +480,21 @@ class ExternalClients:
             else:
                 job = await self._reserve(principal, client_id, key, digest, source, intent["category"],
                                           intent["profile"], intent["display_name"], intent["reference"])
-            # The one registration (external.browser_cookies): on the admitting path only, before
-            # the demand commits, so the transfer's first resolution can already find them.
-            if intent.get("cookies"):
+            # The one registration with core (transfers.request_context): on the admitting path only,
+            # before the demand commits, so the transfer's first resolution already has it.
+            if intent.get("context"):
                 try:
-                    browser_cookies.register(job["reserved_demand_id"], principal.account_id, principal.credential_id,
-                                             intent["cookies"])
-                except CookieCapacity:
-                    raise ExternalRefused("cookie_capacity", "Too many videos with a sign-in are waiting; retry shortly",
-                                          status=503, retryable=True) from None
+                    request_contexts.register(job["reserved_demand_id"], intent["context"],
+                                              owner=principal.account_id,
+                                              valid=_browser_grant(principal.credential_id, job["reserved_demand_id"]))
+                except ContextCapacity:
+                    raise ExternalRefused("cookie_capacity", "Too many downloads with a sign-in are waiting; retry "
+                                          "shortly", status=503, retryable=True) from None
             try:
                 await self._admit(principal, job, source)
             except ExternalRefused:
                 if await self.repository.demand(job["reserved_demand_id"]) is None:
-                    browser_cookies.release(job["reserved_demand_id"])
+                    request_contexts.release(job["reserved_demand_id"])
                 raise
             return await self._view(await self._accept(job)), True
 
@@ -839,7 +857,7 @@ class ExternalClients:
                 await _audit(db, "external_job_withdrawn", "External job withdrawn by its client", row,
                              transfer_id=int(demand["transfer_id"]) if demand else None, outcome="withdrawn")
                 await db.commit()
-        browser_cookies.release(row["demand_id"])   # eagerly; settle() is the authority
+        request_contexts.release(row["demand_id"])   # eagerly; settle() is the authority
         await self._reconcile_controls(job_id=row["id"])
         view = await self._view(await self._refresh(row["id"]))
         return {**view, "already_withdrawn": already}
@@ -1684,7 +1702,7 @@ class ExternalClients:
         recovered_retirements = await self._settle_pending_retirements()
         refreshed = await self._refresh_unsettled()
         retired = await self._retire_acknowledged_folders()
-        cookies_released = await browser_cookies.settle()
+        cookies_released = await request_contexts.settle()
         return {"accepted": len(pending), "forgotten": forgotten, "recovered": recovered, "released": released,
                 "refreshed": refreshed, "retired": retired, "profile_retirements": recovered_retirements,
                 "cookies_released": cookies_released}

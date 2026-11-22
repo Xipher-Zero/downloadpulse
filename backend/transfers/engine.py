@@ -731,7 +731,7 @@ class TransferEngine(_RecoveryTransferEngine):
         try:
             async with self._resolution_slot():
                 with speculative_preparation():
-                    result = await provider.resolve(record.resolvable)
+                    result = await provider.resolve(await self._with_context(record.transfer_id, record.resolvable))
             result = self._authoritative_provider_result(provider.descriptor.id, result,
                                                          request_kind=record.resolvable.kind)
             observation = result.observation
@@ -872,8 +872,10 @@ class TransferEngine(_RecoveryTransferEngine):
         that has such capacity there -- while DownloadPulse holds a backup on
         that provider reclaims ONE backup and retries ONCE; anything else,
         or a second refusal, is the ordinary refusal."""
+        resolvable = await self._with_context(record.transfer_id, record.resolvable)
+
         def call():
-            return provider.resolve_cached(record.resolvable) if cached else provider.resolve(record.resolvable)
+            return provider.resolve_cached(resolvable) if cached else provider.resolve(resolvable)
 
         try:
             return await call()

@@ -799,10 +799,12 @@ class RsyncExecutor:
 
     # ── evidence ────────────────────────────────────────────────────────────
 
-    async def fingerprint(self, subject):
+    # ``request_context``: a submission's HTTP sign-in and referrer
+    # (``transfers.request_context``); nothing of it applies to rsync.
+    async def fingerprint(self, subject, *, request_context=None):
         return await self._evidence(subject.candidate)
 
-    async def fingerprint_with_input(self, subject, submitted: SubmittedInput):
+    async def fingerprint_with_input(self, subject, submitted: SubmittedInput, *, request_context=None):
         return await self._evidence(subject.candidate, submitted)
 
     async def _evidence(self, candidate, submitted: SubmittedInput | None = None):

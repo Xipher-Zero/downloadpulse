@@ -142,7 +142,8 @@ async def _refresh_exact(engine, artifact, index: int):
             origin.request,
             provider.descriptor.id,
         )
-        bound = replace(candidate, refresh_request=origin.request.request)
+        bound = replace(candidate, refresh_request=await engine._with_context(origin.request.transfer_id,
+                                                                              origin.request.request))
         result = engine._authoritative_provider_result(
             provider.descriptor.id,
             await provider.refresh(bound),

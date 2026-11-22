@@ -2,6 +2,22 @@
 
 ## [1.0.2] — Development
 
+### Added
+
+- **Downloads that need your sign-in.** A link sent from the browser extension can bring the
+  browser's cookies for that link's site and the page it was started from, and DownloadPulse
+  uses them for that one download, whichever service or engine fetches it: a file behind a
+  sign-in, or a host that checks where a download was started, now downloads as it would in
+  the browser. They are held only in memory for that download, used only for the addresses
+  they belong to, and never stored or logged.
+
+### Changed
+
+- **One sign-in path for every download.** The video sign-in 1.0.14 introduced is now the same
+  general mechanism, owned by the transfer core and handed to the service and engine that
+  fetch the link, instead of something only Media Downloads could read. It is offered for
+  every link, whether or not Media Downloads is on.
+
 ## [1.0.1] — Native notifications and dependency updates
 
 ### Fixed

@@ -11,6 +11,7 @@ from transfers.errors import NormalizedError
 from transfers.size_evidence import positive_size
 from transfers.staged_input import StagedPayload
 from core.localization import CodedValueError
+from transfers.request_context import RequestContext
 
 
 def new_identity() -> str:
@@ -365,6 +366,11 @@ class TransferRequest:
     # names in its path); a name DownloadPulse made up is not. Recorded at
     # admission, never inferred later; not identity.
     name_supplied: bool = False
+    # The submission's sign-in and referrer (``transfers.request_context``), which
+    # core attaches -- scoped to this request's transfer -- immediately before a
+    # provider resolves or refreshes it. Process memory only: never persisted,
+    # never identity, never compared, never shown.
+    context: RequestContext | None = field(default=None, repr=False, compare=False)
 
 
 # BitTorrent-class request kinds: a magnet URI, or a torrent metainfo upload
@@ -1126,6 +1132,11 @@ class ExecutionRequest:
     # The core continuation plan this writer is authorized under. ``None``
     # authorizes no existing material at all (a restart from zero).
     continuation: ContinuationPlan | None = None
+    # The submission's sign-in and referrer for this transfer
+    # (``transfers.request_context``), attached by core; an executor uses only
+    # ``context.for_address(address)`` / ``headers(address)`` for the address it
+    # fetches. Process memory only: never persisted, never compared, never shown.
+    context: RequestContext | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         # One attempt identity, never two. Once a request exists its attempt is

@@ -312,6 +312,37 @@ Failover retires the old execution and its partial state before another source
 can write the same target. Local, security and unknown failures do not justify
 cycling through alternate sources.
 
+## Submission request context
+
+A submission may bring what its client's own fetch of its links would have carried: the
+client's cookies for the links' site and the page the links were found on (the referrer).
+Core owns that context (`transfers/request_context.py`) exactly as it owns an answered
+input challenge, and integrations never reach for it:
+
+- **Admission.** The intake that accepts the submission validates it
+  (`RequestContext.from_submission`: each cookie's domain matches a submitted link, bounded
+  count and size, an http(s) referrer without user information) and registers it with core
+  (`request_contexts.register`) under the submission's demand, its owner (the submitting
+  account) and the registrant's own grant (for a browser, its token not revoked).
+- **Delivery.** Core attaches the transfer's context to the requests it already passes:
+  `TransferRequest.context` for a provider's `resolve`/`resolve_with_input` and a
+  candidate refresh's `refresh_request`, `ExecutionRequest.context` for an executor's
+  `prepare`/`start`, and `request_context=` for `CandidateSampling.fingerprint` within a
+  decision bound to the transfer. The stored request never carries it.
+- **Scope.** An integration uses only what applies to the address it fetches:
+  `context.headers(address)` / `for_address(address)` -- the cookies whose domain, path and
+  `secure` flag match, as the browser would send them, and the referrer unless it would leave
+  HTTPS for plain HTTP -- or `cookie_jar(address)` for a fetcher that keeps its own jar for
+  that site (Media Downloads). The in-process request owner (`_guarded_request`) applies it
+  afresh on every redirect hop, for that hop's own address; aria2 follows no redirect and gets
+  it for the one address it fetches. A provider-issued link on another host matches nothing,
+  and a provider-issued header is never replaced.
+- **Lifetime.** Process memory only: never the database, a file, a log, an attempt record,
+  identity, a fingerprint, the idempotency digest or a replay. Handed out only for a transfer
+  that is not finished and whose every outstanding demand is the owner's, while the grant
+  stands and within 24 hours; released by `settle` (from durable state), a withdrawal or a
+  refused admission. A restart loses it: the transfer proceeds without.
+
 ## Universal evidence acquisition
 
 The invariant is: **provider facts → access establishment → neutral evidence →

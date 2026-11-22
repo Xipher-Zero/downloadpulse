@@ -429,8 +429,13 @@ class Aria2Executor:
             self._redactions.popitem(last=False)
 
     def _remember_redactions(self, request: ExecutionRequest) -> None:
-        self._remember(request.attempt_id, (value for endpoint in request.work.subject.candidate.endpoints
-                                            for value in (endpoint.address, *endpoint.headers.values()) if value))
+        context = request.context
+        self._remember(request.attempt_id, (
+            *(value for endpoint in request.work.subject.candidate.endpoints
+              for value in (endpoint.address, *endpoint.headers.values()) if value),
+            # The submission's cookie values and referrer: never in a failure detail.
+            *((cookie.value for cookie in context.cookies if cookie.value) if context else ()),
+            *((context.referrer,) if context and context.referrer else ())))
 
     async def _recover_redactions(self, handle: ExecutionHandle, native) -> bool:
         """Whether exact redaction facts are available for this job's native
@@ -456,6 +461,10 @@ class Aria2Executor:
                 name, separator, value = str(line).partition(":")
                 if separator and value.strip():
                     values.append(value.strip())
+                    if name.strip().casefold() == "cookie":
+                        # Each cookie value on its own too: a diagnostic may quote one alone.
+                        values += [part.split("=", 1)[1].strip() for part in value.split(";")
+                                   if "=" in part and part.split("=", 1)[1].strip()]
             for key in ("http-passwd", "ftp-passwd"):
                 value = str(options.get(key) or "")
                 if value and value != _ANONYMOUS_LOGIN.get(key):
@@ -477,6 +486,9 @@ class Aria2Executor:
         if request is not None:
             values += [value for endpoint in request.work.subject.candidate.endpoints
                        for value in (endpoint.address, *endpoint.headers.values()) if value]
+            if request.context:
+                values += [cookie.value for cookie in request.context.cookies if cookie.value]
+                values += [request.context.referrer] if request.context.referrer else []
         if native is not None:
             for item in native.files or []:
                 for uri in item.get("uris") or ():
@@ -498,11 +510,14 @@ class Aria2Executor:
         self._target(str(handle.correlation.get("target") or ""))
         return gid
 
-    async def fingerprint(self, subject):
-        return await self._evidence(subject.candidate)
+    # ``request_context``: the submission's sign-in and referrer core hands this
+    # read (``transfers.request_context``), applied per address by the one
+    # in-process request owner.
+    async def fingerprint(self, subject, *, request_context=None):
+        return await self._evidence(subject.candidate, context=request_context)
 
-    async def fingerprint_with_input(self, subject, submitted: SubmittedInput):
-        return await self._evidence(subject.candidate, submitted)
+    async def fingerprint_with_input(self, subject, submitted: SubmittedInput, *, request_context=None):
+        return await self._evidence(subject.candidate, submitted, context=request_context)
 
     # ── HTTP(S) authority, credential and redirect policy ──────────────────
 
@@ -558,7 +573,7 @@ class Aria2Executor:
         return self._granted(self._private_lan(candidate) and same_host)
 
     async def _download_location(self, candidate, endpoint, submitted: SubmittedInput | None,
-                                 attempt_id: str = ""):
+                                 attempt_id: str = "", context=None):
         """THE executor redirect policy for an HTTP(S) download: where the
         writer is pointed, resolved in-process by the guarded redirect owner
         (aria2 itself never follows a redirect). Returns the answering
@@ -575,7 +590,7 @@ class Aria2Executor:
         start = self._start_address(endpoint.address, submitted)
         result = await resolve_location(start, headers=headers if start == endpoint.address else {},
                                         credential=credential, on_authenticated=_acceptance(submitted),
-                                        **self._granted_at(candidate, endpoint.address, start))
+                                        context=context, **self._granted_at(candidate, endpoint.address, start))
         if isinstance(result, AccessRequired):
             accepts_input = InputMethod.USERNAME_PASSWORD in candidate.accepted_input_methods
             requirement = self._authority_requirement(endpoint.address, result)
@@ -592,7 +607,7 @@ class Aria2Executor:
             return result.uri
         return start
 
-    async def _evidence(self, candidate, submitted: SubmittedInput | None = None):
+    async def _evidence(self, candidate, submitted: SubmittedInput | None = None, *, context=None):
         """One neutral CandidateSampling over the endpoint execution would use.
 
         Transport dispatch lives here, at the executor boundary; byte windows
@@ -625,7 +640,7 @@ class Aria2Executor:
                 start, headers=headers if start == endpoint.address else {},
                 expected_bytes=max(0, int(candidate.expected_bytes or 0)),
                 credential=self._credential(endpoint.address, submitted), on_authenticated=_acceptance(submitted),
-                **self._granted_at(candidate, endpoint.address, start),
+                context=context, **self._granted_at(candidate, endpoint.address, start),
             )
             if isinstance(result, AccessRequired):
                 if not accepts_input or provider_authorization:
@@ -1018,6 +1033,14 @@ class Aria2Executor:
             if same_origin:
                 # A provider-issued header is its own origin's capability.
                 headers.append(f"{key}: {value}")
+        if request.context:
+            # The submission's sign-in and referrer core handed this attempt
+            # (``transfers.request_context``): exactly what the submitting browser
+            # would send to ``location`` -- aria2 follows no redirect, so that is
+            # the one address it fetches. Never in place of a provider-issued header.
+            named = {line.split(":", 1)[0].strip().casefold() for line in headers}
+            headers.extend(f"{key}: {value}" for key, value in request.context.headers(location).items()
+                           if key.casefold() not in named)
         if headers:
             options["header"] = headers
         return address, options
@@ -1185,7 +1208,7 @@ class Aria2Executor:
                 if host_identity is None:
                     raise self._failure(Category.SECURITY_POLICY_REJECTED, Stage.QUEUE, domain=Domain.SECURITY)
             location = await self._download_location(candidate, self._endpoint(candidate), submitted,
-                                                     handle.attempt_id)
+                                                     handle.attempt_id, request.context)
             if isinstance(location, NormalizedError):
                 return ExecutionObservation(handle, ExecutionState.FAILED, error=location)
             secrets += (location,)
@@ -1238,7 +1261,7 @@ class Aria2Executor:
                     raise
             candidate = request.work.subject.candidate
             location = await self._download_location(candidate, self._endpoint(candidate), submitted,
-                                                     handle.attempt_id)
+                                                     handle.attempt_id, request.context)
             if isinstance(location, NormalizedError):
                 return ExecutionObservation(handle, ExecutionState.FAILED, error=location)
             secrets += (location,)

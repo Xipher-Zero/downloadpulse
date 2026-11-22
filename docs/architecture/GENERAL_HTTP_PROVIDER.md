@@ -65,7 +65,7 @@ Recent Activity, Downloads and Details consume this backend truth. They do not i
 
 ## Explicit non-goals
 
-General HTTP & HTTPS does not implement HTML login forms, browser sessions, cookies, OAuth/OIDC/SAML, JavaScript challenges, CAPTCHA flows, saved credentials or site-specific login automation. Ordinary HTTP 403/404/5xx, DNS/TLS failures and security failures are not reclassified as credential requests.
+General HTTP & HTTPS does not implement HTML login forms, its own browser sessions or cookie stores, OAuth/OIDC/SAML, JavaScript challenges, CAPTCHA flows, saved credentials or site-specific login automation. A submission's own request context -- the submitting browser's cookies and referrer -- is core's, applied by the executor to the address it fetches (UNIVERSAL_TRANSFER_CORE.md, "Submission request context"). Ordinary HTTP 403/404/5xx, DNS/TLS failures and security failures are not reclassified as credential requests.
 
 General HTTP & HTTPS adds no provider-specific cross-provider fallback of its own. Moving a request to another provider is the core policy's decision (provider failover after exhaustion, see [ROUTE_PROVIDER_PROVENANCE.md](../ROUTE_PROVIDER_PROVENANCE.md)), not an AllDebrid→HTTP runtime-failure rule.
 

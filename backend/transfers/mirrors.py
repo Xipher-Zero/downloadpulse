@@ -199,7 +199,7 @@ class EvidenceContext:
     owner to retain."""
 
     __slots__ = ("_fingerprints", "_inputs", "_requirements", "_proven", "_supplied", "_borrowed", "_auth",
-                 "_material")
+                 "_material", "_request_context")
 
     # Bounded: each rejected material is excluded from the next match.
     _MATCH_ATTEMPTS = 3
@@ -213,10 +213,27 @@ class EvidenceContext:
         self._borrowed = {}
         self._auth = None
         self._material = {}
+        self._request_context = None
 
     def bind(self, auth) -> None:
         """Bind the deciding request's authentication-input matcher."""
         self._auth = auth
+
+    async def _context(self):
+        """The submission context core holds for the deciding request's transfer
+        (``transfers.request_context``), asked once per decision; None unbound."""
+        if self._auth is None:
+            return None
+        if self._request_context is None:
+            self._request_context = (await self._auth.request_context(),)
+        return self._request_context[0]
+
+    async def _sample(self, executor, subject):
+        """One sample, with the context core hands every read of this decision."""
+        return await executor.fingerprint(subject, request_context=await self._context())
+
+    async def _sample_with_input(self, executor, subject, submitted):
+        return await executor.fingerprint_with_input(subject, submitted, request_context=await self._context())
 
     async def material(self, candidate):
         """``candidate`` itself, or -- when its durable form holds only the
@@ -251,7 +268,7 @@ class EvidenceContext:
                     # never asked -- no question ever carries its address.
                     if submitted is not None:
                         submitted.discard()
-                    sample = await executor.fingerprint(subject)
+                    sample = await self._sample(executor, subject)
                     if isinstance(sample, InputRequirement):
                         sample = None
                 elif submitted is not None and executor.capabilities.transient_input:
@@ -259,7 +276,7 @@ class EvidenceContext:
                 else:
                     if submitted is not None:
                         submitted.discard()
-                    sample = await executor.fingerprint(subject)
+                    sample = await self._sample(executor, subject)
                     if (isinstance(sample, InputRequirement) and executor.capabilities.transient_input
                             and self._auth is not None):
                         if self._auth.owns(candidate):
@@ -342,7 +359,7 @@ class EvidenceContext:
             if self._auth is not None:
                 await self._auth.settle(submitted, accepted=True, candidate=candidate)
 
-        sample = await authenticated(executor.fingerprint_with_input(subject, submitted), submitted, accepted)
+        sample = await authenticated(self._sample_with_input(executor, subject, submitted), submitted, accepted)
         if sample is not None and not isinstance(sample, InputRequirement) \
                 and _fingerprint_kind(sample) != FingerprintKind.UNAVAILABLE.value:
             self._proven[str(candidate.id)] = sample
@@ -382,7 +399,7 @@ class EvidenceContext:
             return requirement
         rejected = False
         try:
-            sample = await executor.fingerprint_with_input(subject, lease)
+            sample = await self._sample_with_input(executor, subject, lease)
             rejected = isinstance(sample, InputRequirement)
         finally:
             await self._auth.end_proof_lease(lease, rejected=rejected)

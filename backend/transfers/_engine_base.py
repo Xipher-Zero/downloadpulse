@@ -99,7 +99,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import contextvars
 import math
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
@@ -123,7 +122,6 @@ class ObservationBatch(dict):
 
 from transfers.canonical import CanonicalOwnership
 from transfers.contracts import (
-    _SERVED_TRANSFER,
     AccountIdentitySource, CandidateRefresh, Cleanup, DiscoveryResolution, Inventory, ProviderInputContinuation,
     UpstreamSelection,
 )
@@ -147,6 +145,7 @@ from transfers.input_required import (
     split_user_supplied,
 )
 from transfers.requests import auth_scope, direct_link_host
+from transfers.request_context import RequestContext, request_contexts
 from transfers.models import (
     Artifact, ArtifactFingerprint, CancellationInitiator, Capability, CleanupAuthority, CleanupDirective, ContinuationCapability,
     DeliveryKind, DiscoveryDepth, DiscoveryLimits, DiscoveryResult, RemoteObjectKind,
@@ -311,6 +310,11 @@ class _EvidenceAuth:
     def owns(self, candidate) -> bool:
         return str(candidate.id) in self.own
 
+    async def request_context(self):
+        """The submission context core holds for this transfer
+        (``transfers.request_context``), for the decision's samples."""
+        return await self.engine._request_context(self.transfer_id)
+
     async def resolve(self, candidate, requirement):
         return await self.engine.inputs.resolve(self.transfer_id, self.chain, self.engine._requirement_scope(
             requirement, self.engine._input_scope(candidate)), requirement)
@@ -354,7 +358,8 @@ class _EvidenceAuth:
         provider = self.engine.registry.providers.get(candidate.provider_id)
         if candidate.refresh_request is None or not isinstance(provider, CandidateRefresh):
             return None
-        return await self.engine._issued_material(candidate, candidate.refresh_request)
+        return await self.engine._issued_material(
+            candidate, await self.engine._with_context(self.transfer_id, candidate.refresh_request))
 
     async def end_proof_lease(self, submitted, *, rejected: bool):
         transition = await self.engine.inputs.end_proof_lease(submitted, rejected=rejected)
@@ -595,6 +600,22 @@ class TransferEngine:
     def _lan_granted(candidate: TransferCandidate, lan_host: str) -> bool:
         return bool(lan_host) and candidate.delivery == DeliveryKind.DIRECT and bool(candidate.endpoints) and all(
             direct_link_host(endpoint.address) == lan_host for endpoint in candidate.endpoints)
+
+    @staticmethod
+    async def _request_context(transfer_id: int | None) -> RequestContext | None:
+        """The submission context core holds for ``transfer_id``
+        (``transfers.request_context``), for an execution request; else None."""
+        return await request_contexts.for_transfer(transfer_id)
+
+    async def _with_context(self, transfer_id: int | None, request):
+        """``request`` as core hands it to a provider: carrying its transfer's
+        submission context when core holds one (``transfers.request_context``).
+        The record's own request is never changed: the context lives only on
+        this in-memory copy."""
+        if not isinstance(request, TransferRequest):
+            return request
+        context = await self._request_context(transfer_id)
+        return replace(request, context=context) if context else request
 
     async def _consented_lan_host(self, record: RequestRecord) -> str:
         """The host the operator explicitly submitted, with local-network
@@ -1093,10 +1114,7 @@ class TransferEngine:
                 # The continuation serves the challenged request itself.
                 cycle.admitted[work.request_id] = None
             unit = self._serve_input_continuation(cycle, work)
-        # The unit runs in its own context naming its transfer (contracts.served_transfer).
-        context = contextvars.copy_context()
-        context.run(_SERVED_TRANSFER.set, transfer.id)
-        task = asyncio.create_task(unit, context=context)
+        task = asyncio.create_task(unit)
         cycle.units[task] = transfer.id
         if qualification:
             cycle.qualifying.add(task)
@@ -2010,7 +2028,9 @@ class TransferEngine:
                 matched = resolution.submitted
                 try:
                     result = self._authoritative_provider_result(
-                        provider.descriptor.id, await provider.resolve_with_input(record.resolvable, matched),
+                        provider.descriptor.id,
+                        await provider.resolve_with_input(await self._with_context(record.transfer_id, record.resolvable),
+                                                          matched),
                         request_kind=record.resolvable.kind, lan_host=lan_host)
                 finally:
                     matched.discard()
@@ -2138,7 +2158,8 @@ class TransferEngine:
             raise TransferError(self._error(Category.INVALID_ADAPTER_RESPONSE, Stage.RESOLUTION))
         interpreted = replace(record, interpretation=alternate)
         result = self._authoritative_provider_result(
-            provider.descriptor.id, await provider.resolve(alternate), request_kind=alternate.kind,
+            provider.descriptor.id, await provider.resolve(await self._with_context(record.transfer_id, alternate)),
+            request_kind=alternate.kind,
             lan_host=await self._consented_lan_host(record))
         if (result.discovery is None or result.discovery.alternate is not None or result.error or result.candidates
                 or result.observation or result.input_required):
@@ -2330,13 +2351,14 @@ class TransferEngine:
                 if submitted is None:
                     return
                 secrets = submitted.secret_values()
+                resolvable = await self._with_context(record.transfer_id, record.resolvable)
                 if isinstance(provider, ProviderInputContinuation):
-                    result = await provider.resolve_with_input(record.resolvable, submitted)
+                    result = await provider.resolve_with_input(resolvable, submitted)
                     discovery_input = None
                 else:
                     # A provider that asked core for discovery states its
                     # request again; the answer continues that discovery.
-                    result = await provider.resolve(record.resolvable)
+                    result = await provider.resolve(resolvable)
                     discovery_input = submitted
             attempt = ResolutionAttempt(challenge.operation_id, record.id, bound_provider_id, "input_required")
             if discovery_input is None:
@@ -3362,7 +3384,8 @@ class TransferEngine:
                 return
             if executable is not candidate:
                 work = self._work(artifact, executable, attempt_id)
-            request = ExecutionRequest(work, attempt_id, continuation=plan)
+            request = ExecutionRequest(work, attempt_id, continuation=plan,
+                                       context=await self._request_context(artifact.transfer_id))
             prepared = executor.prepare(request)
             if isinstance(prepared, InputRequirement):
                 if not executor.capabilities.transient_input:
@@ -3516,7 +3539,8 @@ class TransferEngine:
             return None
         if not transient:
             return candidate
-        return await self._issued_material(candidate, record.resolvable, lan_host=await self._consented_lan_host(record),
+        return await self._issued_material(candidate, await self._with_context(record.transfer_id, record.resolvable),
+                                           lan_host=await self._consented_lan_host(record),
                                            artifact_id=artifact.id)
 
     def _candidate_expired(self) -> NormalizedError:
@@ -3701,7 +3725,8 @@ class TransferEngine:
                 # The same writer continues: exactly the plan it was admitted under.
                 request = ExecutionRequest(work, challenge.operation_id,
                                            continuation=await self.repository.execution_continuation(
-                                               challenge.operation_id))
+                                               challenge.operation_id),
+                                           context=await self._request_context(challenge.transfer_id))
                 async with self._dispatch_lock:
                     if not self.dispatch_permitted or not await self._live(challenge.transfer_id, admission=True):
                         return
@@ -3742,7 +3767,8 @@ class TransferEngine:
             footprint = self._footprint(executor, work)
             # A new writer after input: planned by the one planner, like any admission.
             _state, _facts, plan = await self._plan_material(artifact, candidate, executor, work, "admission")
-            request = ExecutionRequest(work, challenge.operation_id, continuation=plan)
+            request = ExecutionRequest(work, challenge.operation_id, continuation=plan,
+                                       context=await self._request_context(challenge.transfer_id))
             async with self._dispatch_lock:
                 if not self.dispatch_permitted or not await self._live(challenge.transfer_id, admission=True):
                     return

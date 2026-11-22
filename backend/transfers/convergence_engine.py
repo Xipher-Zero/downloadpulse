@@ -771,7 +771,8 @@ class TransferEngine(_QualifiedTransferEngine):
 
         if not await self.repository.recovery_claim_current(claim, now=self.clock()):
             return False, "claim_lost", None
-        bound_candidate = replace(candidate, refresh_request=record.resolvable)
+        bound_candidate = replace(candidate, refresh_request=await self._with_context(record.transfer_id,
+                                                                                       record.resolvable))
         try:
             result = self._authoritative_provider_result(
                 provider.descriptor.id,

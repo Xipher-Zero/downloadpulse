@@ -89,7 +89,7 @@ withdrawal, advisory pause/resume and the per-client limits.
 
 | Route | Does |
 |---|---|
-| `POST /api/browser/v1/jobs` `{idempotency_key, source, display_name?, client_reference?}` | Submit. `201` new, `200` the same key and intent again; another intent under that key is `409 idempotency_conflict`. |
+| `POST /api/browser/v1/jobs` `{idempotency_key, source, display_name?, client_reference?, cookies?, referrer?}` | Submit. `201` new, `200` the same key and intent again; another intent under that key is `409 idempotency_conflict`. `cookies` and `referrer` (links only) are the submission's request context (below); neither is part of the intent. |
 | `GET /api/browser/v1/jobs?after&limit&phase` | This browser's jobs by change cursor. |
 | `GET /api/browser/v1/jobs/{id}` | One of them; another client's is `404`. |
 | `POST /api/browser/v1/jobs/{id}/withdraw` | Remove: withdraw this browser's request. The download stops only if nobody else needs it; finished files are kept. |
@@ -104,6 +104,16 @@ withdrawal, advisory pause/resume and the per-client limits.
   and **Skip Local Connection Confirmation** settings, exactly as for any
   submitter that cannot answer the confirmation. Otherwise they are refused
   (`local_network_confirmation_required`). A browser never consents.
+- **Request context (1.0.2).** A links submission may carry `cookies` (the browser's
+  cookies for the links' own site, each `{name, value, domain, path, secure, http_only,
+  host_only, expires}`) and `referrer` (the page the download was started from). Core holds
+  them for that job and hands each integration only what applies to the address it fetches
+  (UNIVERSAL_TRANSFER_CORE.md, "Submission request context"): a file behind a sign-in, a
+  host that checks the referrer and a video only its signed-in viewer can watch all work the
+  same way. The session's `capabilities.cookies` and `capabilities.referrer` say they are
+  taken (`sources: ["links"]`, with their bounds); a cookie for any other site, a non-links
+  source or a malformed value is `422 invalid_request` naming the field, never a value. Too
+  many jobs holding context at once is `503 cookie_capacity` (retryable).
 - **The job view:** `id`, `revision`, `cursor`, the timestamps, `display_name`,
   `client_reference`, `name` (the transfer's title as DownloadPulse shows it:
   the Downloads list's derived display name, so a media download's resolved

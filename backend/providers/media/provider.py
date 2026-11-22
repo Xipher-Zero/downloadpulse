@@ -114,10 +114,11 @@ class MediaProvider:
             raise _failure("unsupported")
         return address
 
-    async def _facts(self, address: str, *, single_item: bool = False) -> dict:
+    async def _facts(self, address: str, *, single_item: bool = False, context=None) -> dict:
         try:
             return await self.extract(address, selection=planning.selection(self.target_resolution),
-                                      collection_bound=planning.COLLECTION_BOUND, single_item=single_item)
+                                      collection_bound=planning.COLLECTION_BOUND, single_item=single_item,
+                                      context=context)
         except MediaFailure as exc:
             raise _failure(exc.code, exc.detail) from None
 
@@ -150,7 +151,8 @@ class MediaProvider:
             # An answer to a question this link never asked is not an answer.
             raise _failure("unsupported", "no acquisition scope applies to this link")
         single = scope == AcquisitionScope.ITEM
-        facts = await self._facts(address, single_item=single)
+        # The sign-in core attached for this request (transfers.request_context), if any.
+        facts = await self._facts(address, single_item=single, context=request.context)
         if facts.get("kind") == "collection":
             if single:
                 raise _failure("unsupported", "nested collection")

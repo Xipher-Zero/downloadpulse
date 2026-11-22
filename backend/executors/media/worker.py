@@ -32,8 +32,8 @@ finalization (one ``-c copy`` remux, into Matroska when the plan chose MKV)
 is this worker's own, into the container the plan fixed before materialization.
 Plugins, configuration files, caches, netrc and remote components are never
 loaded, and cookies are never read from a file, a browser profile or the
-environment. The one exception is a connected browser's per-job video sign-in
-(``external.browser_cookies``): the instruction's own ``cookies`` list, placed
+environment. The one exception is a submission's sign-in, which core hands
+this work (``transfers.request_context``): the instruction's own ``cookies`` list, placed
 in yt-dlp's in-memory jar (``_install_cookies``) and gone with this process --
 ``cookiefile`` stays None, so yt-dlp never saves it, and every failure detail
 has those values redacted (``_detail``).

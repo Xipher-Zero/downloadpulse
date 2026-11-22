@@ -105,12 +105,12 @@ def console_interpreter(executable: str = sys.executable) -> str:
 
 class MediaSandbox:
     def __init__(self, runtime_dir: str, *, egress=None, python: str | None = None, budget: str = "yt_dlp",
-                 tools: MediaTools | None = None, youtube_player_clients: tuple[str, ...] = (), cookies=None):
+                 tools: MediaTools | None = None, youtube_player_clients: tuple[str, ...] = ()):
         self.processes = ProcessOwnership(runtime_dir)
-        # A browser's per-job video sign-in (``external.browser_cookies``), READ only: its
-        # cookies go to the worker on the instruction pipe, never to a file, argv or the
-        # environment, and only when the reader hands them out for this very work.
-        self.cookies = cookies
+        # A submission's sign-in (``transfers.request_context``) arrives with each call,
+        # from what core handed the provider or executor for that very work: its
+        # cookies go to the worker on the instruction pipe, never to a file, argv or
+        # the environment.
         # The effective YouTube player-client preference every extraction and
         # acquisition this sandbox runs asks yt-dlp for; empty is Automatic.
         self.youtube_player_clients = tuple(youtube_player_clients)
@@ -213,18 +213,16 @@ class MediaSandbox:
         temporary.replace(path)
         return True
 
-    async def _sign_in(self, attempt_id: str | None = None) -> dict:
-        """``{"cookies": [...]}`` when the reader hands this work its cookies -- an
-        acquisition's by its attempt, an extraction's by the resolution unit it
-        runs in -- else ``{}``: any failure is no cookies."""
-        if self.cookies is None:
-            return {}
-        try:
-            cookies = await (self.cookies.current() if attempt_id is None
-                             else self.cookies.for_attempt(attempt_id))
-        except Exception:
-            return {}
-        return {"cookies": [cookie.as_instruction() for cookie in cookies]} if cookies else {}
+    @staticmethod
+    def _sign_in(context, url: str) -> dict:
+        """``{"cookies": [...]}``: the sign-in core handed this work for ``url``'s
+        site (``RequestContext.cookie_jar``, on the provider's or executor's
+        request) in the worker instruction's form; ``{}`` when there is none."""
+        cookies = context.cookie_jar(url) if context else ()
+        return {"cookies": [{"name": cookie.name, "value": cookie.value, "domain": cookie.domain,
+                             "path": cookie.path, "secure": cookie.secure, "http_only": cookie.http_only,
+                             "host_only": cookie.host_only, "expires": cookie.expires}
+                            for cookie in cookies]} if cookies else {}
 
     def _spec(self, mode: str, url: str, proxy: str, guard, **extra) -> bytes:
         missing = self.tools.missing()
@@ -235,7 +233,8 @@ class MediaSandbox:
                            "youtube_player_clients": list(self.youtube_player_clients), **extra},
                           separators=(",", ":")).encode("utf-8")
 
-    async def extract(self, url: str, *, selection: dict, collection_bound: int, single_item: bool = False) -> dict:
+    async def extract(self, url: str, *, selection: dict, collection_bound: int, single_item: bool = False,
+                      context=None) -> dict:
         """Read-only facts about ``url`` (``worker.extract``) -- only the one
         medium it names when ``single_item`` -- or the outcome that ended the
         extraction as ``MediaFailure``."""
@@ -249,7 +248,7 @@ class MediaSandbox:
             proxy, guard = await self.route(scope)
             spec = self._spec("extract", url, proxy, guard, selection=selection, collection_bound=collection_bound,
                               single_item=single_item, workspace=str(workspace),
-                              **await self._sign_in())
+                              **self._sign_in(context, url))
             owned = await self.processes.spawn(identity, self.argv(), env=self.environment(workspace), stdin=spec)
             stdout, _stderr = await self._collect(owned, identity, EXTRACT_TIMEOUT_SECONDS)
         finally:
@@ -292,7 +291,7 @@ class MediaSandbox:
         return bytes(stdout), bytes(stderr)
 
     async def start(self, attempt_id: str, *, url: str, plan: dict, workspace: Path, target: Path,
-                    result: Path, concurrent_fragments: int = 1) -> OwnedProcess:
+                    result: Path, concurrent_fragments: int = 1, context=None) -> OwnedProcess:
         """Start the attempt's one acquisition worker; its route stays live
         until ``revoke(public_scope(attempt_id))``."""
         scope = public_scope(attempt_id)
@@ -302,7 +301,7 @@ class MediaSandbox:
             spec = self._spec("acquire", url, proxy, guard, plan=plan, attempt=str(attempt_id),
                               workspace=str(workspace), target=str(target), result=str(result),
                               concurrent_fragment_downloads=int(concurrent_fragments),
-                              **await self._sign_in(str(attempt_id)))
+                              **self._sign_in(context, url))
             return await self.processes.spawn(attempt_id, self.argv(), env=self.environment(workspace), stdin=spec)
         except BaseException:
             self.revoke(scope)

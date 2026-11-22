@@ -151,19 +151,14 @@ async def list_all_browser_tokens():
                           "last_seen_at": row.get("last_seen_at")} for row in await accounts.list_browser_tokens()]}
 
 
-def _video_cookies(application) -> dict | None:
-    """The browser's video sign-in (external.browser_cookies), offered only while Media
-    Downloads takes part (operator, 2026-11-19): otherwise the extension never sends any."""
-    from core.config import get_settings
-    from external import browser_cookies as held
-    from integrations.configuration import effective_enabled
-    media = next((item for item in getattr(application, "definitions", ()) if item.id == "media"), None)
-    try:
-        if media is None or not effective_enabled(get_settings(), media):
-            return None
-    except Exception:
-        return None
-    return {"max_count": held.MAX_COOKIES, "max_bytes": held.MAX_BYTES, "sources": ["links"]}
+def _request_context_capabilities() -> dict:
+    """What a link submission may bring with it (``transfers.request_context``):
+    its sign-in on the links' own site and the page it came from. Core hands
+    them to whichever integration fetches the links, so they are offered for
+    every link, not only for a video."""
+    from transfers import request_context as held
+    return {"cookies": {"max_count": held.MAX_COOKIES, "max_bytes": held.MAX_BYTES, "sources": ["links"]},
+            "referrer": {"max_length": held.MAX_REFERRER, "sources": ["links"]}}
 
 
 @router.get("/browser/v1/session")
@@ -177,9 +172,7 @@ async def browser_session(request: Request, application: ApplicationService = De
     label = next((str(row["label"]) for row in rows if str(row["id"]) == principal.credential_id), "")
     capabilities = {"sources": sorted(BROWSER_SOURCE_KINDS), "controls": ["pause", "resume"],
                     "withdraw": True, "estimate": True}
-    cookies = _video_cookies(application)
-    if cookies:
-        capabilities["cookies"] = cookies
+    capabilities.update(_request_context_capabilities())
     return {"protocol": BROWSER_PROTOCOL, "token": {"id": principal.credential_id, "label": label},
             "account": {"display_name": principal.display_name},
             "capabilities": capabilities,

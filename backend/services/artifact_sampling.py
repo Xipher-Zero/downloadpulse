@@ -215,7 +215,7 @@ _READ_HEADERS = frozenset({"range", "accept-encoding"})
 
 async def _guarded_request(session, uri: str, headers: dict, *, method: str = "GET", data: bytes | None = None,
                            carried: frozenset[str] = _READ_HEADERS, max_redirects: int = 3,
-                           private_lan: bool = False, credential: Credential = None):
+                           private_lan: bool = False, credential: Credential = None, context=None):
     """THE one in-process HTTP(S) request owner: ``(response, reason, uri)``.
 
     Every hop's destination is validated by ``network_safety``; redirects are
@@ -225,7 +225,11 @@ async def _guarded_request(session, uri: str, headers: dict, *, method: str = "G
     it, and is never restored even if a later hop returns. An operator
     ``credential`` is attached to exactly the hops whose authentication scope
     is the one it was given for -- never another host or port, never HTTP for
-    an HTTPS answer. ``uri`` is the address the returned response answered for."""
+    an HTTPS answer. A submission's ``context`` (``transfers.request_context``)
+    is applied afresh on every hop, for that hop's own address -- exactly what
+    the submitting browser would have sent there, never another host's cookies
+    -- and never replaces a header the caller set. ``uri`` is the address the
+    returned response answered for."""
     current = uri
     current_headers = dict(headers)
     prior_origin = _origin(uri)
@@ -243,6 +247,10 @@ async def _guarded_request(session, uri: str, headers: dict, *, method: str = "G
         except network_safety.UnsafeDestinationError:
             return None, "destination_rejected", current
         sent = dict(current_headers)
+        if context:
+            named = {key.casefold() for key in sent}
+            sent.update({key: value for key, value in context.headers(validated).items()
+                         if key.casefold() not in named})
         if credential is not None and auth_scope(validated) == credential[0]:
             sent["Authorization"] = credential[1]
         response = await session.request(method, validated, headers=sent, data=data, allow_redirects=False)
@@ -279,6 +287,7 @@ async def sampled_public_artifact_fingerprint(
     private_lan: bool = False,
     credential: Credential = None,
     on_authenticated: Accepted = None,
+    context=None,
 ) -> Sample | AccessRequired:
     """Return bounded structured content evidence for a public HTTP(S) capability.
 
@@ -314,7 +323,7 @@ async def sampled_public_artifact_fingerprint(
             first_headers = {**base_headers, "Range": f"bytes=0-{sample_bytes - 1}"}
             response, redirect_reason, answered = await _guarded_request(session, validated, first_headers,
                                                                          private_lan=bool(granted_host),
-                                                                         credential=credential)
+                                                                         credential=credential, context=context)
             if response is None:
                 return unavailable(redirect_reason or "sampler_unavailable")
             try:
@@ -366,7 +375,7 @@ async def sampled_public_artifact_fingerprint(
             last_headers = {**base_headers, "Range": f"bytes={last_start}-{total - 1}"}
             response, last_redirect_reason, _answered = await _guarded_request(session, validated, last_headers,
                                                                                private_lan=bool(granted_host),
-                                                                               credential=credential)
+                                                                               credential=credential, context=context)
             if response is None:
                 return sample(total, prefix, FingerprintKind.PREFIX_CONTENT_SAMPLE,
                                last_redirect_reason or "sampler_unavailable", prefix)
@@ -1197,7 +1206,7 @@ class Located:
 
 async def resolve_location(uri: str, *, headers: dict | None = None, credential: Credential = None,
                            timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS, private_lan: bool = False,
-                           on_authenticated: Accepted = None) -> Located | AccessRequired | None:
+                           on_authenticated: Accepted = None, context=None) -> Located | AccessRequired | None:
     """Follow one address's redirects the way every in-process HTTP(S) read
     does (``_guarded_request``) and report where it is finally answered.
 
@@ -1222,7 +1231,7 @@ async def resolve_location(uri: str, *, headers: dict | None = None, credential:
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             response, _reason, answered = await _guarded_request(
                 session, validated, {**(headers or {}), "Range": "bytes=0-0"}, private_lan=bool(granted_host),
-                credential=credential)
+                credential=credential, context=context)
             if response is None:
                 return None
             try:

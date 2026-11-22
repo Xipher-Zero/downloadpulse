@@ -318,7 +318,9 @@ class MediaExecutor:
                 owned = await self.sandbox.start(handle.attempt_id, url=media["url"], plan=media,
                                                  workspace=workspace, target=target,
                                                  result=self._record_path(handle.attempt_id),
-                                                 concurrent_fragments=self.concurrent_fragments)
+                                                 concurrent_fragments=self.concurrent_fragments,
+                                                 # The sign-in core attached (transfers.request_context).
+                                                 context=request.context)
             except ProcessGroupAlive:
                 return await self.observe(handle)
             # The acquisition's whole scope: every planned stream and a planned subtitle.

@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 from transfers.applicability import ProviderApplicability
 from transfers.entitlement import ProviderEntitlements
 from transfers.input_required import SubmittedInput
+from transfers.request_context import RequestContext
 from transfers.models import (
     ActiveCapacity, AvailabilityState, CachePresence, CleanupDirective, DiscoveryDepth, DiscoveryLimits, DiscoveryResult, ExecutionFootprint, ExecutionHandle, ExecutionObservation, ExecutionRequest,
     ExecutionSnapshot, ExecutionSubject, ExecutionWork, ExecutorCapabilities, ExecutorClaim, ExecutorGateResult,
@@ -124,19 +125,6 @@ def speculative_attempt() -> bool:
     a provider must not contract the account's entitlement, or record any
     other lasting account fact, from them."""
     return _SPECULATIVE_ATTEMPT.get()
-
-
-# Set by core for one resolution unit's task (and so every provider call it makes,
-# collection members included): the transfer that unit serves. A plain integer,
-# never a secret; outside a unit it is None. A provider-side reader may use it to
-# find state held for that transfer outside core -- the browser's per-job video
-# sign-in (external.browser_cookies) -- and must treat None as "none".
-_SERVED_TRANSFER: ContextVar[int | None] = ContextVar("served_transfer", default=None)
-
-
-def served_transfer() -> int | None:
-    """The transfer the resolution unit in progress serves, if any."""
-    return _SERVED_TRANSFER.get()
 
 
 @contextmanager
@@ -346,15 +334,17 @@ class CandidateSampling(Protocol):
     equivalence is decided by core evidence policy only.
     """
 
-    async def fingerprint(self, subject: ExecutionSubject) -> ArtifactFingerprint | InputRequirement | None: ...
+    async def fingerprint(self, subject: ExecutionSubject, *, request_context: RequestContext | None = None
+                          ) -> ArtifactFingerprint | InputRequirement | None: ...
 
 
 @runtime_checkable
 class CandidateSamplingContinuation(Protocol):
     """Continue the same evidence acquisition with submitted transient input."""
 
-    async def fingerprint_with_input(self, subject: ExecutionSubject,
-                                     submitted: SubmittedInput) -> ArtifactFingerprint | InputRequirement | None: ...
+    async def fingerprint_with_input(self, subject: ExecutionSubject, submitted: SubmittedInput, *,
+                                     request_context: RequestContext | None = None
+                                     ) -> ArtifactFingerprint | InputRequirement | None: ...
 
 
 @runtime_checkable
