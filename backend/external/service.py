@@ -908,7 +908,7 @@ class ExternalClients:
         (``_write_pending``), committed before the transition, so no
         interruption can leave a hold this owner does not know about."""
         demand = await self.repository.demand(job["demand_id"])
-        transfer_id = int(demand["transfer_id"])
+        transfer_id = await self._control_target(int(demand["transfer_id"]))
         if demand["withdrawn_at"] is not None:
             return {"disposition": "declined", "reason": "job_withdrawn", "transfer_id": transfer_id}
         holder = _holder(control_id)
@@ -1488,6 +1488,16 @@ class ExternalClients:
         return effective_progress(transfer["status"], transfer["progress"], *active_execution_projection(row),
                                   active_execution_bytes(row),
                                   await self.repository.verified_material(int(transfer["id"])))
+
+    async def _control_target(self, transfer_id: int) -> int:
+        """The transfer a job's pause and resume act on: its own, or -- consolidated onto
+        another transfer's unfinished file (1.0.2, operator 2026-11-22) -- that shared
+        transfer, under the same rules (a pause still needs this job to be its only
+        requester; a resume releases only this job's own hold)."""
+        if await self._status(transfer_id) != "consolidated":
+            return transfer_id
+        shared = await self._shared_transfer(await self._members(transfer_id, "consolidated"))
+        return int(shared["id"]) if shared is not None else transfer_id
 
     async def _shared_transfer(self, members: dict):
         """The transfer whose unfinished file a consolidated job waits on, or ``None``

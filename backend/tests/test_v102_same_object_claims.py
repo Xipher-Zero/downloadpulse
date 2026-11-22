@@ -143,6 +143,7 @@ def _browser_projection(world, tmp_path, monkeypatch):
         plan = await external._plan({"id": "job", "demand_id": demand["id"], "client_id": "c", "kind": "browser"})
         return plan.projection
 
+    projection.control_target = external._control_target
     return projection
 
 
@@ -161,6 +162,10 @@ async def test_the_joining_browser_job_follows_the_shared_download_until_it_is_d
     assert (await repository.get(second.id)).state == TransferState.CONSOLIDATED
     joined = await view(second.id)
     assert joined["phase"] == "processing" and joined["reason"] != "completed", joined
+    # Its pause and resume act on the shared download it follows, never on its own
+    # consolidated transfer (operator, 2026-11-22: "This download has already finished").
+    assert await view.control_target(second.id) == first.id
+    assert await view.control_target(first.id) == first.id
     # Paused again by its owner: the joined job says so, it is not done.
     await engine.pause(first.id)
     assert (await view(second.id))["reason"] == "paused"
@@ -168,3 +173,4 @@ async def test_the_joining_browser_job_follows_the_shared_download_until_it_is_d
     executor.finish_all()
     assert await _until(engine, now, lambda: _completed(repository, first.id), finishing=executor)
     assert (await view(second.id))["phase"] == "completed"
+    assert await view.control_target(second.id) == second.id      # done: nothing left to control
