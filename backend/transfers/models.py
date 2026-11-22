@@ -1048,6 +1048,12 @@ class ExecutorCapabilities:
     # offset); the planner derives the maximal mutually safe boundary from it.
     continuation: frozenset[ContinuationCapability] = frozenset({ContinuationCapability.FULL_RESTART})
     continuation_alignment: int = 1
+    # ``(obsolete_key, staged_key)``: work resolved by an earlier release carries this
+    # executor's submitted input inline, base64, under ``obsolete_key`` of the selected
+    # candidate's context; core converges it ONCE to a staged reference under
+    # ``staged_key`` (``TransferEngine._canonical_input``) before the executor starts.
+    # The executor never stages or writes durable state for it. ``None``: none.
+    obsolete_inline_input: tuple[str, str] | None = None
 
     def __post_init__(self):
         kinds = self.materialization_kinds

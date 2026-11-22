@@ -732,7 +732,7 @@ class TransferEngine(_RecoveryTransferEngine):
                 # A speculative backup preparation says so on the request it hands the provider
                 # (``TransferRequest.speculative``), never through ambient state.
                 result = await provider.resolve(replace(
-                    await self._with_context(record.transfer_id, record.resolvable), speculative=True))
+                    await self._with_context(record.transfer_id, record.resolvable, provider), speculative=True))
             result = self._authoritative_provider_result(provider.descriptor.id, result,
                                                          request_kind=record.resolvable.kind)
             observation = result.observation
@@ -873,7 +873,7 @@ class TransferEngine(_RecoveryTransferEngine):
         that has such capacity there -- while DownloadPulse holds a backup on
         that provider reclaims ONE backup and retries ONCE; anything else,
         or a second refusal, is the ordinary refusal."""
-        resolvable = await self._with_context(record.transfer_id, record.resolvable)
+        resolvable = await self._with_context(record.transfer_id, record.resolvable, provider)
 
         def call():
             return provider.resolve_cached(resolvable) if cached else provider.resolve(resolvable)

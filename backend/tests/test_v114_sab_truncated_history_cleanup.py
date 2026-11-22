@@ -419,7 +419,7 @@ async def test_a_deleted_execution_beyond_the_page_completes_cleanup_and_release
     registry = IntegrationRegistry()
     registry.register_provider(UsenetProvider(staged_input=staged_store()))
     registry.register_executor(executor)
-    engine = TransferEngine(repository, registry, download_root=str(root),
+    engine = TransferEngine(repository, registry, staged_input=staged_store(), download_root=str(root),
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0,
                                                   max_active_executions=2),
                             clock=lambda: clock.now)

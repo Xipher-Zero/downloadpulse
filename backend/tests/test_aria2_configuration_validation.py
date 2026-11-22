@@ -16,6 +16,7 @@ only an exit code and an old log tail, and nothing ever retried it.
 """
 from __future__ import annotations
 
+from transfers.integration_grants import ExecutionGrants
 import asyncio
 import json
 import logging

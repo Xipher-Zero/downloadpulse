@@ -118,7 +118,7 @@ async def test_a_submitted_nzb_reaches_the_executor_through_normal_routing(tmp_p
                                   working_directory=str(root / ".dpwork"),
                                   complete_directory=str(root / ".dpwork" / "complete")),
         repository.authorize_execution, staged_input=staged_store()))
-    engine = TransferEngine(repository, registry, download_root=str(root),
+    engine = TransferEngine(repository, registry, staged_input=staged_store(), download_root=str(root),
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0,
                                                   max_active_executions=2),
                             clock=lambda: 1000.0)
@@ -194,7 +194,7 @@ async def test_a_malformed_posting_is_refused_by_the_provider_not_the_service(tm
                                   working_directory=str(root / ".dpwork"),
                                   complete_directory=str(root / ".dpwork" / "complete")),
         repository.authorize_execution, staged_input=staged_store()))
-    engine = TransferEngine(repository, registry, download_root=str(root),
+    engine = TransferEngine(repository, registry, staged_input=staged_store(), download_root=str(root),
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0))
     await engine.initialize()
     service = ApplicationService(engine)

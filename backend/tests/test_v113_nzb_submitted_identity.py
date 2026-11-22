@@ -48,7 +48,9 @@ def posting(names=("BANTAG.nfo", "a8f3c1d09e.mkv", "a8f3c1d09e.par2")) -> bytes:
 
 async def candidate(data, name, supplied):
     provider = UsenetProvider(staged_input=staged_store())
-    result = await provider.resolve(TransferRequest("nzb", data, name=name, name_supplied=supplied))
+    # As core hands it: the payload staged by core first.
+    result = await provider.resolve(TransferRequest("nzb", staged_store().stage_bytes(data), name=name,
+                                                    name_supplied=supplied))
     [found] = result.candidates
     return found
 

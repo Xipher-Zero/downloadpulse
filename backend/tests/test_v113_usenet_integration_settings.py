@@ -17,11 +17,12 @@ from integrations.usenet.definition import (
     MAX_CONNECTIONS, MAX_PRIORITY, MIN_CONNECTIONS, MIN_PRIORITY, PRIORITY_HELP,
     UsenetOptions, UsenetServer, definition as usenet_definition,
 )
+from transfers.integration_grants import ExecutionGrants
 from transfers.registry import IntegrationRegistry
 
 
 def environment(tmp_path):
-    return IntegrationEnvironment(SimpleNamespace(authorize_execution=None, converge_staged_input=None), str(tmp_path))
+    return IntegrationEnvironment(ExecutionGrants(SimpleNamespace(authorize_execution=None)), str(tmp_path))
 
 
 def registry_for(tmp_path, *, enabled=True):

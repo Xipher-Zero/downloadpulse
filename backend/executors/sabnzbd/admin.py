@@ -153,13 +153,14 @@ class SabnzbdAdministration:
     configuration_namespace = "usenet"
 
     def __init__(self, client, options, download_root: str, runtime=None, executor=None,
-                 repository=None, notify_status=None):
+                 executions=None, notify_status=None):
         self.client = client
         self.options = options
         self.download_root = download_root
         self.runtime = runtime
         self.executor = executor
-        self.repository = repository
+        # Core's execution decisions (``ExecutionGrants``), never the repository.
+        self.executions = executions
         # The application's neutral live-status signal: how a runtime
         # transition this lifecycle owns reaches Provider Status.
         self._notify_status = notify_status
@@ -185,11 +186,10 @@ class SabnzbdAdministration:
         execution that may still exist.
         """
         identity = getattr(getattr(self.executor, "descriptor", None), "id", "")
-        query = getattr(self.repository, "executors_with_live_work", None)
-        if not callable(query):
+        if self.executions is None:
             return True
         try:
-            return identity in await query()
+            return await self.executions.has_live_work(identity)
         except Exception:
             return True
 

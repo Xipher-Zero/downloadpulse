@@ -109,8 +109,7 @@ def test_the_usenet_lifecycle_receives_the_neutral_notifier():
     from integrations.usenet import definition
 
     commands = SimpleNamespace(notify_status_changed=object())
-    environment = SimpleNamespace(repository=SimpleNamespace(authorize_execution=None,
-                                                             converge_staged_input=None),
+    environment = SimpleNamespace(executions=SimpleNamespace(authorize=None),
                                   download_root="/download", commands=commands, staged_input=None)
     _provider, executor = definition.build(definition.UsenetOptions(), environment)
     assert executor.lifecycle._notify_status is commands.notify_status_changed

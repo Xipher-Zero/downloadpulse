@@ -14,6 +14,7 @@ import pytest
 
 import db.database as database
 from integrations.catalog import definitions
+from transfers.integration_grants import ExecutionGrants
 from transfers.recovery_repository import TransferRepository
 
 
@@ -48,7 +49,7 @@ def test_the_declared_identities_match_what_is_actually_registered(tmp_path):
     settings = SimpleNamespace(integrations={d.id: IntegrationSettings() for d in definitions})
     registry = IntegrationRegistry()
     register(registry, settings, IntegrationEnvironment(
-        SimpleNamespace(authorize_execution=None, converge_staged_input=None), str(tmp_path)))
+        ExecutionGrants(SimpleNamespace(authorize_execution=None)), str(tmp_path)))
     registered = set(registry.providers) | set(registry.executors)
     declared = set().union(*(d.owned_identities for d in definitions))
     assert declared == registered, (declared ^ registered)
@@ -102,7 +103,7 @@ async def owned_execution(tmp_path, monkeypatch):
                                   working_directory=str(root / ".dpwork"),
                                   complete_directory=str(root / ".dpwork" / "complete")),
         repository.authorize_execution, staged_input=staged_store()))
-    engine = TransferEngine(repository, registry, download_root=str(root),
+    engine = TransferEngine(repository, registry, staged_input=staged_store(), download_root=str(root),
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0,
                                                   max_active_executions=2),
                             clock=lambda: 1000.0)

@@ -8,6 +8,7 @@ import pytest_asyncio
 
 import db.database as database
 from db.migrations.v112 import migrate
+from transfers.integration_grants import ExecutionGrants
 from transfers.errors import TransferError
 from transfers.models import Ownership, TransferState
 from transfers.repository import TransferRepository
@@ -100,7 +101,7 @@ async def test_predecessor_gid_ledger_is_inert_historical_data(legacy):
     assert artifact.execution.native["gid"] == "00000000000000aa"
     assert await repository.authorize_execution(artifact.execution, "cancel")
     executor = aria2_definition.build(IntegrationSettings(), IntegrationEnvironment(
-        repository=repository, download_root=get_settings().download_folder))
+        executions=ExecutionGrants(repository), download_root=get_settings().download_folder))
     assert artifact.execution.correlation["binding"] == executor.binding
     with sqlite3.connect(database.DB_PATH) as conn:
         assert conn.execute("SELECT count(*) FROM execution_attempts").fetchone()[0] == 1

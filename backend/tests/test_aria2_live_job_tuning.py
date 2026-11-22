@@ -20,6 +20,7 @@ from executors.aria2.client import Aria2ResponseError, Aria2Service
 from executors.aria2.definition import Aria2Options
 from executors.aria2.executor import Aria2Configuration, Aria2Executor, TuningOutcome
 from executors.aria2.runtime import TuningState
+from transfers.integration_grants import ExecutionGrants
 from transfers.models import ExecutionAttempt, ExecutionHandle
 
 pytestmark = pytest.mark.asyncio
@@ -258,7 +259,7 @@ async def test_only_the_cores_current_owned_executions_are_selected_never_the_da
     other = ExecutionHandle("rsync", "other", {"target": str(tmp_path / "o")}, {"gid": gids["other"]})
     foreign = handle(executor, tmp_path, gids["foreign"], "foreign", binding="f" * 64)
     repository = Repository([attempt(item) for item in (mine, old, other, foreign)], current={"mine"})
-    admin = Aria2Administration(executor, repository, None, SimpleNamespace())
+    admin = Aria2Administration(executor, ExecutionGrants(repository), None, SimpleNamespace())
     result = await admin.converge_job_tuning()
     # The one canonical predicate decides "current" for this daemon's own jobs.
     assert repository.asked == [(("mine", "old"), "pause")]
@@ -281,8 +282,8 @@ async def test_jobs_are_changed_one_at_a_time_and_terminal_ones_are_not_counted(
         running.pop()
 
     daemon.on_change = one_at_a_time
-    admin = Aria2Administration(executor, Repository([attempt(item) for item in handles],
-                                                     {item.attempt_id for item in handles}),
+    admin = Aria2Administration(executor, ExecutionGrants(Repository([attempt(item) for item in handles],
+                                                     {item.attempt_id for item in handles})),
                                 None, SimpleNamespace())
     result = await admin.converge_job_tuning()
     assert result["selected"] == 3 and result["applied"] == 3 and result["not_live"] == 1
@@ -320,10 +321,10 @@ async def test_an_earlier_save_still_converging_never_overwrites_a_later_one(tmp
             await asyncio.sleep(0.05)
 
     daemon.on_change = save_b_lands_mid_pass
-    pass_a = asyncio.create_task(Aria2Administration(first, repository, None, runtime).converge_job_tuning())
+    pass_a = asyncio.create_task(Aria2Administration(first, ExecutionGrants(repository), None, runtime).converge_job_tuning())
     await saved_b.wait()
     # B's pass runs on the executor B's configure built, behind A's.
-    pass_b = asyncio.create_task(Aria2Administration(executor(), repository, None, runtime).converge_job_tuning())
+    pass_b = asyncio.create_task(Aria2Administration(executor(), ExecutionGrants(repository), None, runtime).converge_job_tuning())
     await asyncio.gather(pass_a, pass_b)
     assert all(job["options"]["split"] == "9" for job in jobs.values())
 
@@ -398,7 +399,7 @@ def daemon_world(tmp_path, count, *, split=5):
 async def converge(executor, repository, seconds):
     loop = asyncio.get_running_loop()
     started = loop.time()
-    result = await Aria2Administration(executor, repository, None, SimpleNamespace()).converge_job_tuning(
+    result = await Aria2Administration(executor, ExecutionGrants(repository), None, SimpleNamespace()).converge_job_tuning(
         deadline=started + seconds)
     return result, loop.time() - started
 

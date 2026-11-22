@@ -7,6 +7,7 @@ import pytest
 from integrations.definition import IntegrationEnvironment, IntegrationSettings
 from providers.general_http.definition import definition
 from providers.general_http.provider import GeneralHttpProvider
+from transfers.integration_grants import ExecutionGrants
 from transfers.applicability import ProviderApplicability
 from transfers.errors import Category, TransferError
 from transfers.models import Capability, IntegrationDescriptor, TransferRequest
@@ -73,7 +74,7 @@ def test_direct_link_intake_leaves_userinfo_for_the_core_admission_boundary_to_s
 
 
 def test_definition_uses_existing_backend_enablement_and_priority_model():
-    environment = IntegrationEnvironment(repository=None, download_root="/tmp")
+    environment = IntegrationEnvironment(executions=None, download_root="/tmp")
     disabled = definition.build(IntegrationSettings(enabled=False, priority=17), environment)
     enabled = definition.build(IntegrationSettings(enabled=True, priority=23), environment)
     assert disabled.descriptor.enabled is False and disabled.descriptor.priority == 17

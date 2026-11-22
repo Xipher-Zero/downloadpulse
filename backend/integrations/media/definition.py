@@ -176,7 +176,7 @@ def build(options: MediaOptions, environment):
     provider = MediaProvider(sandbox.extract, target_resolution=options.target_resolution,
                              video_quality=options.video_quality, video_codec=options.video_codec,
                              subtitle_language=environment.preferred_subtitle_language)
-    executor = MediaExecutor(environment.download_root, runtime_dir(), environment.repository.authorize_execution,
+    executor = MediaExecutor(environment.download_root, runtime_dir(), environment.executions.authorize,
                              sandbox=sandbox, concurrent_fragments=options.concurrent_fragment_downloads)
     return provider, executor
 

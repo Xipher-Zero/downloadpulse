@@ -299,3 +299,30 @@ class _StagedWriter:
             self._handle.close()
         with contextlib.suppress(OSError):
             self._temporary.unlink()
+
+
+class StagedInputReader:
+    """What an integration is handed of the staged-input owner: READ only.
+
+    An integration that takes a large submitted payload opens, reads and
+    verifies a reference core gave it -- never stages, discards or sweeps:
+    staging is core's (admission, and ``TransferEngine`` before a provider that
+    reads staged input resolves an inline payload), reclamation the owner's."""
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: StagedInputStore):
+        self._store = store
+
+    @property
+    def max_bytes(self) -> int:
+        return self._store.max_bytes
+
+    def opened(self, reference: StagedPayload):
+        return self._store.opened(reference)
+
+    def read(self, reference: StagedPayload) -> bytes:
+        return self._store.read(reference)
+
+    def verify(self, reference: StagedPayload) -> None:
+        self._store.verify(reference)

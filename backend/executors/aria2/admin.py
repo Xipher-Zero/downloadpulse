@@ -22,9 +22,12 @@ class Aria2Administration:
     ``administration`` of the aria2 executor). It holds no DownloadPulse global
     policy and is never used by neutral runtime-limit operations."""
 
-    def __init__(self, executor, repository, commands, runtime):
+    def __init__(self, executor, executions, commands, runtime):
         self.executor = executor
-        self.repository = repository
+        # Core's execution decisions and this executor's own attempts (``ExecutionGrants``),
+        # and the operator commands it may forward (``IntegrationCommands``): never the
+        # repository or the application.
+        self.executions = executions
         self.application = commands
         self.runtime = runtime
         self._last_housekeeping = 0.0
@@ -44,12 +47,10 @@ class Aria2Administration:
         return await self.client.get_all(*args, **kwargs)
 
     async def _owned(self):
-        attempts = [attempt for attempt in await self.repository.executions()
-                    if attempt.handle.executor_id == self.executor.descriptor.id
-                    and attempt.handle.correlation.get("binding") == self.executor.binding]
+        attempts = await self.executions.attempts_of(self.executor.descriptor.id, self.executor.binding)
         # Every candidate is authorized by the core's own decision, read for
         # all of them at once rather than one query per historical attempt.
-        authorized = await self.repository.authorize_executions([attempt.handle for attempt in attempts], "observe")
+        authorized = await self.executions.authorize_many([attempt.handle for attempt in attempts], "observe")
         return {self.executor._handle_gid(attempt.handle): attempt
                 for attempt, allowed in zip(attempts, authorized, strict=True) if allowed}
 
@@ -168,10 +169,8 @@ class Aria2Administration:
         """This daemon's live executions and, for each, whether the core
         authorizes it as the CURRENT one (``converge_job_tuning``)."""
         executor = self.executor
-        attempts = [attempt for attempt in await self.repository.live_executions()
-                    if attempt.handle.executor_id == executor.descriptor.id
-                    and attempt.handle.correlation.get("binding") == executor.binding]
-        return attempts, await self.repository.authorize_executions([attempt.handle for attempt in attempts], "pause")
+        attempts = await self.executions.attempts_of(executor.descriptor.id, executor.binding, live=True)
+        return attempts, await self.executions.authorize_many([attempt.handle for attempt in attempts], "pause")
 
     async def apply_memory_tuning(self):
         options = build_aria2_global_options(self.runtime.options, include_safety=True, live=True)

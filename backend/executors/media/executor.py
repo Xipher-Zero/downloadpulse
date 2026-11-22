@@ -320,7 +320,7 @@ class MediaExecutor:
                                                  result=self._record_path(handle.attempt_id),
                                                  concurrent_fragments=self.concurrent_fragments,
                                                  # The sign-in core attached (transfers.request_context).
-                                                 context=request.context)
+                                                 **({"context": request.context} if request.context else {}))
             except ProcessGroupAlive:
                 return await self.observe(handle)
             # The acquisition's whole scope: every planned stream and a planned subtitle.

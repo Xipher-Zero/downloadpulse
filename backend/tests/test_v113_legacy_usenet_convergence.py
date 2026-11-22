@@ -107,12 +107,13 @@ async def build(tmp_path, monkeypatch, *, provider, staged_root=None, sab=None):
                              complete_directory=str(root / ".dpwork" / "complete")),
         repository.authorize_execution,
         staged_input=staged,
-        converge=repository.converge_staged_input,
     )
     registry.register_provider(provider)
     registry.register_executor(executor)
     now = [1000.0]
-    engine = TransferEngine(repository, registry, download_root=str(root),
+    # 1.0.2: core converges the obsolete inline input (TransferEngine._canonical_input) with
+    # the one staged-input owner; the executor only reads.
+    engine = TransferEngine(repository, registry, staged_input=staged, download_root=str(root),
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0,
                                                   max_active_executions=4),
                             clock=lambda: now[0])
@@ -268,10 +269,10 @@ async def test_persistence_failure_leaves_legacy_state_retryable(legacy, monkeyp
         calls.append(1)
         raise RuntimeError("durable convergence unavailable")
 
-    monkeypatch.setattr(legacy.executor, "converge", failing)
+    monkeypatch.setattr(legacy.repository, "converge_staged_input", failing)
     await converge(legacy)
 
-    assert calls, "the executor never attempted durable convergence"
+    assert calls, "core never attempted durable convergence"
     assert len(legacy.sab.submissions) == 0, "submitted before durable convergence"
     still = await durable(legacy, transfer_id)
     assert LEGACY_MANIFEST in still.context, "legacy representation was destroyed"
@@ -281,7 +282,7 @@ async def test_persistence_failure_leaves_legacy_state_retryable(legacy, monkeyp
         "a persistence failure was terminalized as permanent invalid input"
 
     # Retry with the real operation converges.
-    monkeypatch.setattr(legacy.executor, "converge", original)
+    monkeypatch.setattr(legacy.repository, "converge_staged_input", original)
     await converge(legacy)
     done = await durable(legacy, transfer_id)
     assert "staged_input" in done.context and "$staged" in done.request_payload
@@ -292,10 +293,10 @@ async def test_staging_failure_is_infrastructure_not_malformed_input(legacy, mon
     from transfers.staged_input import StagedInputError
     transfer_id, _ = await pre_upgrade(legacy)
 
-    async def unavailable(chunks):
+    def unavailable(payload):
         raise StagedInputError("staged input storage is unavailable")
 
-    monkeypatch.setattr(legacy.staged, "stage", unavailable)
+    monkeypatch.setattr(legacy.staged, "stage_bytes", unavailable)
     await converge(legacy)
     assert len(legacy.sab.submissions) == 0
     error = await artifact_error(legacy, transfer_id)
@@ -461,8 +462,8 @@ async def test_a_retrying_upgrade_state_is_not_terminalized_as_invalid(legacy):
 async def test_after_commit_execution_needs_no_legacy_capability(tmp_path, monkeypatch):
     """Once the rows are canonical, the migration capability is not required.
 
-    Proves the convergence is genuinely one-way: an executor with no durable
-    convergence seam at all still runs the transfer.
+    Proves the convergence is genuinely one-way: once canonical, nothing is
+    converged again (and the executor never had a convergence seam: 1.0.2).
     """
     staged_root = tmp_path / "staged"
     first = await build(tmp_path, monkeypatch, provider=LegacyUsenetProvider(), staged_root=staged_root)
@@ -472,7 +473,6 @@ async def test_after_commit_execution_needs_no_legacy_capability(tmp_path, monke
 
     second = await build(tmp_path, monkeypatch, provider=LegacyUsenetProvider(),
                          staged_root=staged_root, sab=first.sab)
-    second.executor.converge = None
     await converge(second)
     state = await durable(second, transfer_id)
     assert "$staged" in state.request_payload

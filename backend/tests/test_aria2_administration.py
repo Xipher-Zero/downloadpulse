@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from transfers.integration_grants import ExecutionGrants
 import pytest
 
 from test_aria2_executor_contract import execution
@@ -28,7 +29,7 @@ async def test_low_level_pause_and_resume_use_core_transfer_identity(execution):
     attempt = SimpleNamespace(handle=execution.handle, transfer_id=47, artifact_id=9)
     repository = _repository((attempt,), execution.executor.authorize)
     application = SimpleNamespace(pause=AsyncMock(), resume=AsyncMock())
-    admin = Aria2Administration(execution.executor, repository, application, _runtime())
+    admin = Aria2Administration(execution.executor, ExecutionGrants(repository), application, _runtime())
     await admin.control(execution.handle.native["gid"], "pause")
     await admin.control(execution.handle.native["gid"], "resume")
     application.pause.assert_awaited_once_with(47)
@@ -42,7 +43,7 @@ async def test_low_level_pause_and_resume_use_core_transfer_identity(execution):
 async def test_owned_gid_with_foreign_path_is_excluded_from_native_admin(execution):
     attempt = SimpleNamespace(handle=execution.handle)
     repository = _repository((attempt,), execution.executor.authorize)
-    admin = Aria2Administration(execution.executor, repository, None, _runtime())
+    admin = Aria2Administration(execution.executor, ExecutionGrants(repository), None, _runtime())
     forged = Aria2DownloadStatus(execution.handle.native["gid"], "active", 4, 1, 1, files=[{"path": "/foreign/file"}])
     assert await admin.filter_owned([forged]) == []
 
@@ -216,7 +217,7 @@ def ownership(execution, tmp_path, monkeypatch):
         conn.close()
         repository = TransferRepository()
         application = SimpleNamespace(pause=AsyncMock(), resume=AsyncMock(), cancel_artifact=AsyncMock())
-        return Aria2Administration(executor, repository, application, _runtime()), repository, application
+        return Aria2Administration(executor, ExecutionGrants(repository), application, _runtime()), repository, application
 
     return build
 

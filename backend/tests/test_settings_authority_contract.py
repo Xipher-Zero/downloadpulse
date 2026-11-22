@@ -26,6 +26,7 @@ from integrations.catalog import definitions
 from integrations.configuration import normalize_settings
 from integrations.definition import IntegrationEnvironment, IntegrationSettings
 from providers.alldebrid.definition import definition as alldebrid_definition
+from transfers.integration_grants import ExecutionGrants
 from transfers.settings import TransferSettings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,7 +180,7 @@ async def test_client_may_change_global_options_and_purge_results():
 
 def test_composition_and_runtime_construct_the_same_daemon_client():
     options = Aria2Options(operation_timeout_seconds=30)
-    executor = aria2_definition.factory(options, IntegrationEnvironment(repository=MagicMock(), download_root="/download"))
+    executor = aria2_definition.factory(options, IntegrationEnvironment(executions=ExecutionGrants(MagicMock()), download_root="/download"))
     runtime = Aria2Runtime()
     runtime.configure(Aria2RuntimeConfiguration(options=options))
     for client in (executor.client, runtime._service()):
@@ -268,7 +269,7 @@ async def test_obsolete_persisted_values_never_redirect_the_dp_owned_daemon(tmp_
         options = settings.integrations["aria2"].options
 
         environment = IntegrationEnvironment(
-            repository=SimpleNamespace(authorize_execution=AsyncMock(return_value=True)),
+            executions=ExecutionGrants(SimpleNamespace(authorize_execution=AsyncMock(return_value=True))),
             download_root=settings.download_folder,
         )
         executor = aria2_definition.build(settings.integrations["aria2"], environment)

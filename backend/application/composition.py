@@ -17,7 +17,8 @@ from transfers.convergence_engine import TransferEngine
 from transfers.policy import TransferPolicy
 from transfers.registry import IntegrationRegistry
 from transfers.recovery_repository import TransferRepository
-from transfers.staged_input import StagedInputStore
+from transfers.integration_grants import ExecutionGrants, IntegrationCommands
+from transfers.staged_input import StagedInputReader, StagedInputStore
 from transfers.storage import DiskCapacity, register_storage_health
 
 
@@ -51,9 +52,10 @@ def configure(application):
     apply_settings(settings)
     application.definitions = definitions
     registry = IntegrationRegistry()
-    register(registry, settings, IntegrationEnvironment(application.repository, settings.download_folder,
-                                                        commands=application,
-                                                        staged_input=application.staged_input,
+    register(registry, settings, IntegrationEnvironment(ExecutionGrants(application.repository),
+                                                        settings.download_folder,
+                                                        commands=IntegrationCommands(application),
+                                                        staged_input=StagedInputReader(application.staged_input),
                                                         preferred_subtitle_language=(
                                                             settings.preferred_subtitle_language)))
     application.engine.registry = registry
@@ -145,14 +147,17 @@ def staged_input_root(settings) -> str:
 def compose():
     settings = get_settings()
     repository = TransferRepository()
-    engine = TransferEngine(repository, IntegrationRegistry(), download_root=settings.download_folder, policy=TransferPolicy())
+    # One staged-input owner: core stages and converges with it; integrations get a reader.
+    staged_input = StagedInputStore(staged_input_root(settings))
+    engine = TransferEngine(repository, IntegrationRegistry(), download_root=settings.download_folder, policy=TransferPolicy(),
+                            staged_input=staged_input)
     consolidation_events = ConsolidationEvents(repository)
     # The canonical owner announces a committed attachment through an injected
     # callback; nothing wraps or proxies it.
     engine.canonical.on_attached = consolidation_events.stage
     from integrations.usenet.nzb import read as read_nzb
     service = ApplicationService(engine, configure=configure,
-                                 staged_input=StagedInputStore(staged_input_root(settings)),
+                                 staged_input=staged_input,
                                  nzb_reader=read_nzb)
     service.consolidation_events = consolidation_events
     configure(service)

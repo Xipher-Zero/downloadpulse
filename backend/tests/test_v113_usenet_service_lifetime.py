@@ -14,6 +14,7 @@ import pytest
 
 import db.database as database
 from executors.sabnzbd.admin import SabnzbdAdministration
+from transfers.integration_grants import ExecutionGrants
 from transfers.models import ExecutionState
 
 
@@ -61,7 +62,7 @@ def admin_for(*, enabled, live_work=frozenset(), runtime=None, applied=None):
     repository = SimpleNamespace(
         executors_with_live_work=lambda: _immediate(frozenset(live_work)))
     admin = SabnzbdAdministration(FakeSab(), options, "/download", runtime, executor,
-                                  repository=repository)
+                                  executions=ExecutionGrants(repository))
     if applied is not None:
         admin.apply_configuration = applied
     return admin, runtime

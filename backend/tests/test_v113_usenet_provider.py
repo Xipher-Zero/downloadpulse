@@ -37,6 +37,11 @@ def build_provider():
     return UsenetProvider(staged_input=staged_store())
 
 
+def nzb(payload: bytes, **kwargs) -> TransferRequest:
+    """An NZB request as core hands it to the provider: its payload staged by core."""
+    return TransferRequest("nzb", staged_store().stage_bytes(payload), **kwargs)
+
+
 def test_descriptor_declares_resolution_and_the_canonical_nzb_kind():
     provider = build_provider()
     assert provider.descriptor.id == "usenet"
@@ -47,7 +52,7 @@ def test_descriptor_declares_resolution_and_the_canonical_nzb_kind():
 @pytest.mark.asyncio
 async def test_valid_nzb_resolves_to_one_collection_candidate():
     provider = build_provider()
-    result = await provider.resolve(TransferRequest("nzb", VALID_NZB, name="thing.nzb"))
+    result = await provider.resolve(nzb(VALID_NZB, name="thing.nzb"))
     assert result.state == ResourceState.AVAILABLE
     assert len(result.candidates) == 1
     candidate = result.candidates[0]
@@ -60,9 +65,18 @@ async def test_valid_nzb_resolves_to_one_collection_candidate():
 @pytest.mark.asyncio
 async def test_malformed_nzb_is_rejected():
     provider = build_provider()
-    for payload in (b"", b"not xml at all", b"<nzb></nzb>", b"<nzb><file></file></nzb>"):
+    for payload in (b"not xml at all", b"<nzb></nzb>", b"<nzb><file></file></nzb>"):
         with pytest.raises(TransferError):
-            await provider.resolve(TransferRequest("nzb", payload, name="x.nzb"))
+            await provider.resolve(nzb(payload, name="x.nzb"))
+
+
+@pytest.mark.asyncio
+async def test_the_provider_never_stages_an_inline_payload_itself():
+    """Staging is core's (1.0.2): an inline NZB reaching the provider is not a request core made."""
+    provider = build_provider()
+    with pytest.raises(TransferError):
+        await provider.resolve(TransferRequest("nzb", VALID_NZB, name="thing.nzb"))
+    assert provider.staged_request_kinds == frozenset({"nzb"})
 
 
 @pytest.mark.asyncio
@@ -75,7 +89,7 @@ async def test_unsupported_request_kind_is_rejected():
 @pytest.mark.asyncio
 async def test_provider_output_carries_no_executor_or_native_state():
     provider = build_provider()
-    result = await provider.resolve(TransferRequest("nzb", VALID_NZB, name="thing.nzb"))
+    result = await provider.resolve(nzb(VALID_NZB, name="thing.nzb"))
     candidate = result.candidates[0]
     # No endpoint is invented: an NZB is not an HTTP resource.
     assert candidate.endpoints == ()
@@ -89,7 +103,7 @@ async def test_provider_routes_to_a_fake_non_sab_nzb_executor():
     """The provider must be usable by any NZB-claiming executor."""
     from executor_fakes import LedgerExecutor, ledger_capabilities
     provider = build_provider()
-    result = await provider.resolve(TransferRequest("nzb", VALID_NZB, name="thing.nzb"))
+    result = await provider.resolve(nzb(VALID_NZB, name="thing.nzb"))
     candidate = result.candidates[0]
 
     class NzbCapableExecutor(LedgerExecutor):

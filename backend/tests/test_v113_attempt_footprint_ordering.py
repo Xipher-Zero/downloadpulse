@@ -103,7 +103,7 @@ async def test_the_first_dispatch_sees_the_attempts_transient_trees(tmp_path, mo
                                   working_directory=str(root / ".dpwork"),
                                   complete_directory=str(root / ".dpwork" / "complete")),
         repository.authorize_execution))
-    engine = TransferEngine(repository, registry, download_root=str(root),
+    engine = TransferEngine(repository, registry, staged_input=staged_store(), download_root=str(root),
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0,
                                                   max_active_executions=2),
                             clock=lambda: 1000.0)

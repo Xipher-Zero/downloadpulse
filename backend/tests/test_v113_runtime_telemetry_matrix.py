@@ -70,7 +70,7 @@ async def mixed(tmp_path, monkeypatch):
     registry.register_executor(acquisition)
     registry.register_executor(other)
     now = [1000.0]
-    engine = TransferEngine(repository, registry, download_root=str(root), clock=lambda: now[0],
+    engine = TransferEngine(repository, registry, staged_input=staged_store(), download_root=str(root), clock=lambda: now[0],
                             policy=TransferPolicy(retry_delay=1, adoption_stability_seconds=0,
                                                   max_active_executions=4))
     await engine.initialize()

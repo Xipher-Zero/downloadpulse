@@ -151,14 +151,20 @@ class IntegrationGroupSettings(BaseModel):
 
 @dataclass(frozen=True)
 class IntegrationEnvironment:
-    repository: object
+    # What core lends about executions (``transfers.integration_grants.ExecutionGrants``):
+    # its authorize decisions and ONE executor's own attempts, without candidates --
+    # never the transfer repository.
+    executions: object
     download_root: str
-    # Neutral application commands (pause/resume/cancel) an integration-owned
-    # administration surface may forward operator intent to.
+    # The operator commands (pause/resume/cancel one artifact) and the status
+    # signal an integration-owned administration surface may forward
+    # (``transfers.integration_grants.IntegrationCommands``) -- never the
+    # application service.
     commands: object = None
-    # The neutral durable-input owner (``transfers.staged_input``). An
-    # integration whose request class carries a large submitted payload borrows
-    # it to READ that payload; it owns no part of its lifecycle.
+    # A READ-only view of the neutral durable-input owner
+    # (``transfers.staged_input.StagedInputReader``): an integration whose request
+    # class carries a large submitted payload opens, reads and verifies the
+    # reference core gave it. Staging and reclamation are core's.
     staged_input: object = None
     # The operator's global Preferred Subtitle Language (``AppSettings
     # .preferred_subtitle_language``): owned by the global Downloads settings,

@@ -230,18 +230,14 @@ def build(options: UsenetOptions, environment):
             # The internal control-plane key is redacted from every diagnostic.
             secrets=(service_runtime.internal_api_key(),),
         ),
-        environment.repository.authorize_execution,
+        environment.executions.authorize,
         staged_input=environment.staged_input,
-        # The narrow durable convergence seam for work resolved before the
-        # staged-input correction. A bound method, exactly like the
-        # authorization callable above -- never a repository handle.
-        converge=environment.repository.converge_staged_input,
     )
     # The administration surface is BOTH the configuration applier and the
     # managed lifecycle component; composition discovers each generically.
     administration = SabnzbdAdministration(client, options, root,
                                            service_runtime.runtime, executor,
-                                           repository=environment.repository,
+                                           executions=environment.executions,
                                            notify_status=getattr(getattr(environment, "commands", None),
                                                                  "notify_status_changed", None))
     executor.administration = administration

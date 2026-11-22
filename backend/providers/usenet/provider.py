@@ -8,7 +8,7 @@ output.
 """
 from __future__ import annotations
 
-from integrations.usenet.nzb import InvalidNzb, parse, read, useful_name
+from integrations.usenet.nzb import InvalidNzb, read, useful_name
 from transfers.applicability import ProviderApplicability
 from transfers.errors import (
     Category, Confidence, Domain, EvidenceBasis, NormalizedError, Retryability, Stage, TransferError,
@@ -38,11 +38,14 @@ class UsenetProvider:
         "usenet", "Usenet", frozenset({Capability.RESOLVE}),
         request_types=frozenset({REQUEST_KIND}),
     )
+    # Core hands this provider every NZB as a staged reference: an inline payload is
+    # staged by core first (``TransferEngine._with_context``), never here.
+    staged_request_kinds = frozenset({REQUEST_KIND})
 
     def __init__(self, staged_input=None):
-        # The neutral durable-input owner. Injected, never constructed here:
-        # the provider borrows it to READ a submitted payload and owns none of
-        # its lifecycle.
+        # A READ-only view of the neutral durable-input owner
+        # (``transfers.staged_input.StagedInputReader``): injected, never
+        # constructed here; this provider stages nothing.
         self.staged_input = staged_input
 
     def _failure(self, category: Category, *, domain=Domain.REQUEST) -> TransferError:
@@ -83,10 +86,10 @@ class UsenetProvider:
     async def _manifest(self, request: TransferRequest):
         """The staged input for this request, and the facts it asserts.
 
-        A request already carrying a durable reference is read by streaming. An
-        inline payload -- a small or programmatic submission -- is staged first,
-        so exactly one representation reaches the candidate either way and the
-        executor has one way to obtain the original bytes.
+        Core hands every NZB as a durable reference (an inline payload is staged
+        by core before this call), read here by streaming, so exactly one
+        representation reaches the candidate and the executor has one way to
+        obtain the original bytes. Anything else is not an NZB request core made.
         """
         payload = request.payload
         if isinstance(payload, StagedPayload):
@@ -100,19 +103,4 @@ class UsenetProvider:
             except InvalidNzb as exc:
                 raise self._failure(Category.INVALID_REQUEST) from exc
 
-        if isinstance(payload, str):
-            payload = payload.encode("utf-8", "strict")
-        if not isinstance(payload, (bytes, bytearray)):
-            raise self._failure(Category.INVALID_REQUEST)
-        try:
-            manifest = parse(bytes(payload), fallback_name=request.name)
-        except InvalidNzb as exc:
-            raise self._failure(Category.INVALID_REQUEST) from exc
-        if self.staged_input is None:
-            raise self._failure(Category.INVALID_REQUEST)
-        async def one_chunk():
-            yield bytes(payload)
-        try:
-            return await self.staged_input.stage(one_chunk()), manifest
-        except StagedInputError as exc:
-            raise self._failure(Category.INVALID_REQUEST) from exc
+        raise self._failure(Category.INVALID_REQUEST)

@@ -32,6 +32,7 @@ from providers.general_http.definition import definition as http_definition
 from providers.media import plan as planning
 from providers.media.provider import MEMBER_KIND, PLAN_KEY, MediaProvider
 from test_v113_collection_route_generic_closure import Route, by_payload, drive, lab, routes, submit
+from transfers.integration_grants import ExecutionGrants
 from transfers import codec
 from transfers.applicability import ApplicabilityClass
 from transfers.errors import Category, Origin, Retryability, Stage, TransferError
@@ -182,7 +183,7 @@ class _Repository:
 
 
 def test_one_paired_integration_one_enable_state_and_network_sources_membership():
-    environment = IntegrationEnvironment(_Repository(), "/tmp/dp-media-downloads")
+    environment = IntegrationEnvironment(ExecutionGrants(_Repository()), "/tmp/dp-media-downloads")
     assert media_definition.kind == "provider_executor" and media_definition.secret_fields == frozenset()
     assert media_definition.owned_identities == frozenset({"media", "yt_dlp"})
     provider, executor = media_definition.build(IntegrationSettings(), environment)
@@ -353,7 +354,7 @@ def test_subtitle_is_authored_then_generated_in_the_preferred_language_only():
     assert settings.preferred_subtitle_language == "de"
     assert "subtitle" not in json.dumps(settings.integrations["media"].model_dump())
     provider, _executor = media_definition.build(IntegrationSettings(), IntegrationEnvironment(
-        _Repository(), "/tmp/dp-media-downloads", preferred_subtitle_language="de"))
+        ExecutionGrants(_Repository()), "/tmp/dp-media-downloads", preferred_subtitle_language="de"))
     assert provider.subtitle_language == "de"
     with pytest.raises(ValueError):
         AppSettings(preferred_subtitle_language="english please")
@@ -1308,7 +1309,7 @@ def test_every_reconfiguration_builds_a_new_executor_on_the_same_live_attempts(t
     from integrations.media.definition import MediaOptions, build
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "state.db")
     environment = SimpleNamespace(download_root=str(tmp_path / "downloads"), preferred_subtitle_language="en",
-                                  repository=SimpleNamespace(authorize_execution=None))
+                                  executions=SimpleNamespace(authorize=None))
     (_provider, first), (_again, second) = build(MediaOptions(), environment), build(MediaOptions(), environment)
     assert first is not second and first.binding == second.binding
     assert first._runs is second._runs
@@ -1516,7 +1517,7 @@ def test_the_option_survives_save_reload_and_restart_and_reaches_the_built_execu
         options = MediaOptions(**reloaded.integrations["media"].options)
         assert options.concurrent_fragment_downloads == 6
         environment = SimpleNamespace(download_root=str(tmp_path / "downloads"), preferred_subtitle_language="en",
-                                      repository=SimpleNamespace(authorize_execution=None))
+                                      executions=SimpleNamespace(authorize=None))
         assert build(options, environment)[1].concurrent_fragments == 6
         # A document without the key (every installation until now) reads 1.
         document = _json.loads(config.CONFIG_PATH.read_text())
@@ -1968,7 +1969,7 @@ def test_a_valid_ordered_selection_saves_reloads_and_reaches_every_extraction(tm
         options = MediaOptions(**config.load_settings().integrations["media"].options)  # what a restart reads
         assert options.youtube_player_clients == ["web_safari", "tv"]
         environment = SimpleNamespace(download_root=str(tmp_path / "downloads"), preferred_subtitle_language="en",
-                                      repository=SimpleNamespace(authorize_execution=None))
+                                      executions=SimpleNamespace(authorize=None))
         provider, executor = build(options, environment)
         # ONE sandbox runs both the provider's extraction and the executor's.
         assert executor.sandbox is provider.extract.__self__
@@ -1997,7 +1998,7 @@ def test_a_stored_client_the_upgraded_yt_dlp_no_longer_offers_is_kept_shown_and_
     assert options.public()["youtube_player_client_support"] == {
         "supported": ["tv", "web", "web_safari"], "unsupported": ["retired"], "effective": []}
     environment = SimpleNamespace(download_root="/downloads", preferred_subtitle_language="en",
-                                  repository=SimpleNamespace(authorize_execution=None))
+                                  executions=SimpleNamespace(authorize=None))
     assert media.build(options, environment)[1].sandbox.youtube_player_clients == ()
     # An unrelated save works and carries the stored choice forward untouched.
     result, saved = _player_client_route(current, {"video_codec": "av1"})

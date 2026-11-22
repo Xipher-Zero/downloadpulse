@@ -118,7 +118,7 @@ class MediaProvider:
         try:
             return await self.extract(address, selection=planning.selection(self.target_resolution),
                                       collection_bound=planning.COLLECTION_BOUND, single_item=single_item,
-                                      context=context)
+                                      **({"context": context} if context else {}))
         except MediaFailure as exc:
             raise _failure(exc.code, exc.detail) from None
 

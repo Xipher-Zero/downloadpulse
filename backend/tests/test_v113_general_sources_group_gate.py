@@ -21,6 +21,7 @@ from integrations.configuration import (
     normalize_settings, public_integrations,
 )
 from integrations.definition import IntegrationEnvironment, IntegrationSettings
+from transfers.integration_grants import ExecutionGrants
 from transfers.registry import IntegrationRegistry
 
 
@@ -142,7 +143,7 @@ def _registered(settings):
     providers so the test needs no repository or managed service."""
     registry = IntegrationRegistry()
     selected = tuple(d for d in definitions if d.id in {"general_http", "general_ftp", "alldebrid"})
-    register(registry, settings, IntegrationEnvironment(object(), "/tmp/dp-group-gate"),
+    register(registry, settings, IntegrationEnvironment(ExecutionGrants(object()), "/tmp/dp-group-gate"),
              selected=selected)
     return {provider.descriptor.id: provider.descriptor.enabled
             for provider in registry.providers.values()}

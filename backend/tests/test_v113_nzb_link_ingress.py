@@ -163,7 +163,7 @@ async def build(tmp_path, monkeypatch, *, max_bytes=None, policy=None):
     registry = IntegrationRegistry()
     provider = UsenetProvider(staged_input=store)
     registry.register_provider(provider)
-    engine = TransferEngine(repository, registry, download_root=str(tmp_path / "downloads"),
+    engine = TransferEngine(repository, registry, staged_input=store, download_root=str(tmp_path / "downloads"),
                             policy=policy or TransferPolicy(), clock=lambda: 1000.0)
     await engine.initialize()
     return ApplicationService(engine, staged_input=store, nzb_reader=read_nzb), store, repository, provider

@@ -98,6 +98,7 @@ aggregation) safe against every other writer.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import math
 from collections.abc import Mapping
@@ -146,6 +147,7 @@ from transfers.input_required import (
 )
 from transfers.requests import auth_scope, direct_link_host
 from transfers.request_context import RequestContext, request_contexts
+from transfers.staged_input import StagedInputError
 from transfers.models import (
     Artifact, ArtifactFingerprint, CancellationInitiator, Capability, CleanupAuthority, CleanupDirective, ContinuationCapability,
     DeliveryKind, DiscoveryDepth, DiscoveryLimits, DiscoveryResult, RemoteObjectKind,
@@ -400,8 +402,13 @@ def _vacancy(folder: str) -> str | None:
 
 class TransferEngine:
     def __init__(self, repository: TransferRepository, registry: IntegrationRegistry, *,
-                 download_root: str, policy: TransferPolicy | None = None, postprocessors=(), clock=time.time):
+                 download_root: str, policy: TransferPolicy | None = None, postprocessors=(), clock=time.time,
+                 staged_input=None):
         self.repository = repository
+        # The staged-input owner (``transfers.staged_input``): core stages a submitted payload
+        # for a provider that reads staged input, and converges an executor's obsolete inline
+        # input -- integrations are handed only a reader.
+        self.staged_input = staged_input
         self.registry = registry
         self.canonical = CanonicalOwnership(repository, material_present=self._material_present)
         self.challenges = InputChallengeStore(clock=clock, on_retired=self._question_retired)
@@ -623,15 +630,89 @@ class TransferEngine:
         (``transfers.request_context``), for an execution request; else None."""
         return await request_contexts.for_transfer(transfer_id)
 
-    async def _with_context(self, transfer_id: int | None, request):
+    async def _with_context(self, transfer_id: int | None, request, provider=None):
         """``request`` as core hands it to a provider: carrying its transfer's
-        submission context when core holds one (``transfers.request_context``).
-        The record's own request is never changed: the context lives only on
-        this in-memory copy."""
+        submission context when core holds one (``transfers.request_context``),
+        and -- for a provider that reads staged input
+        (``staged_request_kinds``) -- an inline payload staged by core first,
+        so no integration ever stages anything. The record's own request is
+        never changed: both live only on this in-memory copy (the staged
+        object is referenced by what the provider returns, else reclaimed by
+        the owner's sweep)."""
         if not isinstance(request, TransferRequest):
             return request
+        if (provider is not None and isinstance(request.payload, (bytes, bytearray, str))
+                and request.kind in getattr(provider, "staged_request_kinds", frozenset())):
+            if self.staged_input is None:
+                raise TransferError(self._error(Category.INVALID_REQUEST, Stage.RESOLUTION, domain=Domain.REQUEST,
+                                                retryability=Retryability.NEVER))
+            try:
+                inline = request.payload
+                inline = inline.encode("utf-8", "strict") if isinstance(inline, str) else bytes(inline)
+                request = replace(request, payload=self.staged_input.stage_bytes(inline))
+            except (StagedInputError, UnicodeEncodeError) as exc:
+                raise TransferError(self._error(Category.INVALID_REQUEST, Stage.RESOLUTION, domain=Domain.REQUEST,
+                                                retryability=Retryability.NEVER)) from exc
         context = await self._request_context(transfer_id)
         return replace(request, context=context) if context else request
+
+    async def _start_converged(self, executor, request: ExecutionRequest, handle, start):
+        """Start ``request`` through ``start`` once its input is canonical
+        (``_canonical_input``); a convergence core refuses is this start's FAILED
+        observation, exactly as the executor's own refusal to start would be."""
+        try:
+            ready = await self._canonical_input(executor, request)
+        except TransferError as exc:
+            return ExecutionObservation(handle, ExecutionState.FAILED, error=exc.error)
+        return await start(ready)
+
+    async def _canonical_input(self, executor, request: ExecutionRequest) -> ExecutionRequest:
+        """``request`` with its selected candidate's OBSOLETE inline input (an earlier
+        release's representation, ``ExecutorCapabilities.obsolete_inline_input``)
+        converged ONCE by core to a staged reference, durably, before the executor
+        starts: decode, stage, verify, then the repository's atomic compare-and-swap
+        of both durable copies (``converge_staged_input``). The executor only ever
+        reads a staged reference; nothing else is changed."""
+        declared = getattr(getattr(executor, "capabilities", None), "obsolete_inline_input", None)
+        candidate = request.work.subject.candidate
+        context = dict(candidate.context or {})
+        if not declared or declared[1] in context or declared[0] not in context:
+            return request
+        obsolete, staged_key = declared
+
+        def refused(category, retryability, diagnostic):
+            return TransferError(NormalizedError(Domain.REQUEST if category == Category.INVALID_REQUEST else
+                                                 Domain.EXECUTOR, category, Stage.QUEUE, retryability=retryability,
+                                                 integration_id=executor.descriptor.id, diagnostic=diagnostic))
+        try:
+            payload = base64.b64decode(str(context[obsolete]), validate=True)
+        except (ValueError, TypeError):
+            raise refused(Category.INVALID_REQUEST, Retryability.NEVER, "submitted input is not valid base64") from None
+        if not payload:
+            raise refused(Category.INVALID_REQUEST, Retryability.NEVER, "submitted input is empty")
+        if self.staged_input is None:
+            raise refused(Category.EXECUTOR_UNAVAILABLE, Retryability.BACKOFF, "staged input unavailable")
+        try:
+            staged = self.staged_input.stage_bytes(payload)
+            self.staged_input.verify(staged)
+        except (StagedInputError, OSError) as exc:
+            raise refused(Category.EXECUTOR_UNAVAILABLE, Retryability.BACKOFF, type(exc).__name__) from exc
+        try:
+            outcome, proven = await self.repository.converge_staged_input(
+                request.attempt_id, staged_context=staged.as_context(), context_key=staged_key,
+                retire_context_keys=(obsolete,))
+        except Exception as exc:
+            raise refused(Category.EXECUTOR_UNAVAILABLE, Retryability.BACKOFF, type(exc).__name__) from exc
+        if outcome == "mismatch":
+            # The two durable copies disagree: corruption, and no authority to pick one.
+            raise refused(Category.INVALID_REQUEST, Retryability.NEVER, "submitted input copies disagree")
+        if outcome not in ("converged", "already") or proven is None:
+            raise refused(Category.EXECUTOR_UNAVAILABLE, Retryability.BACKOFF, f"input convergence: {outcome}")
+        context.pop(obsolete, None)
+        context[staged_key] = dict(proven)
+        work = request.work
+        return replace(request, work=replace(work, subject=replace(work.subject,
+                                                                   candidate=replace(candidate, context=context))))
 
     async def _consented_lan_host(self, record: RequestRecord) -> str:
         """The host the operator explicitly submitted, with local-network
@@ -2048,7 +2129,8 @@ class TransferEngine:
                 try:
                     result = self._authoritative_provider_result(
                         provider.descriptor.id,
-                        await provider.resolve_with_input(await self._with_context(record.transfer_id, record.resolvable),
+                        await provider.resolve_with_input(await self._with_context(record.transfer_id, record.resolvable,
+                                                                                    provider),
                                                           matched),
                         request_kind=record.resolvable.kind, lan_host=lan_host)
                 finally:
@@ -2177,7 +2259,7 @@ class TransferEngine:
             raise TransferError(self._error(Category.INVALID_ADAPTER_RESPONSE, Stage.RESOLUTION))
         interpreted = replace(record, interpretation=alternate)
         result = self._authoritative_provider_result(
-            provider.descriptor.id, await provider.resolve(await self._with_context(record.transfer_id, alternate)),
+            provider.descriptor.id, await provider.resolve(await self._with_context(record.transfer_id, alternate, provider)),
             request_kind=alternate.kind,
             lan_host=await self._consented_lan_host(record))
         if (result.discovery is None or result.discovery.alternate is not None or result.error or result.candidates
@@ -2197,12 +2279,12 @@ class TransferEngine:
         await self.repository.record_interpretation(record.id, alternate)
         return interpreted, await self._discovered(interpreted, provider, outcome)
 
-    @staticmethod
-    async def _discovered(record: RequestRecord, provider, outcome):
+    async def _discovered(self, record: RequestRecord, provider, outcome):
         """The provider's reading of the server's answer (a requirement passes through)."""
         if isinstance(outcome, InputRequirement):
             return outcome
-        return await provider.resolve_discovered(record.resolvable, outcome)
+        return await provider.resolve_discovered(
+            await self._with_context(record.transfer_id, record.resolvable, provider), outcome)
 
     async def _discover(self, record: RequestRecord, provider, requested: ResolutionResult, submitted=None, *,
                         challenge: InputChallenge | None = None):
@@ -2375,7 +2457,7 @@ class TransferEngine:
                 if submitted is None:
                     return
                 secrets = submitted.secret_values()
-                resolvable = await self._with_context(record.transfer_id, record.resolvable)
+                resolvable = await self._with_context(record.transfer_id, record.resolvable, provider)
                 if isinstance(provider, ProviderInputContinuation):
                     result = await provider.resolve_with_input(resolvable, submitted)
                     discovery_input = None
@@ -3499,7 +3581,8 @@ class TransferEngine:
                         submitted = await self._adopted_input(artifact, candidate)
                 if submitted is not None:
                     try:
-                        observed = await executor.start_with_input(request, handle, submitted)
+                        observed = await self._start_converged(executor, request, handle,
+                                                             lambda ready: executor.start_with_input(ready, handle, submitted))
                     except Exception as exc:
                         observed = ExecutionObservation(handle, ExecutionState.UNKNOWN,
                             error=unknown_failure(exc, integration_id=executor.descriptor.id, domain=Domain.EXECUTOR,
@@ -3512,9 +3595,10 @@ class TransferEngine:
                         # Core already decided this same-candidate retry and
                         # fenced the previous attempt; the executor may carry
                         # its native state into the new, durably prepared one.
-                        observed = await executor.retry_from(request, handle, retry_from)
+                        observed = await self._start_converged(executor, request, handle,
+                                                             lambda ready: executor.retry_from(ready, handle, retry_from))
                     else:
-                        observed = await executor.start(request, handle)
+                        observed = await self._start_converged(executor, request, handle, lambda ready: executor.start(ready, handle))
                 except Exception as exc:
                     observed = ExecutionObservation(handle, ExecutionState.UNKNOWN,
                         error=unknown_failure(exc, integration_id=executor.descriptor.id, domain=Domain.EXECUTOR, stage=Stage.QUEUE))
@@ -3770,7 +3854,9 @@ class TransferEngine:
                         return
                     await self.inputs.mark_use(artifact.transfer_id, artifact.request_id, str(candidate.id),
                                                submitted.token)
-                    observed = await executor.start_with_input(request, artifact.execution, submitted)
+                    observed = await self._start_converged(
+                        executor, request, artifact.execution,
+                        lambda ready: executor.start_with_input(ready, artifact.execution, submitted))
                     self._record_admission(observed)
                     current = next(item for item in await self.repository.artifacts(challenge.transfer_id) if item.id == artifact.id)
                     await self._execution_result(current, executor, observed)
@@ -3825,7 +3911,7 @@ class TransferEngine:
                 handle = prepared
             await self.challenges.clear(challenge)
             try:
-                observed = await executor.start(request, handle)
+                observed = await self._start_converged(executor, request, handle, lambda ready: executor.start(ready, handle))
             except Exception as exc:
                 observed = ExecutionObservation(handle, ExecutionState.UNKNOWN,
                     error=unknown_failure(exc, integration_id=executor.descriptor.id, domain=Domain.EXECUTOR,

@@ -736,7 +736,7 @@ async def test_a_torbox_failure_reaches_native_usenet_through_neutral_failover(t
     registry, torbox = nzb_registry(before=True, staged=staged)
     registry.register_executor(MemoryExecutor(TransferRepository().authorize_execution))
     repository = TransferRepository()
-    engine = TransferEngine(repository, registry, download_root=str(tmp_path / "downloads"),
+    engine = TransferEngine(repository, registry, staged_input=staged, download_root=str(tmp_path / "downloads"),
                             policy=TransferPolicy(retry_delay=0.0), clock=lambda: 1000.0)
     await engine.initialize()
     transfer = await engine.submit((TransferRequest("nzb", staged.stage_bytes(NZB), "show.nzb"),), name="show")

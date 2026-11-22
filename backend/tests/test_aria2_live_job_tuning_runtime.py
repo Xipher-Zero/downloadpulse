@@ -33,6 +33,7 @@ import pytest
 import db.database as database
 from executors.aria2.admin import Aria2Administration
 from test_v113_native_continuation_runtime import BODY, MIB, completed, refetched, runtime, start_origin
+from transfers.integration_grants import ExecutionGrants
 from transfers import codec
 from transfers.applicability import ProviderApplicability
 from transfers.models import (
@@ -68,7 +69,7 @@ async def save(rt):
 
 
 def administration(rt):
-    return Aria2Administration(rt.executor, rt.repository, None, SimpleNamespace(tuning_lock=asyncio.Lock()))
+    return Aria2Administration(rt.executor, ExecutionGrants(rt.repository), None, SimpleNamespace(tuning_lock=asyncio.Lock()))
 
 
 async def ticking(rt, stop):

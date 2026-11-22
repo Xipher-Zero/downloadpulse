@@ -156,11 +156,11 @@ def build(options, environment):
         waiting_window=options.waiting_window, stopped_window=options.stopped_window,
         secrets=(RPC_SECRET,),
     )
-    executor = Aria2Executor(client, configuration, environment.repository.authorize_execution, runtime=runtime)
+    executor = Aria2Executor(client, configuration, environment.executions.authorize, runtime=runtime)
     # The managed daemon lifecycle and aria2's administration surface are
     # aria2-owned and reach the application through the generic integration
     # seam (``ManagedIntegration`` / ``AdministeredIntegration``).
-    administration = Aria2Administration(executor, environment.repository, environment.commands, runtime)
+    administration = Aria2Administration(executor, environment.executions, environment.commands, runtime)
     executor.lifecycle = administration
     executor.administration = administration
     return executor

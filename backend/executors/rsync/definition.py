@@ -45,7 +45,7 @@ def build(options, environment):
         connection_timeout_seconds=options.connection_timeout_seconds,
         transfer_timeout_seconds=options.transfer_timeout_seconds,
     )
-    return RsyncExecutor(configuration, environment.repository.authorize_execution)
+    return RsyncExecutor(configuration, environment.executions.authorize)
 
 
 definition = IntegrationDefinition("rsync", "executor", "rsync", RsyncOptions, build)
