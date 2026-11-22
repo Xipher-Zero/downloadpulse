@@ -186,7 +186,7 @@ test('E06/E14: Easy withdraws Activity Log live from the sidebar, the page, the 
   await expect(page.locator('#sidebar [aria-current="page"]')).toHaveCount(1);
 
   await page.setViewportSize({width: 320, height: 760});
-  expect(await dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings', 'help']);
+  await expect.poll(() => dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings', 'help']);
   await expect(page.locator('#shell-dock .dp-shell-dock-more')).toHaveCount(0);
   await expect(page.locator('#shell-dock [data-view="dashboard"]')).toHaveAttribute('aria-current', 'page');
   await expect(page.locator('#shell-dock [aria-current="page"]')).toHaveCount(1);
@@ -195,7 +195,7 @@ test('E06/E14: Easy withdraws Activity Log live from the sidebar, the page, the 
   await openAccount(page);
   await choose(page, 'advanced');
   await closeAccount(page);
-  expect(await dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings']);
+  await expect.poll(() => dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings']);
   await expect(page.locator('#shell-dock .dp-shell-dock-more')).toHaveCount(1);
   expect(await moreViews(page)).toEqual(['events', 'help']);
   await expect(page.locator('#shell-dock [data-view="dashboard"]')).toHaveAttribute('aria-current', 'page');
@@ -448,7 +448,7 @@ test.describe('the password-auth runtime', () => {
 
     const phone = await signIn(browser, user, {width: 320, height: 760});
     const page = phone.page;
-    expect(await dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings', 'help']);
+    await expect.poll(() => dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings', 'help']);
     const bell = page.locator('#shell-dock .dp-shell-dock-item').nth(3);
     await expect(bell).toHaveAttribute('aria-label', 'Notifications');
     await expect(bell.locator('svg[data-dp-lucide="bell-ring"]')).toHaveCount(1);
@@ -465,7 +465,7 @@ test.describe('the password-auth runtime', () => {
     await closeAccount(page);
     expect(await panelCards(page, 'notifications')).toEqual(['Webhook Notifications']);
     await expect(page.locator('#page-title')).toHaveText('Notifications');
-    expect(await dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings', 'help']);
+    await expect.poll(() => dockViews(page)).toEqual(['torrents', 'stats', 'dashboard', 'settings', 'help']);
     await expect(page.locator('#shell-dock [data-view="settings"]')).toHaveAttribute('aria-current', 'page');
     if (EVIDENCE) await page.screenshot({path: `${EVIDENCE}/user-easy-notifications-320.png`});
     expect((await api(page, 'GET', '/settings')).status).toBe(403);   // no Admin settings, either mode

@@ -16,6 +16,37 @@ updates:
     labels:
       - dependencies
       - python
+    # The bundled Usenet service's runtime closure (backend/requirements.in) is pinned to the
+    # versions its SABnzbd release names, and SABnzbd refuses to start with any sabctools but
+    # the one it requires: these move together with a SABnzbd upgrade, never on their own.
+    ignore:
+      - dependency-name: "apprise"
+      - dependency-name: "sabctools"
+      - dependency-name: "CT3"
+      - dependency-name: "feedparser"
+      - dependency-name: "configobj"
+      - dependency-name: "cheroot"
+      - dependency-name: "cherrypy"
+      - dependency-name: "jaraco.functools"
+      - dependency-name: "jaraco.collections"
+      - dependency-name: "jaraco.text"
+      - dependency-name: "jaraco.classes"
+      - dependency-name: "jaraco.context"
+      - dependency-name: "more-itertools"
+      - dependency-name: "zc.lockfile"
+      - dependency-name: "tempora"
+      - dependency-name: "pytz"
+      - dependency-name: "sgmllib3k"
+      - dependency-name: "portend"
+      - dependency-name: "PySocks"
+      - dependency-name: "puremagic"
+      - dependency-name: "rarfile"
+      - dependency-name: "guessit"
+      - dependency-name: "babelfish"
+      - dependency-name: "rebulk"
+      - dependency-name: "hachoir"
+      - dependency-name: "ujson"
+      - dependency-name: "orjson"
     groups:
       # Group all non-breaking minor/patch updates into a single PR
       minor-and-patch:

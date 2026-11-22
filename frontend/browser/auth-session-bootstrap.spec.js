@@ -91,7 +91,9 @@ test('application 401 still redirects when canonical session confirmation report
   expect(await page.evaluate(() => window.downloadPulseAuth.session().authenticated)).toBe(true);
 
   sessionExpired = true;
-  await page.evaluate(() => window.downloadPulseAuth.fetch('/api/bootstrap-expired-probe'));
+  // The expected outcome is a navigation to /login, which can end the page before
+  // an awaited answer returns: start the request and follow the URL instead.
+  await page.evaluate(() => { window.downloadPulseAuth.fetch('/api/bootstrap-expired-probe').catch(() => {}); });
 
   await expect(page).toHaveURL(/\/login\?next=/);
 });

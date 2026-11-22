@@ -69,8 +69,7 @@ async def live(tmp_path, monkeypatch):
     async def operation():
         yield
 
-    monkeypatch.setattr(main.app.state, "application", SimpleNamespace(application_operation=operation),
-                        raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", SimpleNamespace(application_operation=operation))
     from api import auth_routes
 
     # These proofs render the sign-in page many times from one peer.

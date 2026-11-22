@@ -127,8 +127,7 @@ async def served(tmp_path, monkeypatch):
     async def operation():
         yield
 
-    monkeypatch.setattr(main.app.state, "application", SimpleNamespace(application_operation=operation),
-                        raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", SimpleNamespace(application_operation=operation))
     session_store.clear()
     _record, raw = await accounts.create_token(DEFAULT_INTEGRATION_ID, "probe")
     sessions = {}

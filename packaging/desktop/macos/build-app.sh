@@ -22,6 +22,11 @@ app="$out/DownloadPulse.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp -R "$stage" "$app/Contents/Resources/app"
+# The native shell is the process that shows the window and the notices, so it lives
+# where macOS looks for a bundle's code: Contents/MacOS. From there NSBundle's main
+# bundle is DownloadPulse.app, and the notices carry its name and icon; from
+# Resources it had no bundle, and Neutralino fell back to osascript (Script Editor's icon).
+mv "$app/Contents/Resources/app/desktop/shell/downloadpulse-shell" "$app/Contents/MacOS/downloadpulse-shell"
 # The DMG window's background is the DMG's, not the application's.
 icons="$app/Contents/Resources/app/desktop/shell/resources/icons"
 background="$out/dmg-background.tiff"; rm -f "$background"
@@ -47,6 +52,7 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null
 if [ -n "$identity" ]; then
   find "$app/Contents/Resources/app" -type f \( -perm -u+x -o -name '*.so' -o -name '*.dylib' \) -print0 |
     xargs -0 -I{} codesign --force --timestamp --options runtime --entitlements "$here/entitlements.plist" -s "$identity" {}
+  codesign --force --timestamp --options runtime --entitlements "$here/entitlements.plist" -s "$identity" "$app/Contents/MacOS/downloadpulse-shell"
   codesign --force --timestamp --options runtime --entitlements "$here/entitlements.plist" -s "$identity" "$app"
 else
   codesign --force --deep -s - "$app"

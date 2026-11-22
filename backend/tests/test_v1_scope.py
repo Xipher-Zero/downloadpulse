@@ -101,7 +101,7 @@ def test_frontend_and_runtime_lock_have_no_legacy_surface():
         assert marker not in frontend
 
     requirements = (REPO_ROOT / "backend/requirements.txt").read_text().casefold()
-    assert "bencode2==0.3.33" in requirements
+    assert "bencode2==0.3.38" in requirements
     assert "bencodepy" not in requirements
 
 

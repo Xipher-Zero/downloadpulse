@@ -135,7 +135,7 @@ async def test_details_show_requested_by_to_readonly_without_mutation_and_never_
     repository = TransferRepository()
     engine = TransferEngine(repository, IntegrationRegistry(), download_root="/nonexistent-payloads",
                             policy=TransferPolicy(retry_delay=0), clock=lambda: 1000.0)
-    monkeypatch.setattr(main.app.state, "application", ApplicationService(engine), raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", ApplicationService(engine))
     someone = await accounts.create_local_account("someone", "someone-secret", role="user", display_name="Someone")
     transfer_id, _demand = await _submit(repository, someone.id)
 
@@ -211,7 +211,7 @@ async def test_every_reader_sees_every_request_and_withdrawal_stays_the_owners(s
     repository = TransferRepository()
     engine = TransferEngine(repository, IntegrationRegistry(), download_root="/nonexistent-payloads",
                             policy=TransferPolicy(retry_delay=0), clock=lambda: 1000.0)
-    monkeypatch.setattr(main.app.state, "application", ApplicationService(engine), raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", ApplicationService(engine))
     other = await accounts.create_local_account("other", "other-secret", role="user", display_name="Other")
     transfer_id, _other_first = await _submit(repository, other.id)
     await _submit(repository, other.id)

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.0.1] — Development
+
+### Fixed
+
+- **macOS notifications carry DownloadPulse's name and icon.** The desktop app's window process now
+  runs from the application bundle's own code folder, so macOS delivers its notifications as
+  DownloadPulse's instead of through Script Editor.
+
+### Changed
+
+- **Dependencies:** FastAPI 0.163.2, Uvicorn 0.54.0, uvloop 0.23.0, httptools 0.9.0, aiohttp
+  3.14.5, Pydantic 2.14.3, bencode2 0.3.38, python-multipart 0.0.34, AsyncSSH 2.24.1, Authlib 1.9.9,
+  joserfc 1.8.0 and yt-dlp 2026.10.26; FastAPI now brings opentelemetry-api 1.45.2 (Apache-2.0). The
+  bundled Usenet service's own packages stay at the versions SABnzbd 5.1.3 requires.
+
 ## [1.0.0] — First public release
 
 DownloadPulse 1.0.0 is the first public release: a self-hosted download manager for a server or NAS,

@@ -1149,6 +1149,21 @@ LIFECYCLE_NOTICES = {"transfer.accepted": "desktop.notice.accepted", "transfer.c
                      "transfer.paused": "transfer.action.paused_toast"}
 
 
+def shell_binary_path(shell_dir: Path, platform: str = sys.platform) -> Path:
+    """The native shell's executable. In the macOS application bundle it is in
+    Contents/MacOS (packaging/desktop/macos/build-app.sh), so that macOS takes it
+    for DownloadPulse.app's own code and its notices carry the application's name
+    and icon; everywhere else, and outside a bundle, it is beside its resources."""
+    if platform == "win32":
+        return shell_dir / "downloadpulse-shell.exe"
+    if platform == "darwin" and len(shell_dir.parents) > 3:
+        # <bundle>/Contents/Resources/app/desktop/shell -> <bundle>/Contents/MacOS
+        bundled = shell_dir.parents[3] / "MacOS" / "downloadpulse-shell"
+        if bundled.is_file():
+            return bundled
+    return shell_dir / "downloadpulse-shell"
+
+
 def shell_environment(root: Path, environ=None, platform: str = sys.platform) -> dict[str, str]:
     """The native shell's environment: this process's own, plus
       - Windows: its WebView2 profile inside DownloadPulse's data root
@@ -1315,7 +1330,7 @@ async def run() -> int:
             auth_file.unlink(missing_ok=True)
             # The shell runs under DownloadPulse's own name (its webview keys its
             # data on it), in the environment shell_environment() gives it.
-            shell_binary = paths["shell"] / ("downloadpulse-shell.exe" if os.name == "nt" else "downloadpulse-shell")
+            shell_binary = shell_binary_path(paths["shell"])
             shell_process = await processes.spawn(SHELL_ID, [
                 str(shell_binary), f"--path={paths['shell']}", "--load-dir-res",
                 f"--url=http://127.0.0.1:{port}/"], env=shell_environment(root))

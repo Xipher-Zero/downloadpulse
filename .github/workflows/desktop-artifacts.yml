@@ -36,7 +36,7 @@
 # notarization or physical-hardware qualification. Nothing is signed (the DMG
 # is ad hoc signed only) and no secret is used.
 #
-# Runs on every push to 1.0.0 that touches the desktop, its recipes or its
+# Runs on every push to 1.0.1 that touches the desktop, its recipes or its
 # legal files. Each platform builds and smoke-tests its own final installer on
 # its own runner and reports the build identity, hashes and results in its job
 # summary. The Actions cache carries only shareable build inputs
@@ -51,7 +51,8 @@
 # its smoke-tested outputs to the combined handover as an intermediate artifact
 # of this run (desktop-intermediate-<platform>-<sha>, 1 day); the handover runs
 # once the shared inputs passed, takes exactly the platforms that passed every
-# step -- one EXE, DMG or Flatpak each, stamped with this commit and run and
+# step (each set waits for only its own builds, so a platform is published as
+# soon as it is done) -- one EXE, DMG or Flatpak each, stamped with this commit and run and
 # matching its builder's SHA256SUMS --, assembles their corresponding source
 # (DownloadPulse-<version>-desktop-sources-*.tar: the recipes' source archives,
 # patches and recipes -- sources only, never RAR's package --, the MSYS2
@@ -70,7 +71,7 @@ name: Desktop Artifacts
 on:
   push:
     branches:
-      - '1.0.0'
+      - '1.0.1'
     paths:
       - 'desktop/**'
       - 'packaging/desktop/**'
@@ -122,6 +123,7 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       platforms: ${{ steps.plan.outputs.platforms }}
+      sets: ${{ steps.plan.outputs.sets }}
     steps:
       # The platforms this run builds: all three on a push, the dispatch's choice otherwise.
       - name: The platforms this run builds
@@ -134,7 +136,7 @@ jobs:
             macos|windows|linux) platforms="$CHOICE" ;;
             *) echo "unknown platforms: $CHOICE"; exit 1 ;;
           esac
-          entries=()
+          entries=(); sets=()
           for platform in $platforms; do
             case "$platform" in
               macos) entries+=('{"name":"macos-arm64","os":"macos-15"}') ;;
@@ -142,8 +144,19 @@ jobs:
               linux) entries+=('{"name":"linux-x64","os":"ubuntu-24.04"}') ;;
             esac
           done
+          # The handover's sets: each platform on its own, as soon as its build is done, and the
+          # complete set when this run builds all three.
+          for platform in $platforms; do
+            case "$platform" in
+              macos) sets+=('{"set":"macos","builds":"macos-arm64"}') ;;
+              windows) sets+=('{"set":"windows","builds":"windows-x64"}') ;;
+              linux) sets+=('{"set":"linux","builds":"linux-x64"}') ;;
+            esac
+          done
+          [ "$platforms" != "macos windows linux" ] || sets+=('{"set":"complete","builds":"macos-arm64 windows-x64 linux-x64"}')
           matrix="{\"include\":[$(IFS=,; echo "${entries[*]}")]}"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "sets={\"include\":[$(IFS=,; echo "${sets[*]}")]}" >> "$GITHUB_OUTPUT"
           echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
           echo "Building: $platforms" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -566,16 +579,48 @@ jobs:
           path: desktop-build/
 
   handover:
-    name: Installers and their corresponding source (approved commit only; each platform, and the complete set)
-    needs: [inputs, desktop]
+    name: Installers and their corresponding source (approved commit only; ${{ matrix.set }})
+    # Not after the whole desktop matrix: each set starts with the shared inputs and waits for
+    # exactly the builds it carries, so a platform is published as soon as its own build is done
+    # and a slow runner holds back only the complete set.
+    needs: inputs
     # Only for the one commit DESKTOP_INSTALLERS_UPLOAD_SHA names in full, once the shared inputs passed:
     # it publishes each platform that passed every build and smoke check (only those hand over an
     # intermediate artifact), whatever became of the others; any other run ends with its installers on
     # their build runners.
     if: always() && needs.inputs.result == 'success' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.inputs.outputs.sets) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The wait for its builds (the desktop job's own limit, 150 minutes) and then the handover itself.
+    timeout-minutes: 190
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - name: Wait for the builds this set carries (${{ matrix.builds }})
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDS: ${{ matrix.builds }}
+        run: |
+          # The latest attempt of each of this run's jobs, so a re-run build is the one waited for.
+          while :; do
+            jobs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | select(.name | startswith("Desktop (")) | "\(.name)|\(.status)|\(.conclusion)"')"
+            pending=""; failed=""
+            for build in $BUILDS; do
+              line="$(printf '%s\n' "$jobs" | grep -F "Desktop ($build)|" || true)"
+              case "$line" in
+                *"|completed|success") ;;
+                *"|completed|"*) failed="$failed $build" ;;
+                *) pending="$pending $build" ;;
+              esac
+            done
+            if [ -n "$failed" ]; then echo "did not pass:$failed -- nothing to publish for ${{ matrix.set }}"; exit 1; fi
+            [ -n "$pending" ] || break
+            echo "waiting for:$pending"; sleep 60
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -590,10 +635,10 @@ jobs:
           key: desktop-inputs-${{ env.RUN_KEY }}
           enableCrossOsArchive: true
           fail-on-cache-miss: true
-      - name: The platforms' smoke-tested outputs (this run's intermediate artifacts)
+      - name: The platforms' smoke-tested outputs (this run's intermediate artifacts, of this set's builds)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: desktop-intermediate-*-${{ github.sha }}
+          pattern: desktop-intermediate-${{ matrix.set == 'complete' && '*' || matrix.builds }}-${{ github.sha }}
           merge-multiple: true
           path: desktop-build
       - name: The platforms that passed (each handed over its smoke-tested outputs)
@@ -732,7 +777,7 @@ jobs:
       # Publish (only for the one commit the repository variable DESKTOP_INSTALLERS_UPLOAD_SHA names in full;
       # this repository is public, so anyone signed in to GitHub can download them).
       - name: Publish macOS
-        if: steps.passed.outputs.macos == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
+        if: matrix.set == 'macos' && steps.passed.outputs.macos == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}-macos
@@ -740,7 +785,7 @@ jobs:
           if-no-files-found: error
           path: ${{ runner.temp }}/sets/macos/
       - name: Publish Windows
-        if: steps.passed.outputs.windows == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
+        if: matrix.set == 'windows' && steps.passed.outputs.windows == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}-windows
@@ -748,7 +793,7 @@ jobs:
           if-no-files-found: error
           path: ${{ runner.temp }}/sets/windows/
       - name: Publish Linux
-        if: steps.passed.outputs.linux == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
+        if: matrix.set == 'linux' && steps.passed.outputs.linux == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}-linux
@@ -756,7 +801,7 @@ jobs:
           if-no-files-found: error
           path: ${{ runner.temp }}/sets/linux/
       - name: Publish the complete set (all three passed in this run)
-        if: steps.passed.outputs.complete == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
+        if: matrix.set == 'complete' && steps.passed.outputs.complete == 'true' && vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-installers-${{ github.sha }}

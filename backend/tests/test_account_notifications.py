@@ -214,8 +214,7 @@ async def live(tmp_path, monkeypatch, wire):
     async def operation():
         yield
 
-    monkeypatch.setattr(main.app.state, "application", SimpleNamespace(application_operation=operation),
-                        raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", SimpleNamespace(application_operation=operation))
     session_store.clear()
     await admin_with_password()                       # a usable sign-in, so role alone decides
     people = {

@@ -8,7 +8,7 @@ on:
   push:
     branches:
       - main
-      - '1.0.0'
+      - '1.0.1'
       - 'staging/**'
       - 'audit/**'
     tags:

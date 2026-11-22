@@ -329,8 +329,7 @@ async def open_mode(tmp_path, monkeypatch):
     async def operation():
         yield
 
-    monkeypatch.setattr(main.app.state, "application", SimpleNamespace(application_operation=operation),
-                        raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", SimpleNamespace(application_operation=operation))
     _record, token = await accounts.create_token(DEFAULT_INTEGRATION_ID, "rebinding-probe")
     transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url=SOCKET) as client:

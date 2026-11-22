@@ -1032,7 +1032,7 @@ async def http(world, monkeypatch, tmp_path):
         profiles=profiles)})
     config.apply_settings(current)
     config.save_settings(current)
-    monkeypatch.setattr(main.app.state, "application", world.application, raising=False)
+    monkeypatch.setitem(main.app.state._state, "application", world.application)
     session_store.clear()
     admin, _ = session_store.create(Principal.password_session(account("admin", account_id=accounts.DEFAULT_ADMIN_ID,
                                                                        role=Role.ADMIN)), lifetime_seconds=3600)

@@ -1023,3 +1023,25 @@ async def test_the_shells_save_dialog_answer_is_read_as_neutralino_sends_it(tmp_
             await receiving
     finally:
         await runner.cleanup()
+
+
+# ── macOS: the shell runs from the bundle's Contents/MacOS ─────────────────
+
+def test_the_macos_bundle_runs_the_shell_from_contents_macos(tmp_path):
+    shell_dir = tmp_path / "DownloadPulse.app" / "Contents" / "Resources" / "app" / "desktop" / "shell"
+    shell_dir.mkdir(parents=True)
+    (shell_dir.parents[3] / "MacOS").mkdir()
+    bundled = shell_dir.parents[3] / "MacOS" / "downloadpulse-shell"
+    # Outside a bundle (no Contents/MacOS shell), and on Linux, it is beside its resources.
+    assert supervisor.shell_binary_path(shell_dir, "darwin") == shell_dir / "downloadpulse-shell"
+    bundled.write_bytes(b"")
+    assert supervisor.shell_binary_path(shell_dir, "darwin") == bundled
+    assert supervisor.shell_binary_path(shell_dir, "linux") == shell_dir / "downloadpulse-shell"
+    assert supervisor.shell_binary_path(shell_dir, "win32") == shell_dir / "downloadpulse-shell.exe"
+
+
+def test_the_macos_build_moves_the_shell_into_contents_macos_and_signs_it():
+    script = (Path(__file__).resolve().parents[2] / "packaging/desktop/macos/build-app.sh").read_text(encoding="utf-8")
+    assert ('mv "$app/Contents/Resources/app/desktop/shell/downloadpulse-shell" '
+            '"$app/Contents/MacOS/downloadpulse-shell"') in script
+    assert '-s "$identity" "$app/Contents/MacOS/downloadpulse-shell"' in script

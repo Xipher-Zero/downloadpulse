@@ -95,7 +95,7 @@ def test_aria2_global_options_http_request_does_not_deadlock_behind_maintenance(
         return await call_next(request)
 
     probe = AdmissionProbe()
-    monkeypatch.setattr(main_module.app.state, "application", probe, raising=False)
+    monkeypatch.setitem(main_module.app.state._state, "application", probe)
     monkeypatch.setattr(main_module, "enforce_authentication", passthrough)
     monkeypatch.setattr(main_module, "enforce_general_web_security", passthrough)
 

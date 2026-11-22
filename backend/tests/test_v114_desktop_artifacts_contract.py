@@ -6,8 +6,9 @@ workflow, the installer script and the recipes as committed.
   signature-checked and unmodified, and runs it only interactively, with its
   own interface (Microsoft's licence terms); a silent install refuses instead.
 * The handover publishes each platform that passed every build and smoke
-  check on its own, and the complete set only when all three passed in the
-  run, only for the one commit an explicit approval names.
+  check on its own, as soon as that platform's build is done (not after the
+  whole matrix), and the complete set only when all three passed in the run,
+  only for the one commit an explicit approval names.
 * RARLAB's RAR package is never cached or handed over as source.
 * The checksum file covers the manifest and every delivered file, not itself.
 """
@@ -107,8 +108,21 @@ APPROVED = "vars.DESKTOP_INSTALLERS_UPLOAD_SHA == github.sha"
 
 def test_the_handover_publishes_each_passed_platform_and_the_complete_set_only_for_an_approved_commit():
     handover = JOBS["handover"]
-    assert set(handover["needs"]) == {"inputs", "desktop"}
+    # Each set waits for only its own builds: it needs the shared inputs, not the desktop matrix.
+    assert handover["needs"] == "inputs"
     assert handover["if"] == f"always() && needs.inputs.result == 'success' && {APPROVED}"
+    assert handover["strategy"] == {"fail-fast": False, "matrix": "${{ fromJSON(needs.inputs.outputs.sets) }}"}
+    assert handover["permissions"] == {"contents": "read", "actions": "read"}
+    wait = _steps("handover")[0]
+    assert wait["env"]["BUILDS"] == "${{ matrix.builds }}"
+    assert "actions/runs/$GITHUB_RUN_ID/jobs?filter=latest" in wait["run"]
+    assert '*"|completed|success") ;;' in wait["run"] and "exit 1" in wait["run"]
+    plan = next(step for step in _steps("inputs") if step.get("id") == "plan")["run"]
+    for entry in ('{"set":"macos","builds":"macos-arm64"}', '{"set":"windows","builds":"windows-x64"}',
+                  '{"set":"linux","builds":"linux-x64"}'):
+        assert entry in plan
+    assert ('[ "$platforms" != "macos windows linux" ] || '
+            'sets+=(\'{"set":"complete","builds":"macos-arm64 windows-x64 linux-x64"}\')') in plan
     uploads = [(job, step) for job, body in JOBS.items() for step in body["steps"]
                if "actions/upload-artifact" in step.get("uses", "")]
     assert [(job, step["with"]["retention-days"]) for job, step in uploads] == [("desktop", 1)] + [("handover", 14)] * 4
@@ -117,15 +131,20 @@ def test_the_handover_publishes_each_passed_platform_and_the_complete_set_only_f
     assert intermediate["with"]["name"] == "desktop-intermediate-${{ matrix.name }}-${{ github.sha }}"
     published = {step["with"]["name"]: step["if"] for _, step in uploads[1:]}
     assert published == {
-        "desktop-installers-${{ github.sha }}-macos": f"steps.passed.outputs.macos == 'true' && {APPROVED}",
-        "desktop-installers-${{ github.sha }}-windows": f"steps.passed.outputs.windows == 'true' && {APPROVED}",
-        "desktop-installers-${{ github.sha }}-linux": f"steps.passed.outputs.linux == 'true' && {APPROVED}",
-        "desktop-installers-${{ github.sha }}": f"steps.passed.outputs.complete == 'true' && {APPROVED}"}
+        "desktop-installers-${{ github.sha }}-macos":
+            f"matrix.set == 'macos' && steps.passed.outputs.macos == 'true' && {APPROVED}",
+        "desktop-installers-${{ github.sha }}-windows":
+            f"matrix.set == 'windows' && steps.passed.outputs.windows == 'true' && {APPROVED}",
+        "desktop-installers-${{ github.sha }}-linux":
+            f"matrix.set == 'linux' && steps.passed.outputs.linux == 'true' && {APPROVED}",
+        "desktop-installers-${{ github.sha }}":
+            f"matrix.set == 'complete' && steps.passed.outputs.complete == 'true' && {APPROVED}"}
     passed = next(step for step in _steps("handover") if step.get("id") == "passed")["run"]
     assert 'if [ -f "desktop-build/$os/COMMIT" ]' in passed
     assert '[ "$passed" != "macos windows linux" ] || echo "complete=true"' in passed
     download = next(step for step in _steps("handover") if "actions/download-artifact" in step.get("uses", ""))
-    assert download["with"]["pattern"] == "desktop-intermediate-*-${{ github.sha }}"
+    assert download["with"]["pattern"] == (
+        "desktop-intermediate-${{ matrix.set == 'complete' && '*' || matrix.builds }}-${{ github.sha }}")
     cleanup = JOBS["intermediates"]
     assert set(cleanup["needs"]) == {"desktop", "handover"} and cleanup["if"] == f"always() && {APPROVED}"
     assert cleanup["permissions"] == {"actions": "write"} and WORKFLOW["permissions"] == {"contents": "read"}

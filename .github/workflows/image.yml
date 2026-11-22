@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - '1.0.0'
+      - '1.0.1'
       - 'staging/**'
     tags:
       - 'v*'
@@ -12,7 +12,7 @@ on:
   pull_request:
     branches:
       - main
-      - '1.0.0'
+      - '1.0.1'
       - 'staging/**'
   workflow_dispatch:
     inputs:
@@ -595,13 +595,13 @@ jobs:
           printf 'Candidate tags:\n%s\n' "$GENERATED_TAGS"
 
   # This commit's immutable image is published (a re-run included): move the
-  # rolling development alias 1.0.0-testing to it, if it is still the 1.0.0
-  # tip, one evaluation at a time. Its outcome is the "1.0.0-testing" commit
+  # rolling development alias 1.0.1-testing to it, if it is still the 1.0.1
+  # tip, one evaluation at a time. Its outcome is the "1.0.1-testing" commit
   # status, never this workflow's verdict.
   testing-alias:
     name: Testing alias
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/1.0.0'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/1.0.1'
     permissions:
       contents: read
       packages: write

@@ -9,7 +9,7 @@ the lock file and `licenses/python-runtime.json`.
 | Package | Version | License |
 |---|---:|---|
 | aiohappyeyeballs | 2.6.1 | PSF-2.0 |
-| aiohttp | 3.14.4 | Apache-2.0 AND MIT |
+| aiohttp | 3.14.5 | Apache-2.0 AND MIT |
 | aiosignal | 1.4.0 | Apache-2.0 |
 | aiosqlite | 0.22.1 | MIT |
 | annotated-doc | 0.0.4 | MIT |
@@ -18,12 +18,12 @@ the lock file and `licenses/python-runtime.json`.
 | apprise | 1.12.0 | BSD-2-Clause |
 | argon2-cffi | 25.1.0 | MIT |
 | argon2-cffi-bindings | 26.1.0 | MIT; vendored Argon2/BLAKE2 components are CC0-1.0 |
-| asyncssh | 2.24.0 | EPL-2.0 OR GPL-2.0-or-later (used under GPL-2.0-or-later) |
+| asyncssh | 2.24.1 | EPL-2.0 OR GPL-2.0-or-later (used under GPL-2.0-or-later) |
 | attrs | 26.1.0 | MIT |
-| authlib | 1.9.1 | BSD-3-Clause |
+| authlib | 1.9.9 | BSD-3-Clause |
 | babelfish | 0.6.1 | BSD-3-Clause |
 | bcrypt | 5.0.0 | Apache-2.0 |
-| bencode2 | 0.3.33 | MIT ([bundled notice](../licenses/bencode2-MIT.txt)) |
+| bencode2 | 0.3.38 | MIT ([bundled notice](../licenses/bencode2-MIT.txt)) |
 | certifi | 2026.10.19 | MPL-2.0 |
 | cffi | 2.1.1 | MIT-0 |
 | charset-normalizer | 3.5.1 | MIT |
@@ -34,7 +34,7 @@ the lock file and `licenses/python-runtime.json`.
 | cryptography | 50.0.0 | Apache-2.0 OR BSD-3-Clause |
 | ct3 | 3.4.0.post5 | MIT |
 | deno | 2.9.8 | MIT |
-| fastapi | 0.141.1 | MIT |
+| fastapi | 0.163.2 | MIT |
 | feedparser | 6.0.12 | BSD-2-Clause |
 | frozenlist | 1.8.0 | Apache-2.0 |
 | google-re2 | 1.1.20251105 | BSD-3-Clause |
@@ -42,7 +42,7 @@ the lock file and `licenses/python-runtime.json`.
 | h11 | 0.16.0 | MIT |
 | hachoir | 3.3.0 | GPL-2.0-only (bundled service dependency; see the copyleft review below) |
 | httpcore | 1.0.9 | BSD-3-Clause |
-| httptools | 0.8.0 | MIT |
+| httptools | 0.9.0 | MIT |
 | httpx | 0.28.1 | BSD-3-Clause |
 | idna | 3.15 | BSD-3-Clause |
 | jaraco-classes | 3.4.0 | MIT |
@@ -50,22 +50,23 @@ the lock file and `licenses/python-runtime.json`.
 | jaraco-context | 4.3.0 | MIT |
 | jaraco-functools | 4.6.0 | MIT |
 | jaraco-text | 3.8.1 | MIT |
-| joserfc | 1.7.6 | BSD-3-Clause |
+| joserfc | 1.8.0 | BSD-3-Clause |
 | markdown | 3.10.3 | BSD-3-Clause |
 | more-itertools | 11.1.0 | MIT |
 | multidict | 6.9.1 | Apache-2.0 |
 | oauthlib | 4.0.1 | BSD-3-Clause |
+| opentelemetry-api | 1.45.2 | Apache-2.0 |
 | orjson | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) |
 | portend | 3.2.1 | MIT |
 | prometheus-client | 0.26.0 | Apache-2.0 AND BSD-2-Clause |
 | propcache | 0.5.2 | Apache-2.0 |
 | puremagic | 2.2.0 | MIT |
 | pycparser | 3.0 | BSD-3-Clause |
-| pydantic | 2.13.4 | MIT |
-| pydantic-core | 2.46.4 | MIT |
+| pydantic | 2.14.3 | MIT |
+| pydantic-core | 2.50.4 | MIT |
 | pysocks | 1.7.1 | BSD-3-Clause |
 | python-dateutil | 2.9.0.post0 | Apache-2.0 AND BSD-3-Clause |
-| python-multipart | 0.0.32 | Apache-2.0 |
+| python-multipart | 0.0.34 | Apache-2.0 |
 | pytz | 2026.2 | MIT |
 | pyyaml | 6.0.3 | MIT |
 | rarfile | 4.3 | ISC |
@@ -78,14 +79,14 @@ the lock file and `licenses/python-runtime.json`.
 | six | 1.17.0 | MIT |
 | starlette | 1.3.1 | BSD-3-Clause |
 | tempora | 5.8.1 | MIT |
-| typing-extensions | 4.15.0 | PSF-2.0 |
-| typing-inspection | 0.4.2 | MIT |
+| typing-extensions | 4.16.0 | PSF-2.0 |
+| typing-inspection | 0.4.5 | MIT |
 | ujson | 5.13.0 | BSD-3-Clause AND TCL |
 | urllib3 | 2.8.0 | MIT |
-| uvicorn | 0.52.4 | BSD-3-Clause |
-| uvloop | 0.22.1 | MIT OR Apache-2.0 |
+| uvicorn | 0.54.0 | BSD-3-Clause |
+| uvloop | 0.23.0 | MIT OR Apache-2.0 |
 | yarl | 1.25.1 | Apache-2.0 |
-| yt-dlp | 2026.10.21 | Unlicense |
+| yt-dlp | 2026.10.26 | Unlicense |
 | yt-dlp-ejs | 0.8.0 | Unlicense AND MIT AND ISC |
 | zc-lockfile | 4.0 | ZPL-2.1 |
 

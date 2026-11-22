@@ -215,13 +215,16 @@ test('the menu works from the keyboard, Escape and an outside press dismiss it, 
   await page.focus('#theme-picker-toggle');
   await page.keyboard.press('Enter');
   await expect.poll(() => menuOpen(page)).toBe(true);
-  expect(await page.evaluate(() => document.activeElement.textContent.trim())).toBe('DownloadPulse (Default)');
+  // Focus moves into the menu once it has opened (and its choices are listed): wait for it,
+  // or a slow runner reads the toggle that still holds it.
+  const focused = () => page.evaluate(() => document.activeElement.textContent.trim());
+  await expect.poll(focused).toBe('DownloadPulse (Default)');
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');
-  expect(await page.evaluate(() => document.activeElement.textContent.trim())).toBe('Dracula');
+  await expect.poll(focused).toBe('Dracula');
   await page.keyboard.press('Enter');
   await expect.poll(() => menuOpen(page)).toBe(false);
-  expect(await page.evaluate(() => document.activeElement.id)).toBe('theme-picker-toggle');
+  await expect.poll(() => page.evaluate(() => document.activeElement.id)).toBe('theme-picker-toggle');
   expect(await page.getAttribute('#theme-picker-toggle', 'aria-expanded')).toBe('false');
   expect(await state(page)).toMatchObject({light: false, palette: 'dracula'});
 
@@ -229,7 +232,7 @@ test('the menu works from the keyboard, Escape and an outside press dismiss it, 
   await expect.poll(() => menuOpen(page)).toBe(true);
   await page.keyboard.press('Escape');
   await expect.poll(() => menuOpen(page)).toBe(false);
-  expect(await page.evaluate(() => document.activeElement.id)).toBe('theme-picker-toggle');
+  await expect.poll(() => page.evaluate(() => document.activeElement.id)).toBe('theme-picker-toggle');
 
   const box = (await openPicker(page), await page.locator('#theme-picker').boundingBox());
   await page.mouse.click(20, 980);

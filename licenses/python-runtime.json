@@ -9,7 +9,7 @@
     },
     {
       "name": "aiohttp",
-      "version": "3.14.4",
+      "version": "3.14.5",
       "license": "Apache-2.0 AND MIT"
     },
     {
@@ -54,7 +54,7 @@
     },
     {
       "name": "asyncssh",
-      "version": "2.24.0",
+      "version": "2.24.1",
       "license": "EPL-2.0 OR GPL-2.0-or-later"
     },
     {
@@ -64,7 +64,7 @@
     },
     {
       "name": "authlib",
-      "version": "1.9.1",
+      "version": "1.9.9",
       "license": "BSD-3-Clause"
     },
     {
@@ -79,7 +79,7 @@
     },
     {
       "name": "bencode2",
-      "version": "0.3.33",
+      "version": "0.3.38",
       "license": "MIT"
     },
     {
@@ -134,7 +134,7 @@
     },
     {
       "name": "fastapi",
-      "version": "0.141.1",
+      "version": "0.163.2",
       "license": "MIT"
     },
     {
@@ -174,7 +174,7 @@
     },
     {
       "name": "httptools",
-      "version": "0.8.0",
+      "version": "0.9.0",
       "license": "MIT"
     },
     {
@@ -214,7 +214,7 @@
     },
     {
       "name": "joserfc",
-      "version": "1.7.6",
+      "version": "1.8.0",
       "license": "BSD-3-Clause"
     },
     {
@@ -236,6 +236,11 @@
       "name": "oauthlib",
       "version": "4.0.1",
       "license": "BSD-3-Clause"
+    },
+    {
+      "name": "opentelemetry-api",
+      "version": "1.45.2",
+      "license": "Apache-2.0"
     },
     {
       "name": "orjson",
@@ -269,12 +274,12 @@
     },
     {
       "name": "pydantic",
-      "version": "2.13.4",
+      "version": "2.14.3",
       "license": "MIT"
     },
     {
       "name": "pydantic-core",
-      "version": "2.46.4",
+      "version": "2.50.4",
       "license": "MIT"
     },
     {
@@ -289,7 +294,7 @@
     },
     {
       "name": "python-multipart",
-      "version": "0.0.32",
+      "version": "0.0.34",
       "license": "Apache-2.0"
     },
     {
@@ -354,12 +359,12 @@
     },
     {
       "name": "typing-extensions",
-      "version": "4.15.0",
+      "version": "4.16.0",
       "license": "PSF-2.0"
     },
     {
       "name": "typing-inspection",
-      "version": "0.4.2",
+      "version": "0.4.5",
       "license": "MIT"
     },
     {
@@ -374,12 +379,12 @@
     },
     {
       "name": "uvicorn",
-      "version": "0.52.4",
+      "version": "0.54.0",
       "license": "BSD-3-Clause"
     },
     {
       "name": "uvloop",
-      "version": "0.22.1",
+      "version": "0.23.0",
       "license": "MIT OR Apache-2.0"
     },
     {
@@ -389,7 +394,7 @@
     },
     {
       "name": "yt-dlp",
-      "version": "2026.10.21",
+      "version": "2026.10.26",
       "license": "Unlicense"
     },
     {
