@@ -107,6 +107,19 @@ def permits(principal: Principal | None, capability: Capability) -> bool:
     return capability is Capability.PUBLIC or capability in capabilities(principal)
 
 
+def account_permits(principal: Principal | None, capability: Capability) -> bool:
+    """What the principal's ACCOUNT's role permits, whatever token carried the
+    request. Never a route's authority (a browser token reaches only the
+    browser client, ``capabilities``): it answers what the person a browser
+    acts for may do with that browser's own downloads -- Pause and Resume them
+    as they could in DownloadPulse (operator, 2026-11-22)."""
+    try:
+        role = Role(str(getattr(principal, "role", "") or ""))
+    except ValueError:
+        return False
+    return capability is Capability.PUBLIC or capability in ROLE_CAPABILITIES[role]
+
+
 _P, _S, _I = Capability.PUBLIC, Capability.SESSION, Capability.INTERFACE
 _R, _ST = Capability.TRANSFERS_READ, Capability.STATISTICS_READ
 _SUB, _OP, _DES = Capability.TRANSFERS_SUBMIT, Capability.TRANSFERS_OPERATE, Capability.TRANSFERS_DESTROY

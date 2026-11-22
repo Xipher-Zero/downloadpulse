@@ -23,6 +23,12 @@
 - **A browser download that joined another shows its real progress.** A download sent from the
   browser that joined one already in progress showed as done at once; it now shows the shared
   download's state and progress, and is done when that file is.
+- **Pause and Resume from the browser work like they do in DownloadPulse.** The extension refused
+  to pause a download another request also needed, and to resume one paused in DownloadPulse.
+  A connected browser acts for the person who connected it, so either person may now pause or
+  resume a shared download from their browser, whoever paused it, as they can in DownloadPulse.
+  Only a global pause is still left for DownloadPulse to lift. An Integration's pause is
+  unchanged: it is honoured only while no other request needs the download.
 
 ### Changed
 

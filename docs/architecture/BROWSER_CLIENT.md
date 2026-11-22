@@ -85,7 +85,7 @@ the one external-client owner (`external/service.py`), as a **browser** job
 (`external_jobs.kind`). It has no category, delivery profile, delivery or
 acknowledgement. Everything else is the external protocol's, unchanged:
 client-scoped idempotency, the change-cursor listing, isolation, demand-only
-withdrawal, advisory pause/resume and the per-client limits.
+withdrawal and the per-client limits. Its pause and resume are its person's own (below), not the advisory hold an Integration gets.
 
 | Route | Does |
 |---|---|
@@ -93,7 +93,7 @@ withdrawal, advisory pause/resume and the per-client limits.
 | `GET /api/browser/v1/jobs?after&limit&phase` | This browser's jobs by change cursor. |
 | `GET /api/browser/v1/jobs/{id}` | One of them; another client's is `404`. |
 | `POST /api/browser/v1/jobs/{id}/withdraw` | Remove: withdraw this browser's request. The download stops only if nobody else needs it; finished files are kept. |
-| `POST /api/browser/v1/jobs/{id}/controls` `{kind: pause\|resume, request_key}` | The protocol's advisory controls. Honoured only while this browser's request is the only one the download serves, otherwise declined with its reason (`shared_interest`, `globally_paused`, `paused_independently`, …). |
+| `POST /api/browser/v1/jobs/{id}/controls` `{kind: pause\|resume, request_key}` | The person's own Pause and Resume of the download this job is served by (a joined job's shared transfer), as in DownloadPulse: honoured whoever else's request shares it and whoever paused it (operator, 2026-11-22). Declined only while everything is paused (`globally_paused`), once settled (`already_settled`) or withdrawn (`job_withdrawn`). The pause is an operator pause, not a client hold; `paused_by` is `client` while the standing pause is still the one this browser applied. |
 
 - **Sources.** `links` (1–100), `magnet`, `nzb_link`, `nzb`, `torrent`,
   `metalink` (a `.meta4` file, as DownloadPulse's own upload takes it).

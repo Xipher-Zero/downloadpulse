@@ -35,6 +35,7 @@ from dataclasses import dataclass
 
 from auth.accounts import owned_account_ids
 from auth.models import AuthMechanism, Principal
+from auth.permissions import Capability, account_permits
 from auth.throttle import DualWindowRateLimiter
 from core.logging_utils import sanitize_exception
 from db.database import get_db
@@ -130,8 +131,9 @@ def _lock(table, key) -> asyncio.Lock:
 # The client kinds (``external.store``): an Integration's jobs are delivered
 # into a delivery profile; a person's connected browser's jobs are that
 # person's own downloads, as Quick Add's are -- no category, profile or
-# delivery. Everything else (identity, idempotency, listing, isolation,
-# withdrawal, advisory controls, limits) is one and the same for both.
+# delivery. Its pause and resume are its person's own (``_person_controls``),
+# not an advisory hold. Everything else (identity, idempotency, listing,
+# isolation, withdrawal, limits) is one and the same for both.
 BROWSER = "browser"
 # What a browser may submit: every kind DownloadPulse's own Quick Add takes.
 BROWSER_SOURCE_KINDS = frozenset({"links", "magnet", "nzb_link", "nzb", "torrent", "metalink"})
@@ -143,6 +145,26 @@ def _browser(principal: Principal | None) -> bool:
 
 def _kind(job: dict) -> str:
     return str(job.get("kind") or "integration")
+
+
+def _person_controls(job: dict, principal: Principal | None) -> bool:
+    """Whether a control on ``job`` is its person's own Pause/Resume rather than
+    an advisory request. A connected browser acts for the person who connected
+    it, and that person may pause and resume any download in DownloadPulse --
+    one other people's requests share included; the people sort a disagreement
+    out between them (operator, 2026-11-22). An Integration is no person: its
+    pause stays an advisory hold it alone may release, never against another
+    requester's interest."""
+    return _kind(job) == BROWSER and account_permits(principal, Capability.TRANSFERS_OPERATE)
+
+
+def _person_owns(control: dict | None, hold: dict | None) -> bool:
+    """Whether the transfer's standing pause is still exactly the person's own
+    Pause this control applied (no holder: an operator pause, at the generation
+    it wrote) -- so the browser may say it paused it."""
+    return bool(control is not None and hold is not None and hold["paused"] and not hold["holder"]
+                and not control["pause_holder"] and control["pause_generation"] is not None
+                and int(hold["generation"]) == int(control["pause_generation"]))
 
 
 def _delivered_kind(job: dict) -> None:
@@ -911,6 +933,26 @@ class ExternalClients:
         if demand["withdrawn_at"] is not None:
             return {"disposition": "declined", "reason": "job_withdrawn", "transfer_id": transfer_id}
         holder = _holder(control_id)
+        person = _person_controls(job, principal)
+
+        async def decide_as_person():
+            # The person's own Pause/Resume, exactly DownloadPulse's (``engine.pause``
+            # / ``engine.resume``), except that a browser never lifts a global pause.
+            status = await self._status(transfer_id)
+            globally = await self.repository.globally_paused()
+            hold = await self.repository.pause_hold(transfer_id)
+            paused = bool(hold and hold["paused"]) or status == "paused"
+            if status in _TERMINAL or status is None:
+                return {"disposition": "declined", "reason": "already_settled"}
+            if globally:
+                return {"disposition": "declined", "reason": "globally_paused"}
+            if kind == "pause":
+                if paused:
+                    return {"disposition": "honored", "reason": "already_paused"}
+                return {"disposition": "honored", "reason": "paused", "apply": ("pause", None)}
+            if not paused:
+                return {"disposition": "honored", "reason": "not_paused"}
+            return {"disposition": "honored", "reason": "resumed", "apply": ("resume", None)}
 
         async def decide():
             status = await self._status(transfer_id)
@@ -952,11 +994,17 @@ class ExternalClients:
         from transfers.storage import StorageHealthError
 
         try:
-            decision = await self.application.adjudicated_control(transfer_id, decide)
+            decision = await self.application.adjudicated_control(
+                transfer_id, decide_as_person if person else decide)
         except (ApplicationMaintenanceActive, StorageHealthError) as exc:  # refused before decide: nothing applied
             logger.info("external control not applied (job %s): %s", job["id"], type(exc).__name__)
             decision = {"disposition": "declined", "reason": "maintenance_active", "retryable": True}
         applied, hold = decision.pop("applied", ()), decision.pop("hold", None)
+        if person:
+            if decision["reason"] == "paused" and hold and hold["paused"] and not hold["holder"]:
+                decision["pause_generation"] = int(hold["generation"])
+            decision["transfer_id"] = transfer_id
+            return decision
         if decision["reason"] == "paused":
             if hold and hold["paused"] and hold["holder"] == holder:
                 decision.update(pause_holder=holder, pause_generation=int(hold["generation"]))
@@ -1113,6 +1161,13 @@ class ExternalClients:
             settled += 1
             await self._refresh(row["job_id"])
         return settled
+
+    async def _latest_pause(self, job_id: str) -> dict | None:
+        """The job's standing applied pause, its person's own included (no holder)."""
+        async with get_db() as db:
+            return await db.fetchone(
+                """SELECT * FROM external_controls WHERE job_id=? AND kind='pause' AND disposition='honored'
+                   AND reason='paused' AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1""", (job_id,))
 
     async def _active_pause(self, job_id: str) -> dict | None:
         async with get_db() as db:
@@ -1463,7 +1518,7 @@ class ExternalClients:
             active = await self._active_pause(job["id"])
             hold = await self.repository.pause_hold(int(transfer["id"]) if transfer else transfer_id)
             projection["paused_by"] = (
-                "client" if _owns(active, hold)
+                "client" if _owns(active, hold) or _person_owns(await self._latest_pause(job["id"]), hold)
                 else "administrator" if await self.repository.globally_paused() else "operator")
         if status == "error" and transfer and transfer["normalized_error"]:
             try:
@@ -1832,7 +1887,8 @@ class ExternalClients:
             transfer_id = int(row["transfer_id"])
             hold = await self.repository.pause_hold(transfer_id)
             status = await self._status(transfer_id)
-            if _owns(await self._active_pause(row["job_id"]), hold):
+            if (_owns(await self._active_pause(row["job_id"]), hold)
+                    or _person_owns(await self._latest_pause(row["job_id"]), hold)):
                 effective = "paused" if status == "paused" else "pausing"
             elif (hold is not None and hold["paused"]) or status == "paused":
                 effective = "held_by_operator"

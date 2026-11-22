@@ -914,7 +914,11 @@ class ApplicationService:
         operator control interleaves between what was read and what was
         done. The result carries ``applied`` (the engine's answer; ``None``
         for a refused release) and ``hold`` (the pause owner's intent
-        afterwards). Never an operator route under an external identity."""
+        afterwards). ``("pause", None)`` and ``("resume", None)`` are a
+        connected browser's PERSON's own Pause and Resume (a browser acts for
+        the person who connected it); an Integration's control is only ever a
+        hold and its fenced release. Never an operator route under an external
+        identity."""
         async with self.operator_controls, self.application_operation():
             decision = await decide()
             action = decision.pop("apply", None)
@@ -924,6 +928,10 @@ class ApplicationService:
                     decision["applied"] = await self.engine.pause(int(transfer_id), holder=value)
                 elif kind == "release":
                     decision["applied"] = await self.engine.resume(int(transfer_id), held_by=value)
+                elif kind == "resume" and value is None:
+                    # A connected browser's person's own Resume (``decide`` found no
+                    # global pause on this boundary, so none is lifted).
+                    decision["applied"] = await self.engine.resume(int(transfer_id))
                 else:
                     raise ValueError(f"unknown advisory control {kind!r}")
                 decision["hold"] = await self.repository.pause_hold(int(transfer_id))
