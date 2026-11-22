@@ -2,6 +2,7 @@
   <img src="docs/logo.svg" width="96" alt="DownloadPulse Logo"/>
   <h1>DownloadPulse</h1>
   <p><strong>Self-hosted transfer orchestration for direct links, magnets, torrents, NZBs and media pages.</strong><br/>Universal lifecycle · debrid, Usenet and network-source providers · aria2, rsync, SABnzbd and yt-dlp execution · recovery · observability</p>
+  <p><a href="https://downloadpulse.net"><strong>downloadpulse.net</strong></a></p>
 
   [![License](https://img.shields.io/github/license/Xipher-Zero/downloadpulse?style=flat-square)](LICENSE)
   [![Tests](https://img.shields.io/github/actions/workflow/status/Xipher-Zero/downloadpulse/tests.yml?style=flat-square&label=tests)](https://github.com/Xipher-Zero/downloadpulse/actions/workflows/tests.yml)
