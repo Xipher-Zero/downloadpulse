@@ -28,13 +28,13 @@ async function boot(page, width, {fonts = true} = {}) {
   await page.setViewportSize({width, height: 1000});
   await page.route(url => url.pathname === '/api/stats/detail', route => route.fulfill({status: 200, contentType: 'application/json',
     body: JSON.stringify({period: new URL(route.request().url()).searchParams.get('period'),
-      totals: {torrent_total: 123456, completed_count: 123456, partial_total: 12345, success_rate_pct: 99.9, completed_size: 999.9 * 1024 ** 4},
+      totals: {torrent_total: 123456, completed_count: 123456, partial_total: 12345, success_rate_pct: 99.9, completed_size: 999.9 * 1000 ** 4},
       torrent_status: [], file_status: [], event_levels: [], transfer_methods: [], daily_completions: []})}));
   await page.route(url => url.pathname === '/api/stats', async route => {
     const response = await route.fetch();
     const body = await response.json();
     route.fulfill({response, json: {...body, completed_last_24h: 9999, completed_last_7d: 99999, success_rate_pct: 99.9,
-      avg_download_duration_seconds: 123.4 * 3600, avg_torrent_size_bytes: 999.9 * 1024 ** 3}});
+      avg_download_duration_seconds: 123.4 * 3600, avg_torrent_size_bytes: 999.9 * 1000 ** 3}});
   });
   await page.goto('/');
   await page.waitForFunction(() => window.DPStatisticsLifecycle);

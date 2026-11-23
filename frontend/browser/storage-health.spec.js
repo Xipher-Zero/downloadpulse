@@ -96,7 +96,7 @@ test('storage transition UX deduplicates stable faults, reports capacity, and cl
   await expect(warning).toBeVisible();
   await expect(warning.locator('.dp-storage-warning__domain')).toHaveText('Download Storage');
   await expect(warning.locator('.dp-storage-warning__state')).toHaveText('Full');
-  await expect(warning.locator('.dp-storage-warning__capacity')).toHaveText('0 B free of 100.0 GB');
+  await expect(warning.locator('.dp-storage-warning__capacity')).toHaveText('0 B free of 107.4 GB');
   await expect(page.locator('.toast.error .dp-toast-copy', {hasText: 'Download Storage is full'})).toHaveCount(1);
 
   await page.evaluate(() => Promise.all([
@@ -156,7 +156,7 @@ test('storage warning keeps domains independent and never renders unknown capaci
   await expect(application.locator('.dp-storage-warning__capacity')).toHaveCount(0);
   await expect(download.locator('.dp-storage-warning__domain')).toHaveText('Download Storage');
   await expect(download.locator('.dp-storage-warning__state')).toHaveText('Low space');
-  await expect(download.locator('.dp-storage-warning__capacity')).toHaveText('5.0 GB free of 100.0 GB');
+  await expect(download.locator('.dp-storage-warning__capacity')).toHaveText('5.4 GB free of 107.4 GB');
   expect(await application.textContent()).not.toContain('0 B');
 
   current = health({

@@ -87,7 +87,7 @@ test('Backups opens the manager with restore points, never member files', async 
   await expect(rows(dialog)).toHaveCount(3);
   await expect(rows(dialog).first().locator('.dp-backup-contents')).toHaveText('DP State');
   await expect(rows(dialog).first().locator('.dp-backup-when')).toContainText('2026');
-  await expect(rows(dialog).first().locator('.dp-backup-size')).toHaveText('18.4 MB');
+  await expect(rows(dialog).first().locator('.dp-backup-size')).toHaveText('19.3 MB');
   const text = await dialog.innerText();
   for (const member of ['downloadpulse.db', 'config.json', 'avatar']) expect(text).not.toContain(member);
   // Application terminology only: nothing transport-shaped anywhere.

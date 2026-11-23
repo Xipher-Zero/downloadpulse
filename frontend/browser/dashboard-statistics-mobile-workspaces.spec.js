@@ -217,7 +217,7 @@ test('the Statistics header shows the longest wordings drawn whole, the filters 
       expect(h.cards.find(card => card.metric === 'data').label).toBe('Total Data Downloaded');
       expect(h.rest, `${width}px: separator and history row`).toEqual([true, true]);
     }
-    expect(h.cards.find(card => card.metric === 'data').value).toBe('679.9 GB');
+    expect(h.cards.find(card => card.metric === 'data').value).toBe('730 GB');
     // Label and value each drawn whole on one line inside their card (scaled down on a narrow card).
     for (const card of h.cards) expect(card.whole, `${width}px ${card.metric}: label and value whole`).toBe(true);
   }
