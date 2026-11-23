@@ -552,11 +552,12 @@ test.describe('touch', () => {
     await page.locator('#t-tbody tr[data-torrent-id="9801"] .t-chk').tap();
     await page.locator('.dp-downloads-bulk-action--resume').tap();
     await expect.poll(() => state.bulk.at(-1)).toEqual({ids: [9801], action: 'resume'});
-    // The bulk action ends by refreshing the statistics without waiting: let a
-    // GET /stats still inside the /api/stats route finish before the test ends,
-    // so teardown cannot dispose the response its handler is reading (the
-    // dashboard-decorative-pulse precedent). No particular response is awaited:
-    // a refresh may be coalesced with one already in flight.
-    await page.unrouteAll({behavior: 'wait'});
+    // The bulk action ends by refreshing the statistics without waiting, and
+    // this page also holds routed requests that never finish on their own; so
+    // the routes are taken down without waiting for handlers still running,
+    // and an error one of them raises after the test (a response disposed by
+    // teardown) is not reported against it. Everything this test proves was
+    // asserted above.
+    await page.unrouteAll({behavior: 'ignoreErrors'});
   });
 });
