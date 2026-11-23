@@ -2,7 +2,7 @@
 
 This document describes the live frontend ownership model. It records current owners and boot relationships; it does not describe historical correction layers as though they were still canonical.
 
-The application reports `1.0.2` for the current release.
+The application reports `1.0.3` for the current development tree; `1.0.2` is the latest published release.
 
 ## Core rule
 

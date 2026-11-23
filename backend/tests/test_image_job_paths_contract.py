@@ -58,7 +58,7 @@ def _evaluate(expression: str, *, event: str, ref: str, publish_sha: bool) -> bo
 
 # (event, ref, publish_sha) -> the one job that runs
 CASES = [
-    ("push", "refs/heads/1.0.2", False, "publish"),
+    ("push", "refs/heads/1.0.3", False, "publish"),
     ("push", "refs/heads/main", False, "publish"),
     ("push", "refs/heads/staging/x", False, "publish"),
     ("push", "refs/tags/v1.0.14", False, "publish"),
@@ -70,7 +70,7 @@ CASES = [
     ("workflow_dispatch", "refs/heads/fix/x", True, "publish"),
     ("workflow_dispatch", "refs/heads/chore/x", True, "publish"),
     ("workflow_dispatch", "refs/heads/main", False, "build-and-smoke-test"),
-    ("workflow_dispatch", "refs/heads/1.0.2", True, "build-and-smoke-test"),
+    ("workflow_dispatch", "refs/heads/1.0.3", True, "build-and-smoke-test"),
     ("workflow_dispatch", "refs/heads/staging/x", True, "build-and-smoke-test"),
 ]
 
@@ -134,4 +134,4 @@ def test_the_smoke_steps_exist_once_as_text_and_are_reused_by_alias():
 def test_the_testing_alias_follows_the_one_publishing_job():
     alias = _jobs()["testing-alias"]
     assert alias["needs"] == "publish"
-    assert alias["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/1.0.2'"
+    assert alias["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/1.0.3'"
