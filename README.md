@@ -175,7 +175,9 @@ Open:
 http://your-server:8095
 ```
 
-Go to **Settings → Services**. Network sources are switched on in a new installation; every premium service is off until you turn it on (connecting a Real-Debrid or TorBox account turns that service on once the connection is proven). Enable the premium services you intend to use and connect each premium service's account (an API key, or the service's own device sign-in). **HTTP & HTTPS** intentionally has only its canonical enable control. If the installation is reachable by users or networks you do not fully trust, configure native access control under **Settings → Authentication** before exposing it beyond that trusted boundary.
+The first time it opens, the **Setup Wizard** walks through a new installation: the interface language, the **Deployment Type** (**Standalone**, one person as the built-in Administrator, with no password set up by the wizard, or **Server**, several people with their own accounts), the **Download Directory**, on a Server the username and password of your own **Administrator** account (creating it turns on Username & Password sign-in), optional **Premium Services**, and **Getting Started**. Each step is saved when you select **Next**. On a Server, sign in with the new Administrator account after **Finish & Open Dashboard**. An Admin can run it again from **My Account → Rerun Setup Wizard**; a rerun changes no account.
+
+Everything the wizard sets can be changed later in **Settings**. Go to **Settings → Services**. Network sources are switched on in a new installation; every premium service is off until you turn it on (connecting a Real-Debrid or TorBox account turns that service on once the connection is proven). Enable the premium services you intend to use and connect each premium service's account (an API key, or the service's own device sign-in). **HTTP & HTTPS** intentionally has only its canonical enable control. If the installation is reachable by users or networks you do not fully trust, configure native access control under **Settings → Authentication** before exposing it beyond that trusted boundary.
 
 ### Docker image
 
@@ -206,6 +208,8 @@ docker run -d \
 ```
 
 Adjust the paths and UID/GID for your system. `CORS_ORIGINS=*` prevents startup: list explicit origins, or leave it unset.
+
+**Rootless Podman.** The container starts as root, sets the ownership of `/app/config`, `/app/data` and `/download` to `PUID:PGID`, then runs DownloadPulse as that user. Under rootless Podman's default user namespace, a container UID such as 1000 is a sub-UID on the host, so those folders end up owned by an ID your host user cannot read. Run it with `--userns=keep-id --user 0:0` and set `PUID`/`PGID` to your host user's `id -u`/`id -g`: the container UID then is your own, and the files are yours. `--userns=keep-id` alone is not enough, because the container would then start as your user rather than root and could not switch users.
 
 ---
 
@@ -312,7 +316,10 @@ When Username & Password authentication is enabled, REST clients may use standar
 | `POST` | `/api/torrents/add-file` | Upload a `.torrent` file |
 | `GET` | `/api/torrents` | List tracked downloads |
 | `GET` | `/api/torrents/{id}` | Retrieve a tracked download |
-| `DELETE` | `/api/torrents/{id}` | Delete a tracked download |
+| `DELETE` | `/api/torrents/{id}` | Delete a tracked download. `remove_remote` (default `true`) also removes its copy at the premium service, if it has one; `remove_remote=false` keeps that copy. The older name `from_alldebrid` is still accepted; sending both with different values is refused (HTTP 422) and nothing is deleted |
+| `POST` | `/api/torrents/{id}/pause` | Pause a download |
+| `POST` | `/api/torrents/{id}/resume` | Resume a paused download |
+| `POST` | `/api/torrents/{id}/cancel` | Cancel a download |
 | `POST` | `/api/torrents/{id}/retry` | Retry a failed download |
 | `POST` | `/api/torrents/import-existing` | Import transfers already present on enabled premium-service accounts |
 | `POST` | `/api/torrents/recover-all` | Recover eligible stuck or failed transfers |
@@ -340,7 +347,7 @@ When Username & Password authentication is enabled, REST clients may use standar
 | `GET` | `/api/auth/config` | Redacted authentication configuration/status |
 | `PUT` | `/api/auth/config` | Update native authentication configuration through the lockout state machine |
 | `POST` | `/api/auth/oidc/verify-config` | Stage proposed OIDC settings and start full verification sign-in |
-| `GET/POST/DELETE` | `/api/accounts/{id}/tokens` | List, issue (shown once) or revoke an Integration account's bearer tokens (Admin) |
+| `GET/POST/DELETE` | `/api/accounts/{id}/tokens` | List, issue (shown once) or revoke (`DELETE /api/accounts/{id}/tokens/{token_id}`) an Integration account's bearer tokens (Admin). `POST` takes a JSON body with a required `label` (1–128 characters) naming the token, and an optional `succeeds` (an earlier token's ID) that rotates it: the new token takes over that token's jobs and the earlier one is revoked at once |
 | `GET` / `POST` | `/api/requests`, `/api/requests/{id}/withdraw` | List and withdraw your own submitted requests (Admin: anyone's) |
 
 ---

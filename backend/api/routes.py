@@ -19,6 +19,7 @@ from typing import Annotated, AsyncGenerator, Literal
 from urllib.parse import urlparse, urlsplit
 
 from fastapi import Depends, APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -1636,12 +1637,19 @@ async def save_transfer_trace(torrent_id: int, application: ApplicationService =
 
 
 @router.delete("/torrents/{torrent_id}")
-async def delete_torrent(torrent_id: int, request: Request, from_alldebrid: bool = True,
+async def delete_torrent(torrent_id: int, request: Request, remove_remote: bool | None = None,
+                         from_alldebrid: bool | None = None,
                          application: ApplicationService = Depends(get_application)):
+    """``remove_remote`` (default true): also remove the transfer's copy at
+    the provider. ``from_alldebrid`` is its old name, still accepted; both
+    given with different values is refused before anything is deleted."""
+    if remove_remote is not None and from_alldebrid is not None and remove_remote != from_alldebrid:
+        raise RequestValidationError([{"type": "value_conflict", "loc": ("query", "remove_remote"),
+                                       "msg": "remove_remote and from_alldebrid disagree", "input": None}])
+    remote = next((value for value in (remove_remote, from_alldebrid) if value is not None), True)
     expected = await require_destruction(request, application.repository, torrent_id)
-    # The old query parameter is retained as an external API compatibility alias.
     try:
-        return await application.delete(torrent_id, remote=from_alldebrid, expected_demand=expected)
+        return await application.delete(torrent_id, remote=remote, expected_demand=expected)
     except KeyError:
         raise DisplayError(404, "Transfer not found", code="transfer.not_found")
 

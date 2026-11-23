@@ -84,6 +84,35 @@ async def test_actual_api_drives_fake_provider_and_executor_without_native_id(ru
 
 
 @pytest.mark.asyncio
+async def test_delete_names_provider_removal_remove_remote_and_keeps_from_alldebrid(runtime, monkeypatch):
+    """``remove_remote`` and its old name ``from_alldebrid`` both decide
+    whether the provider-side copy is removed; neither given keeps the
+    default (removed); both given and disagreeing is refused untouched."""
+    application, _provider, _executor, client = runtime
+    calls = []
+
+    async def delete(transfer_id, *, remote=True, expected_demand=None):
+        calls.append(remote)
+        return {"ok": True}
+
+    response = await client.post("/api/links/add", json={"links": ["https://fake.example/remote-copy"]})
+    assert response.status_code == 200, response.text
+    transfer_id = response.json()["id"]
+    monkeypatch.setattr(application, "delete", delete)
+    for query, remote in (("", True), ("?remove_remote=false", False), ("?remove_remote=true", True),
+                          ("?from_alldebrid=false", False), ("?from_alldebrid=true", True),
+                          ("?remove_remote=false&from_alldebrid=false", False)):
+        response = await client.delete(f"/api/torrents/{transfer_id}{query}")
+        assert response.status_code == 200, (query, response.text)
+        assert calls[-1] is remote, query
+    before = len(calls)
+    response = await client.delete(f"/api/torrents/{transfer_id}?remove_remote=false&from_alldebrid=true")
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "remove_remote"]
+    assert len(calls) == before
+
+
+@pytest.mark.asyncio
 async def test_duplicate_preview_validates_empty_input_and_accepts_core_resource_identity(runtime):
     _application, provider, _executor, client = runtime
     assert (await client.post("/api/torrents/check-duplicate", json={})).status_code == 400

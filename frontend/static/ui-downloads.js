@@ -1464,7 +1464,7 @@ async function deleteT(id, eventObj, button) {
   const targetId = confirmedIds[0];
   setButtonPending(button, true, 'downloads.action.deleting');
   try {
-    await api('DELETE', `/torrents/${targetId}?from_alldebrid=true`);
+    await api('DELETE', `/torrents/${targetId}?remove_remote=true`);
     toast(window.DPI18n.t('downloads.action.deleted'), 'success');
     await loadTorrents();
     loadStats();
