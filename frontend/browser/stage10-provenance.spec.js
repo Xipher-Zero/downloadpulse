@@ -441,9 +441,13 @@ test('row identity survives an authoritative refresh: expansion and focus are ke
   await expect(page.locator('tr[data-dp-candidate-owner="artifact:17432"]')).toBeVisible();
   await disclosure.focus();
 
-  // The same background refresh the Downloads/Dashboard surfaces trigger: the
-  // Files rows are re-rendered wholesale from a fresh payload.
-  await page.evaluate(() => document.dispatchEvent(new CustomEvent('downloadpulse:downloads-rendered')));
+  // Details' live refresh (app.js dpRefreshDetail, the entry its live signals
+  // call): the Files rows are re-rendered wholesale from a fresh payload.
+  const fresh = {...canonicalDetail(), name: 'Refreshed release'};
+  await page.route(url => url.pathname === '/api/torrents/303',
+    r => r.fulfill({status:200, contentType:'application/json', body:JSON.stringify(fresh)}));
+  await page.evaluate(() => dpRefreshDetail());
+  await expect(page.locator('#modal-title')).toHaveText('Refreshed release');
   await expect(page.locator('.dp-detail-files-card tr.dp-detail-file-row')).toHaveCount(10);
   // Expanded state is keyed by presentation_id, so it survives the re-render
   // instead of collapsing or reopening against the wrong row.

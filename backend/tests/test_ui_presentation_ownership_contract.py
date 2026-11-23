@@ -167,7 +167,7 @@ def test_transfer_level_candidate_control_is_one_shared_group_owner() -> None:
     index = read("index.html")
     # The shared runtime is loaded once, as an ordered defer script (like the
     # per-file candidate owner), not through the bounded presentation loader.
-    assert index.count("/ui-group-candidates.js?v=2") == 1
+    assert index.count("/ui-group-candidates.js?v=3") == 1
     assert "ui-group-candidates.js" not in provider
     style = read("style.css")
     assert style.count("/ui-group-candidates.css") == 1

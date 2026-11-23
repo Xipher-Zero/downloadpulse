@@ -128,4 +128,4 @@ def test_escape_closes_details_through_the_shared_modal_owner():
     # Focus goes back to the invoking row, or the row redrawn in its place.
     assert "returnTargetNow(returnTarget)" in modal
     index = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert index.count("/app.js?v=44") == 1
+    assert index.count("/app.js?v=46") == 1

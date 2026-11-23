@@ -57,7 +57,6 @@
   let detailTransferId = null;
   // The open Details mount's newest re-read: an older answer never repaints it.
   let mountGeneration = 0;
-  let mountRefreshTimer = null;
 
   function esc(value) {
     if (typeof window.esc === 'function') return window.esc(value);
@@ -419,8 +418,6 @@
   function onDetailClosed() {
     detailTransferId = null;
     mountGeneration += 1;
-    if (mountRefreshTimer != null) window.clearTimeout(mountRefreshTimer);
-    mountRefreshTimer = null;
     closeMenu();
   }
 
@@ -435,18 +432,9 @@
     } catch (_) { /* the modal owns its own error surface */ }
   }
 
-  // The server published a semantic change of the transfer whose Details is
-  // open (e.g. a newly committed candidate): re-read it once per burst. A
-  // switch in progress refreshes the mount itself when it finishes.
-  function onTransferUpdated(event) {
-    const transferId = Number(event && event.detail && event.detail.transferId);
-    if (detailTransferId == null || transferId !== detailTransferId || menuBusy) return;
-    if (mountRefreshTimer != null) window.clearTimeout(mountRefreshTimer);
-    mountRefreshTimer = window.setTimeout(function () {
-      mountRefreshTimer = null;
-      if (!menuBusy) refreshDetailMount();
-    }, 120);
-  }
+  // A semantic change of the open transfer is Details' own live refresh
+  // (app.js): its drawing (detail-rendered, relabel) re-renders this mount
+  // from that payload. Only a finished switch re-reads the mount here.
 
   // ── Popover ─────────────────────────────────────────────────────────────
 
@@ -1309,7 +1297,6 @@
     document.addEventListener('pointerdown', onDocumentPointerDown, true);
     document.addEventListener('downloadpulse:detail-rendered', onDetailRendered);
     document.addEventListener('downloadpulse:detail-closed', onDetailClosed);
-    document.addEventListener('downloadpulse:transfer-updated', onTransferUpdated);
     document.addEventListener('downloadpulse:locale-changed', onLocaleChanged);
     // Deferred to a microtask defensively: Downloads and Dashboard Recent
     // both render the group launcher inline, in the same pass as the rest

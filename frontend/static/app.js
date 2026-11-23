@@ -908,6 +908,7 @@ function dpCloseContextMenu(restoreFocus) {
   abort.abort();
   node.remove();
   if (restoreFocus) restore?.();
+  dpDrawHeldDetail();                 // Details' newest answer waited for the menu
 }
 function dpOpenContextMenu(event, anchor, {label, items, restore}) {
   dpCloseContextMenu(false);
@@ -3403,8 +3404,9 @@ function dpErrorReasonMarkup(t) {
     + `<div class="dp-detail-error-reason-schedule">${schedule}</div></div></div>`;
 }
 
-/* Details' body and title from one payload: drawn when it arrives, and again --
- * from the same payload, with no request -- when the page's language changes. */
+/* Details' body and title from one payload: drawn when it arrives, again --
+ * from the same payload, with no request -- when the page's language changes,
+ * and again from a newer one while it is open (dpRefreshDetail, below). */
 let dpDetailShown = null;
 function dpPaintDetail(t, relabel) {
   const modalTitle = document.getElementById('modal-title');
@@ -3502,16 +3504,28 @@ function dpPaintDetail(t, relabel) {
     dpRenderWithdrawal(t);
     dpRenderReveal(t);
 
-    // ``relabel``: the same transfer re-said in another language; the Files
-    // header owners re-word from what they hold instead of re-reading.
+    // ``relabel``: the same transfer drawn again in place -- re-said in another
+    // language, or Details' live refresh; the Files header owners re-draw
+    // from what they hold instead of re-reading, and keep their open menus.
     document.dispatchEvent(new CustomEvent('downloadpulse:detail-rendered',
       {detail: {transferId: Number(t.id), transfer: t, relabel: Boolean(relabel)}}));
 }
 
 /* Repaint ``root`` from data it already shows, keeping the reader's place: its
- * scroll, which <details> are open, and focus -- the element at the same place
- * (the same data draws the same structure), else the dialog's close control. */
+ * scroll, which <details> are open, focus -- the element at the same place
+ * (the same data draws the same structure), else the dialog's close control --
+ * and a text selection inside it, where the same place still holds that much text. */
 function dpRepaintKeepingPlace(root, paint) {
+  const selection = window.getSelection();
+  const at = node => {
+    if (!root.contains(node)) return null;
+    const route = [];
+    for (; node !== root; node = node.parentNode) route.unshift(Array.prototype.indexOf.call(node.parentNode.childNodes, node));
+    return route;
+  };
+  const find = route => route.reduce((node, index) => node && node.childNodes[index], root);
+  const range = selection && selection.rangeCount && !selection.isCollapsed ? selection.getRangeAt(0) : null;
+  const ends = range && [[at(range.startContainer), range.startOffset], [at(range.endContainer), range.endOffset]];
   const scroll = root.scrollTop;
   const opened = Array.from(root.querySelectorAll('details'), node => node.open);
   const active = document.activeElement;
@@ -3522,6 +3536,11 @@ function dpRepaintKeepingPlace(root, paint) {
   paint();
   root.querySelectorAll('details').forEach((node, index) => { if (index < opened.length) node.open = opened[index]; });
   root.scrollTop = scroll;
+  if (ends && ends.every(([route]) => route)) {
+    const nodes = ends.map(([route, offset]) => [find(route), offset]);
+    const fits = ([node, offset]) => node && offset <= (node.nodeType === Node.TEXT_NODE ? node.length : node.childNodes.length);
+    if (nodes.every(fits)) selection.setBaseAndExtent(nodes[0][0], nodes[0][1], nodes[1][0], nodes[1][1]);
+  }
   if (!path.length) return;
   let target = root;
   for (const index of path) target = target && target.children[index];
@@ -3531,12 +3550,102 @@ function dpRepaintKeepingPlace(root, paint) {
 document.addEventListener('downloadpulse:locale-changed', () => {
   const body = document.getElementById('modal-body');
   if (DPModal.mode !== 'details' || !dpDetailShown || !body) return;
-  // The newest payload held for this transfer (the Files owner may have refreshed it).
-  const newer = window.DPDetailCandidates?.latest?.();
-  if (newer && Number(newer.id) === Number(dpDetailShown.id)) dpDetailShown = newer;
+  // dpDetailShown is the newest payload: Details is its only reader, and live
+  // progress figures are merged into it.
   dpRepaintKeepingPlace(body, () => dpPaintDetail(dpDetailShown, true));
 });
-document.addEventListener('downloadpulse:detail-closed', () => { dpDetailShown = null; });
+document.addEventListener('downloadpulse:detail-closed', () => { dpDetailShown = null; dpDetailHeld = null; });
+
+/* Details stays live while it is open. A live signal that the open transfer
+ * changed semantically -- this module's torrent_updated naming it (alone, or as
+ * a progress batch's item whose status changed), a consolidation naming it its
+ * canonical target, or, with no stream to name it, the polling fallback's tick
+ * and a reconnected stream -- re-reads it with the opening's own GET: one read
+ * in flight at most, and one trailing read for whatever changed meanwhile.
+ * The answer is drawn in place keeping the reader's place; an unchanged answer
+ * draws nothing. An answer for an earlier opening, or after Details closed or
+ * gave the shell to another view, is never shown. A transfer gone since shows
+ * the opening's own failure. While a pointer is pressed in Details or its menu
+ * is open, the newest answer waits and is drawn once they are let go. */
+let dpDetailHeld = null;
+let dpDetailPointerDown = false;
+const dpRefreshDetail = coalesceAsync(async () => {
+  const shown = dpDetailShown;
+  if (DPModal.mode !== 'details' || !shown) return;
+  const opening = dpDetailOpening;
+  const live = () => opening === dpDetailOpening && DPModal.mode === 'details'
+    && Number(dpDetailShown?.id) === Number(shown.id);
+  let t;
+  try {
+    t = await api('GET', `/torrents/${shown.id}`);
+  } catch (e) {
+    if (!live() || e?.status !== 404) return;          // a passing failure: the next signal reads again
+    dpDetailShown = null;
+    dpDetailFailed(shown.id, e);
+    return;
+  }
+  if (!live()) return;
+  dpDetailHeld = {t, opening};
+  dpDrawHeldDetail();
+});
+window.dpRefreshDetail = dpRefreshDetail;
+function dpDetailTransfersChanged(ids) {
+  if (DPModal.mode !== 'details' || !dpDetailShown) return;
+  if (ids.some(id => id != null && Number(id) === Number(dpDetailShown.id))) dpRefreshDetail();
+}
+/* A progress batch item for the open transfer whose status did not change
+ * (the scheduler publishes one about every half second while it downloads)
+ * reads nothing and draws nothing else: its figures join the payload Details
+ * holds, and only the Progress value is said again, by its own owner. */
+const DP_DETAIL_PROGRESS_FIELDS = ['progress', 'active_execution_progress', 'active_execution_basis', 'acquisition_eta'];
+function dpDetailProgressChanged(item) {
+  if (DPModal.mode !== 'details' || Number(dpDetailShown?.id) !== Number(item?.id ?? item?.torrent_id)) return;
+  const figures = Object.fromEntries(DP_DETAIL_PROGRESS_FIELDS.filter(key => key in item).map(key => [key, item[key]]));
+  dpDetailShown = {...dpDetailShown, ...figures};
+  if (dpDetailHeld && Number(dpDetailHeld.t.id) === Number(dpDetailShown.id)) dpDetailHeld.t = {...dpDetailHeld.t, ...figures};
+  const value = document.querySelector('#modal-body .dp-detail-progress .dv');
+  const said = dpDetailProgress(dpDetailShown);
+  if (value && value.innerHTML !== said) value.innerHTML = said;
+}
+/* What torrent_updated says about the open Details. */
+function dpDetailTransferUpdated(payload) {
+  if (!Array.isArray(payload?.items)) {
+    dpDetailTransfersChanged([payload?.id ?? payload?.torrent_id]);
+    return;
+  }
+  dpDetailTransfersChanged(payload.items.filter(item => item?.status_changed).map(item => item?.id ?? item?.torrent_id));
+  payload.items.filter(item => item && !item.status_changed).forEach(dpDetailProgressChanged);
+}
+function dpDrawHeldDetail() {
+  const body = document.getElementById('modal-body');
+  const held = dpDetailHeld;
+  if (!held || !body || dpDetailPointerDown || dpContextMenu) return;
+  dpDetailHeld = null;
+  const t = held.t;
+  if (held.opening !== dpDetailOpening || DPModal.mode !== 'details' || Number(dpDetailShown?.id) !== Number(t.id)) return;
+  if (JSON.stringify(t) === JSON.stringify(dpDetailShown)) return;
+  dpDetailShown = t;
+  const resource = dpDetailResource;
+  const shownResource = body.querySelector('.dp-detail-resource');
+  const reads = node => [node.dataset.tooltip, node.textContent].join('\n');
+  dpRepaintKeepingPlace(body, () => {
+    dpPaintDetail(t, true);
+    // An Original Resource that reads the same stays the very element it was,
+    // so its shown tooltip and its focus stay with it.
+    const drawn = body.querySelector('.dp-detail-resource');
+    if (!shownResource || !drawn || reads(drawn) !== reads(shownResource)) return;
+    drawn.replaceWith(shownResource);
+    if (dpDetailResource && resource) dpDetailResource = resource;
+  });
+}
+document.addEventListener('pointerdown', event => {
+  if (event.target instanceof Element && event.target.closest('#modal-body')) dpDetailPointerDown = true;
+}, true);
+['pointerup', 'pointercancel'].forEach(type => document.addEventListener(type, () => {
+  if (!dpDetailPointerDown) return;
+  dpDetailPointerDown = false;
+  requestAnimationFrame(dpDrawHeldDetail);           // after the click the press makes
+}, true));
 
 /* Details opens its backdrop at once and its shell with its content: the
  * shell stays unseen until the transfer is rendered into it, so it never
@@ -3554,6 +3663,8 @@ async function showDetail(id) {
   dpCloseContextMenu(false);
   const opening = ++dpDetailOpening;
   const current = () => opening === dpDetailOpening && DPModal.mode === 'details';
+  dpDetailShown = null;              // until this opening's answer, there is nothing to keep live
+  dpDetailHeld = null;               // nor an earlier opening's answer to draw
 
   DPModal.open({mode: 'details', title: DPI18n.t('common.loading'), closeLabel: DPI18n.t('a11y.close_details'), pending: true, escape: true});
   const slow = setTimeout(() => { if (current()) DPModal.reveal({hold: true}); }, DETAIL_LOADING_GRACE_MS);
@@ -3574,18 +3685,24 @@ async function showDetail(id) {
     dpPaintDetail(t);
   } catch(e) {
     if (!current()) return;
-    if (modalBody) {
-      modalBody.innerHTML =
-        `<div class="empty" style="padding:24px">${esc(DPI18n.t('details.load_failed', {reason: sanitizeErrorMsg(e.message)}))}</div>`;
-    }
-
-    toast(sanitizeErrorMsg(e.message),'error');
-    document.dispatchEvent(new CustomEvent('downloadpulse:detail-rendered',
-      {detail: {transferId: Number(id), transfer: null, error: true}}));
+    dpDetailFailed(id, e);
   } finally {
     clearTimeout(slow);
     if (current()) DPModal.reveal();
   }
+}
+
+// Details could not be read: said in its body, and once as a toast.
+function dpDetailFailed(id, e) {
+  const modalBody = document.getElementById('modal-body');
+  if (modalBody) {
+    modalBody.innerHTML =
+      `<div class="empty" style="padding:24px">${esc(DPI18n.t('details.load_failed', {reason: sanitizeErrorMsg(e.message)}))}</div>`;
+  }
+
+  toast(sanitizeErrorMsg(e.message),'error');
+  document.dispatchEvent(new CustomEvent('downloadpulse:detail-rendered',
+    {detail: {transferId: Number(id), transfer: null, error: true}}));
 }
 
 // Requested By: the requests this transfer's work serves, exactly as the
@@ -3603,7 +3720,7 @@ function dpDetailFactCells(t, providerPresentation) {
   const cell = (key, value, cls) => `<div${cls ? ` class="${cls}"` : ''}><div class="dk">${esc(DPI18n.t(`details.field.${key}`))}</div><div class="dv">${value}</div></div>`;
   const status = cell('status', badge(transferDisplayStatus(t), t));
   const provider = cell('provider', esc(providerPresentation.label), 'dp-detail-provider');
-  const progress = cell('progress', dpDetailProgress(t));
+  const progress = cell('progress', dpDetailProgress(t), 'dp-detail-progress');
   const size = cell('size', esc(fmtSize(t.size_bytes)));
   const submitted = cell('submitted_as', sourceLabel(t.source, t.request_kinds));
   const added = cell('added', window.downloadsDateMarkup(t.created_at));
@@ -4236,6 +4353,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (document.getElementById('view-torrents')?.classList.contains('active')) {
         loadTorrents().catch(()=>{});
       }
+      dpRefreshDetail();
     }
 
     function connect() {
@@ -4324,7 +4442,11 @@ document.addEventListener('DOMContentLoaded', () => {
           'duplicate_consolidated',
           function(e) {
             try {
-              const copy = window.DPIcons.consolidationToastCopy(JSON.parse(e.data));
+              const payload = JSON.parse(e.data);
+              // The canonical targets gained the source's work without being
+              // named by its torrent_updated: an open Details among them reads again.
+              if (Array.isArray(payload?.canonical_transfer_ids)) dpDetailTransfersChanged(payload.canonical_transfer_ids);
+              const copy = window.DPIcons.consolidationToastCopy(payload);
               if (copy) window.DPIcons.toast(copy, 'success');
             } catch (_) {
               // Invalid public event data is ignored rather than rendered.
@@ -4376,6 +4498,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             notifyExtractionFailure(payload);
             executionActivityChanged();
+            dpDetailTransferUpdated(payload);
 
             const patchedProgress =
               patchProgressOnlyTransferEvent(payload);
@@ -4518,6 +4641,9 @@ document.addEventListener('DOMContentLoaded', () => {
             loadTorrents()
               .catch(()=>{});
           }
+
+          // No stream names a changed transfer: an open Details reads on this tick.
+          dpRefreshDetail();
         }, 15000);
     }
 

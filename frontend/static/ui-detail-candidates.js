@@ -12,13 +12,7 @@
   // server-given ``access.destroy`` of the Details being rendered).
   let switchAllowed = false;
   let activeTransferId = null;
-  let latestDetail = null;
   let providerNames = new Map();
-  let presentationGeneration = 0;
-  let refreshTimer = null;
-  let filesPointerActive = false;
-  let deferredDetail = null;
-  let deferredFrame = 0;
   let installed = false;
 
   function html(value) {
@@ -281,9 +275,10 @@
     return String(fallback || t('details.candidate.switch_failed_default'));
   }
 
-  async function refreshAfterSwitch(transferId, key) {
-    const generation = ++presentationGeneration;
-    await fetchPresentation(transferId, generation);
+  // After a switch Details shows the server's state: its own live refresh
+  // (app.js) re-reads and draws it, these rows bound to that drawing.
+  async function refreshAfterSwitch(key) {
+    await window.dpRefreshDetail();
     const jobs = [];
     if (typeof window.loadTorrents === 'function') jobs.push(Promise.resolve(window.loadTorrents()));
     if (typeof window.loadRecent === 'function') jobs.push(Promise.resolve(window.loadRecent()));
@@ -316,23 +311,30 @@
         activeTransferId, artifactId, candidateId, file.filename, source ? source.textContent.trim() : '');
       if (result === null) {
         switchingRows.delete(key);
-        await refreshAfterSwitch(activeTransferId, key).catch(function () {});
+        await refreshAfterSwitch(key).catch(function () {});
         return;
       }
       switchingRows.delete(key);
-      await refreshAfterSwitch(activeTransferId, key);
+      await refreshAfterSwitch(key);
       if (typeof window.toast === 'function') {
         window.toast(t('details.candidate.switched', {filename: String(result.filename || file.filename || t('details.candidate.file_fallback')),
           source: String(result.source_host || t('details.candidate.source_fallback'))}), 'success');
       }
     } catch (error) {
       switchingRows.delete(key);
-      await refreshAfterSwitch(activeTransferId, key).catch(function () {});
+      await refreshAfterSwitch(key).catch(function () {});
       if (typeof window.toast === 'function') {
         window.toast({
           title: t('details.candidate.switch_failed', {filename: String(file.filename || t('details.candidate.file_fallback'))}),
           body: normalizedFailure(error && error.detail, error && error.message)
         }, 'error');
+      }
+    } finally {
+      // Details draws nothing for an unchanged answer (a cancelled or refused
+      // switch), so the control this press disabled is given back here.
+      if (button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute('aria-disabled');
       }
     }
   }
@@ -358,95 +360,11 @@
     });
   }
 
-  function renderNow(detail) {
-    switchAllowed = Boolean(detail && window.downloadPulseAuth?.mayDestroy(detail));
-    if (!hasDisplayRows(detail)) return;
-    const tbody = document.querySelector('#modal-body .dp-detail-files-card .t-table tbody');
-    if (!tbody) return;
-    const displayed = displayRows(detail);
-    const focused = document.activeElement;
-    const focusedRowId = focused instanceof HTMLElement &&
-      focused.matches('.dp-detail-candidate-disclosure') && tbody.contains(focused)
-      ? String(focused.dataset.dpRowId || '') : '';
-    const valid = new Set(displayed.map(rowKey));
-    Array.from(expandedRows).forEach(function (key) {
-      const file = displayed.find(function (item) { return rowKey(item) === key; });
-      if (!valid.has(key) || !file || Number(file.candidate_count || 0) <= 1) expandedRows.delete(key);
-    });
-    tbody.innerHTML = rows(displayed, detail);
-    bindDisclosures(displayed);
-    if (focusedRowId) {
-      const restored = tbody.querySelector(
-        'tr.dp-detail-file-row[data-dp-row-id="' + CSS.escape(focusedRowId) + '"] .dp-detail-candidate-disclosure');
-      if (restored) restored.focus({preventScroll:true});
-    }
-  }
-
-  function render(detail) {
-    if (filesPointerActive) {
-      deferredDetail = detail;
-      return;
-    }
-    deferredDetail = null;
-    renderNow(detail);
-  }
-
-  function flushDeferredRender() {
-    if (filesPointerActive || !deferredDetail) return;
-    const detail = deferredDetail;
-    deferredDetail = null;
-    renderNow(detail);
-  }
-
-  function releaseFilesPointer() {
-    if (!filesPointerActive) return;
-    filesPointerActive = false;
-    if (deferredFrame) window.cancelAnimationFrame(deferredFrame);
-    deferredFrame = window.requestAnimationFrame(function () {
-      deferredFrame = 0;
-      flushDeferredRender();
-    });
-  }
-
-  async function fetchPresentation(id, generation) {
-    if (typeof window.api !== 'function') return;
-    const transferId = Number(id);
-    const detail = await window.api('GET', '/torrents/' + transferId);
-    if (activeTransferId !== transferId || generation !== presentationGeneration) return;
-    latestDetail = detail;
-    render(latestDetail);
-  }
-
-  function queueRefresh() {
-    if (activeTransferId == null) return;
-    const overlay = document.getElementById('overlay');
-    if (!overlay || !overlay.classList.contains('open')) return;
-    const transferId = activeTransferId;
-    const generation = ++presentationGeneration;
-    if (refreshTimer != null) window.clearTimeout(refreshTimer);
-    refreshTimer = window.setTimeout(function () {
-      refreshTimer = null;
-      fetchPresentation(transferId, generation).catch(function () {});
-    }, 120);
-  }
-
-  function clearRefreshState() {
-    if (refreshTimer != null) window.clearTimeout(refreshTimer);
-    refreshTimer = null;
-    presentationGeneration += 1;
-  }
-
   function resetDetailState() {
     expandedRows.clear();
     switchingRows.clear();
     activeTransferId = null;
-    latestDetail = null;
     switchAllowed = false;
-    deferredDetail = null;
-    filesPointerActive = false;
-    clearRefreshState();
-    if (deferredFrame) window.cancelAnimationFrame(deferredFrame);
-    deferredFrame = 0;
   }
 
   // app.js is the sole owner of the shared detail-modal globals and the
@@ -457,14 +375,11 @@
     const transferId = Number(event && event.detail && event.detail.transferId);
     if (!Number.isFinite(transferId)) return;
     if (activeTransferId !== transferId) expandedRows.clear();
-    clearRefreshState();
     activeTransferId = transferId;
-    deferredDetail = null;
     const transfer = event.detail.transfer;
     switchAllowed = Boolean(transfer && window.downloadPulseAuth?.mayDestroy(transfer));
-    latestDetail = hasDisplayRows(transfer) ? transfer : null;
     // The rows were rendered by rowsMarkup() from this same payload; only bind them.
-    if (latestDetail) bindDisclosures(displayRows(latestDetail));
+    if (hasDisplayRows(transfer)) bindDisclosures(displayRows(transfer));
   }
 
   function onDetailClosed() {
@@ -478,44 +393,13 @@
     document.addEventListener('downloadpulse:detail-rendered', onDetailRendered);
     document.addEventListener('downloadpulse:detail-closed', onDetailClosed);
 
-    const modalBody = document.getElementById('modal-body');
-    if (modalBody && modalBody.dataset.dpCandidatePointerGuard !== '1') {
-      modalBody.addEventListener('pointerdown', function (event) {
-        const target = event.target instanceof Element ? event.target : null;
-        if (target && target.closest('.dp-detail-files-card')) filesPointerActive = true;
-      });
-      modalBody.addEventListener('pointerup', releaseFilesPointer);
-      modalBody.addEventListener('pointercancel', releaseFilesPointer);
-      modalBody.addEventListener('pointerleave', function (event) {
-        if (!event.buttons) releaseFilesPointer();
-      });
-      modalBody.dataset.dpCandidatePointerGuard = '1';
-    }
-
-    // A list re-rendered only to say the same answer in another language is
-    // no news about the open transfer: Details re-says itself, without a read.
-    // (Window capture: set before any page owner repaints for the change.)
-    let relabeling = false;
-    window.addEventListener('downloadpulse:locale-changed', function () {
-      relabeling = true;
-      window.setTimeout(function () { relabeling = false; }, 0);
-    }, true);
-    const onSurfaceRendered = function () { if (!relabeling) queueRefresh(); };
-    document.addEventListener('downloadpulse:downloads-rendered', onSurfaceRendered);
-    document.addEventListener('downloadpulse:dashboard-recent-rendered', onSurfaceRendered);
-    // A semantic change the server published for the open transfer (e.g. a
-    // newly committed candidate) re-reads it through the same coalesced,
-    // generation-guarded refresh -- whichever page Details was opened from.
-    document.addEventListener('downloadpulse:transfer-updated', function (event) {
-      const transferId = Number(event && event.detail && event.detail.transferId);
-      if (Number.isFinite(transferId) && transferId === activeTransferId) queueRefresh();
-    });
+    // The open transfer's live changes, and the read after a switch, are
+    // Details' own (app.js dpRefreshDetail, which also holds a drawing while
+    // a pointer is pressed in Details); these rows are bound to each drawing
+    // through downloadpulse:detail-rendered, never read or drawn here.
   }
 
-  // ``latest()``: the newest payload this owner holds for the open transfer
-  // (a refresh may be newer than the one Details was opened with).
-  window.DPDetailCandidates = Object.freeze({rowsMarkup: rows, displayRows: displayRows,
-    latest: function () { return latestDetail; }});
+  window.DPDetailCandidates = Object.freeze({rowsMarkup: rows, displayRows: displayRows});
 
   // Candidate styling is loaded through the canonical style.css @import
   // graph, not injected here, so it has one loaded owner.

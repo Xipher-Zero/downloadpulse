@@ -71,6 +71,20 @@ test('structured server rejection stays truthful and does not move ACTIVE', asyn
   await expect(panel.locator('.dp-detail-candidate-switch')).toBeEnabled();
 });
 
+test('a refused switch draws nothing new, yet its Switch works again', async ({page}) => {
+  // Details draws nothing for the unchanged answer; the pressed control is given back.
+  const holder={detail:detail('a')}; let posts=0;
+  await openCandidates(page,holder,async route=>{posts+=1;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({detail:{category:'provider_unavailable',message:'Selected provider is unavailable'}})});});
+  const button=page.locator('tr[data-dp-candidate-owner="502"] .dp-detail-candidate-switch');
+  await button.click();
+  await expect.poll(()=>posts).toBe(1);
+  await expect(button).toBeEnabled();
+  await expect(button).not.toHaveAttribute('aria-disabled','true');
+  await button.click();
+  await expect.poll(()=>posts).toBe(2);
+  await expect(button).toBeEnabled();
+});
+
 test('disclosure is one ghost candidate button with the Network glyph and "N Candidates" text', async ({page}) => {
   const holder={detail:detail('a')};
   await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status:200,contentType:'text/css',body:''}));

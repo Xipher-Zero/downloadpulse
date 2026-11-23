@@ -589,13 +589,13 @@ test('Details candidate switch remains available after comprehensive presentatio
  const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return{promise,resolve};};
  const renderedRevision=()=>page.locator('tr[data-dp-artifact-id="502"] .dp-detail-filename-copy').textContent().then(text=>Number((/^fixture-r(\d+)\.rar$/.exec(text.trim())||[])[1]||0));
  await ready(page);await page.evaluate(()=>showDetail(990));await page.locator('tr[data-dp-artifact-id="502"] .dp-detail-candidate-disclosure').click();
- // The open source panel and its Switch action must survive a comprehensive list refresh: the owner
- // re-reads the transfer and re-renders its own rows.
+ // The open source panel and its Switch action must survive a live refresh of Details: its owner
+ // (app.js dpRefreshDetail, the entry its live signals call) re-reads the transfer and draws it again in place.
  const panel=page.locator('tr[data-dp-candidate-owner="502"]');await expect(panel).toBeVisible();await expect(panel.locator('.dp-detail-candidate-switch')).toHaveCount(1);
  const before=await renderedRevision();expect(before).toBeGreaterThanOrEqual(1);
  gate=deferred();parked=deferred();
- await page.evaluate(()=>document.dispatchEvent(new CustomEvent('downloadpulse:downloads-rendered')));
- // The owner's refresh read is now in flight: the panel must stay open and actionable meanwhile.
+ await page.evaluate(()=>{dpRefreshDetail();});
+ // Details' refresh read is now in flight: the panel must stay open and actionable meanwhile.
  await parked.promise;
  await expect(panel).toBeVisible();await expect(panel.locator('.dp-detail-candidate-switch')).toHaveCount(1);
  gate.resolve();gate=null;

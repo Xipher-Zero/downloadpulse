@@ -50,16 +50,19 @@ def test_details_files_rows_have_exactly_one_renderer():
     assert "<tbody>${window.DPDetailCandidates.rowsMarkup(dpDisplayFiles, t)}</tbody>" in app
     assert "t.files.map(" not in app
     assert "t.file_presentations.map(" not in app
-    # WS3b: it also hands Details its newest payload, so a language change re-says it without a read.
-    assert ("window.DPDetailCandidates = Object.freeze({rowsMarkup: rows, displayRows: displayRows,\n"
-            "    latest: function () { return latestDetail; }});") in owner
+    # WS20: Details is the only holder of the newest payload (a language change
+    # re-says dpDetailShown); this owner hands out rows only.
+    assert "window.DPDetailCandidates = Object.freeze({rowsMarkup: rows, displayRows: displayRows});" in owner
+    assert "latest" not in owner and "DPDetailCandidates?.latest" not in app
     # The owner does not re-fetch or re-render what app.js just rendered from
     # the same payload; it only binds its own disclosures.
     handler = owner.split("function onDetailRendered(event) {", 1)[1].split("function onDetailClosed()", 1)[0]
     assert "fetchPresentation" not in handler and "render(" not in handler and "bindDisclosures" in handler
-    # One fetch of the transfer; the settings document is the cached canonical one.
-    fetcher = owner.split("async function fetchPresentation(", 1)[1].split("function queueRefresh", 1)[0]
-    assert "'/settings'" not in fetcher
+    # WS20: the owner reads nothing itself -- the open transfer's reads, live
+    # and after a switch, are Details' own (app.js dpRefreshDetail).
+    assert "window.api(" not in owner and "'/settings'" not in owner
+    assert "await window.dpRefreshDetail();" in owner
+    assert "window.dpRefreshDetail = dpRefreshDetail;" in app
 
 
 def test_the_canonical_owner_is_never_wrapped_or_proxied():
