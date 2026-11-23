@@ -56,7 +56,7 @@ from core.processes import WINDOWLESS
 # The most of an external tool's own output kept for a diagnostic.
 _TOOL_OUTPUT_TAIL_BYTES = 4096
 
-logger = logging.getLogger("alldebrid.extractor")
+logger = logging.getLogger("downloadpulse.extractor")
 
 # ---------------------------------------------------------------------------
 # Archive detection

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -81,6 +82,20 @@ def configure_logging(level: str = "INFO", pretty: bool = False, log_format: str
     logging.getLogger().setLevel(numeric_level)
     for lib in ("uvicorn.access", "uvicorn.error", "httpx", "aiosqlite"):
         logging.getLogger(lib).setLevel(logging.WARNING)
+
+
+def deployment_mode() -> str:
+    """What the startup banner names this installation: the installed desktop
+    application, a container (Docker, Podman, an Unraid template -- an
+    image's /.dockerenv or Podman's /run/.containerenv), or else a process run
+    directly on its host. Said as it is, never assumed (1.0.3: a generic
+    host was announced as "Docker / Unraid")."""
+    from core.config import desktop_installation
+    if desktop_installation():
+        return "Desktop application"
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return "Container"
+    return "Host process"
 
 
 def log_startup_banner(

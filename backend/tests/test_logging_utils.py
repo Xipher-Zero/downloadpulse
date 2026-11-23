@@ -38,13 +38,13 @@ def test_sanitize_log_value_redacts_url_passwords_and_query_tokens():
 
 
 def test_startup_banner_uses_logger_and_expected_links(caplog):
-    logger = logging.getLogger("alldebrid.main")
+    logger = logging.getLogger("downloadpulse.main")
 
-    with caplog.at_level(logging.INFO, logger="alldebrid.main"):
+    with caplog.at_level(logging.INFO, logger="downloadpulse.main"):
         log_startup_banner(
             logger,
             version="1.8.7",
-            mode="Docker / Unraid",
+            mode="Container",
             database="SQLite",
             download_client="aria2",
             web_ui="http://0.0.0.0:8080",

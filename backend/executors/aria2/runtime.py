@@ -16,7 +16,7 @@ from executors.aria2.client import Aria2Service
 from executors.process_ownership import output_lines
 from core.processes import WINDOWLESS
 
-logger = logging.getLogger("alldebrid.aria2")
+logger = logging.getLogger("downloadpulse.aria2")
 
 # The daemon DownloadPulse runs listens on loopback only. Its RPC endpoint and
 # secret are constructed here and never come from settings. The secret is

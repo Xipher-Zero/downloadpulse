@@ -178,7 +178,7 @@ _AUTHORITY_DIAGNOSTIC = "redirected_authority"
 _SUBMISSIONS_LIMIT = 256
 _IDENTITY_READ_SECONDS = 2.0
 
-logger = logging.getLogger("alldebrid.aria2")
+logger = logging.getLogger("downloadpulse.aria2")
 
 
 @dataclass(frozen=True)

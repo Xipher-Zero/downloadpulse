@@ -25,7 +25,7 @@ from transfers.applicability import (
     parse_url_applicability,
 )
 
-logger = logging.getLogger("alldebrid.hosts")
+logger = logging.getLogger("downloadpulse.alldebrid.hosts")
 
 INTEGRATION_ID = "alldebrid"
 HOST_STATE_KEY = "supported-hosts"

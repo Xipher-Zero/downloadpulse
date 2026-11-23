@@ -483,12 +483,12 @@ async def test_unrecoverable_redaction_facts_fail_closed_on_diagnostic_text_not_
 
 def _loss_warnings(caplog):
     return [record.getMessage() for record in caplog.records
-            if record.name == "alldebrid.aria2" and record.levelno == logging.WARNING]
+            if record.name == "downloadpulse.aria2" and record.levelno == logging.WARNING]
 
 
 @pytest.mark.asyncio
 async def test_ordinary_observation_of_an_accepted_job_logs_no_identity_warning(execution, caplog):
-    caplog.set_level(logging.DEBUG, logger="alldebrid.aria2")
+    caplog.set_level(logging.DEBUG, logger="downloadpulse.aria2")
     await execution.executor.start(execution.request, execution.handle)
     for _ in range(3):
         assert (await execution.executor.observe(execution.handle)).state == ExecutionState.RUNNING
@@ -500,7 +500,7 @@ async def test_ordinary_observation_of_an_accepted_job_logs_no_identity_warning(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("replaced, expected", [(False, "daemon=same"), (True, "daemon=differs")])
 async def test_lost_accepted_job_names_whether_the_accepting_daemon_still_answers(execution, caplog, replaced, expected):
-    caplog.set_level(logging.DEBUG, logger="alldebrid.aria2")
+    caplog.set_level(logging.DEBUG, logger="downloadpulse.aria2")
     gid = execution.handle.native["gid"]
     await execution.executor.start(execution.request, execution.handle)
     accepted = execution.daemon.session
@@ -528,7 +528,7 @@ async def test_lost_accepted_job_names_whether_the_accepting_daemon_still_answer
 
 @pytest.mark.asyncio
 async def test_unreadable_daemon_identity_never_fails_dispatch_or_observation(execution, caplog):
-    caplog.set_level(logging.DEBUG, logger="alldebrid.aria2")
+    caplog.set_level(logging.DEBUG, logger="downloadpulse.aria2")
     execution.daemon.session = None
     started = await execution.executor.start(execution.request, execution.handle)
     assert started.state == ExecutionState.QUEUED
@@ -540,7 +540,7 @@ async def test_unreadable_daemon_identity_never_fails_dispatch_or_observation(ex
 
 @pytest.mark.asyncio
 async def test_identity_that_changes_across_submission_is_never_claimed_as_the_acceptor(execution, caplog):
-    caplog.set_level(logging.DEBUG, logger="alldebrid.aria2")
+    caplog.set_level(logging.DEBUG, logger="downloadpulse.aria2")
     reads = iter(["b4f0" * 10, "af7e" * 10])
     execution.daemon.session_id = AsyncMock(side_effect=lambda: next(reads, "af7e" * 10))
     await execution.executor.start(execution.request, execution.handle)
@@ -553,7 +553,7 @@ async def test_identity_that_changes_across_submission_is_never_claimed_as_the_a
 
 @pytest.mark.asyncio
 async def test_cancel_removing_its_own_job_is_not_reported_as_a_loss(execution, caplog):
-    caplog.set_level(logging.DEBUG, logger="alldebrid.aria2")
+    caplog.set_level(logging.DEBUG, logger="downloadpulse.aria2")
     await execution.executor.start(execution.request, execution.handle)
     await execution.executor.cancel(execution.handle)
     assert execution.handle.native["gid"] not in execution.daemon.jobs
@@ -563,6 +563,6 @@ async def test_cancel_removing_its_own_job_is_not_reported_as_a_loss(execution, 
 
 @pytest.mark.asyncio
 async def test_absence_of_a_job_this_process_never_submitted_logs_nothing(execution, caplog):
-    caplog.set_level(logging.DEBUG, logger="alldebrid.aria2")
+    caplog.set_level(logging.DEBUG, logger="downloadpulse.aria2")
     assert (await execution.executor.observe(execution.handle)).state == ExecutionState.ABSENT
     assert _loss_warnings(caplog) == []

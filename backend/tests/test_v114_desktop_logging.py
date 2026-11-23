@@ -1,7 +1,8 @@
 """The desktop application's log says what it is and keeps real errors visible.
 
 * Its startup banner names the desktop application and the window's own
-  address, never "Docker / Unraid" and 0.0.0.0 (a server's are unchanged).
+  address, never a container mode and 0.0.0.0 (a server's are unchanged); a
+  server names what it actually runs in (1.0.3).
 * A peer resetting or aborting a connection DownloadPulse was closing (Windows'
   WinError 10054/10053, a page going away) is not logged as an error with a
   traceback; every other event-loop error still is.
@@ -15,9 +16,18 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 
 
-def test_the_banner_names_the_desktop_application_and_its_windows_address():
+def test_the_banner_names_the_desktop_application_and_its_windows_address(monkeypatch):
+    from core import logging_utils
     source = (BACKEND / "main.py").read_text(encoding="utf-8")
-    assert 'mode="Desktop application" if desktop_installation() else "Docker / Unraid",' in source
+    assert "mode=deployment_mode()," in source
+    monkeypatch.setenv("DOWNLOADPULSE_DESKTOP", "1")
+    assert logging_utils.deployment_mode() == "Desktop application"
+    # A server says what it runs in, never assumed: a container, else a process on its host.
+    monkeypatch.setenv("DOWNLOADPULSE_DESKTOP", "0")
+    for present, expected in ((set(), "Host process"), ({"/.dockerenv"}, "Container"),
+                              ({"/run/.containerenv"}, "Container")):
+        monkeypatch.setattr(logging_utils.os.path, "exists", lambda path, present=present: path in present)
+        assert logging_utils.deployment_mode() == expected
     assert 'f"http://127.0.0.1:{desktop_port} (the application window)" if desktop_port' in source
 
 

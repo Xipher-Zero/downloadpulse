@@ -13,7 +13,7 @@ from executors.aria2.runtime import build_aria2_global_options
 # Settings request sets its own (``api.routes._JOB_TUNING_REQUEST_SECONDS``).
 _TUNING_PASS_SECONDS = 40.0
 
-logger = logging.getLogger("alldebrid.aria2")
+logger = logging.getLogger("downloadpulse.aria2")
 
 
 class Aria2Administration:

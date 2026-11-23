@@ -31,7 +31,7 @@ from core.logging_utils import sanitize_exception
 from core.branding import APP_SHORT_NAME
 from providers.alldebrid.rate_limit import TokenBucketRateLimiter
 
-logger = logging.getLogger("alldebrid.api")
+logger = logging.getLogger("downloadpulse.alldebrid.api")
 
 API_V4  = "https://api.alldebrid.com/v4"
 API_V41 = "https://api.alldebrid.com/v4.1"

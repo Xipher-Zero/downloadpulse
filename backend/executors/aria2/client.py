@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import aiohttp
 from core.logging_utils import sanitize_log_value
 
-logger = logging.getLogger("alldebrid.aria2")
+logger = logging.getLogger("downloadpulse.aria2")
 
 _CLOSING_TRANSPORT_MSGS = frozenset({
     "Cannot write to closing transport",

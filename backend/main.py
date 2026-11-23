@@ -61,7 +61,7 @@ from auth.policy import (
 from auth.sessions import CSRF_HEADER, session_store
 from core.branding import APP_METADATA_TITLE, APP_NAME, APP_SHORT_NAME
 from core.config import get_settings as _get_log_settings
-from core.logging_utils import configure_logging, log_startup_banner, sanitize_log_value
+from core.logging_utils import configure_logging, deployment_mode, log_startup_banner, sanitize_log_value
 from transfers.staged_input import MAX_STAGED_INPUT_BYTES
 from external.arr import UPLOAD_CEILINGS, adapter_of
 from external.arr import available as adapter_available
@@ -139,7 +139,7 @@ async def lifespan(app: FastAPI):
     log_startup_banner(
         logger,
         version=read_version(),
-        mode="Desktop application" if desktop_installation() else "Docker / Unraid",
+        mode=deployment_mode(),
         database="SQLite",
         download_client="aria2",
         web_ui=(f"http://127.0.0.1:{desktop_port} (the application window)" if desktop_port
