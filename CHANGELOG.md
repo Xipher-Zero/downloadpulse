@@ -2,6 +2,63 @@
 
 ## [1.0.3] — Development
 
+### Fixed
+
+- **A source that says "not found" is not asked again.** A direct link whose server answered 404
+  (or 410) waited for a timed retry of the same address before needing attention, even with
+  another source available. The route now ends at once: another source is tried now, and with
+  none the download shows Requires attention right away. A provider's link that may only have
+  expired is still refreshed first.
+- **Cancel removes the partial files it was writing.** Cancel left the full-size pre-allocated
+  file and its control file in the download folder; only Delete removed them. A cancelled
+  download now removes what it was writing, as a deleted one does; files that finished
+  downloading stay. A cancelled download is final: Retry does not reopen it.
+- **After a restart, downloads resume at once.** A download that was running when DownloadPulse
+  stopped waited a full retry delay in Waiting for retry after the restart, and counted a
+  failure. It now continues as soon as DownloadPulse is back.
+- **Less work while idle.** With nothing downloading, DownloadPulse no longer re-reads its
+  download list several times a second.
+- **The Linux desktop keeps downloads only where they survive.** The Flatpak's setup wizard
+  offered the home folder, which the sandbox does not keep: files marked done vanished when the
+  application closed. A folder the sandbox does not keep is now refused, with the reason, and
+  the wizard suggests your Downloads folder instead of an empty field. The folder browser says
+  "Current folder" in the desktop application.
+- **The desktop quits when there is no tray.** On desktops without a system tray (GNOME without
+  an extension), closing the window only minimized it and nothing could quit. There, the close
+  button now asks to quit and quits cleanly; with a tray it hides to it as before. Stopping
+  the application from the system shuts it down in order, and the tray's absence is logged
+  once instead of every few seconds; the desktop logs now rotate. A window that fails to start
+  is said in a notification (Linux and Windows) and logged.
+- **Rows say why.** Failed, Requires attention and Waiting for retry rows show the reason under
+  their status (and when the next attempt is), the same reason Details gives.
+- **Sizes in the units they are labelled in.** Sizes were counted in 1024s but labelled MB; they
+  are now decimal (140,064,536 bytes is 140.1 MB). A multi-file download has one name ("+ N
+  more") everywhere, and a route whose download then failed shows as failed in Route History.
+- **First run.** Users & Access names the built-in Administrator for what it is ("Built-in ·
+  used when sign-in is off") instead of an account with no sign-in method. A browser that tries
+  to connect before setup is finished is told to finish setup first.
+- **The database file is private** (mode 0600, with its journal files).
+
+### Added
+
+- **Each page has its own address.** Downloads, Activity Log, Statistics, Settings and Help open
+  at /downloads, /activity, /statistics, /settings and /help, so they can be bookmarked, and Back
+  and Forward move between them. Escape closes the Details window and returns to the row it was
+  opened from.
+- **Show in folder** (desktop application): a finished download's row and Details reveal its
+  file in the system's file manager.
+
+### Changed
+
+- **The desktop's store listing describes the desktop application**, with screenshots, and its
+  release notes are generated from this changelog.
+- **The delete endpoint's provider flag is `remove_remote`.** `from_alldebrid` is still
+  accepted; giving both with different values is refused.
+- **Logs name DownloadPulse**, and the startup line says what it runs in (desktop application,
+  container or host process).
+- **README:** the setup wizard, the per-download pause, resume and cancel endpoints, the API
+  token's label, and rootless Podman.
+
 ## [1.0.2] — Downloads with your sign-in, and one download per file
 
 ### Added
