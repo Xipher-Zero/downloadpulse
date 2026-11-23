@@ -16,17 +16,17 @@ const detail = (id, attempts) => ({
 
 const attempts = [
   {ordinal: 1, presentation_ordinal: 1, provider_id: 'general_http', provider_name: 'HTTP & HTTPS',
-   outcome: 'completed', relation: 'original',
+   outcome: 'completed', presentation_outcome: 'completed', relation: 'original',
    route_identity: 'https://mirror-one.example.com/releases/ubuntu-24.04.1-desktop-amd64.iso',
    route_location: 'https://mirror-one.example.com/releases/ubuntu-24.04.1-desktop-amd64.iso'},
   {ordinal: 2, presentation_ordinal: 2, provider_id: 'general_http', provider_name: 'HTTP & HTTPS',
-   outcome: 'resolved', relation: 'consolidated', contributing_transfer_id: 411,
+   outcome: 'resolved', presentation_outcome: 'resolved', relation: 'consolidated', contributing_transfer_id: 411,
    route_identity: 'https://mirror-two.example.com/x.iso', route_location: 'https://mirror-two.example.com/x.iso'},
   {ordinal: 3, presentation_ordinal: 3, provider_id: 'alldebrid', provider_name: 'AllDebrid',
-   outcome: 'failed', relation: 'unverified', verification_state: 'unverified',
+   outcome: 'failed', presentation_outcome: 'failed', relation: 'unverified', verification_state: 'unverified',
    contributing_transfer_id: 412, route_identity: 'https://m3.example/x.iso', route_location: 'https://m3.example/x.iso'},
   {ordinal: 4, presentation_ordinal: 4, provider_id: 'alldebrid', provider_name: 'AllDebrid',
-   outcome: 'cancelled', relation: 'original',
+   outcome: 'cancelled', presentation_outcome: 'cancelled', relation: 'original',
    route_identity: 'https://m4.example/x.iso', route_location: 'https://m4.example/x.iso'},
 ];
 

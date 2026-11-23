@@ -67,9 +67,9 @@ test('a Multimeta transfer keeps its origin while the real route and engine stay
     execution_attempts: [],
     route_attempts: [
       {ordinal: 1, presentation_ordinal: 1, provider_id: 'multimeta', provider_name: 'Multimeta',
-       outcome: 'resolved', relation: 'original', route_identity: '', route_location: 'release.meta4'},
+       outcome: 'resolved', presentation_outcome: 'resolved', relation: 'original', route_identity: '', route_location: 'release.meta4'},
       {ordinal: 2, presentation_ordinal: 2, provider_id: 'general_http', provider_name: 'HTTP(S)',
-       outcome: 'active', relation: 'original', route_identity: 'https://mirror.example.org',
+       outcome: 'active', presentation_outcome: 'active', relation: 'original', route_identity: 'https://mirror.example.org',
        route_location: 'https://mirror.example.org/pub/release.iso'},
     ],
   });

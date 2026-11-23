@@ -175,3 +175,24 @@ async def test_a_transfer_without_a_failure_names_none(runtime):
     item, details = await _surfaces(runtime, transfer_id)
     assert item["presentation_error_category"] is None and item["presentation_retry_at"] is None
     assert "error_reason" not in details
+
+
+@pytest.mark.asyncio
+async def test_retry_and_recovery_read_one_canonical_status_on_the_list_and_in_details(runtime):
+    """WS10: the list and Details say one status for one state -- a file in a
+    retry back-off is "Waiting for retry" on both, whatever its raw state or a
+    held recovery claim; a file being picked up again is "Recovering" on both.
+    Both surfaces word it by that status (``status.<presentation_status>``)."""
+    transfer_id, artifact_id = await _with_artifact(runtime, "retry-label")
+    for raw in ("queued", "recovery_wait", "refresh_pending"):
+        await _hold(transfer_id, artifact_id, action="retry", quiescence="retry_backoff", wake=f"retry_at:{RETRY_AT}")
+        await _write("UPDATE download_files SET status=? WHERE id=?", (raw, artifact_id))
+        await _write("UPDATE artifact_recovery_state SET recovery_claim_token='claim' WHERE artifact_id=?", (artifact_id,))
+        item, details = await _surfaces(runtime, transfer_id)
+        assert item["presentation_status"] == details["presentation_status"] == "waiting_for_retry", raw
+        assert item["presentation_label"] == details["presentation_label"] == "Waiting for retry", raw
+    await _hold(transfer_id, artifact_id, action="retry")
+    await _write("UPDATE download_files SET status='refresh_pending' WHERE id=?", (artifact_id,))
+    item, details = await _surfaces(runtime, transfer_id)
+    assert item["presentation_status"] == details["presentation_status"] == "recovering"
+    assert item["presentation_label"] == details["presentation_label"] == "Recovering"

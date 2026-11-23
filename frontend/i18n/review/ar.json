@@ -33208,6 +33208,22 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.name.more": {
+   "source": "fbdde7f840789ff9",
+   "translation": "47eeceb5ec9eeda4",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.name.files": {
+   "source": "6dc4db36859f7cd9",
+   "translation": "8c64d91eb0988ba5",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

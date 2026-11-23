@@ -108,8 +108,8 @@ test('Details separates safe original resource, final provider, ordered failover
   await isolateExternalFonts(page);
   const detail = {...listFixture({id:906,name:'Failover detail'}), original_resource:'https://downloads.example/file.bin?…', executors:['aria2'],
     route_attempts:[
-      {ordinal:5,provider_id:'alldebrid',provider_name:'AllDebrid',outcome:'failed',route_origin:null,route_location:null,route_identity:null},
-      {ordinal:9,provider_id:'general_http',provider_name:'HTTP(S)',outcome:'completed',route_origin:'https://mirror.example',route_location:'https://mirror.example/file.bin',route_identity:'https://mirror.example'},
+      {ordinal:5,provider_id:'alldebrid',provider_name:'AllDebrid',outcome:'failed', presentation_outcome:'failed',route_origin:null,route_location:null,route_identity:null},
+      {ordinal:9,provider_id:'general_http',provider_name:'HTTP(S)',outcome:'completed', presentation_outcome:'completed',route_origin:'https://mirror.example',route_location:'https://mirror.example/file.bin',route_identity:'https://mirror.example'},
     ], files:[], source_outcomes:[], events:[]};
   await page.route(url => url.pathname === '/api/torrents/906', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(detail)}));
   await page.route(url => url.pathname === '/api/torrents', route => route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({items:[detail],total:1})}));
@@ -135,7 +135,7 @@ test('Route History projects backend route_identity verbatim and never reconstru
   await isolateExternalFonts(page);
   // Each row carries misleading neighbours (cache fields, a debrid-looking origin, the provider id): the
   // renderer must show exactly what the backend decided in route_identity, nothing derived.
-  const row = (ordinal, outcome, extra) => ({ordinal, provider_id:'alldebrid', provider_name:'AllDebrid', outcome,
+  const row = (ordinal, outcome, extra) => ({ordinal, provider_id:'alldebrid', provider_name:'AllDebrid', outcome, presentation_outcome: outcome,
     route_origin:null, route_location:null, route_identity:null, ...extra});
   const detail = {...listFixture({id:907,name:'Debrid route identity'}), original_resource:'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567',
     executors:[], files:[], source_outcomes:[], events:[],
@@ -166,7 +166,7 @@ test('Route History shows the canonical object source story: original, consolida
   // adversarial toward client-side inference: durable ordinals restart per contributing transfer, a
   // "consolidated" row shares its host family with an original, and the candidate list names none of these hosts.
   const route = (presentation_ordinal, ordinal, host, relation, contributing_transfer_id, extra = {}) => ({
-    ordinal, presentation_ordinal, provider_id:'general_http', provider_name:'HTTP & HTTPS', outcome:'resolved',
+    ordinal, presentation_ordinal, provider_id:'general_http', provider_name:'HTTP & HTTPS', outcome:'resolved', presentation_outcome:'resolved',
     route_origin:`https://${host}`, route_location:`https://${host}/releases/ubuntu.iso`, route_identity:`https://${host}`,
     relation, verification_state: relation === 'unverified' ? 'unverified' : 'verified', unverified_reason:null,
     contributing_transfer_id, ...extra});
@@ -262,7 +262,7 @@ test('Route History never infers a relationship the backend did not project', as
   await isolateExternalFonts(page);
   // No relation fields at all (a legacy-shaped payload), yet hosts and candidate summaries that LOOK like another
   // transfer's mirrors: the renderer must label nothing, and must keep showing the durable ordinal as given.
-  const bare = (ordinal, host) => ({ordinal, provider_id:'general_http', provider_name:'HTTP & HTTPS', outcome:'resolved',
+  const bare = (ordinal, host) => ({ordinal, provider_id:'general_http', provider_name:'HTTP & HTTPS', outcome:'resolved', presentation_outcome:'resolved',
     route_origin:`https://${host}`, route_location:`https://${host}/ubuntu.iso`, route_identity:`https://${host}`,
     candidates:[{candidate_id:'x', source:{scope:'host', key:'mirrors.aliyun.com'}}]});
   const detail = {...listFixture({id:908, name:'No projected relation'}), executors:[], files:[], source_outcomes:[], events:[],

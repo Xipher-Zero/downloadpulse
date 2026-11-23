@@ -566,7 +566,7 @@ async def test_a_personal_report_counts_only_that_owners_requests(core, wire, mo
     await repository.withdraw_demand([alone_demand], by=alice.id)        # history keeps its attribution
 
     mine = (await generate_report(24, owner_ids=await accounts.owned_account_ids(alice.id)))["report"]["summary"]
-    assert (mine["torrents_processed"], mine["completed"], mine["total_downloaded"]) == (2, 1, "1000.0 B")
+    assert (mine["torrents_processed"], mine["completed"], mine["total_downloaded"]) == (2, 1, "1 KB")
     theirs = (await generate_report(24, owner_ids=[bob.id]))["report"]["summary"]
     assert (theirs["torrents_processed"], theirs["completed"]) == (5, 2)
     everyone = (await generate_report(24))["report"]["summary"]

@@ -123,7 +123,10 @@ def test_route_history_renderer_is_a_thin_projector_of_backend_route_fields():
         # DP 1.0.14 late-source liveness: whether the operator may reconsider an
         # unverified contribution, projected by the repository
         # (transfers/_repository_base.py), never derived here.
-        "reconsider_available"}
+        "reconsider_available",
+        # DP 1.0.3 WS10: what became of the route, projected by Route History's
+        # one owner (``_route_presentation_outcome``): a failed route reads failed.
+        "presentation_outcome"}
     for forbidden in ("alldebrid", "debrid", "cache", "torrent", "magnet", "general_http",
                       "route_origin", "provider_id", "source_identity", "delivery", "hostname",
                       "endsWith", "new URL", "URL("):

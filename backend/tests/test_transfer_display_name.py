@@ -5,7 +5,8 @@ Covers DP 1.0.12 UI presentation task Section 27 cases O-T: the pure
 prefers artifact-derived names over the root/request name, and never exposes
 raw source-host/hash bookkeeping when meaningful filenames exist.
 """
-from transfers.display_name import normalized_transfer_display_name
+from transfers.display_name import normalized_transfer_display_name, transfer_display_name
+from transfers.requests import direct_link_collection_name
 
 
 # ── O: single file ──────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ def test_common_base_match_is_case_insensitive():
 
 def test_unrelated_filenames_do_not_invent_a_common_name():
     filenames = ["alpha.mkv", "beta.srt", "gamma.nfo"]
-    assert normalized_transfer_display_name(filenames) == "alpha.mkv + 2 files"
+    assert normalized_transfer_display_name(filenames) == "alpha.mkv + 2 more"
 
 
 def test_mixed_recognized_and_unrelated_bases_fall_back_to_representative_plus_count():
@@ -59,7 +60,7 @@ def test_mixed_recognized_and_unrelated_bases_fall_back_to_representative_plus_c
     filenames = ["Example.Release.part01.rar", "readme.txt"]
     assert (
         normalized_transfer_display_name(filenames)
-        == "Example.Release.part01.rar + 1 files"
+        == "Example.Release.part01.rar + 1 more"
     )
 
 
@@ -208,8 +209,27 @@ def test_pinned_representative_filename_form_uses_total_minus_one_count():
     assert len(filenames) == 24
     assert (
         normalized_transfer_display_name(filenames)
-        == "Example.Release.part01.rar + 23 files"
+        == "Example.Release.part01.rar + 23 more"
     )
+
+
+# ── One multi-file wording, with its parts ────────────────────────────────
+
+
+def test_a_batch_is_named_the_same_way_when_submitted_and_once_its_files_are_known():
+    # The submitted name (before any file is known) and the display name
+    # (from the files) say the same "+ N more": never "+ 1 files".
+    submitted = direct_link_collection_name([], ["https://host.example/SHA256SUMS", "https://host.example/ubuntu.iso"])
+    shown = transfer_display_name(["SHA256SUMS", "ubuntu.iso"], root_name=submitted)
+    assert submitted == shown.text == "SHA256SUMS + 1 more"
+    assert shown.parts == {"name": "SHA256SUMS", "count": 1, "form": "more"}
+
+
+def test_a_collection_base_counts_every_file_and_a_single_name_has_no_parts():
+    shown = transfer_display_name(["Example.Release.part01.rar", "Example.Release.part02.rar"])
+    assert shown == ("Example.Release + 2 files", {"name": "Example.Release", "count": 2, "form": "files"})
+    assert transfer_display_name(["one.mkv"]).parts is None
+    assert transfer_display_name([], root_name="Root").parts is None
 
 
 # ── Read models: Details and the restart confirmation use the same title ──
@@ -300,3 +320,25 @@ async def test_details_keeps_a_torrent_root_title_and_ignores_non_current_artifa
                 "WHERE torrent_id=? ORDER BY id LIMIT 1", (request, value, media))
         await db.commit()
     assert (await _details(core, media)).get("display_name") == "The Real Title.webm" == await _listed(core, media)
+
+
+@pytest.mark.asyncio
+async def test_the_list_and_details_carry_the_same_multi_file_name_and_parts(tmp_path, monkeypatch):
+    core = await _lab(tmp_path, monkeypatch)
+    media = await _watch(core, "SHA256SUMS")
+    async with database.get_db() as db:
+        await db.execute(
+            "INSERT INTO transfer_requests (id, transfer_id, parent_id, ordinal, payload) "
+            "SELECT 'second-member', transfer_id, id, 1, payload FROM transfer_requests "
+            "WHERE transfer_id=? AND parent_id IS NULL", (media,))
+        await db.execute(
+            "INSERT INTO download_files (torrent_id, request_id, filename, status) "
+            "SELECT torrent_id, 'second-member', 'ubuntu.iso', status FROM download_files "
+            "WHERE torrent_id=? ORDER BY id LIMIT 1", (media,))
+        await db.commit()
+    details = await _details(core, media)
+    page = await downloads.list_operational_torrents(status=None, search=None, limit=0, offset=0, order="queue",
+                                                     application=core.application)
+    item = next(item for item in page["items"] if item["id"] == media)
+    assert details["display_name"] == item["display_name"] == "SHA256SUMS + 1 more"
+    assert details["display_name_parts"] == item["display_name_parts"] == {"name": "SHA256SUMS", "count": 1, "form": "more"}

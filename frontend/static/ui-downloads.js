@@ -762,7 +762,7 @@ function rowMarkup(t) {
   const fileSelectionMarkup = window.DPFileSelection?.chipMarkup?.(t) || '';
   const groupMarkup = window.DPGroupCandidates?.launcherMarkup?.(t, 'compact', 'downloads') || '';
   const T = (key, values) => esc(window.DPI18n.t(key, values));
-  const name = esc(t.display_name || t.name) || T('transfer.unnamed');
+  const name = esc(transferTitle(t)) || T('transfer.unnamed');
   const movable = operable && queueEditable() && t.queue_member === true;
   // Admission found this promoted transfer waiting only on restarts nobody
   // confirmed: the operator may reaffirm its place (reaffirmQueue).
@@ -807,7 +807,7 @@ function rowMarkup(t) {
         ${destroyable ? `<button class="btn btn-danger btn-sm dp-downloads-remove" data-default-label="${T('transfer.action.remove')}" onclick="event.stopPropagation();deleteT(${t.id},event,this)" data-tooltip="${T('transfer.action.remove_tooltip')}">${window.DPIcons.iconLabel('trash2', window.DPI18n.t('transfer.action.remove'))}</button>` : ''}
       </div>
     </td>
-    <td class="dp-downloads-select-cell" onclick="event.stopPropagation()"><input type="checkbox" class="t-chk" data-id="${t.id}" aria-label="${T('downloads.select_row', {name: t.display_name || t.name || window.DPI18n.t('transfer.unnamed')})}"${_selectedIds.has(stableDownloadId(t.id)) ? ' checked' : ''} onchange="onCheckboxChange(this)"/></td>` : ''}
+    <td class="dp-downloads-select-cell" onclick="event.stopPropagation()"><input type="checkbox" class="t-chk" data-id="${t.id}" aria-label="${T('downloads.select_row', {name: transferTitle(t) || window.DPI18n.t('transfer.unnamed')})}"${_selectedIds.has(stableDownloadId(t.id)) ? ' checked' : ''} onchange="onCheckboxChange(this)"/></td>` : ''}
   </tr>`;
 }
 

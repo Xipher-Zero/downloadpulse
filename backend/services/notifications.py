@@ -110,12 +110,20 @@ _RATE_LIMIT_SECONDS   = 2.0
 _DEDUP_WINDOW_SECONDS = 10.0  # Reduced from 30s — prevents suppressing different transfers with same name
 
 
-def _fmt_bytes(b: int) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if b < 1024:
-            return f"{b:.1f} {unit}"
-        b /= 1024
-    return f"{b:.1f} TB"
+def format_bytes(b) -> str:
+    """A size in decimal units (1 KB = 1000 B), the browser's ``fmtSize`` rule:
+    whole bytes, else one decimal without a trailing ".0", rolling to the next
+    unit before four integer digits."""
+    value = max(0.0, float(b or 0))
+    units = ("B", "KB", "MB", "GB", "TB", "PB")
+    unit = 0
+    while round(value, 1) >= 1000 and unit < len(units) - 1:
+        value /= 1000
+        unit += 1
+    if unit == 0:
+        return f"{round(value)} B"
+    text = f"{value:.1f}"
+    return f"{text[:-2] if text.endswith('.0') else text} {units[unit]}"
 
 
 def _now_utc() -> str:
@@ -214,7 +222,7 @@ class NotificationService:
         if file_count:
             fields.append({"name": "Files",       "value": str(file_count),       "inline": True})
         if size_bytes:
-            fields.append({"name": "Size",        "value": _fmt_bytes(size_bytes), "inline": True})
+            fields.append({"name": "Size",        "value": format_bytes(size_bytes), "inline": True})
         if download_client:
             fields.append({"name": "Client",      "value": download_client,        "inline": True})
         if destination:
@@ -281,9 +289,9 @@ class NotificationService:
             {"name": "Filtered",     "value": str(blocked_files),        "inline": True},
         ]
         if total_size:
-            fields.append({"name": "Total Size",      "value": _fmt_bytes(total_size),       "inline": True})
+            fields.append({"name": "Total Size",      "value": format_bytes(total_size),       "inline": True})
         if downloaded_size:
-            fields.append({"name": "Downloaded Size", "value": _fmt_bytes(downloaded_size),  "inline": True})
+            fields.append({"name": "Downloaded Size", "value": format_bytes(downloaded_size),  "inline": True})
         fields.append(    {"name": "Time",            "value": _now_utc(),                   "inline": True})
         await self._send(
             url=self.webhook_url,

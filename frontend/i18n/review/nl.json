@@ -33084,6 +33084,22 @@
      "resolution": "Corrected to the reviewer's wording."
     }
    ]
+  },
+  "transfer.name.more": {
+   "source": "fbdde7f840789ff9",
+   "translation": "f1d7ddbcc8420756",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.name.files": {
+   "source": "6dc4db36859f7cd9",
+   "translation": "577a0ddc04ab7e56",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

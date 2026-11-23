@@ -85,7 +85,7 @@ function scpDetail() {
     original_resource: SUBMITTED, files: [], source_outcomes: [], events: [], executors: ['aria2'],
     execution_attempts: [],
     route_attempts: [{ordinal: 1, presentation_ordinal: 1, provider_id: SCP, provider_name: 'SCP',
-      outcome: 'active', relation: 'original', route_identity: EXECUTED, route_location: EXECUTED}],
+      outcome: 'active', presentation_outcome: 'active', relation: 'original', route_identity: EXECUTED, route_location: EXECUTED}],
   });
 }
 

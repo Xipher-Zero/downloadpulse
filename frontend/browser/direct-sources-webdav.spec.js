@@ -434,10 +434,10 @@ test('a decomposed WebDAV collection shows its WebDAV origin while HTTP(S) deliv
       original_resource: SUBMITTED, files: [], source_outcomes: [], events: [], executors: ['aria2'],
       execution_attempts: [],
       route_attempts: [
-        {ordinal: 1, presentation_ordinal: 1, provider_id: PROVIDER, provider_name: 'WebDAV', outcome: 'resolved',
+        {ordinal: 1, presentation_ordinal: 1, provider_id: PROVIDER, provider_name: 'WebDAV', outcome: 'resolved', presentation_outcome: 'resolved',
          relation: 'original', route_identity: 'https://files.example.org', route_location: SUBMITTED},
         {ordinal: 2, presentation_ordinal: 2, provider_id: 'general_http', provider_name: 'HTTP(S)',
-         outcome: 'active', relation: 'original', route_identity: 'https://files.example.org',
+         outcome: 'active', presentation_outcome: 'active', relation: 'original', route_identity: 'https://files.example.org',
          route_location: 'https://files.example.org/dav/Album/01.flac'},
       ],
     });

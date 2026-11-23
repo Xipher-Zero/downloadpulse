@@ -467,6 +467,8 @@
   "transfer.action.pause_tooltip": "Pause this download",
   "transfer.action.resume_tooltip": "Resume this download",
   "transfer.unnamed": "(unnamed)",
+  "transfer.name.more": "{name} + {count, plural, one {{count} more} other {{count} more}}",
+  "transfer.name.files": "{name} + {count, plural, one {{count} file} other {{count} files}}",
   "provider_status.heading": "Provider Status",
   "provider_status.checking": "Provider Status: checking…",
   "provider_status.checking_tooltip": "Provider Status: Checking",

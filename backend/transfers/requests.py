@@ -14,6 +14,7 @@ from xml.parsers import expat
 
 import yaml
 
+from transfers.display_name import multi_file_name
 from transfers.filesystem import safe_name
 
 MAX_DIRECT_LINKS_PER_BATCH = 100
@@ -490,10 +491,10 @@ def direct_link_collection_name(
         if all(base.casefold() == first_base.casefold() for base in bases[1:]):
             return safe_name(f"{first_base} ({total} links)")
 
-        return safe_name(f"{resolved[0]} + {total - 1} more")
+        return safe_name(multi_file_name(resolved[0], total - 1).text)
 
     fallback = direct_link_filename(urls[0], 1)
-    return safe_name(f"{fallback} + {total - 1} more")
+    return safe_name(multi_file_name(fallback, total - 1).text)
 
 
 

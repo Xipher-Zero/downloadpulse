@@ -22,18 +22,44 @@ filenames once they become known, and the raw root/request name (e.g.
 since. This module reuses that same proven pattern-matching core (the three
 multipart/split-archive regexes and the case-insensitive common-base check)
 against the transfer's CURRENT authoritative artifact filenames instead, so
-the display name reflects what is actually being downloaded. Only the final
-wording changes, to match this task's explicit total-files preference
-(Section 16) over the historical source-ingest "N links"/"N more" phrasing,
-which was written for a link count known before resolution, not a file count
-known after it.
+the display name reflects what is actually being downloaded.
+
+This module is also the one owner of a multi-file name's wording
+(``multi_file_name``): a shown name plus how many OTHER files or links there
+are reads "<name> + N more" -- the submitted name a direct-link batch is
+given (``transfers.requests.direct_link_collection_name``) and the
+representative-filename form below alike, so one transfer is never named both
+ways. A derived collection base, itself none of the files, counts every file:
+"<base> + N files". Each name also carries its structured parts
+(``TransferDisplayName.parts``), from which the browser says it in the
+reader's language (``transfer.name.more`` / ``transfer.name.files``); the
+English text stays the API's and the journal's.
 """
 from __future__ import annotations
 
 import re
-from typing import Optional, Sequence
+from typing import NamedTuple, Optional, Sequence
 
 _UNNAMED = "(unnamed)"
+
+
+class TransferDisplayName(NamedTuple):
+    """A transfer's title: its English ``text`` and, for a multi-file name,
+    its ``parts`` -- ``{"name", "count", "form"}``, ``form`` being ``"more"``
+    (``name`` is one of the files or links; ``count`` the others) or
+    ``"files"`` (``name`` is a derived collection base; ``count`` every file)
+    -- else ``None``."""
+    text: str
+    parts: Optional[dict] = None
+
+
+def multi_file_name(name: str, count: int) -> TransferDisplayName:
+    """``name`` -- one file or link of several -- and the ``count`` others."""
+    return TransferDisplayName(f"{name} + {int(count)} more", {"name": name, "count": int(count), "form": "more"})
+
+
+def _collection_name(base: str, count: int) -> TransferDisplayName:
+    return TransferDisplayName(f"{base} + {int(count)} files", {"name": base, "count": int(count), "form": "files"})
 
 _MULTIPART_BASE_PATTERNS = (
     re.compile(r"(?i)^(?P<base>.+)\.part\d+\.rar$"),
@@ -65,6 +91,17 @@ def normalized_transfer_display_name(
     *,
     root_is_canonical_identity: bool = False,
 ) -> str:
+    """The English text of ``transfer_display_name``."""
+    return transfer_display_name(
+        artifact_filenames, root_name, root_is_canonical_identity=root_is_canonical_identity).text
+
+
+def transfer_display_name(
+    artifact_filenames: Sequence[str],
+    root_name: Optional[str] = None,
+    *,
+    root_is_canonical_identity: bool = False,
+) -> TransferDisplayName:
     """Derive the canonical human-facing transfer title.
 
     Preference order (Section 15 of the DP 1.0.12 presentation task; narrowed
@@ -104,23 +141,24 @@ def normalized_transfer_display_name(
     - REPRESENTATIVE-FILENAME form (no safe common base; the first actual
       filename is shown as-is): the count is TOTAL MINUS ONE, because that
       shown filename already visibly accounts for one of the N files and
-      counting it again would overstate the total. Example: a 24-file set
-      whose members do not share a recognized common base, with
-      ``Example.Release.part01.rar`` as the first filename -> exactly
-      ``"Example.Release.part01.rar + 23 files"``.
+      counting it again would overstate the total -- the others, said as
+      ``multi_file_name`` says them. Example: a 24-file set whose members do
+      not share a recognized common base, with ``Example.Release.part01.rar``
+      as the first filename -> exactly
+      ``"Example.Release.part01.rar + 23 more"``.
     """
     names = [str(name).strip() for name in (artifact_filenames or []) if str(name or "").strip()]
     if not names:
         fallback = str(root_name or "").strip()
-        return fallback or _UNNAMED
+        return TransferDisplayName(fallback or _UNNAMED)
 
     if root_is_canonical_identity:
         canonical_root = str(root_name or "").strip()
         if canonical_root:
-            return canonical_root
+            return TransferDisplayName(canonical_root)
 
     if len(names) == 1:
-        return names[0]
+        return TransferDisplayName(names[0])
 
     total = len(names)
     bases = [_collection_base(name) for name in names]
@@ -128,10 +166,10 @@ def normalized_transfer_display_name(
     if first_base and all(base.casefold() == first_base.casefold() for base in bases[1:]):
         # The derived base is not itself one of the N filenames: count every
         # file (Section 16's "Example.Release + 24 files" — total, not N-1).
-        return f"{first_base} + {total} files"
+        return _collection_name(first_base, total)
 
     # No safe common base: a representative filename (itself one of the N)
     # plus how many OTHER files exist, rather than an aggressive/wrong guess
-    # (Section 16's "Example.Release.part01.rar + 23 files" — total-1, since
-    # the shown name already accounts for one of the files).
-    return f"{names[0]} + {total - 1} files"
+    # ("Example.Release.part01.rar + 23 more" — total-1, since the shown name
+    # already accounts for one of the files).
+    return multi_file_name(names[0], total - 1)

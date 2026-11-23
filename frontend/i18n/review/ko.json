@@ -32754,6 +32754,22 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.name.more": {
+   "source": "fbdde7f840789ff9",
+   "translation": "f86df30b67bf103e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.name.files": {
+   "source": "6dc4db36859f7cd9",
+   "translation": "638328df3201d07b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

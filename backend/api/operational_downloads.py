@@ -43,7 +43,7 @@ from transfers.read_models import (
     RAW_PRESENTATION as _RAW_PRESENTATION, TERMINAL_PRESENTATION as _TERMINAL_PRESENTATION,
     WAIT_PRESENTATION as _WAIT_PRESENTATION, active_execution_projection,
 )
-from transfers.display_name import normalized_transfer_display_name
+from transfers.display_name import transfer_display_name
 from transfers.runtime_telemetry import acquisition_eta_payload
 from transfers.errors import Category, TransferError
 from transfers.input_required import public_challenge
@@ -666,7 +666,7 @@ async def list_operational_torrents(
         # source_identity the icon already uses — never inferred from
         # filename shape/count/provider). It must win over any single member
         # artifact filename (Workstream C name-regression correction).
-        display_name = normalized_transfer_display_name(
+        display_name = transfer_display_name(
             artifact_filenames,
             root_name=projected.get("name"),
             root_is_canonical_identity=source_identity.get("kind") in {"magnet", "torrent_file"},
@@ -766,8 +766,9 @@ async def list_operational_torrents(
         # Canonical human-facing transfer title (Section 15-20; narrowed by
         # the DP 1.0.12 Workstream C name-regression correction). Dashboard
         # Recent and Downloads both render this SAME field — no per-surface
-        # normalization duplication.
-        item["display_name"] = display_name
+        # normalization duplication. Its parts let the browser say a
+        # multi-file name in the reader's language.
+        item["display_name"], item["display_name_parts"] = display_name
         # Candidate-action scope/count/target (Section 3): the smallest
         # unambiguous candidate-switch operation scope the operator can act
         # on right now. Orthogonal to common_candidate_count/

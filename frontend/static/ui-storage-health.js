@@ -21,23 +21,12 @@
     return typeof value === 'number' && Number.isFinite(value);
   }
 
+  // The size is app.js's one formatter's (fmtSize); only a known empty
+  // volume reads "0 B" here rather than its unknown dash.
   function formatBytes(value) {
     if (!isFiniteNumber(value)) return null;
-    if (value === 0) return t('format.size.b', {value: window.DPI18n.number(0)});
-
-    if (typeof window.fmtSize === 'function') {
-      const formatted = window.fmtSize(value);
-      if (formatted && formatted !== '—') return formatted;
-    }
-
-    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    let amount = Math.max(0, value);
-    let unit = 0;
-    while (amount >= 1024 && unit < units.length - 1) {
-      amount /= 1024;
-      unit += 1;
-    }
-    return t(`format.size.${units[unit].toLowerCase()}`, {value: window.DPI18n.number(amount, unit === 0 ? 0 : 1)});
+    if (value <= 0) return t('format.size.b', {value: window.DPI18n.number(0)});
+    return window.fmtSize(value);
   }
 
   function formatCapacity(snapshot) {

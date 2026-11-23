@@ -256,17 +256,11 @@ async def collect_all_metrics(
 async def generate_report(hours: int = 24, owner_ids: Optional[list[str]] = None) -> Dict[str, Any]:
     """Generate a structured report for the given time window (``owner_ids``:
     one owner's own activity, ``collect_all_metrics``)."""
+    from services.notifications import format_bytes
     metrics = await collect_all_metrics(hours=hours, owner_ids=owner_ids)
     t = metrics["torrents"]
     d = metrics["downloads"]
     f = metrics["files"]
-
-    def _fmt_bytes(b: int) -> str:
-        for u in ("B", "KB", "MB", "GB", "TB"):
-            if b < 1024:
-                return f"{b:.1f} {u}"
-            b //= 1024
-        return f"{b:.1f} TB"
 
     def _fmt_dur(s: int) -> str:
         if s < 60:   return f"{s}s"
@@ -282,8 +276,8 @@ async def generate_report(hours: int = 24, owner_ids: Optional[list[str]] = None
                 "completed":          t["completed"],
                 "errors":             t["errors"],
                 "success_rate":       f"{t['success_rate_pct']}%" if t["success_rate_pct"] is not None else "—",
-                "total_downloaded":   _fmt_bytes(d["total_bytes"]),
-                "avg_torrent_size":   _fmt_bytes(d["avg_bytes"]),
+                "total_downloaded":   format_bytes(d["total_bytes"]),
+                "avg_torrent_size":   format_bytes(d["avg_bytes"]),
                 "avg_duration":       _fmt_dur(d["avg_duration_sec"]),
                 "total_files":        f["total"],
                 "blocked_files":      f["blocked"],

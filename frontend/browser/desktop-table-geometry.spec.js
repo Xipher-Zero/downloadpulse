@@ -250,14 +250,15 @@ test('Recent Activity keeps its fixed desktop tracks through the desktop, Status
   expect((await geometry(page, 'dashboard')).layout).toBe('fixed');
 });
 
-/* fmtSize never writes four integer digits: from 1000 (as written) a size is
- * the next unit's 1.0, so the longest size is eight characters, "999.9 XB" --
- * the width Recent Activity's Size floor is measured for. */
+/* fmtSize is decimal (1 KB = 1000 B) and never writes four integer digits:
+ * from 1000 (as written) a size is the next unit's 1, so the longest size is
+ * eight characters, "999.9 XB" -- the width Recent Activity's Size floor is
+ * measured for. */
 test('a size rolls over to the next unit before it would show four integer digits', async ({ page }) => {
   await page.goto('/');
-  const sizes = await page.evaluate(() => [999.9 * 1024 ** 2, 999.96 * 1024 ** 2, 1000 * 1024 ** 2, 1023.9 * 1024 ** 2,
-    257.7 * 1024 ** 2, 987.6 * 1024 ** 4, 1000 * 1024 ** 4, 999, 1000, 0].map(fmtSize));
-  expect(sizes).toEqual(['999.9 MB', '1.0 GB', '1.0 GB', '1.0 GB', '257.7 MB', '987.6 TB', '1.0 PB', '999.0 B', '1.0 KB', '—']);
+  const sizes = await page.evaluate(() => [999.9e6, 999.96e6, 1000e6, 1023.9e6,
+    257.7e6, 987.6e12, 1000e12, 999, 1000, 140064536, 0].map(fmtSize));
+  expect(sizes).toEqual(['999.9 MB', '1 GB', '1 GB', '1 GB', '257.7 MB', '987.6 TB', '1 PB', '999 B', '1 KB', '140.1 MB', '—']);
 });
 
 test('both tables resize continuously: no column jumps at 1440/1439, and the sidebar change only widens them', async ({ page }) => {

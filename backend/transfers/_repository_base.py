@@ -1144,9 +1144,28 @@ def _assign_route_identities(route_attempts):
             item["route_identity"] = origin
 
 
-def _project_route_history(route_attempts, requests, *, lineage_attempts=()):
+def _route_presentation_outcome(row, request_states, transfer_failed, transfer_id) -> str:
+    """What became of a route, as Route History says it: its durable
+    ``outcome``, except that a route which ended failed reads ``failed`` --
+    one the backend states failed (``verification_state``: a failed
+    contribution), or one that only ``resolved`` (its provider answered) and
+    whose source then failed, or whose own transfer ended failed, without it
+    ever delivering (delivery records ``completed``). Never a rewrite of the
+    durable outcome."""
+    outcome = str(row.get("outcome") or "").strip().lower()
+    if row.get("verification_state") == "failed":
+        return "failed"
+    if outcome == "resolved":
+        native = int(row.get("contributing_transfer_id") or 0) == int(transfer_id)
+        if request_states.get(str(row.get("request_id"))) == "failed" or (native and transfer_failed):
+            return "failed"
+    return outcome
+
+
+def _project_route_history(route_attempts, requests, *, lineage_attempts=(), transfer_id=0, transfer_failed=False):
     """The one Route History presentation owner: sets ``route_origin``,
-    ``route_location`` and ``route_identity`` on every historical route row.
+    ``route_location``, ``route_identity`` and ``presentation_outcome``
+    (``_route_presentation_outcome``) on every historical route row.
 
     Everything derives from the exact historical ``resolution_attempts.result``
     (carried on each row as ``resolution_result`` and consumed here) plus the
@@ -1164,6 +1183,9 @@ def _project_route_history(route_attempts, requests, *, lineage_attempts=()):
     they only establish that lineage's first authoritative cache fact, exactly
     as they do in the contributing transfer's own Details. ``requests`` must
     cover the lineage of every presented row."""
+    request_states = {str(item["id"]): str(item.get("state") or "") for item in requests}
+    for row in route_attempts:
+        row["presentation_outcome"] = _route_presentation_outcome(row, request_states, transfer_failed, transfer_id)
     displayed = {row["id"] for row in route_attempts}
     lineage = [row for row in lineage_attempts if row["id"] not in displayed]
     history = [*route_attempts, *lineage]
@@ -1738,6 +1760,7 @@ class TransferRepository:
             _project_route_history(
                 result["route_attempts"], (*requests, *lineage_requests),
                 lineage_attempts=[dict(row) for row in lineage_routes],
+                transfer_id=transfer_id, transfer_failed=str(result["status"]) == str(TransferState.FAILED),
             )
             for item in result["route_attempts"]:
                 item.pop("transfer_id", None)

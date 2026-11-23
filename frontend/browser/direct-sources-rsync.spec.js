@@ -358,7 +358,7 @@ test('an rsync-over-SSH transfer is presented as rsync everywhere, Route History
     original_resource: SUBMITTED, files: [], source_outcomes: [], events: [], executors: ['rsync'],
     execution_attempts: [],
     route_attempts: [{ordinal: 1, presentation_ordinal: 1, provider_id: PROVIDER, provider_name: 'rsync',
-      outcome: 'active', relation: 'original', route_identity: SUBMITTED, route_location: SUBMITTED}],
+      outcome: 'active', presentation_outcome: 'active', relation: 'original', route_identity: SUBMITTED, route_location: SUBMITTED}],
   });
   await page.route(url => url.pathname === '/api/torrents',
     route => route.fulfill({status: 200, contentType: 'application/json',

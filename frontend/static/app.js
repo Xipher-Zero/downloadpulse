@@ -1049,8 +1049,10 @@ function renderRouteHistory(t) {
     const provider = attempt.provider_name || DPI18n.t('transfer.provider.unknown');
     // An unverified association is the backend's statement about this source; it
     // replaces the route's own outcome label and never reads as a verified candidate.
+    // Otherwise the outcome is what became of the route (presentation_outcome:
+    // a route that ended failed says so, never "Resolved").
     const unverified = attempt.verification_state === 'unverified';
-    const outcome = unverified ? {label: DPI18n.t('details.route.unverified'), state: 'unverified'} : routeOutcomePresentation(attempt.outcome);
+    const outcome = unverified ? {label: DPI18n.t('details.route.unverified'), state: 'unverified'} : routeOutcomePresentation(attempt.presentation_outcome);
     const outcomeTitle = unverified && attempt.unverified_reason ? DPI18n.t('details.reason.unverified', {reason: attempt.unverified_reason})
       : (attempt.failure_reason ? DPI18n.t('details.reason.failed', {reason: attempt.failure_reason}) : '');
     const relation = relationOf(attempt);
@@ -1179,13 +1181,28 @@ function coalesceAsync(fn) {
 
 
 // ── Format ─────────────────────────────────────────────────────────────────
-// A size never shows four integer digits: from 1000 (as written, so 999.96
-// rolls too) it is the next unit's 1.0, at most "999.9 XB" -- eight characters.
+// The one size formatter: decimal units (1 KB = 1000 B, so 140,064,536 B is
+// "140.1 MB"), whole bytes, else one decimal without a trailing ".0". A size
+// never shows four integer digits: from 1000 (as written, so 999.96 rolls too)
+// it is the next unit's 1, at most "999.9 XB" -- eight characters.
 function fmtSize(b) {
   if (!b) return '—';
-  const u = ['B','KB','MB','GB','TB','PB']; let i = 0;
-  while (Number(b.toFixed(1)) >= 1000 && i < u.length-1) {b/=1024; i++;}
-  return DPI18n.t(`format.size.${u[i].toLowerCase()}`, {value: DPI18n.number(b, 1)});
+  const u = ['B','KB','MB','GB','TB','PB']; let i = 0; let v = Number(b);
+  while (Number(v.toFixed(1)) >= 1000 && i < u.length-1) {v/=1000; i++;}
+  const shown = i === 0 ? Math.round(v) : Number(v.toFixed(1));
+  return DPI18n.t(`format.size.${u[i].toLowerCase()}`, {value: DPI18n.number(shown, Number.isInteger(shown) ? 0 : 1)});
+}
+// A transfer's title: the backend's one name (transfers.display_name), a
+// multi-file name said from its parts in the page's language -- "<name> + N
+// more", or a collection base's "<base> + N files" -- else its text as given.
+// Plain text; the caller escapes it.
+function transferTitle(t) {
+  const parts = t && t.display_name_parts;
+  if (parts && typeof parts.name === 'string' && parts.name && Number.isInteger(parts.count)) {
+    return DPI18n.t(parts.form === 'files' ? 'transfer.name.files' : 'transfer.name.more',
+      {name: parts.name, count: parts.count});
+  }
+  return String((t && (t.display_name || t.name)) || '');
 }
 function fmtTransferRate(bps, rollover) {
   const speed = Number(bps);
@@ -3306,7 +3323,7 @@ function dpPaintDetail(t, relabel) {
   const modalBody = document.getElementById('modal-body');
     if (modalTitle) {
       modalTitle.textContent =
-        t.display_name || t.name || DPI18n.t('details.title_fallback');
+        transferTitle(t) || DPI18n.t('details.title_fallback');
     }
 
     const providerPresentation = transferProviderPresentation(t);
@@ -3517,7 +3534,10 @@ function dpUsenetServersCell(evidence) {
   if (evidence.state === 'known' && servers.length) {
     value = servers.map(server => {
       const notes = [];
-      if (server.reported) notes.push(DPI18n.t('details.usenet.reported_share', {share: server.reported}));
+      // The share in the one size formatter's units, from the bytes the engine's
+      // report works out to -- never the engine's own words for them.
+      const share = Number(server.approximate_bytes);
+      if (Number.isFinite(share) && share > 0) notes.push(DPI18n.t('details.usenet.reported_share', {share: fmtSize(share)}));
       if (!server.attributed) notes.push(DPI18n.t('details.usenet.unattributed'));
       if (server.removed) notes.push(DPI18n.t('details.usenet.removed_note'));
       const named = server.name || server.recorded_name || DPI18n.t('details.usenet.unnamed');

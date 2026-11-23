@@ -41,8 +41,8 @@ def test_bounded_presentation_boot_is_ordered_and_loader_free() -> None:
         "/ui-processing-presentation.js?v=4",
         "/ui-transfer-source-presentation.js?v=1",
         "/ui-file-selection.js?v=2",
-        "/ui-downloads.js?v=5",
-        "/ui-dashboard-transfer-presentation.js?v=4",
+        "/ui-downloads.js?v=6",
+        "/ui-dashboard-transfer-presentation.js?v=5",
         "/ui-activity-log-runtime.js?v=6",
         "/ui-settings-archive-passwords.js?v=3",
     )
@@ -294,8 +294,8 @@ def test_file_selection_boot_entry_follows_the_bounded_owner_list() -> None:
         "/ui-toast-contract.js?v=2",
         "/ui-processing-presentation.js?v=4",
         "/ui-file-selection.js?v=2",
-        "/ui-downloads.js?v=5",
-        "/ui-dashboard-transfer-presentation.js?v=4",
+        "/ui-downloads.js?v=6",
+        "/ui-dashboard-transfer-presentation.js?v=5",
         "/ui-activity-log-runtime.js?v=6",
         "/ui-settings-archive-passwords.js?v=3",
     )

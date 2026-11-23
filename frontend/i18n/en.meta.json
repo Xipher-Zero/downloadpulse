@@ -23990,6 +23990,26 @@
    "context": "Browser pairing: a refusal while this new installation's initial setup is not finished yet. Shown in the reader's language; API clients receive the English `detail`.",
    "owner": "backend/api/browser_routes.py",
    "criticality": "normal"
+  },
+  "transfer.name.more": {
+   "category": "label",
+   "context": "A transfer's title when it has several files or links and none names them all: one file or link name, then how many others there are, e.g. 'SHA256SUMS + 1 more'. Keep the name first and the '+'.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal",
+   "args": {
+    "name": "string: one file or link name, as given",
+    "count": "plural: how many other files or links"
+   }
+  },
+  "transfer.name.files": {
+   "category": "label",
+   "context": "A transfer's title when its files share one collection name (e.g. the parts of one archive): that name, then how many files there are in all, e.g. 'Example.Release + 24 files'. Keep the name first and the '+'.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal",
+   "args": {
+    "name": "string: the files' shared collection name, as given",
+    "count": "plural: how many files in all"
+   }
   }
  }
 }

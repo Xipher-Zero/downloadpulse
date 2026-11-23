@@ -3682,7 +3682,9 @@
   "transfer.status_with_reason": "{status} · {reason}",
   "transfer.reason_next_attempt": "{reason} · المحاولة التالية: {time}",
   "settings.users.signin.builtin": "مضمّن · يُستخدم عندما يكون تسجيل الدخول معطّلًا",
-  "error.browser.pairing.setup_incomplete": "أكمِل إعداد DownloadPulse أولًا، ثم اربط المتصفح مرة أخرى."
+  "error.browser.pairing.setup_incomplete": "أكمِل إعداد DownloadPulse أولًا، ثم اربط المتصفح مرة أخرى.",
+  "transfer.name.more": "{name} + {count, plural, zero {لا شيء آخر} one {واحد آخر} two {اثنان آخران} few {{count} أخرى} many {{count} أخرى} other {{count} أخرى}}",
+  "transfer.name.files": "{name} + {count, plural, zero {لا ملفات} one {ملف واحد} two {ملفان} few {{count} ملفات} many {{count} ملفًا} other {{count} ملف}}"
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7365,6 +7367,8 @@
   "transfer.status_with_reason": "0897e092bbd86238",
   "transfer.reason_next_attempt": "c32c695a49d5c17b",
   "settings.users.signin.builtin": "81e8973aee4c4b53",
-  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd"
+  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
+  "transfer.name.more": "fbdde7f840789ff9",
+  "transfer.name.files": "6dc4db36859f7cd9"
  }
 }

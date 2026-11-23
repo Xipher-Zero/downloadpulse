@@ -32540,6 +32540,22 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.name.more": {
+   "source": "fbdde7f840789ff9",
+   "translation": "619a8253b25fc29c",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.name.files": {
+   "source": "6dc4db36859f7cd9",
+   "translation": "6bb2524d54993440",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

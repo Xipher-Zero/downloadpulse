@@ -60,7 +60,7 @@ test('one contributing server sits beneath Provider; the left column is unchange
   const field = page.locator('#modal-body .detail-grid > .dp-detail-usenet-servers');
   await expect(field.locator('.dk')).toHaveCSS('text-transform', 'uppercase');
   await expect(field.locator('.dv')).toHaveText('Primary');
-  await expect(field.locator('.dp-detail-usenet-server')).toHaveAttribute('data-tooltip', /about 1\.2 GB of articles delivered/);
+  await expect(field.locator('.dp-detail-usenet-server')).toHaveAttribute('data-tooltip', /about 1\.3 GB of articles delivered/);
   await expect(field.locator('.dp-detail-usenet-server')).not.toHaveAttribute('title');
   await shot(page, 'usenet-server-one');
 });

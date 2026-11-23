@@ -3682,7 +3682,9 @@
   "transfer.status_with_reason": "{status} · {reason}",
   "transfer.reason_next_attempt": "{reason} · prochaine tentative : {time}",
   "settings.users.signin.builtin": "Intégré · utilisé quand la connexion est désactivée",
-  "error.browser.pairing.setup_incomplete": "Terminez d’abord la configuration de DownloadPulse, puis connectez-vous à nouveau."
+  "error.browser.pairing.setup_incomplete": "Terminez d’abord la configuration de DownloadPulse, puis connectez-vous à nouveau.",
+  "transfer.name.more": "{name} + {count, plural, one {{count} autre} many {{count} autres} other {{count} autres}}",
+  "transfer.name.files": "{name} + {count, plural, one {{count} fichier} many {{count} fichiers} other {{count} fichiers}}"
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7365,6 +7367,8 @@
   "transfer.status_with_reason": "0897e092bbd86238",
   "transfer.reason_next_attempt": "c32c695a49d5c17b",
   "settings.users.signin.builtin": "81e8973aee4c4b53",
-  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd"
+  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
+  "transfer.name.more": "fbdde7f840789ff9",
+  "transfer.name.files": "6dc4db36859f7cd9"
  }
 }

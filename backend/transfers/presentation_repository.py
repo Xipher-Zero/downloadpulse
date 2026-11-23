@@ -18,7 +18,7 @@ from transfers._repository_base import (
     is_canonical_artifact_row,
 )
 from transfers.cohorts import unverified_association_count
-from transfers.display_name import normalized_transfer_display_name
+from transfers.display_name import TransferDisplayName, transfer_display_name
 from transfers.manual_failover import switch_eligible
 from transfers.models import BITTORRENT_REQUEST_KINDS, TORRENT_FILE_REQUEST_KINDS, SizeKnowledge
 from transfers.repository import TransferRepository as _CanonicalTransferRepository
@@ -620,6 +620,11 @@ class TransferRepository(_CanonicalTransferRepository):
         async with get_db() as db:
             return await transfer_display_names(db, transfer_ids)
 
+    async def display_name_records(self, transfer_ids) -> dict[int, TransferDisplayName]:
+        """Each transfer's title with its parts (``transfer_display_name_records``)."""
+        async with get_db() as db:
+            return await transfer_display_name_records(db, transfer_ids)
+
     async def presentation(self, transfer_id: int, details: bool = False, *,
                             capacity_only_blocked_ids=frozenset()):
         """``capacity_only_blocked_ids`` (Section 9) is the live set from
@@ -995,7 +1000,8 @@ class TransferRepository(_CanonicalTransferRepository):
                     item["download_speed"] = 0
 
         result["request_kinds"] = request_kinds
-        result["display_name"] = (await self.display_names((transfer_id,))).get(int(transfer_id))
+        result["display_name"], result["display_name_parts"] = (
+            await self.display_name_records((transfer_id,))).get(int(transfer_id), (None, None))
         if route_provider is not _NOT_A_TORRENT_ROOT:
             result["route_provider_id"] = route_provider
         result["current_source_identity"] = public_source_identity(source_kind or request_kind, candidate_source)
@@ -1067,8 +1073,15 @@ class TransferRepository(_CanonicalTransferRepository):
 
 
 async def transfer_display_names(db, transfer_ids) -> dict[int, str]:
+    """Each transfer's human-facing title as English text
+    (``transfer_display_name_records``)."""
+    return {transfer_id: name.text
+            for transfer_id, name in (await transfer_display_name_records(db, transfer_ids)).items()}
+
+
+async def transfer_display_name_records(db, transfer_ids) -> dict[int, TransferDisplayName]:
     """Each transfer's human-facing title, as the Downloads list derives it
-    (``api.operational_downloads``): ``normalized_transfer_display_name`` over
+    (``api.operational_downloads``): ``transfer_display_name`` over
     the filenames of its current canonical artifacts in artifact order, its
     root request kind deciding whether a torrent/magnet root name is its
     identity, and its durable ``name`` the fallback. Read on the caller's open
@@ -1100,7 +1113,7 @@ async def transfer_display_names(db, transfer_ids) -> dict[int, str]:
     filenames: dict[int, list[str]] = {}
     for row in files:
         filenames.setdefault(int(row["torrent_id"]), []).append(row["filename"])
-    return {int(row["id"]): normalized_transfer_display_name(
+    return {int(row["id"]): transfer_display_name(
                 filenames.get(int(row["id"]), []), root_name=row["name"],
                 root_is_canonical_identity=public_source_identity(
                     kinds.get(int(row["id"]), "")).get("kind") in {"magnet", "torrent_file"})

@@ -34473,6 +34473,23 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.name.more": {
+   "source": "fbdde7f840789ff9",
+   "translation": "b7ded58172572450",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.name.files": {
+   "source": "6dc4db36859f7cd9",
+   "translation": "82e36dac5a951548",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "identical": "'file' is the invariable Italian term (1 file, 24 file)."
   }
  }
 }

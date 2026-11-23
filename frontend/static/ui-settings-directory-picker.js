@@ -62,15 +62,7 @@
     const number = Number(value);
     if (!Number.isFinite(number) || number < 0) return null;
     if (number === 0) return t('format.size.b', {value: window.DPI18n.number(0)});
-    if (typeof fmtSize === 'function') return fmtSize(number);
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let unit = 0;
-    let scaled = number;
-    while (scaled >= 1024 && unit < units.length - 1) {
-      scaled /= 1024;
-      unit += 1;
-    }
-    return t(`format.size.${units[unit].toLowerCase()}`, {value: window.DPI18n.number(scaled, 1)});
+    return fmtSize(number);
   }
 
   /* The browser itself -- current folder, its state and capacity, Up, the

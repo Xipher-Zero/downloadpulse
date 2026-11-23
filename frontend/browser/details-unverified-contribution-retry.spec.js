@@ -16,16 +16,16 @@ const detail = (id, attempts, extra = {}) => ({
 
 const attempts = [
   {ordinal: 1, presentation_ordinal: 1, provider_id: 'debridlink', provider_name: 'Debrid-Link',
-   outcome: 'completed', relation: 'original', route_identity: 'https://hoster.example/f/movie.bin'},
+   outcome: 'completed', presentation_outcome: 'completed', relation: 'original', route_identity: 'https://hoster.example/f/movie.bin'},
   {ordinal: 1, presentation_ordinal: 2, provider_id: 'alldebrid', provider_name: 'AllDebrid',
-   outcome: 'resolved', relation: 'consolidated', verification_state: 'verified', contributing_transfer_id: 411,
+   outcome: 'resolved', presentation_outcome: 'resolved', relation: 'consolidated', verification_state: 'verified', contributing_transfer_id: 411,
    route_identity: 'https://verified.example/movie.bin'},
   {ordinal: 1, presentation_ordinal: 3, provider_id: 'alldebrid', provider_name: 'AllDebrid',
-   outcome: 'resolved', relation: 'unverified', verification_state: 'unverified', contributing_transfer_id: 412,
+   outcome: 'resolved', presentation_outcome: 'resolved', relation: 'unverified', verification_state: 'unverified', contributing_transfer_id: 412,
    unverified_reason: 'sampler_unavailable', reconsider_available: true,
    route_identity: 'https://other.example/movie.bin'},
   {ordinal: 1, presentation_ordinal: 4, provider_id: 'alldebrid', provider_name: 'AllDebrid',
-   outcome: 'resolved', relation: 'unverified', verification_state: 'unverified', contributing_transfer_id: 413,
+   outcome: 'resolved', presentation_outcome: 'resolved', relation: 'unverified', verification_state: 'unverified', contributing_transfer_id: 413,
    unverified_reason: 'sampler_unavailable', reconsider_available: false,
    route_identity: 'https://pending.example/movie.bin'},
 ];

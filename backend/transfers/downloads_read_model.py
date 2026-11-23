@@ -149,12 +149,13 @@ def _downloads_search_match(needle, root_name, request_kind, filenames, label, d
             return 1
     # The displayed name is the root name or a file name (both matched above)
     # unless it names a collection -- a file name or a prefix of one, then
-    # " + N files" -- or nothing at all, so only those can add a match: one
-    # reaching into " + N files" holds its "+" or lies within it.
+    # " + N files" or " + N more" (``transfers.display_name``) -- or nothing at
+    # all, so only those can add a match: one reaching into that tail holds
+    # its "+" or lies within it.
     if len(names) < 2:
         if names or root_name:
             return 0
-    elif "+" not in needle and all(needle not in f" + {count} files" for count in (len(names), len(names) - 1)):
+    elif "+" not in needle and all(needle not in tail for tail in (f" + {len(names)} files", f" + {len(names) - 1} more")):
         return 0
     displayed = normalized_transfer_display_name(
         names, root_name=root_name,

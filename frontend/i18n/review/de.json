@@ -34713,6 +34713,22 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.name.more": {
+   "source": "fbdde7f840789ff9",
+   "translation": "a94d3ec97d2b5c01",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.name.files": {
+   "source": "6dc4db36859f7cd9",
+   "translation": "c8e2fe13cb32c57f",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }
