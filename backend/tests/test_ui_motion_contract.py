@@ -268,18 +268,20 @@ def test_every_fullscreen_modal_fades_in_place_through_its_own_owner() -> None:
     assert close.count("classList.remove('dp-help-legal-modal-open')") == 1
     app = read("app.js")
     close = app[app.index("function finishClose(reason) {"):app.index("// The pending shell's content has arrived")]
-    assert "window.DPMotion.leave(overlay, modal, returnTarget)" in close and "if (exit !== exits) return;" in close
+    assert "window.DPMotion.leave(overlay, modal, window.DPSettingsModal.focusTarget(origin))" in close and "if (exit !== exits) return;" in close
     done = close[close.index("leaving.then(() => {"):close.index("if (closedMode === 'details')")]
     assert "document.removeEventListener('keydown', containTab);" in done
     # Focus returns to the invoking control, or the list row redrawn in its place.
-    assert "const target = returnTargetNow(returnTarget);" in done
+    assert "const target = window.DPSettingsModal.focusTarget(origin);" in done
     assert "window.DPMotion.restore(overlay, target, {remove: false})" in done
     # The exit releases Tab containment once it has gone; Escape at once, with the closing.
     assert done.count("removeEventListener") == 1 and close.count(".focus(") == 1          # only in the no-motion fallback
-    assert close.count("document.removeEventListener('keydown', escapeClose);") == 1
+    assert close.count("window.removeEventListener('keydown', escapeClose);") == 1   # Details listens on the window (one Escape precedence)
     # A dialog opened while another leaves returns where that one would have.
-    for owner in (settings, auth, app):
+    for owner in (settings, auth):
         assert "window.DPMotion.focusOrigin()" in owner
+    # The Details shell takes it through the one focus-return owner (1.0.3).
+    assert "window.DPSettingsModal.focusOrigin()" in app
     # Details: the shell appears with its content (or, slow, held at full height), one opening at a time.
     detail = app[app.index("const DETAIL_LOADING_GRACE_MS = 300;"):app.index("// Requested By:")]
     assert ("DPModal.open({mode: 'details', title: DPI18n.t('common.loading'), closeLabel: DPI18n.t('a11y.close_details'), "

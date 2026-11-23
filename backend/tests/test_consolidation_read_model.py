@@ -88,7 +88,9 @@ async def test_explicit_consolidated_query_preserves_durable_history_access(oper
         application=application,
     )
     assert result == {
-        "items": [{"id": consolidated_id, "status": "consolidated"}],
+        # Every list item says whether Show in folder is offered (1.0.3,
+        # projected by the backend); a consolidated transfer never offers it.
+        "items": [{"id": consolidated_id, "status": "consolidated", "reveal_available": False}],
         "total": 1,
         "search": {"query": None, "mode": "none", "transfer_id": None, "status": "complete", "pending": 0,
                    "finality": "exact", "notice": None},
