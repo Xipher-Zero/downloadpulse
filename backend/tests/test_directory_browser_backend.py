@@ -27,6 +27,7 @@ def _capacity(tmp_path: Path) -> tuple[DiskCapacity, Path, Path]:
         download_dir,
         minimum_gb=0,
         application_path=app_dir / "downloadpulse.db",
+        persistent_roots=None,
     )
     return capacity, app_dir, download_dir
 

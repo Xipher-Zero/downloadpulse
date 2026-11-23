@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "この転送には転送単位のプロバイダー選択がありません",
   "error.transfer.no_switchable_route": "この転送には切り替え可能なプロバイダー経路がありません",
   "error.transfer.not_found": "転送が見つかりません",
+  "error.transfer.retry_cancelled": "キャンセルしたダウンロードは再試行できません。ダウンロードするには、もう一度追加してください。",
+  "error.transfer.location_not_completed": "ダウンロードは完了していません。",
+  "error.transfer.location_missing": "このダウンロードのファイルは、もうダウンロードフォルダーにありません。",
   "error.desktop.only": "選択した場所への保存はデスクトップアプリでのみ利用できます",
   "error.desktop.save_failed": "ファイルを保存できませんでした",
   "error.tuning.content_limit_invalid": "コンテンツ上限は正のバイト数で指定してください",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "ウィンドウ フレームの色が無効です。",
   "error.desktop.quit_only": "終了するウィンドウがあるのはデスクトップ アプリケーションだけです。",
   "error.desktop.quit_refused": "この終了の要求は期限切れです。終了するには、もう一度ウィンドウを閉じてください。",
+  "error.desktop.quit_window_only": "DownloadPulse を終了できるのは、DownloadPulse のウィンドウだけです。",
   "error.desktop.reveal_only": "「フォルダーに表示」はデスクトップアプリでのみ使用できます。",
   "error.desktop.reveal_window_only": "「フォルダーに表示」は DownloadPulse のウィンドウでのみ使用できます。",
   "error.desktop.reveal_not_completed": "フォルダーに表示できるのは、完了したダウンロードだけです。",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

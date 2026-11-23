@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "لا تتضمن عملية النقل اختيار مزود على مستوى النقل",
   "error.transfer.no_switchable_route": "لا تتضمن عملية النقل مسار مزود قابلًا للتبديل",
   "error.transfer.not_found": "عملية النقل غير موجودة",
+  "error.transfer.retry_cancelled": "لا يمكن إعادة محاولة تنزيل تم إلغاؤه. أضفه مرة أخرى لتنزيله.",
+  "error.transfer.location_not_completed": "لم يكتمل التنزيل.",
+  "error.transfer.location_missing": "لم تعد ملفات هذا التنزيل موجودة في مجلد التنزيل.",
   "error.desktop.only": "الحفظ في موقع مختار متاح فقط في تطبيق سطح المكتب",
   "error.desktop.save_failed": "تعذّر حفظ الملف",
   "error.tuning.content_limit_invalid": "حد المحتوى عدد موجب من البايتات",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "ألوان إطار النافذة غير صالحة.",
   "error.desktop.quit_only": "تطبيق سطح المكتب وحده لديه نافذة يمكن إنهاؤها.",
   "error.desktop.quit_refused": "انتهت صلاحية طلب الإنهاء هذا. أغلق النافذة مرة أخرى للإنهاء.",
+  "error.desktop.quit_window_only": "لا يمكن إنهاء DownloadPulse إلا من نافذته.",
   "error.desktop.reveal_only": "لا تتوفر ميزة \"إظهار في المجلد\" إلا في تطبيق سطح المكتب.",
   "error.desktop.reveal_window_only": "لا تعمل ميزة \"إظهار في المجلد\" إلا في نافذة DownloadPulse.",
   "error.desktop.reveal_not_completed": "لا يمكن إظهار سوى التنزيل المكتمل في مجلده.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

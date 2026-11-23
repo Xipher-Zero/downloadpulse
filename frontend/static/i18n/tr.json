@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "Aktarımda aktarım düzeyinde bir sağlayıcı seçimi yok",
   "error.transfer.no_switchable_route": "Aktarımda geçiş yapılabilecek bir sağlayıcı rotası yok",
   "error.transfer.not_found": "Aktarım bulunamadı",
+  "error.transfer.retry_cancelled": "İptal edilen bir indirme yeniden denenemez. İndirmek için yeniden ekleyin.",
+  "error.transfer.location_not_completed": "İndirme tamamlanmadı.",
+  "error.transfer.location_missing": "Bu indirmenin dosyaları artık indirme klasöründe değil.",
   "error.desktop.only": "Seçilen bir konuma kaydetme yalnızca masaüstü uygulamasında kullanılabilir",
   "error.desktop.save_failed": "Dosya kaydedilemedi",
   "error.tuning.content_limit_invalid": "İçerik sınırı pozitif bir bayt sayısı olmalıdır",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "Pencere çerçevesinin renkleri geçerli değil.",
   "error.desktop.quit_only": "Çıkılacak bir pencere yalnızca masaüstü uygulamasında vardır.",
   "error.desktop.quit_refused": "Bu çıkış isteğinin süresi doldu. Çıkmak için pencereyi yeniden kapatın.",
+  "error.desktop.quit_window_only": "DownloadPulse'tan yalnızca kendi penceresinden çıkılabilir.",
   "error.desktop.reveal_only": "\"Klasörde göster\" yalnızca masaüstü uygulamasında kullanılabilir.",
   "error.desktop.reveal_window_only": "\"Klasörde göster\" yalnızca DownloadPulse penceresinde çalışır.",
   "error.desktop.reveal_not_completed": "Yalnızca tamamlanmış bir indirme klasöründe gösterilebilir.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

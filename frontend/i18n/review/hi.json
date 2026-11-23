@@ -33201,6 +33201,38 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "error.transfer.retry_cancelled": {
+   "source": "3a3c5f4f4cc27c73",
+   "translation": "d8c53d4c501a21b6",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.quit_window_only": {
+   "source": "67a2c97d52006ab1",
+   "translation": "fba71b93268c3f88",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.transfer.location_not_completed": {
+   "source": "862822ee0425f200",
+   "translation": "7b0ce8f94b7fd9bd",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.transfer.location_missing": {
+   "source": "53f6f481984d1cd6",
+   "translation": "85a5f9dcf83dc440",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

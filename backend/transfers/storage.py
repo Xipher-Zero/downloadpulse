@@ -31,7 +31,7 @@ from transfers.errors import (
     TransferError,
 )
 
-from core.desktop_storage import persists, sandbox_persistent_roots
+from core.desktop_storage import persists
 
 logger = logging.getLogger("downloadpulse.storage")
 _GIB = 1024 ** 3
@@ -46,8 +46,6 @@ _FSYNC_UNSUPPORTED_ERRNOS = frozenset(
     if code is not None
 )
 
-
-_SANDBOX = object()   # DiskCapacity(persistent_roots=...) default: the sandbox's own
 
 
 class StorageDomain(StrEnum):
@@ -243,11 +241,12 @@ class DiskCapacity:
     """
 
     def __init__(self, root, minimum_gb=0, hysteresis_gb=0.5, *, application_path=None, clock=time.time,
-                 persistent_roots=_SANDBOX):
+                 persistent_roots):
         self._lock = threading.RLock()
-        # Where downloads may be kept at all (``None``: anywhere). By default
-        # the installed desktop application's sandbox (core.desktop_storage).
-        self.persistent_roots = sandbox_persistent_roots() if persistent_roots is _SANDBOX else persistent_roots
+        # Where downloads may be kept at all (``None``: anywhere), as the
+        # composition says: the installed desktop application's sandbox
+        # (``core.desktop_storage.sandbox_persistent_roots``).
+        self.persistent_roots = persistent_roots
         self._clock = clock
         self.root = str(root)
         self.minimum_gb = max(0.0, float(minimum_gb or 0))

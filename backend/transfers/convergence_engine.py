@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 from dataclasses import dataclass, replace
 
+from core.localization import CodedValueError
 from transfers.candidate_activation import ActivationResult, activate_candidate, resolve_candidate_index, retire_writer
 from transfers.cohorts import reopen_unverified_associations, unverified_association_count
 from transfers.contracts import CandidateRefresh, ResourceLookup
@@ -1669,13 +1670,16 @@ class TransferEngine(_QualifiedTransferEngine):
                 in await self.repository.resources(transfer_id)
             ):
                 return False
-            artifacts = await self.repository.artifacts(transfer_id)
             # A cancelled transfer is final (1.0.3): its stopped execution's
             # partial material is reclaimed (``_retire_stopped_execution_material``),
             # so nothing may reopen it -- not even a recovery reason it held before
-            # the cancel. Retry re-runs its post-processing alone, as for finished work.
-            if transfer.state == TransferState.CANCELLED or (
-                    artifacts and not await self._retry_actionable(artifacts)):
+            # the cancel -- and Retry refuses by name rather than report a success
+            # that changed nothing.
+            if transfer.state == TransferState.CANCELLED:
+                raise CodedValueError("A cancelled download cannot be retried. Add it again to download it.",
+                                      code="transfer.retry_cancelled")
+            artifacts = await self.repository.artifacts(transfer_id)
+            if artifacts and not await self._retry_actionable(artifacts):
                 # Nothing to reacquire: Retry re-runs post-processing alone,
                 # without a lifecycle transition to bind the reset to.
                 return await self.repository.reset_postprocessing(transfer_id)

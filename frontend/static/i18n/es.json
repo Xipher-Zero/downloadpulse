@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "La transferencia no tiene elección de proveedor a nivel de transferencia",
   "error.transfer.no_switchable_route": "La transferencia no tiene ninguna ruta de proveedor a la que se pueda cambiar",
   "error.transfer.not_found": "Transferencia no encontrada",
+  "error.transfer.retry_cancelled": "No se puede reintentar una descarga cancelada. Añádala de nuevo para descargarla.",
+  "error.transfer.location_not_completed": "La descarga no se ha completado.",
+  "error.transfer.location_missing": "Los archivos de esta descarga ya no están en la carpeta de descargas.",
   "error.desktop.only": "Guardar en una ubicación elegida solo está disponible en la aplicación de escritorio",
   "error.desktop.save_failed": "No se pudo guardar el archivo",
   "error.tuning.content_limit_invalid": "Un límite de contenido es un número positivo de bytes",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "Los colores del marco de la ventana no son válidos.",
   "error.desktop.quit_only": "Solo la aplicación de escritorio tiene una ventana desde la que salir.",
   "error.desktop.quit_refused": "Esta solicitud para salir ha caducado. Cierre la ventana de nuevo para salir.",
+  "error.desktop.quit_window_only": "Solo la ventana de DownloadPulse puede cerrarlo.",
   "error.desktop.reveal_only": "«Mostrar en la carpeta» solo está disponible en la aplicación de escritorio.",
   "error.desktop.reveal_window_only": "«Mostrar en la carpeta» solo funciona en la ventana de DownloadPulse.",
   "error.desktop.reveal_not_completed": "Solo se puede mostrar en su carpeta una descarga completada.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

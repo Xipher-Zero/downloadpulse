@@ -3,7 +3,7 @@ outcome read as (DP 1.0.3 WS10).
 
 - Sizes are decimal (1 KB = 1000 B) through app.js's one ``fmtSize`` -- the
   storage and folder-browser sizes delegate to it -- and the backend's one
-  ``services.notifications.format_bytes`` says them by the same rule.
+  ``core.units.format_bytes`` says them by the same rule.
 - A multi-file name is ``transfers.display_name``'s, said in the page's
   language from its parts by app.js's one ``transferTitle``.
 - A route that ended failed reads "Failed" in Route History, never
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from services.notifications import format_bytes
+from core.units import format_bytes
 from transfers._repository_base import _route_presentation_outcome
 from transfers.downloads_read_model import _downloads_search_match
 

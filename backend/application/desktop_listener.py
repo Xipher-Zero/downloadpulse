@@ -33,6 +33,12 @@ logger = logging.getLogger("downloadpulse.desktop_listener")
 HOST = "127.0.0.1"
 LOWEST, HIGHEST = 1024, 65535
 CHUNK = 64 * 1024
+# How long a closed relay connection's address still reads as Local Port's.
+# The server starts no further pipelined request on a connection once it is
+# closing (uvicorn ``on_response_complete``), and it sees this relay's close in
+# moments; until then the address must not read as the window's. Meanwhile the
+# closing side's TIME_WAIT keeps it from being another connection's.
+RELAYED_AFTER_CLOSE_SECONDS = 60.0
 INTERNAL_PORT_ENV = "DOWNLOADPULSE_DESKTOP_PORT"
 
 
@@ -92,18 +98,41 @@ class LocalListener:
         self._target: int | None = None           # the backend's own internal port
         self._lock = asyncio.Lock()
         self._connections: set[asyncio.StreamWriter] = set()
+        # The local address of each connection this relay opened to the
+        # backend -- the client address the backend sees for every request it
+        # carries (``relays``) -- counted, as one address may be reused.
+        self._relayed: dict[tuple[str, int], int] = {}
+        self._forgetting: set[asyncio.TimerHandle] = set()   # each pending ``_forget``, until it runs or ``stop``
 
     def state(self, configured: int) -> dict:
         """``port``: the configured Local Port; ``listening``: whether this
         process listens on it now."""
         return {"port": configured, "listening": self._server is not None and self._port == configured}
 
+    def relays(self, client) -> bool:
+        """Whether ``client`` -- the address a request reached the backend
+        from -- is one of this relay's own connections to it: the request came
+        through Local Port. The kernel chose that address when the relay
+        connected; nothing a client sends can name it."""
+        return client is not None and (str(client[0]), int(client[1])) in self._relayed
+
+    def _forget(self, relayed: tuple[str, int], handle: list) -> None:
+        self._forgetting.discard(handle[0])
+        if self._relayed.get(relayed, 0) > 1:
+            self._relayed[relayed] -= 1
+        else:
+            self._relayed.pop(relayed, None)
+
     async def _relay(self, client_reader, client_writer) -> None:
         self._connections.add(client_writer)
-        backend_writer = None
+        backend_writer = relayed = None
         try:
             backend_reader, backend_writer = await asyncio.open_connection(HOST, self._target)
             self._connections.add(backend_writer)
+            # Recorded before a byte is relayed, so no request it carries is
+            # ever seen without it.
+            relayed = tuple(backend_writer.get_extra_info("sockname")[:2])
+            self._relayed[relayed] = self._relayed.get(relayed, 0) + 1
             await asyncio.gather(_pipe(client_reader, backend_writer), _pipe(backend_reader, client_writer))
         except (ConnectionError, OSError):
             pass
@@ -113,6 +142,17 @@ class LocalListener:
                     self._connections.discard(writer)
                     with suppress(OSError, RuntimeError):
                         writer.close()
+            if relayed is not None:
+                # The backend may still be serving a request this connection
+                # carried (a client that pipelined one, then went): the address
+                # stays relayed until the connection is closed and a while
+                # after (``RELAYED_AFTER_CLOSE_SECONDS``), never forgotten first.
+                with suppress(OSError, RuntimeError, ConnectionError):
+                    await backend_writer.wait_closed()
+                handle: list = []
+                handle.append(asyncio.get_running_loop().call_later(
+                    RELAYED_AFTER_CLOSE_SECONDS, self._forget, relayed, handle))
+                self._forgetting.add(handle[0])
 
     async def _serve(self, sock: socket.socket) -> asyncio.base_events.Server:
         return await asyncio.start_server(self._relay, sock=sock)
@@ -157,6 +197,9 @@ class LocalListener:
     async def stop(self) -> None:
         async with self._lock:
             server, self._server, self._port = self._server, None, None
+            for pending in self._forgetting:
+                pending.cancel()
+            self._forgetting.clear()
             if server is None:
                 return
             server.close()
@@ -170,6 +213,16 @@ class LocalListener:
 listener = LocalListener()
 
 
+def configured_port() -> int:
+    """The installation's Local Port (``AppSettings.desktop_local_port``); the
+    default when the saved value is not a port a Local Port may be."""
+    from core.config import AppSettings, get_settings
+    try:
+        return valid_port(get_settings().desktop_local_port)
+    except PortInvalid:
+        return AppSettings.model_fields["desktop_local_port"].default
+
+
 def internal_port() -> int | None:
     """The backend's own port, as its supervisor started it."""
     try:
@@ -178,14 +231,14 @@ def internal_port() -> int | None:
         return None
 
 
-def window_request(host: str) -> bool:
+def window_request(client) -> bool:
     """Whether a request came to the window's own address -- the private port
     the supervisor loads the window from (``http://127.0.0.1:<port>/``) -- and
-    not through Local Port: the relay passes every byte as its client sent it,
-    so a Local Port client's ``Host`` names Local Port. ``host`` is the
-    request's ``Host`` header. (A browser pointed at the private port by hand
-    would name it too; that port is picked afresh each run and published
-    nowhere but the window's own address.)"""
-    from auth.policy import normalized_host_authority
-    port = internal_port()
-    return port is not None and normalized_host_authority(host) == (HOST, port)
+    not through Local Port. Decided by the connection it arrived on, never by
+    anything its client sent (a ``Host`` header is the client's to write):
+    ``client`` is the request's peer address (ASGI ``scope["client"]``), and
+    a request Local Port carried arrives from one of the relay's own
+    connections (``LocalListener.relays``). (A browser pointed at the private
+    port by hand would come to it directly too; that port is picked afresh
+    each run and published nowhere but the window's own address.)"""
+    return internal_port() is not None and client is not None and not listener.relays(client)

@@ -990,6 +990,13 @@ class ApplicationService:
         consolidated onto while that file is unfinished."""
         return await self.repository.serving_transfer(int(transfer_id))
 
+    @staticmethod
+    def may_have_completed_location(status) -> bool:
+        """Whether a transfer in ``status`` can have a completed location at
+        all (``completed_location``'s own first check): it is completed. Its
+        files may still be gone; only ``completed_location`` reads the disk."""
+        return status == TransferState.COMPLETED
+
     async def completed_location(self, transfer_id: int) -> tuple[str, bool]:
         """Where a completed download is on disk, as core records it: ``(path,
         folder)``. A download of one file: that file (``folder`` false). Of
@@ -999,16 +1006,15 @@ class ApplicationService:
         a completed transfer's completed artifacts, each an existing regular
         file (not a link) beneath the download root, and a folder beneath it
         or the root itself. ``KeyError``: no such transfer; otherwise a
-        ``CodedValueError`` (``desktop.reveal_not_completed``,
-        ``desktop.reveal_missing``)."""
+        ``CodedValueError`` (``transfer.location_not_completed``,
+        ``transfer.location_missing``)."""
         import os
         from pathlib import Path
 
         from transfers.filesystem import is_link
         transfer = await self.require(int(transfer_id))
-        if transfer.state != TransferState.COMPLETED:
-            raise CodedValueError("Only a completed download can be shown in its folder.",
-                                  code="desktop.reveal_not_completed")
+        if not self.may_have_completed_location(transfer.state):
+            raise CodedValueError("The download is not completed.", code="transfer.location_not_completed")
         targets = [artifact.target for artifact in await self.repository.artifacts(int(transfer_id))
                    if artifact.state == "completed" and artifact.target]
         collection = (transfer.collection_root
@@ -1041,7 +1047,7 @@ class ApplicationService:
         located = await asyncio.to_thread(locate)
         if located is None:
             raise CodedValueError("This download's files are no longer in the download folder.",
-                                  code="desktop.reveal_missing")
+                                  code="transfer.location_missing")
         return located
 
     async def owned_executions(self):

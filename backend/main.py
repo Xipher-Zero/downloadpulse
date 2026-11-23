@@ -168,13 +168,12 @@ async def lifespan(app: FastAPI):
     if desktop_channel is not None:
         desktop_control.serve(application, asyncio.get_running_loop(), desktop_channel)
         # Local Port: the external clients' address, beside the window's own.
-        from api.routes import _configured_local_port
-        from application.desktop_listener import internal_port, listener
+        from application.desktop_listener import configured_port, internal_port, listener
         target = internal_port()
         if target is None:
             logger.error("the desktop supervisor gave no internal port: Local Port is not listening")
         else:
-            await listener.start(_configured_local_port(), target)
+            await listener.start(configured_port(), target)
     try:
         yield
     finally:

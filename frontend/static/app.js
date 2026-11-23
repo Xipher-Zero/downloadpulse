@@ -714,11 +714,12 @@ window.DPDesktopSave = DPDesktopSave;
  * (its Downloads row, its Details) can be shown in the system's file manager:
  * the page names only the transfer (POST /desktop/reveal); the backend works
  * out where it is from its own records -- nothing here sends a path -- and the
- * desktop supervisor opens the file manager there. A refusal is said. A
- * server never offers it. */
+ * desktop supervisor opens the file manager there. Whether it is offered is
+ * the backend's own answer on the row and on Details (``reveal_available``:
+ * the window asked, the caller may operate, the download is completed); a
+ * refusal -- its files are gone -- is said. A server never offers it. */
 const DPDesktopReveal = Object.freeze({
-  offered: t => window.downloadPulseDesktop === true && Boolean(t) && t.status === 'completed'
-    && dpCan('transfers.operate'),
+  offered: t => Boolean(t) && t.reveal_available === true,
   async show(id, button) {
     setButtonPending(button, true);
     try {

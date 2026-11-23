@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "A transferência não tem escolha de provedor no nível da transferência",
   "error.transfer.no_switchable_route": "A transferência não tem uma rota de provedor que possa ser trocada",
   "error.transfer.not_found": "Transferência não encontrada",
+  "error.transfer.retry_cancelled": "Não é possível tentar novamente um download cancelado. Adicione-o de novo para baixá-lo.",
+  "error.transfer.location_not_completed": "O download não foi concluído.",
+  "error.transfer.location_missing": "Os arquivos deste download não estão mais na pasta de downloads.",
   "error.desktop.only": "Salvar em um local escolhido só está disponível no aplicativo para desktop",
   "error.desktop.save_failed": "Não foi possível salvar o arquivo",
   "error.tuning.content_limit_invalid": "O limite de conteúdo é um número positivo de bytes",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "As cores da moldura da janela não são válidas.",
   "error.desktop.quit_only": "Somente o aplicativo para desktop tem uma janela para sair.",
   "error.desktop.quit_refused": "Esta solicitação para sair expirou. Feche a janela novamente para sair.",
+  "error.desktop.quit_window_only": "Só a janela do DownloadPulse pode encerrá-lo.",
   "error.desktop.reveal_only": "\"Mostrar na pasta\" só está disponível no aplicativo para desktop.",
   "error.desktop.reveal_window_only": "\"Mostrar na pasta\" só funciona na janela do DownloadPulse.",
   "error.desktop.reveal_not_completed": "Só é possível mostrar na pasta um download concluído.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

@@ -50,6 +50,7 @@ def test_wrong_but_writable_small_filesystem_has_truthful_browser_and_active_cap
         download,
         1,
         application_path=app / "downloadpulse.db",
+        persistent_roots=None,
     )
 
     def fake_usage(path):
@@ -114,7 +115,7 @@ async def _routing_runtime(tmp_path, monkeypatch, name):
         policy=TransferPolicy(adoption_stability_seconds=0),
     )
     await engine.initialize()
-    capacity = DiskCapacity(download_root, application_path=db_path)
+    capacity = DiskCapacity(download_root, application_path=db_path, persistent_roots=None)
     capacity.check()
     application = ApplicationService(engine, capacity=capacity)
     return application, engine, repository, specialized, generic, ready, download_root

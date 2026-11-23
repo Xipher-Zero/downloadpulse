@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "Transfer tidak memiliki pilihan penyedia tingkat transfer",
   "error.transfer.no_switchable_route": "Transfer tidak memiliki rute penyedia yang dapat dialihkan",
   "error.transfer.not_found": "Transfer tidak ditemukan",
+  "error.transfer.retry_cancelled": "Unduhan yang dibatalkan tidak dapat dicoba ulang. Tambahkan lagi untuk mengunduhnya.",
+  "error.transfer.location_not_completed": "Unduhan belum selesai.",
+  "error.transfer.location_missing": "File unduhan ini sudah tidak ada di folder unduhan.",
   "error.desktop.only": "Menyimpan ke lokasi yang dipilih hanya tersedia di aplikasi desktop",
   "error.desktop.save_failed": "Berkas tidak dapat disimpan",
   "error.tuning.content_limit_invalid": "Batas konten berupa jumlah byte positif",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "Warna bingkai jendela tidak valid.",
   "error.desktop.quit_only": "Hanya aplikasi desktop yang memiliki jendela untuk keluar.",
   "error.desktop.quit_refused": "Permintaan keluar ini sudah kedaluwarsa. Tutup jendela lagi untuk keluar.",
+  "error.desktop.quit_window_only": "Hanya jendela DownloadPulse yang dapat menutupnya.",
   "error.desktop.reveal_only": "\"Tampilkan di folder\" hanya tersedia di aplikasi desktop.",
   "error.desktop.reveal_window_only": "\"Tampilkan di folder\" hanya berfungsi di jendela DownloadPulse.",
   "error.desktop.reveal_not_completed": "Hanya unduhan yang sudah selesai yang dapat ditampilkan di foldernya.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

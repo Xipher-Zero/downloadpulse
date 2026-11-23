@@ -5,6 +5,7 @@ from pathlib import Path
 from application.consolidation_events import ConsolidationEvents
 from application.service import ApplicationService
 from core.config import get_settings, apply_settings
+from core.desktop_storage import sandbox_persistent_roots
 from integrations.catalog import definitions, register
 from integrations.configuration import normalize_settings
 from services.downloader_egress_guard import downloader_egress_guard
@@ -97,7 +98,8 @@ def configure(application):
             settings.disk_guard_resume_hysteresis_gb, application_path=database.DB_PATH)
     else:
         capacity = DiskCapacity(settings.download_folder, settings.min_free_disk_gb,
-            settings.disk_guard_resume_hysteresis_gb, application_path=database.DB_PATH)
+            settings.disk_guard_resume_hysteresis_gb, application_path=database.DB_PATH,
+            persistent_roots=sandbox_persistent_roots())
         application.capacity = capacity
     register_storage_health(capacity)
     initial_health = capacity.check()

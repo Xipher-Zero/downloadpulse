@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "У передачи нет выбора провайдера на уровне передачи",
   "error.transfer.no_switchable_route": "У передачи нет маршрута провайдера, на который можно переключиться",
   "error.transfer.not_found": "Передача не найдена",
+  "error.transfer.retry_cancelled": "Отменённую загрузку нельзя повторить. Добавьте её снова, чтобы загрузить.",
+  "error.transfer.location_not_completed": "Загрузка не завершена.",
+  "error.transfer.location_missing": "Файлов этой загрузки больше нет в папке загрузок.",
   "error.desktop.only": "Сохранение в выбранное место доступно только в настольном приложении",
   "error.desktop.save_failed": "Не удалось сохранить файл",
   "error.tuning.content_limit_invalid": "Ограничение объёма — положительное число байт",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "Недопустимые цвета рамки окна.",
   "error.desktop.quit_only": "Окно для выхода есть только у настольного приложения.",
   "error.desktop.quit_refused": "Срок этого запроса на выход истёк. Чтобы выйти, закройте окно ещё раз.",
+  "error.desktop.quit_window_only": "Завершить DownloadPulse можно только из его окна.",
   "error.desktop.reveal_only": "«Показать в папке» доступно только в настольном приложении.",
   "error.desktop.reveal_window_only": "«Показать в папке» работает только в окне DownloadPulse.",
   "error.desktop.reveal_not_completed": "Показать в папке можно только завершённую загрузку.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

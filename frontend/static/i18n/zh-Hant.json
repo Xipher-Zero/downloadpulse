@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "此傳輸沒有傳輸層級的提供者選擇",
   "error.transfer.no_switchable_route": "此傳輸沒有可切換的提供者路徑",
   "error.transfer.not_found": "找不到傳輸",
+  "error.transfer.retry_cancelled": "已取消的下載無法重試。請重新新增以下載。",
+  "error.transfer.location_not_completed": "下載尚未完成。",
+  "error.transfer.location_missing": "此下載的檔案已不在下載資料夾中。",
   "error.desktop.only": "儲存到所選位置僅在桌面應用程式中可用",
   "error.desktop.save_failed": "無法儲存檔案",
   "error.tuning.content_limit_invalid": "內容限制必須是正數的位元組數",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "視窗框架色彩無效。",
   "error.desktop.quit_only": "只有桌面應用程式有可結束的視窗。",
   "error.desktop.quit_refused": "此結束要求已過期。若要結束，請再次關閉視窗。",
+  "error.desktop.quit_window_only": "只有 DownloadPulse 視窗可以結束它。",
   "error.desktop.reveal_only": "「在資料夾中顯示」僅在桌面應用程式中提供。",
   "error.desktop.reveal_window_only": "「在資料夾中顯示」僅能在 DownloadPulse 視窗中使用。",
   "error.desktop.reveal_not_completed": "只有已完成的下載才能在其資料夾中顯示。",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

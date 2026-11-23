@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "स्थानांतरण में स्थानांतरण-स्तर का कोई प्रदाता विकल्प नहीं है",
   "error.transfer.no_switchable_route": "स्थानांतरण में बदलने योग्य कोई प्रदाता मार्ग नहीं है",
   "error.transfer.not_found": "स्थानांतरण नहीं मिला",
+  "error.transfer.retry_cancelled": "रद्द किए गए डाउनलोड को दोबारा नहीं आज़माया जा सकता। इसे डाउनलोड करने के लिए फिर से जोड़ें।",
+  "error.transfer.location_not_completed": "डाउनलोड पूरा नहीं हुआ है।",
+  "error.transfer.location_missing": "इस डाउनलोड की फ़ाइलें अब डाउनलोड फ़ोल्डर में नहीं हैं।",
   "error.desktop.only": "चुने गए स्थान पर सहेजना केवल डेस्कटॉप ऐप्लिकेशन में उपलब्ध है",
   "error.desktop.save_failed": "फ़ाइल सहेजी नहीं जा सकी",
   "error.tuning.content_limit_invalid": "सामग्री सीमा बाइट की एक धनात्मक संख्या होती है",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "विंडो फ़्रेम के रंग मान्य नहीं हैं।",
   "error.desktop.quit_only": "केवल डेस्कटॉप एप्लिकेशन को उसकी विंडो से बंद किया जा सकता है।",
   "error.desktop.quit_refused": "बंद करने के इस अनुरोध की समय-सीमा समाप्त हो गई है। DownloadPulse बंद करने के लिए विंडो फिर से बंद करें।",
+  "error.desktop.quit_window_only": "केवल DownloadPulse विंडो ही इसे बंद कर सकती है।",
   "error.desktop.reveal_only": "\"फ़ोल्डर में दिखाएँ\" केवल डेस्कटॉप ऐप्लिकेशन में उपलब्ध है।",
   "error.desktop.reveal_window_only": "\"फ़ोल्डर में दिखाएँ\" केवल DownloadPulse विंडो में काम करता है।",
   "error.desktop.reveal_not_completed": "केवल पूरा हुआ डाउनलोड ही उसके फ़ोल्डर में दिखाया जा सकता है।",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

@@ -73,7 +73,7 @@ async def test_browse_confirm_authoritative_save_persists_and_restart_reconstruc
         directory.mkdir()
     monkeypatch.setattr(config, "CONFIG_PATH", config_dir / "config.json")
 
-    capacity = DiskCapacity(old_download, application_path=app_dir / "downloadpulse.db")
+    capacity = DiskCapacity(old_download, application_path=app_dir / "downloadpulse.db", persistent_roots=None)
     capacity.check()
 
     browsed = _browse_directory(selected, capacity)
@@ -106,6 +106,7 @@ async def test_browse_confirm_authoritative_save_persists_and_restart_reconstruc
         restarted_capacity = DiskCapacity(
             reloaded.download_folder,
             application_path=app_dir / "downloadpulse.db",
+            persistent_roots=None,
         )
         health = restarted_capacity.check()
         restarted_browse = _browse_directory(
@@ -182,7 +183,7 @@ async def test_restart_keeps_unresolved_request_neutral_under_storage_fault_then
     await engine2.initialize()
 
     _make_download_read_only(monkeypatch, download_root)
-    capacity2 = DiskCapacity(download_root, application_path=db_path)
+    capacity2 = DiskCapacity(download_root, application_path=db_path, persistent_roots=None)
     application2 = ApplicationService(engine2, capacity=capacity2)
     health2 = await application2.check_resources()
     assert health2["download"]["state"] == "read_only"
@@ -223,7 +224,7 @@ async def test_restart_keeps_unresolved_request_neutral_under_storage_fault_then
     registry3.register_provider(generic3)
     engine3 = _engine(repository3, registry3, download_root)
     await engine3.initialize()
-    capacity3 = DiskCapacity(download_root, application_path=db_path)
+    capacity3 = DiskCapacity(download_root, application_path=db_path, persistent_roots=None)
     application3 = ApplicationService(engine3, capacity=capacity3)
     health3 = await application3.check_resources()
     assert health3["download"]["state"] == "read_only"
@@ -276,7 +277,7 @@ async def test_restart_rehydrates_persisted_ready_applicability_while_download_e
     await engine.initialize()
 
     _make_download_read_only(monkeypatch, download_root)
-    capacity = DiskCapacity(download_root, application_path=db_path)
+    capacity = DiskCapacity(download_root, application_path=db_path, persistent_roots=None)
     application = ApplicationService(engine, capacity=capacity)
     health = await application.check_resources()
     assert health["download"]["state"] == "read_only"

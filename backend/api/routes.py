@@ -48,7 +48,6 @@ from transfers.models import SubmissionDemand
 from transfers.read_models import DemandChanged
 from transfers.manual_queue_move import QueueMoveRefused, RestartConfirmationRequired
 from transfers.manual_route_switch import root_switches
-from transfers.presentation_repository import failure_selection
 from transfers.settings import TransferSettings
 from core.logging_utils import sanitize_exception, sanitize_log_value
 from core.presentation_safety import safe_original_http_resource, safe_original_remote_file_resource, safe_public_host
@@ -163,6 +162,7 @@ from transfers import codec
 from application.service import AcquisitionScopeRequired, ApplicationService, LocalNetworkConfirmationRequired
 from executors.aria2.runtime import _canonical_aria2_options
 from services.event_bus import bind_publisher
+from application.desktop_control import bind_edge as bind_desktop_edge
 from services import transfer_trace
 from api.serializers import (
     public_download_file,
@@ -358,31 +358,19 @@ def _error_disclosure(error, displayed, definitions) -> dict | None:
     return facts or None
 
 
-async def _error_reason(repository, transfer_id: int, transfer, displayed, wake_condition, definitions) -> dict | None:
+async def _error_reason(repository, transfer_id: int, presented, definitions) -> dict | None:
     """The reporting integration's own words (``IntegrationPresentation
     .error_reasons``) for the failure Details shows, or ``None``.
 
-    That failure is the one ``failure_selection`` (the presentation owner)
-    names: the transfer's displayed error when it has one (bound exactly as
-    ``_error_disclosure`` binds it), else the failure DownloadPulse is still
-    recovering from, with only its real schedule as ``scheduled_retry_at``.
-    Nothing here decides or changes recovery. An error is the integration's
-    by any identity it records work under (a provider's or its executor's),
-    and nothing more is read unless some integration declares words at all."""
+    Which failure that is, and its real schedule, is core's answer
+    (``TransferRepository.failure_reason``, the selection the list and
+    Details' presentation make); this only words it. An error is the
+    integration's by any identity it records work under (a provider's or its
+    executor's), and nothing is read unless some integration declares words."""
     declaring = [definition for definition in definitions or () if definition.presentation.error_reasons]
     if not declaring:
         return None
-    if displayed is not None:
-        error = transfer.error if transfer else None
-        if error is None or not isinstance(displayed, dict) or error.as_dict() != displayed:
-            return None
-        selected = failure_selection(error, (), (), wake_condition)
-    else:
-        selected = failure_selection(
-            None,
-            [(item.state, item.error, item.retry_at) for item in await repository.requests(transfer_id)],
-            [(item.state, item.error) for item in await repository.artifacts(transfer_id)],
-            wake_condition)
+    selected = await repository.failure_reason(transfer_id, presented)
     if selected is None:
         return None
     error, retry_at = selected
@@ -1351,8 +1339,7 @@ async def get_torrent(torrent_id: int, application: ApplicationService = Depends
     disclosure = _error_disclosure(transfer.error if transfer else None, item.get("error"), application.definitions)
     if disclosure:
         result["error_disclosure"] = disclosure
-    reason = await _error_reason(application.repository, torrent_id, transfer, item.get("error"),
-                                 result.get("wake_condition"), application.definitions)
+    reason = await _error_reason(application.repository, torrent_id, item, application.definitions)
     if reason:
         result["error_reason"] = reason
     registry = getattr(engine, "registry", None)
@@ -1371,6 +1358,8 @@ async def get_torrent(torrent_id: int, application: ApplicationService = Depends
     contributors = result.pop("execution_contributors", None)
     if "usenet" in {result.get(f"{role}_provider_id") for role in ("active", "route", "delivering", "current")}:
         result["usenet_servers"] = _usenet_servers(contributors)
+    result["reveal_available"] = _reveal_offered(request) and ApplicationService.may_have_completed_location(
+        result.get("status"))
     principal = getattr(getattr(request, "state", None), "principal", None)
     if principal is not None:
         # What the interface may offer this caller here (a hint; every act is
@@ -1512,7 +1501,9 @@ async def desktop_frame(body: DesktopFrame):
 # own page whether to quit (application.desktop_control op quit_prompt, event
 # desktop_quit_prompt); its Quit sends the prompt's single-use nonce here, and
 # the supervisor quits on its next look (op show: quit). Without the nonce of
-# the prompt pending, nothing quits. A server has no window to quit.
+# the prompt pending, nothing quits; and only the window's own page asks
+# (``desktop_listener.window_request``), never a client through Local Port.
+# A server has no window to quit.
 
 class DesktopQuit(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -1520,9 +1511,12 @@ class DesktopQuit(BaseModel):
 
 
 @router.post("/desktop/quit")
-async def desktop_quit(body: DesktopQuit):
+async def desktop_quit(body: DesktopQuit, request: Request):
     _require_desktop("Only the desktop application has a window to quit.", "desktop.quit_only")
     from application.desktop_control import request_quit
+    from application.desktop_listener import window_request
+    if not window_request(request.client):
+        raise DisplayError(403, "Only the DownloadPulse window can quit it.", code="desktop.quit_window_only")
     if not request_quit(body.nonce):
         raise DisplayError(409, "This request to quit has expired. Close the window again to quit.",
                            code="desktop.quit_refused")
@@ -1550,7 +1544,7 @@ async def desktop_reveal(body: DesktopReveal, request: Request,
     _require_desktop("Show in folder is only available in the desktop application.", "desktop.reveal_only")
     from application.desktop_control import request_reveal
     from application.desktop_listener import window_request
-    if not window_request(request.headers.get("host", "")):
+    if not window_request(request.client):
         raise DisplayError(403, "Show in folder works only in the DownloadPulse window.",
                            code="desktop.reveal_window_only")
     try:
@@ -1558,9 +1552,29 @@ async def desktop_reveal(body: DesktopReveal, request: Request,
     except KeyError:
         raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
     except CodedValueError as exc:
-        raise refusal(409, str(exc), exc) from None
+        # Why core has no location to show (``transfer.location_*``), in Show in folder's words.
+        if code_of(exc)[0] == "transfer.location_not_completed":
+            raise DisplayError(409, "Only a completed download can be shown in its folder.",
+                               code="desktop.reveal_not_completed") from None
+        raise DisplayError(409, "This download's files are no longer in the download folder.",
+                           code="desktop.reveal_missing") from None
     request_reveal(path, folder)
     return {"revealing": True}
+
+
+def _reveal_offered(request) -> bool:
+    """Whether this request may be offered Show in folder on any transfer:
+    the desktop application's own window asked (``desktop_listener
+    .window_request``), by a caller who may operate transfers -- the checks
+    ``desktop_reveal`` makes before it asks core where a download is. Each
+    transfer adds core's own first check (``ApplicationService
+    .may_have_completed_location``); whether its files are still there is
+    read only when it is asked (``completed_location``), never per row."""
+    from application.desktop_listener import window_request
+    from core.config import desktop_installation
+    principal = getattr(getattr(request, "state", None), "principal", None)
+    return bool(desktop_installation() and request is not None and window_request(request.client)
+                and principal is not None and permits(principal, Capability.TRANSFERS_OPERATE))
 
 
 # ── Local Port (the desktop application's external address) ────────────────
@@ -1578,18 +1592,10 @@ class LocalPortUpdate(BaseModel):
     port: int
 
 
-def _configured_local_port() -> int:
-    from application.desktop_listener import PortInvalid, valid_port
-    try:
-        return valid_port(get_settings().desktop_local_port)
-    except PortInvalid:
-        return AppSettings.model_fields["desktop_local_port"].default
-
-
 async def _local_port_reading() -> dict:
-    from application.desktop_listener import listener
+    from application.desktop_listener import configured_port, listener
     from auth.accounts import recent_clients
-    return {**listener.state(_configured_local_port()), "recent_clients": await recent_clients()}
+    return {**listener.state(configured_port()), "recent_clients": await recent_clients()}
 
 
 @router.get("/settings/local-port")
@@ -1725,6 +1731,8 @@ async def retry_torrent(torrent_id: int, application: ApplicationService = Depen
         return await application.retry(torrent_id)
     except KeyError:
         raise DisplayError(404, "Transfer not found", code="transfer.not_found")
+    except CodedValueError as exc:
+        raise refusal(409, str(exc), exc) from None
 
 
 @router.post("/torrents/{torrent_id}/pause")
@@ -2936,6 +2944,7 @@ async def _sse_prompt_window(nonce: str) -> bool:
 
 
 bind_publisher(_sse_broadcast)
+bind_desktop_edge(prompt_window=_sse_prompt_window, stats=get_stats)
 session_store.on_revocation(_sse_sessions_ended)
 
 
@@ -2958,7 +2967,7 @@ async def _sse_generator(request: Request) -> AsyncGenerator[str, None]:
     from core.config import desktop_installation
     subscriber = _SseSubscriber(request.state.principal, token,
                                 session_store.fingerprint(token) if token else b"",
-                                desktop_installation() and window_request(request.headers.get("host", "")))
+                                desktop_installation() and window_request(request.client))
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     async with _sse_lock:
         _sse_subscribers[queue] = subscriber

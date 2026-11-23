@@ -23,7 +23,7 @@ sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve
 import db.database as database  # noqa: E402
 from executor_fakes import LedgerExecutor, LedgerProvider  # noqa: E402
 from transfers.convergence_engine import TransferEngine  # noqa: E402
-from transfers.models import TransferRequest  # noqa: E402
+from transfers.models import SubmissionDemand, TransferRequest  # noqa: E402
 from transfers.policy import TransferPolicy  # noqa: E402
 from transfers.recovery_repository import TransferRepository  # noqa: E402
 from transfers.registry import IntegrationRegistry  # noqa: E402
@@ -78,6 +78,35 @@ async def main() -> None:
 
     root.mkdir(parents=True, exist_ok=True)
     (root / "unrelated.bin").write_bytes(b"unrelated")
+    if scenario == "shared":
+        # Two accounts' demands for one transfer: Cancel applies to the
+        # withdrawing account's own request; the transfer stops, and its
+        # partial is reclaimed, only once no demand still needs it.
+        mine, theirs = SubmissionDemand("account-a"), SubmissionDemand("account-b")
+        request = (TransferRequest("ledger", "single", name="single"),)
+        transfer = await engine.submit(request, demand=mine)
+        joined = await engine.submit(request, demand=theirs)
+        report["one transfer"] = joined.id == transfer.id
+        await engine.tick()
+        artifact = (await repository.artifacts(transfer.id))[0]
+        target = Path(artifact.target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"\x00" * 16)
+        executor.run(artifact.execution)
+        executor.cancel_mode = "confirm"
+        settled = await engine.withdraw_demand((mine.id,), by="account-a")
+        report["after first withdrawal"] = {"settled": settled,
+                                            "transfer": (await repository.get(transfer.id)).state.value,
+                                            "writer": executor.job_for(artifact.execution).state.value,
+                                            "target": target.read_bytes() if target.exists() else None}
+        settled = await engine.withdraw_demand((theirs.id,), by="account-b")
+        report["after last withdrawal"] = {"settled": settled,
+                                           "transfer": (await repository.get(transfer.id)).state.value,
+                                           "cleanup": await cleanup_state(artifact.execution.attempt_id),
+                                           "target": target.read_bytes() if target.exists() else None,
+                                           "files": files(root)}
+        print(json.dumps(report, default=str))
+        return
     requests = (TransferRequest("ledger", "single", name="single"),)
     if scenario == "completed":
         requests += (TransferRequest("ledger", "delivered", name="delivered"),)
@@ -132,7 +161,11 @@ async def main() -> None:
     if scenario == "partial-on":
         # A cancelled transfer is final: Retry never reopens it, so nothing is
         # written again where its partial files were.
-        await engine.retry(transfer.id)
+        try:
+            await engine.retry(transfer.id)
+            report["retry refused"] = None
+        except ValueError as exc:
+            report["retry refused"] = getattr(exc, "display_code", None)
         for _ in range(3):
             await engine.tick()
         report["after retry"] = {"transfer": (await repository.get(transfer.id)).state.value,

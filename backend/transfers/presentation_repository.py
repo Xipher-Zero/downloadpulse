@@ -385,14 +385,23 @@ def failure_selection(transfer_error, requests, artifacts, wake_condition):
     return None
 
 
+def failure_identity(error) -> str:
+    """An opaque identity of one whole ``NormalizedError`` -- its category,
+    reporter, native code, diagnostic and every other recorded fact -- that
+    names which error it is without saying any of them."""
+    import hashlib
+    return hashlib.sha256(codec.dump(error).encode("utf-8")).hexdigest()[:32]
+
+
 def pending_request_failure_sql(transfer_ids: str) -> str:
     """For each transfer in ``transfer_ids`` (an SQL id list or subquery): the
     one request ``failure_selection`` can choose -- the first, in the
     repository's request order, that is pending with an error and a scheduled
-    retry -- as ``transfer_id``, ``state``, ``error_category``, ``retry_at``.
-    Only the error's category is read, never the error itself."""
-    return f"""SELECT transfer_id, state, error_category, retry_at FROM (
-        SELECT r.transfer_id, r.state, CASE WHEN json_valid(r.error) THEN json_extract(r.error, '$.category') END AS error_category, r.retry_at,
+    retry -- as ``transfer_id``, ``state``, ``error_category``, ``retry_at``,
+    and ``error`` (the whole error, which only Details' Reason decodes:
+    ``TransferRepository.failure_reason``)."""
+    return f"""SELECT transfer_id, state, error_category, retry_at, error FROM (
+        SELECT r.transfer_id, r.state, CASE WHEN json_valid(r.error) THEN json_extract(r.error, '$.category') END AS error_category, r.retry_at, r.error,
                ROW_NUMBER() OVER (PARTITION BY r.transfer_id ORDER BY r.parent_id, r.ordinal, r.id) AS rank
         FROM transfer_requests r
         WHERE r.transfer_id IN ({transfer_ids}) AND r.state = 'pending'
@@ -624,6 +633,41 @@ class TransferRepository(_CanonicalTransferRepository):
         """Each transfer's title with its parts (``transfer_display_name_records``)."""
         async with get_db() as db:
             return await transfer_display_name_records(db, transfer_ids)
+
+    async def _selected_failure(self, transfer_id: int, wake_condition) -> tuple | None:
+        """``failure_selection`` over the transfer's candidates read with their
+        whole errors: the transfer's error, the one request
+        ``pending_request_failure_sql`` chooses, the canonical artifacts."""
+        transfer = await self.get(int(transfer_id))
+        async with get_db() as db:
+            requests = await db.fetchall(pending_request_failure_sql("?"), (int(transfer_id),))
+        return failure_selection(
+            transfer.error if transfer is not None else None,
+            [(row["state"], codec.error(row["error"]), row["retry_at"]) for row in requests],
+            [(artifact.state, artifact.error) for artifact in await self.artifacts(int(transfer_id))],
+            wake_condition)
+
+    async def failure_reason(self, transfer_id: int, presented) -> tuple | None:
+        """The failure Details' Reason names, as ``(error, scheduled_retry_at)``
+        with the whole ``NormalizedError``, or ``None``.
+
+        It is the very failure ``presented`` -- this transfer's Details
+        presentation, as ``presentation(details=True)`` returned it -- selected:
+        the same ``failure_selection`` over the same candidates with the same
+        wake, so none once the transfer is settled, exactly as the list and
+        Details say. It must still be that same error -- its category, its
+        schedule and its identity (``presentation_error_identity``, which also
+        binds its reporter and native code); one that changed between the two
+        reads names nothing, never another failure's words."""
+        category = presented.get("presentation_error_category") if isinstance(presented, dict) else None
+        identity = presented.get("presentation_error_identity") if isinstance(presented, dict) else None
+        if not category or not identity:
+            return None
+        selected = await self._selected_failure(transfer_id, presented.get("wake_condition"))
+        if selected is None or (selected[0].category.value, selected[1], failure_identity(selected[0])) != (
+                category, presented.get("presentation_retry_at"), identity):
+            return None
+        return selected
 
     async def presentation(self, transfer_id: int, details: bool = False, *,
                             capacity_only_blocked_ids=frozenset()):
@@ -952,6 +996,15 @@ class TransferRepository(_CanonicalTransferRepository):
                      [(row["state"], row["error_category"], row["retry_at"]) for row in failure_requests],
                      [(row["status"], row["error_category"]) for row in file_rows if is_canonical_artifact_row(row)]),
         ))
+        if details:
+            # Which error that is (``failure_identity``), for Details' Reason
+            # (``failure_reason``): never more than an opaque identity.
+            selected = (await self._selected_failure(transfer_id, result.get("wake_condition"))
+                        if result.get("presentation_error_category") else None)
+            result["presentation_error_identity"] = (
+                failure_identity(selected[0]) if selected is not None
+                and (selected[0].category.value, selected[1]) == (result["presentation_error_category"],
+                                                                  result.get("presentation_retry_at")) else None)
         if str(result.get("status") or "").lower() == "consolidated":
             # A settled contributor whose association is still owed proof
             # (``transfers.cohorts.unverified_association_sql``) is not a

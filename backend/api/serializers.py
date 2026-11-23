@@ -15,7 +15,11 @@ import json
 from transfers.errors import NormalizedError
 
 
-_OPAQUE_FIELDS = frozenset({"payload", "context", "handle", "candidate", "candidates", "candidate_source", "candidate_bindings", "endpoints", "request", "resource", "redactions", "headers", "normalized_error"})
+_OPAQUE_FIELDS = frozenset({"payload", "context", "handle", "candidate", "candidates", "candidate_source", "candidate_bindings", "endpoints", "request", "resource", "redactions", "headers", "normalized_error",
+                            # Core's identity of the failure Details' Reason words
+                            # (``TransferRepository.failure_reason``): a hash of the
+                            # whole error, never for a browser or the event stream.
+                            "presentation_error_identity"})
 _TORRENT_PRIVATE_FIELDS = frozenset({"magnet", "download_url"}) | _OPAQUE_FIELDS
 _FILE_PRIVATE_FIELDS = frozenset({"source_url", "download_url"}) | _OPAQUE_FIELDS
 _CAPABILITY_FIELDS = _TORRENT_PRIVATE_FIELDS | _FILE_PRIVATE_FIELDS

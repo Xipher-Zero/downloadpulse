@@ -417,9 +417,9 @@ class _Stream:
     """One event stream of the page, opened at ``port`` (the window's own, or
     Local Port's: a browser tab there)."""
 
-    async def open(self, port: int):
+    async def open(self, port: int, headers=None):
         self.session = aiohttp.ClientSession()
-        self.reply = await self.session.get(f"http://127.0.0.1:{port}/api/events/stream",
+        self.reply = await self.session.get(f"http://127.0.0.1:{port}/api/events/stream", headers=headers,
                                             timeout=aiohttp.ClientTimeout(total=None))
         assert self.reply.status == 200
         assert (await self.event(10))[0] == "connected"
@@ -460,6 +460,11 @@ async def test_quit_is_asked_of_the_windows_own_page_alone_and_needs_its_single_
         assert (await ask("quit_prompt"))["prompted"] is False             # no page at all: minimize
         tab = await _Stream().open(local)                                    # a browser tab, through Local Port
         streams.append(tab)
+        # A Local Port client naming the window's own address is still not the
+        # window: the connection a request arrives on decides, not its Host.
+        forged = {"Host": f"127.0.0.1:{desktop.port}"}
+        posing = await _Stream().open(local, headers=forged)
+        streams.append(posing)
         assert (await ask("quit_prompt"))["prompted"] is False             # a tab is never asked
         window = await _Stream().open(desktop.port)                          # the window's own page
         streams.append(window)
@@ -469,10 +474,20 @@ async def test_quit_is_asked_of_the_windows_own_page_alone_and_needs_its_single_
         assert (await ask("quit_prompt"))["prompted"] is True              # closed again: a new prompt
         name, second = await window.event(10)
         assert name == "desktop_quit_prompt" and second["nonce"] != first["nonce"]
-        assert await tab.event(1) is None                                    # the tab heard neither
+        assert await tab.event(1) is None and await posing.event(1) is None  # the tabs heard neither
         # Only the prompt pending is answered, once.
         assert (await quit_(first["nonce"]))[0] == 409
         assert (await ask("show"))["quit"] is False
+        # Through Local Port nothing quits or is shown, even with the pending nonce and the window's Host.
+        async with aiohttp.ClientSession() as session:
+            for path, body, code in (("/api/desktop/quit", {"nonce": second["nonce"]}, "desktop.quit_window_only"),
+                                     ("/api/desktop/reveal", {"transfer_id": 1}, "desktop.reveal_window_only")):
+                async with session.post(f"http://127.0.0.1:{local}{path}", json=body, headers=forged) as reply:
+                    assert (reply.status, (await reply.json())["code"]) == (403, code), path
+        assert (await ask("show"))["quit"] is False
+        # The window's own address passes the check: refused only for what it names.
+        status, body = await desktop.exchange("POST", "/api/desktop/reveal", json={"transfer_id": 1})
+        assert (status, body["code"]) == (404, "transfer.not_found")
         status, body = await quit_(second["nonce"])
         assert status == 200 and body == {"quitting": True}
         status, body = await quit_(second["nonce"])

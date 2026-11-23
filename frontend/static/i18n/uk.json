@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "Для передавання немає вибору постачальника на рівні передавання",
   "error.transfer.no_switchable_route": "Передавання не має маршруту постачальника, на який можна перемкнутися",
   "error.transfer.not_found": "Передавання не знайдено",
+  "error.transfer.retry_cancelled": "Скасоване завантаження не можна повторити. Додайте його знову, щоб завантажити.",
+  "error.transfer.location_not_completed": "Завантаження не завершено.",
+  "error.transfer.location_missing": "Файлів цього завантаження більше немає в теці завантажень.",
   "error.desktop.only": "Збереження у вибране місце доступне лише в настільному застосунку",
   "error.desktop.save_failed": "Не вдалося зберегти файл",
   "error.tuning.content_limit_invalid": "Обмеження вмісту — це додатна кількість байтів",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "Неприпустимі кольори рамки вікна.",
   "error.desktop.quit_only": "Вікно для виходу є лише в настільної програми.",
   "error.desktop.quit_refused": "Термін дії цього запиту на вихід минув. Щоб вийти, закрийте вікно ще раз.",
+  "error.desktop.quit_window_only": "Завершити DownloadPulse можна лише з його вікна.",
   "error.desktop.reveal_only": "«Показати в теці» доступно лише в настільному застосунку.",
   "error.desktop.reveal_window_only": "«Показати в теці» працює лише у вікні DownloadPulse.",
   "error.desktop.reveal_not_completed": "Показати в теці можна лише завершене завантаження.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "De overdracht heeft geen providerkeuze op overdrachtsniveau",
   "error.transfer.no_switchable_route": "De overdracht heeft geen providerroute waarnaar kan worden overgeschakeld",
   "error.transfer.not_found": "Overdracht niet gevonden",
+  "error.transfer.retry_cancelled": "Een geannuleerde download kan niet opnieuw worden geprobeerd. Voeg hem opnieuw toe om hem te downloaden.",
+  "error.transfer.location_not_completed": "De download is niet voltooid.",
+  "error.transfer.location_missing": "De bestanden van deze download staan niet meer in de downloadmap.",
   "error.desktop.only": "Opslaan op een gekozen locatie is alleen beschikbaar in de desktoptoepassing",
   "error.desktop.save_failed": "Het bestand kon niet worden opgeslagen",
   "error.tuning.content_limit_invalid": "Een inhoudslimiet is een positief aantal bytes",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "De kleuren van het vensterkader zijn ongeldig.",
   "error.desktop.quit_only": "Alleen de desktoptoepassing heeft een venster om af te sluiten.",
   "error.desktop.quit_refused": "Dit verzoek om af te sluiten is verlopen. Sluit het venster opnieuw om af te sluiten.",
+  "error.desktop.quit_window_only": "Alleen het DownloadPulse-venster kan het afsluiten.",
   "error.desktop.reveal_only": "‘In map tonen’ is alleen beschikbaar in de desktoptoepassing.",
   "error.desktop.reveal_window_only": "‘In map tonen’ werkt alleen in het DownloadPulse-venster.",
   "error.desktop.reveal_not_completed": "Alleen een voltooide download kan in de map worden getoond.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

@@ -32842,6 +32842,38 @@
      "resolution": "Corrected to the reviewer's wording."
     }
    ]
+  },
+  "error.transfer.retry_cancelled": {
+   "source": "3a3c5f4f4cc27c73",
+   "translation": "df32800917857287",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.quit_window_only": {
+   "source": "67a2c97d52006ab1",
+   "translation": "a5f584c3e02a4403",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.transfer.location_not_completed": {
+   "source": "862822ee0425f200",
+   "translation": "1fc0acd62f863c85",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.transfer.location_missing": {
+   "source": "53f6f481984d1cd6",
+   "translation": "8122d8d5b8cef4de",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

@@ -24038,19 +24038,43 @@
   "error.desktop.reveal_not_completed": {
    "category": "error",
    "context": "Refusal of Show in folder (a completed download's row or Details in the desktop application), shown as an error message: the download is not completed (it was still in progress, failed or was removed when asked).",
-   "owner": "backend/application/service.py",
+   "owner": "backend/api/routes.py",
    "criticality": "normal"
   },
   "error.desktop.reveal_missing": {
    "category": "error",
    "context": "Refusal of Show in folder (a completed download's row or Details in the desktop application), shown as an error message: the completed download's files are no longer where DownloadPulse put them inside the download folder (moved, renamed or deleted since).",
-   "owner": "backend/application/service.py",
+   "owner": "backend/api/routes.py",
    "criticality": "normal"
   },
   "help.using.downloads_page.show_in_folder": {
    "category": "long-form-help",
    "context": "Field Manual (the Help page), Everyday Use → Downloads page: a list item shown only in the installed desktop application. Bold words name the interface's own labels; use the words the interface itself shows ('Show in folder').",
    "owner": "frontend/static/ui-help-page.js",
+   "criticality": "normal"
+  },
+  "error.transfer.retry_cancelled": {
+   "category": "error",
+   "context": "Downloads and Details: Retry was pressed on a download that was cancelled. A cancelled download is final (its partial files were removed), so it cannot be retried; adding the same link or file again starts it anew. Shown as an error message; API clients receive the English `detail`.",
+   "owner": "backend/transfers/convergence_engine.py",
+   "criticality": "normal"
+  },
+  "error.desktop.quit_window_only": {
+   "category": "error",
+   "context": "Refusal of Quit in the desktop application when the request did not come from the DownloadPulse window itself (for example another program on this computer reaching it through Local Port). Shown as an error message; 'it' is DownloadPulse.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
+  "error.transfer.location_not_completed": {
+   "category": "error",
+   "context": "A request for where a download's files are on disk, refused because the download has not completed. Shown as an error message; API clients receive the English `detail`. (Show in folder words this as its own message.)",
+   "owner": "backend/application/service.py",
+   "criticality": "normal"
+  },
+  "error.transfer.location_missing": {
+   "category": "error",
+   "context": "A request for where a completed download's files are on disk, refused because they are no longer where DownloadPulse put them inside the download folder (moved, renamed or deleted since). Shown as an error message; API clients receive the English `detail`.",
+   "owner": "backend/application/service.py",
    "criticality": "normal"
   }
  }

@@ -1,7 +1,11 @@
 """Show in folder (1.0.3 WS12): a completed download, in the desktop's own file manager.
 
 * Desktop only: a server refuses it (``desktop.reveal_only``); so does a page
-  that reached the backend through Local Port, not the window's own address.
+  that reached the backend through Local Port, not the window's own address
+  (decided by the connection, over real sockets: test_v103_desktop_lifecycle).
+* Where it is offered is the backend's answer on the list and Details
+  (``reveal_available``); core's refusals are generic (``transfer.location_*``)
+  and the reveal edge words them.
 * The page names a transfer, never a path (an extra field is refused): the
   backend resolves where it is from core's records alone
   (``ApplicationService.completed_location``) -- only a completed transfer's
@@ -44,7 +48,6 @@ sys.path.insert(0, str(ROOT))
 from desktop import supervisor  # noqa: E402
 
 WINDOW_PORT = 47811
-LOCAL_PORT = 47812
 
 
 @pytest_asyncio.fixture
@@ -78,14 +81,20 @@ async def desktop(tmp_path, monkeypatch):
         sessions[name] = token
     transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False)
 
-    async def reveal(who, body, *, port=WINDOW_PORT):
+    async def reveal(who, body):
         token = sessions[who]
-        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{port}") as client:
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{WINDOW_PORT}") as client:
             response = await client.post("/api/desktop/reveal", json=body, headers={
                 "Cookie": f"{HTTP_SESSION_COOKIE}={token}", "X-CSRF-Token": session_store.csrf_token(token)})
         return response.status_code, response.json()
 
-    yield SimpleNamespace(root=root, repository=repository, application=application, reveal=reveal)
+    async def read(who, path):
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{WINDOW_PORT}") as client:
+            response = await client.get(path, headers={"Cookie": f"{HTTP_SESSION_COOKIE}={sessions[who]}"})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    yield SimpleNamespace(root=root, repository=repository, application=application, reveal=reveal, read=read)
     session_store.clear()
 
 
@@ -158,6 +167,7 @@ async def test_only_a_completed_download_inside_the_download_root_is_shown(deskt
                                  status="downloading")
     status, body = await desktop.reveal("admin", {"transfer_id": unfinished})
     assert status == 409 and body["code"] == "desktop.reveal_not_completed"
+    assert body["detail"] == "Only a completed download can be shown in its folder."
     outside = await _download(desktop.repository, "alice-id", [_file(tmp_path / "elsewhere" / "x.bin")], payload="c")
     status, body = await desktop.reveal("admin", {"transfer_id": outside})
     assert status == 409 and body["code"] == "desktop.reveal_missing"
@@ -188,10 +198,42 @@ async def test_the_desktop_admits_only_its_one_person(desktop):
 
 
 @pytest.mark.asyncio
-async def test_only_the_windows_own_page_may_ask_and_a_server_never(desktop, monkeypatch):
+async def test_core_names_no_location_in_show_in_folders_words(desktop):
+    """Core's refusal is generic (``transfer.location_*``); the reveal edge words it."""
+    from core.localization import code_of
+    unfinished = await _download(desktop.repository, "alice-id", [_file(desktop.root / "part.bin")],
+                                 status="downloading")
+    gone = await _download(desktop.repository, "alice-id", [desktop.root / "deleted.bin"], payload="b")
+    for transfer, code in ((unfinished, "transfer.location_not_completed"), (gone, "transfer.location_missing")):
+        with pytest.raises(ValueError) as refused:
+            await desktop.application.completed_location(transfer)
+        assert code_of(refused.value)[0] == code
+
+
+@pytest.mark.asyncio
+async def test_the_list_and_details_say_where_show_in_folder_is_offered(desktop, monkeypatch):
+    """``reveal_available``: the window asked, the caller may operate, the
+    download is completed -- no disk read per row; a click on one whose files
+    are gone is refused and said (``desktop.reveal_missing``)."""
+    done = await _download(desktop.repository, "alice-id", [_file(desktop.root / "film.mkv")])
+    gone = await _download(desktop.repository, "alice-id", [desktop.root / "deleted.bin"], payload="b")
+    unfinished = await _download(desktop.repository, "alice-id", [_file(desktop.root / "part.bin")],
+                                 status="downloading", payload="c")
+    offered = {done: True, gone: True, unfinished: False}
+    listed = {item["id"]: item["reveal_available"] for item in (await desktop.read("admin", "/api/torrents"))["items"]}
+    assert listed == offered
+    for transfer, expected in offered.items():
+        assert (await desktop.read("admin", f"/api/torrents/{transfer}"))["reveal_available"] is expected
+    monkeypatch.delenv("DOWNLOADPULSE_DESKTOP")                  # a server never offers it
+    assert not any(item["reveal_available"] for item in (await desktop.read("admin", "/api/torrents"))["items"])
+    assert (await desktop.read("admin", f"/api/torrents/{done}"))["reveal_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_server_never_shows_in_folder(desktop, monkeypatch):
+    # Through Local Port it is refused too: decided by the connection a request
+    # arrived on, over real sockets (test_v103_desktop_lifecycle).
     transfer = await _download(desktop.repository, "alice-id", [_file(desktop.root / "film.mkv")])
-    status, body = await desktop.reveal("admin", {"transfer_id": transfer}, port=LOCAL_PORT)    # through Local Port
-    assert status == 403 and body["code"] == "desktop.reveal_window_only"
     monkeypatch.delenv("DOWNLOADPULSE_DESKTOP")
     status, body = await desktop.reveal("admin", {"transfer_id": transfer})
     assert status == 404 and body["code"] == "desktop.reveal_only"
@@ -364,3 +406,14 @@ def test_nothing_reaches_the_file_manager_through_a_shell():
     reveal = source[start:source.index("async def _save(")]
     assert "shell=True" not in reveal and "create_subprocess_shell" not in reveal and "os.system" not in reveal
     assert "cmd.exe" not in reveal and "/bin/sh" not in reveal
+
+
+def test_the_page_offers_show_in_folder_only_where_the_backend_says():
+    """The page decides nothing itself (no status, desktop or capability guess):
+    its row and Details read the backend's ``reveal_available``."""
+    app = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
+    offered = app[app.index("const DPDesktopReveal"):app.index("async show(id, button)")]
+    assert "offered: t => Boolean(t) && t.reveal_available === true," in offered
+    assert "status" not in offered.split("offered:")[1] and "dpCan" not in offered
+    downloads = (ROOT / "frontend" / "static" / "ui-downloads.js").read_text(encoding="utf-8")
+    assert "window.DPDesktopReveal?.offered(t)" in downloads and "DPDesktopReveal.offered(t)" in app

@@ -40,6 +40,7 @@ def _capacity(tmp_path, *, minimum=0, hysteresis=0.5):
         minimum,
         hysteresis,
         application_path=app / "downloadpulse.db",
+        persistent_roots=None,
     ), app, download
 
 
@@ -264,7 +265,7 @@ async def test_health_endpoint_is_reachable_without_database_access(tmp_path):
     missing_app = tmp_path / "missing-app" / "downloadpulse.db"
     download = tmp_path / "download"
     download.mkdir()
-    capacity = DiskCapacity(download, application_path=missing_app)
+    capacity = DiskCapacity(download, application_path=missing_app, persistent_roots=None)
     application, _engine = _dummy_application(capacity)
 
     app = FastAPI()

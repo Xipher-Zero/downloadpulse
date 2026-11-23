@@ -3,11 +3,13 @@
 ``transfers.presentation_repository.failure_selection`` picks the failure a
 transfer's reason names -- its displayed error, else a source whose resolution
 retry is scheduled, else a held file whose acquisition failed -- with only a
-real schedule. Details' Reason (``api.routes._error_reason``) and both
-presentation projections (the bounded Downloads/Dashboard list and Details)
-select through it, so the list and Details carry the same
-``presentation_error_category`` and ``presentation_retry_at``, and Details'
-Reason names the same schedule. Real temporary SQLite, real repository, real
+real schedule, and names none once the transfer is settled. Both presentation
+projections (the bounded Downloads/Dashboard list and Details) select through it
+from the same core-built candidates, and Details' Reason is core's reading of
+that same selection (``TransferRepository.failure_reason``), so the list and
+Details carry the same ``presentation_error_category`` and
+``presentation_retry_at``, and Details' Reason names the same failure and
+schedule -- or, like them, none. Real temporary SQLite, real repository, real
 list and Details routes.
 """
 from __future__ import annotations
@@ -167,6 +169,21 @@ async def test_a_source_waiting_for_its_resolution_retry_names_that_failure_and_
     item, details = await _surfaces(runtime, transfer.id)
     assert item["presentation_error_category"] == CATEGORY and item["presentation_retry_at"] == 1_900_000_000.5
     assert details["error_reason"]["scheduled_retry_at"] == 1_900_000_000.5
+
+
+@pytest.mark.asyncio
+async def test_a_settled_transfer_names_no_failure_on_the_list_or_in_details(runtime):
+    """A failure the transfer still records is history once it is settled:
+    the list, Details' presentation and Details' Reason all name none."""
+    transfer_id, artifact_id = await _with_artifact(runtime, "settled")
+    await _write("UPDATE download_files SET status='cancelled',normalized_error=? WHERE id=?",
+                 (codec.dump(CHALLENGE), artifact_id))
+    await _write("UPDATE torrents SET status='cancelled',normalized_error=?,error_message=? WHERE id=?",
+                 (codec.dump(CHALLENGE), CHALLENGE.message, transfer_id))
+    item, details = await _surfaces(runtime, transfer_id)
+    assert item["presentation_status"] == "cancelled"
+    assert item["presentation_error_category"] is None and item["presentation_retry_at"] is None
+    assert "error_reason" not in details
 
 
 @pytest.mark.asyncio

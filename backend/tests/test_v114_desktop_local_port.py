@@ -242,3 +242,71 @@ async def test_the_desktop_application_refuses_a_deployment_type_change_and_chan
         assert (backend.root / "config" / "config.json").read_bytes() == stored
     finally:
         await backend.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_relayed_connection_reads_as_local_port_until_after_the_backend_saw_it_close(monkeypatch):
+    """A client may pipeline a request and go: the backend can still be serving
+    it when the relay's pipes end. Its address reads as relayed while the
+    backend handles anything that connection carried, and only a while after
+    its close is it forgotten (``RELAYED_AFTER_CLOSE_SECONDS``)."""
+    from application import desktop_listener
+
+    monkeypatch.setattr(desktop_listener, "RELAYED_AFTER_CLOSE_SECONDS", 0.2)
+    relay = desktop_listener.LocalListener()
+    seen = asyncio.get_running_loop().create_future()
+
+    async def backend(reader, writer):
+        peer = writer.get_extra_info("peername")[:2]
+        await reader.read()                         # everything it carried, then the client's end
+        writer.write_eof()                          # the first response done: the relay's pipes end
+        while relay._connections:                   # ... and it has closed this connection
+            await asyncio.sleep(0.01)
+        # The pipelined request, served now, is judged by this.
+        seen.set_result((peer, relay.relays(peer)))
+        writer.close()
+
+    server = await asyncio.start_server(backend, "127.0.0.1", 0)
+    target = server.sockets[0].getsockname()[1]
+    assert await relay.start(free_port(), target)
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", relay._port)
+        writer.write(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+        await writer.drain()
+        writer.close()                              # pipelined, then gone
+        peer, relayed = await asyncio.wait_for(seen, 10)
+        assert relayed is True
+        await asyncio.sleep(0.5)
+        assert relay.relays(peer) is False and not relay._forgetting
+    finally:
+        await relay.stop()
+        server.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_every_pending_forget():
+    """A relayed address still to be forgotten is a timer the listener owns:
+    ``stop`` cancels each one and leaves none pending."""
+    from application import desktop_listener
+
+    relay = desktop_listener.LocalListener()
+    closed = asyncio.get_running_loop().create_future()
+
+    async def backend(reader, writer):
+        await reader.read()
+        writer.close()
+        closed.set_result(None)
+
+    server = await asyncio.start_server(backend, "127.0.0.1", 0)
+    assert await relay.start(free_port(), server.sockets[0].getsockname()[1])
+    try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", relay._port)
+        writer.close()
+        await asyncio.wait_for(closed, 10)
+        while not relay._forgetting:                # the relay has closed its side and scheduled the forget
+            await asyncio.sleep(0.01)
+        pending = list(relay._forgetting)
+        await relay.stop()
+        assert not relay._forgetting and all(handle.cancelled() for handle in pending)
+    finally:
+        server.close()

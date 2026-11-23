@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "Il trasferimento non ha una scelta del provider a livello di trasferimento",
   "error.transfer.no_switchable_route": "Il trasferimento non ha alcun percorso del provider a cui passare",
   "error.transfer.not_found": "Trasferimento non trovato",
+  "error.transfer.retry_cancelled": "Un download annullato non può essere riprovato. Aggiungilo di nuovo per scaricarlo.",
+  "error.transfer.location_not_completed": "Il download non è completato.",
+  "error.transfer.location_missing": "I file di questo download non sono più nella cartella di download.",
   "error.desktop.only": "Il salvataggio in una posizione scelta è disponibile solo nell’applicazione desktop",
   "error.desktop.save_failed": "Impossibile salvare il file",
   "error.tuning.content_limit_invalid": "Un limite di contenuto è un numero positivo di byte",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "I colori della cornice della finestra non sono validi.",
   "error.desktop.quit_only": "Solo l’applicazione desktop ha una finestra da cui uscire.",
   "error.desktop.quit_refused": "Questa richiesta di uscita è scaduta. Chiudi di nuovo la finestra per uscire.",
+  "error.desktop.quit_window_only": "Solo la finestra di DownloadPulse può chiuderlo.",
   "error.desktop.reveal_only": "\"Mostra nella cartella\" è disponibile solo nell’applicazione desktop.",
   "error.desktop.reveal_window_only": "\"Mostra nella cartella\" funziona solo nella finestra di DownloadPulse.",
   "error.desktop.reveal_not_completed": "Solo un download completato può essere mostrato nella sua cartella.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

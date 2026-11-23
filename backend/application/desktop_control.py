@@ -12,8 +12,8 @@ roles and permissions are untouched, and nothing here signs a session in.
 
 The tray asks four things, each answered by its existing owner:
 
-* ``status`` -- the ``/api/stats`` counters (``api.routes.get_stats``),
-  projected to five numbers;
+* ``status`` -- the ``/api/stats`` counters (``api.routes.get_stats``, bound
+  by the edge: ``bind_edge``), projected to five numbers;
 * ``events`` -- the activity journal (``db.event_journal.page``) after a
   cursor, transfer lifecycle events only (a resume: the outcome
   ``resumed``), projected to identifiers, type, outcome and the transfer's
@@ -33,7 +33,8 @@ The tray asks four things, each answered by its existing owner:
   folder, as the backend itself resolved it -- or none; each answered once;
 * ``quit_prompt`` -- the window was closed where no tray can open it again
   (Linux): ask the window's own page -- never a browser tab or a Local Port
-  client (``api.routes._sse_prompt_window``) -- whether to quit, with a fresh
+  client (``api.routes._sse_prompt_window``, bound by the edge: ``bind_edge``)
+  -- whether to quit, with a fresh
   single-use nonce the answer must carry; ``prompted`` says whether such a page
   was there to ask (if not, the supervisor minimizes the window).
 
@@ -80,6 +81,17 @@ _FIELDS = {"status": {"id", "op"}, "events": {"id", "op", "after", "limit"},
 # look (its loop) and the person's own time in the dialog.
 DESTINATION_WAIT_SECONDS = 600
 MAX_PATH = 4096
+
+
+# What only the HTTP edge holds, bound by it at import (``bind_edge``, as
+# ``services.event_bus.bind_publisher``): this module never imports the API.
+# ``prompt_window(nonce) -> bool``: the quit prompt, sent to the window's own
+# page alone; ``stats(application) -> dict``: the ``/api/stats`` counters.
+_edge: dict = {"prompt_window": None, "stats": None}
+
+
+def bind_edge(*, prompt_window, stats) -> None:
+    _edge.update(prompt_window=prompt_window, stats=stats)
 
 
 # The window frame in the page's theme (``set_frame``, from PUT /desktop/frame):
@@ -237,10 +249,9 @@ async def answer(application, request) -> dict:
     if not isinstance(op, str) or op not in _FIELDS or set(request) - _FIELDS[op]:
         return {"id": ident, "error": "refused"}
     if op == "status":
-        from api.routes import _configured_local_port, get_stats
-        from application.desktop_listener import listener
-        return {"id": ident, "status": {**_project_status(await get_stats(application)),
-                                        "local_port": listener.state(_configured_local_port())}}
+        from application.desktop_listener import configured_port, listener
+        return {"id": ident, "status": {**_project_status(await _edge["stats"](application)),
+                                        "local_port": listener.state(configured_port())}}
     if op in {"pause", "resume"}:
         result = await (application.pause_all() if op == "pause" else application.resume_all())
         return {"id": ident, "ok": bool(result.get("ok")), "paused": bool(result.get("paused"))}
@@ -253,9 +264,8 @@ async def answer(application, request) -> dict:
     if op == "quit_prompt":
         # A new prompt replaces any earlier one: only its nonce is accepted.
         global _quit_nonce
-        from api.routes import _sse_prompt_window
         _quit_nonce = nonce = secrets.token_urlsafe(32)
-        if not await _sse_prompt_window(nonce):
+        if _edge["prompt_window"] is None or not await _edge["prompt_window"](nonce):
             _quit_nonce = None                      # no window page to ask
         return {"id": ident, "prompted": _quit_nonce is not None}
     if op == "frame":

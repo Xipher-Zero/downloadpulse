@@ -207,67 +207,39 @@ async def test_errors_without_declared_words_present_exactly_as_before(repositor
         assert "error_reason" not in await _details(repository, transfer_id)
 
 
-class _Records:
-    """The repository's own record readers, as fakes."""
-
-    def __init__(self, requests=(), artifacts=()):
-        self._requests, self._artifacts = tuple(requests), tuple(artifacts)
-
-    async def requests(self, transfer_id):
-        return self._requests
-
-    async def artifacts(self, transfer_id):
-        return self._artifacts
-
-
-def _request(state, error=None, retry_at=0.0):
-    return SimpleNamespace(state=state, error=error, retry_at=retry_at)
-
-
-def _artifact(state, error=None):
-    return SimpleNamespace(state=state, error=error)
-
-
 @pytest.mark.asyncio
-async def test_a_scheduled_resolution_retry_shows_the_reason_and_that_sources_real_schedule():
-    from api.routes import _error_reason
-    records = _Records(requests=(_request("resolved"), _request("pending", _challenge(), 1_900_000_000.5)))
-    assert await _error_reason(records, 1, None, None, None, definitions) == {
-        **CHALLENGE_WORDS, "scheduled_retry_at": 1_900_000_000.5}
-    # A pending source with no scheduled retry is not a scheduled retry.
-    records = _Records(requests=(_request("pending", _challenge(), 0.0),))
-    assert await _error_reason(records, 1, None, None, None, definitions) is None
-
-
-@pytest.mark.asyncio
-async def test_a_held_acquisition_failure_reads_its_schedule_only_from_the_recovery_wake():
-    from api.routes import _error_reason
-    # The executor records its failures under its own identity (yt_dlp).
-    from integrations.media.outcomes import outcome_error
-    acquisition = outcome_error("verification_challenge", Stage.EXECUTION, integration_id="yt_dlp")
-    records = _Records(artifacts=(_artifact("recovery_wait", acquisition),))
-    waiting = await _error_reason(records, 1, None, None, "retry_at:1900000060.0", definitions)
-    assert waiting == {**CHALLENGE_WORDS, "scheduled_retry_at": 1_900_000_060.0}
-    # Held for the operator (budget spent): no automatic retry is claimed.
-    for wake in ("operator_retry", None, "retry_at:not-a-time"):
-        assert (await _error_reason(records, 1, None, None, wake, definitions))["scheduled_retry_at"] is None
-    # A settled file's error is history, and a success leaves nothing to explain.
-    for state in ("completed", "cancelled", "error"):
-        assert await _error_reason(_Records(artifacts=(_artifact(state, _challenge()),)), 1, None, None,
-                                   None, definitions) is None
-    assert await _error_reason(_Records(requests=(_request("resolved"),), artifacts=(_artifact("completed"),)),
-                               1, None, None, None, definitions) is None
-
-
-@pytest.mark.asyncio
-async def test_a_displayed_error_is_explained_only_when_it_is_that_same_error():
-    from api.routes import _error_reason
+async def test_details_reason_is_cores_selection_and_a_changed_failure_names_nothing(repository):
+    """Which failure Details' Reason words is core's answer
+    (``TransferRepository.failure_reason``): the one its presentation selected.
+    A failure that changed between the presentation and that read fails
+    closed, never to another failure's words."""
     error = _challenge()
-    transfer = SimpleNamespace(error=error)
-    records = _Records(requests=(_request("pending", _challenge(), 1_900_000_000.0),))
-    assert (await _error_reason(records, 1, transfer, error.as_dict(), None, definitions))["scheduled_retry_at"] is None
-    # A transition between the two reads fails closed, never to another failure's words.
-    assert await _error_reason(records, 1, SimpleNamespace(error=REJECTED), error.as_dict(), None, definitions) is None
+    _store(721, error)
+    presented = await repository.presentation(721, details=True)
+    assert await repository.failure_reason(721, presented) == (error, None)
+    # That identity is core's alone: neither the Details payload nor the event
+    # stream's projection (``public_payload``) carries it.
+    from api.serializers import public_payload
+    assert presented["presentation_error_identity"]
+    detail = await _details(repository, 721)
+    assert detail["error_reason"] and "presentation_error_identity" not in detail
+    assert "presentation_error_identity" not in public_payload(presented)
+    for changed in ({**presented, "presentation_error_category": Category.CANDIDATE_REJECTED.value},
+                    {**presented, "presentation_retry_at": 1_900_000_000.0},
+                    {**presented, "presentation_error_category": None},
+                    {**presented, "presentation_error_identity": None}):
+        assert await repository.failure_reason(721, changed) is None
+    # Another error of the same category -- another reporter, another native
+    # code -- recorded since the presentation was read: never worded for it.
+    from dataclasses import replace
+    for other in (replace(error, integration_id="another"), replace(error, native_code="auth_required")):
+        assert other.category == error.category
+        conn = sqlite3.connect(database.DB_PATH)
+        conn.execute("UPDATE torrents SET normalized_error=? WHERE id=721", (codec.dump(other),))
+        conn.commit()
+        conn.close()
+        assert await repository.failure_reason(721, presented) is None
+        assert await repository.failure_reason(721, await repository.presentation(721, details=True)) == (other, None)
 
 
 @pytest.mark.asyncio
@@ -275,11 +247,9 @@ async def test_nothing_more_is_read_when_no_integration_declares_words():
     from api.routes import _error_reason
 
     class Unreadable:
-        async def requests(self, transfer_id):
+        async def failure_reason(self, transfer_id, presented):
             raise AssertionError("read")
 
-        artifacts = requests
-
-    assert await _error_reason(Unreadable(), 1, None, None, None, []) is None
-    assert await _error_reason(Unreadable(), 1, None, None, None,
+    assert await _error_reason(Unreadable(), 1, {}, []) is None
+    assert await _error_reason(Unreadable(), 1, {},
                                [item for item in definitions if not item.presentation.error_reasons]) is None

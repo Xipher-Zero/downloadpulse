@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "Transfer nie ma wyboru dostawcy na poziomie transferu",
   "error.transfer.no_switchable_route": "Transfer nie ma trasy dostawcy, którą można przełączyć",
   "error.transfer.not_found": "Nie znaleziono transferu",
+  "error.transfer.retry_cancelled": "Anulowanego pobierania nie można ponowić. Dodaj je ponownie, aby je pobrać.",
+  "error.transfer.location_not_completed": "Pobieranie nie zostało ukończone.",
+  "error.transfer.location_missing": "Pliki tego pobierania nie znajdują się już w folderze pobierania.",
   "error.desktop.only": "Zapisywanie w wybranym miejscu jest dostępne tylko w aplikacji komputerowej",
   "error.desktop.save_failed": "Nie udało się zapisać pliku",
   "error.tuning.content_limit_invalid": "Limit zawartości to dodatnia liczba bajtów",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "Kolory ramki okna są nieprawidłowe.",
   "error.desktop.quit_only": "Tylko aplikacja desktopowa ma okno, którego zamknięcie kończy jej działanie.",
   "error.desktop.quit_refused": "To żądanie zamknięcia wygasło. Aby zamknąć aplikację, zamknij okno ponownie.",
+  "error.desktop.quit_window_only": "Tylko okno DownloadPulse może go zamknąć.",
   "error.desktop.reveal_only": "„Pokaż w folderze” jest dostępne tylko w aplikacji komputerowej.",
   "error.desktop.reveal_window_only": "„Pokaż w folderze” działa tylko w oknie DownloadPulse.",
   "error.desktop.reveal_not_completed": "W folderze można pokazać tylko ukończone pobieranie.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

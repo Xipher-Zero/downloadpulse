@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "传输没有传输级别的提供商选择",
   "error.transfer.no_switchable_route": "传输没有可切换的提供商路由",
   "error.transfer.not_found": "未找到传输",
+  "error.transfer.retry_cancelled": "已取消的下载无法重试。请重新添加以下载。",
+  "error.transfer.location_not_completed": "下载尚未完成。",
+  "error.transfer.location_missing": "此下载的文件已不在下载文件夹中。",
   "error.desktop.only": "保存到所选位置仅在桌面应用中可用",
   "error.desktop.save_failed": "无法保存文件",
   "error.tuning.content_limit_invalid": "内容限制必须是大于0的字节数",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "窗口边框颜色无效。",
   "error.desktop.quit_only": "只有桌面应用程序有可退出的窗口。",
   "error.desktop.quit_refused": "此退出请求已过期。要退出，请再次关闭窗口。",
+  "error.desktop.quit_window_only": "只有 DownloadPulse 窗口可以退出它。",
   "error.desktop.reveal_only": "“在文件夹中显示”仅在桌面应用中可用。",
   "error.desktop.reveal_window_only": "“在文件夹中显示”仅在 DownloadPulse 窗口中可用。",
   "error.desktop.reveal_not_completed": "只有已完成的下载才能在其文件夹中显示。",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

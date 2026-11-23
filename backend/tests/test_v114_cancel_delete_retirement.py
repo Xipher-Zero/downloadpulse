@@ -53,12 +53,25 @@ def test_partial_transfers_on_cancel_reclaims_the_partial_target_and_retry_never
     cancelled = report["after cancel"]
     assert cancelled["target"] is None and cancelled["cleanup"] == STOPPED
     assert cancelled["unrelated"] and cancelled["files"] == ["unrelated.bin"]
+    assert report["retry refused"] == "transfer.retry_cancelled"
     retried = report["after retry"]
     assert retried["transfer"] == "cancelled" and retried["artifact"] == "cancelled"
     assert not retried["material"] and retried["files"] == ["unrelated.bin"]
     after = report["after delete"]
     assert after["transfer"] == "deleted" and after["target"] is None
     assert after["unrelated"] and after["files"] == ["unrelated.bin"]
+
+
+def test_cancel_applies_to_the_own_request_and_reclaims_only_once_no_demand_remains(tmp_path):
+    report = world("shared", tmp_path)
+    assert report["one transfer"]
+    first = report["after first withdrawal"]
+    # Another account still needs the work: it continues, its partial intact.
+    assert first["settled"] == [] and first["transfer"] not in {"cancelled", "deleted"}
+    assert first["writer"] == "running" and first["target"] == repr(b"\x00" * 16)
+    last = report["after last withdrawal"]
+    assert last["transfer"] == "cancelled" and last["target"] is None and last["cleanup"] == STOPPED
+    assert last["files"] == ["unrelated.bin"]
 
 
 def test_a_writer_that_may_still_be_running_keeps_its_material_through_cancel_and_delete(tmp_path):

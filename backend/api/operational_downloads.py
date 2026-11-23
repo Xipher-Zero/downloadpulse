@@ -11,7 +11,6 @@ pages are navigated by cursor across the whole retained history. This module is
 the sole declaring owner of GET /api/events; api.routes declares no variant.
 """
 import asyncio
-import json
 import logging
 import sqlite3
 import time
@@ -20,7 +19,7 @@ from typing import Annotated, Literal, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from api.routes import _provider_display_name, _public_transfer_presentation
+from api.routes import _provider_display_name, _public_transfer_presentation, _reveal_offered
 from application import dispatch_admission as live_admission
 from application.dependencies import get_application
 from application.manual_candidate_failover import preview_switch, switch_candidate
@@ -232,18 +231,6 @@ def _bounded_source_identity(row) -> dict[str, str]:
                     break
 
     return public_source_identity(request_kind, candidate_source)
-
-
-def _artifact_facts(raw_facts) -> list[dict]:
-    """The page's per-artifact facts (``artifact_presentation_facts``),
-    decoded; in artifact id order, the order the selection reads."""
-    try:
-        facts = json.loads(raw_facts) if raw_facts else []
-    except (TypeError, ValueError):
-        facts = []
-    if not isinstance(facts, list):
-        return []
-    return sorted((fact for fact in facts if isinstance(fact, dict)), key=lambda fact: int(fact.get("artifact_id") or 0))
 
 
 def _bounded_child_presentations(facts, *, paused, input_required, capacity_only_blocked_ids):
@@ -569,7 +556,11 @@ def _apply_activity_priority_order(items: list) -> list:
 
 async def _with_access(request: Request | None, application, items: list) -> list:
     """Each row's caller-specific ``access`` (``auth.permissions.transfer_access``),
-    for the whole page in one read."""
+    for the whole page in one read, and whether Show in folder is offered on it
+    (``reveal_available``: ``api.routes._reveal_offered``, no disk read per row)."""
+    offered = _reveal_offered(request)
+    for item in items:
+        item["reveal_available"] = offered and ApplicationService.may_have_completed_location(item.get("status"))
     principal = getattr(getattr(request, "state", None), "principal", None)
     if principal is None:
         return items
@@ -641,19 +632,14 @@ async def list_operational_torrents(
         for name in ("completed", "total", "writers", "acquiring", "bytes_known", "units_known",
                      "units_completed", "units_total", "estimates_known", "estimated"):
             projected.pop(f"_execution_{name}", None)
-        artifact_facts = _artifact_facts(projected.pop("_artifact_presentation_facts", None))
+        artifact_facts = projected.pop("_artifact_presentation_facts", None) or []
         file_presentations = _bounded_child_presentations(
             artifact_facts,
             paused=paused, input_required=input_required,
             capacity_only_blocked_ids=capacity_only_blocked_ids,
         )
-        # The failure a reason names (``failure_selection``), each error its category.
-        request_failure = (projected.pop("_request_failure_state", None),
-                           projected.pop("_request_failure_category", None),
-                           projected.pop("_request_failure_retry_at", None))
-        failure = (projected.pop("_transfer_error_category", None),
-                   [request_failure] if request_failure[0] else [],
-                   [(fact.get("status"), fact.get("error_category")) for fact in artifact_facts])
+        # The failure inputs core's read model built for this row.
+        failure = projected.pop("_presentation_failure", None)
         source_identity = _bounded_source_identity(projected)
         deferred_provider_id = projected.pop("_deferred_provider_id", None)
         deferred_source = _decode_projection_value(projected.pop("_deferred_source", None), None)

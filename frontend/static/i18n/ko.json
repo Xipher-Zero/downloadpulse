@@ -2518,6 +2518,9 @@
   "error.transfer.no_provider_choice": "이 전송에는 전송 단위 제공자 선택이 없습니다",
   "error.transfer.no_switchable_route": "이 전송에는 전환할 수 있는 제공자 경로가 없습니다",
   "error.transfer.not_found": "전송을 찾을 수 없습니다",
+  "error.transfer.retry_cancelled": "취소된 다운로드는 다시 시도할 수 없습니다. 다운로드하려면 다시 추가하세요.",
+  "error.transfer.location_not_completed": "다운로드가 완료되지 않았습니다.",
+  "error.transfer.location_missing": "이 다운로드의 파일이 더 이상 다운로드 폴더에 없습니다.",
   "error.desktop.only": "선택한 위치에 저장은 데스크톱 앱에서만 사용할 수 있습니다",
   "error.desktop.save_failed": "파일을 저장할 수 없습니다",
   "error.tuning.content_limit_invalid": "콘텐츠 제한은 0보다 큰 바이트 수여야 합니다",
@@ -3644,6 +3647,7 @@
   "error.desktop.frame_invalid": "창 프레임 색상이 올바르지 않습니다.",
   "error.desktop.quit_only": "종료할 창은 데스크톱 애플리케이션에만 있습니다.",
   "error.desktop.quit_refused": "이 종료 요청은 만료되었습니다. 종료하려면 창을 다시 닫으세요.",
+  "error.desktop.quit_window_only": "DownloadPulse 창에서만 종료할 수 있습니다.",
   "error.desktop.reveal_only": "'폴더에서 보기'는 데스크톱 앱에서만 사용할 수 있습니다.",
   "error.desktop.reveal_window_only": "'폴더에서 보기'는 DownloadPulse 창에서만 작동합니다.",
   "error.desktop.reveal_not_completed": "완료된 다운로드만 폴더에서 볼 수 있습니다.",
@@ -7383,6 +7387,10 @@
   "error.desktop.reveal_window_only": "1a475f536d481127",
   "error.desktop.reveal_not_completed": "bb8d162759a94436",
   "error.desktop.reveal_missing": "53f6f481984d1cd6",
-  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d",
+  "error.transfer.retry_cancelled": "3a3c5f4f4cc27c73",
+  "error.desktop.quit_window_only": "67a2c97d52006ab1",
+  "error.transfer.location_not_completed": "862822ee0425f200",
+  "error.transfer.location_missing": "53f6f481984d1cd6"
  }
 }

@@ -256,7 +256,7 @@ async def collect_all_metrics(
 async def generate_report(hours: int = 24, owner_ids: Optional[list[str]] = None) -> Dict[str, Any]:
     """Generate a structured report for the given time window (``owner_ids``:
     one owner's own activity, ``collect_all_metrics``)."""
-    from services.notifications import format_bytes
+    from core.units import format_bytes
     metrics = await collect_all_metrics(hours=hours, owner_ids=owner_ids)
     t = metrics["torrents"]
     d = metrics["downloads"]

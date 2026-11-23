@@ -55,6 +55,7 @@ def _capacity(tmp_path, *, minimum_gb=0, hysteresis_gb=0.5):
         minimum_gb=minimum_gb,
         hysteresis_gb=hysteresis_gb,
         application_path=app_dir / "downloadpulse.db",
+        persistent_roots=None,
     )
     return capacity, app_dir, download_dir
 
@@ -470,7 +471,7 @@ async def test_bad_download_storage_does_not_prevent_health_service_startup_path
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     missing = tmp_path / "missing-download"
-    capacity = DiskCapacity(missing, application_path=app_dir / "downloadpulse.db")
+    capacity = DiskCapacity(missing, application_path=app_dir / "downloadpulse.db", persistent_roots=None)
     service, _repository, engine = _service(capacity)
 
     result = await storage_health(service)

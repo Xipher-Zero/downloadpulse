@@ -1453,7 +1453,30 @@ async def downloads_page(repository, *, status, plan, limit: int, offset: int, o
         routed = [int(row["id"]) for row in rows if routes_judged or (
             len(kinds := _bounded_request_kinds(row)) == 1 and kinds[0] in BITTORRENT_REQUEST_KINDS)]
         route_roots = await root_route_facts_by_root_in(repository, db, routed) if routed else {}
+    for row in rows:
+        facts = _artifact_facts(row.get("_artifact_presentation_facts"))
+        row["_artifact_presentation_facts"] = facts
+        # The failure a reason names is selected by the presentation owner
+        # (``effective_presentation`` / ``failure_selection``) from these
+        # inputs -- the same candidates, reduced by the same SQL, that the
+        # Details projection passes -- each error its category.
+        request = (row.pop("_request_failure_state", None), row.pop("_request_failure_category", None),
+                   row.pop("_request_failure_retry_at", None))
+        row["_presentation_failure"] = (row.pop("_transfer_error_category", None), [request] if request[0] else [],
+                                        [(fact.get("status"), fact.get("error_category")) for fact in facts])
     return {"rows": rows, "total": total, "route_roots": route_roots, "routed": routed}
+
+
+def _artifact_facts(raw_facts) -> list[dict]:
+    """A row's per-artifact facts (``_artifact_presentation_facts``), decoded;
+    in artifact id order, the order the failure selection reads."""
+    try:
+        facts = json.loads(raw_facts) if raw_facts else []
+    except (TypeError, ValueError):
+        facts = []
+    if not isinstance(facts, list):
+        return []
+    return sorted((fact for fact in facts if isinstance(fact, dict)), key=lambda fact: int(fact.get("artifact_id") or 0))
 
 
 # Public names for the Downloads route (an edge reaches no underscore name of core).
