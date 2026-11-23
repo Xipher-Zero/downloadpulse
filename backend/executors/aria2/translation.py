@@ -101,6 +101,10 @@ def _http_status_failure(message: object):
     status = int(match.group(1))
     if status == 429:
         return D.NETWORK, C.RATE_LIMITED, T.BACKOFF, O.REMOTE_SOURCE, P.TEMPORARY
+    if status in (404, 410):
+        # Not found / gone: the same facts as aria2's own "resource not found"
+        # (code 3), which carries a 404; a 410 arrives as code 22 with its status.
+        return D.RESOLUTION, C.SOURCE_NOT_FOUND, T.AFTER_RERESOLUTION, O.REMOTE_SOURCE, P.UNKNOWN
     if 500 <= status <= 599:
         return D.NETWORK, C.SOURCE_TEMPORARILY_UNAVAILABLE, T.BACKOFF, O.REMOTE_SOURCE, P.TEMPORARY
     return None

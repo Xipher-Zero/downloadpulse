@@ -500,6 +500,23 @@ class TransferPolicy:
             )
 
         can_refresh = context.can_refresh and context.candidate_refreshes < max(1, self.refreshes_per_recovery_epoch)
+        # The exact source answered "not found" (an HTTP 404 or 410, a missing
+        # file on a remote share) on a route that cannot be refreshed within
+        # budget (1.0.3, operator 2026-11-22): asking the same address again
+        # cannot change that, so the route is done at once -- another legitimate
+        # candidate is tried now, and with none the file needs the operator,
+        # with no timed retry first. A refreshable route (a provider-issued link
+        # that may simply have expired) still refreshes first, below. Scoped to
+        # this route: other candidates and providers keep their chance.
+        if error.stage == Stage.EXECUTION and error.category == Category.SOURCE_NOT_FOUND and not can_refresh:
+            if context.has_alternate:
+                return RecoveryDecision(
+                    RecoveryAction.TRY_ALTERNATE_CANDIDATE, "source_not_found_alternate", retry_at=now,
+                )
+            return RecoveryDecision(
+                RecoveryAction.WAIT_FOR_OPERATOR, "source_not_found",
+                quiescence_reason="recovery_exhausted", wake_condition="operator_retry",
+            )
         if error.category in _EXPIRY_CATEGORIES:
             if can_refresh:
                 return RecoveryDecision(
