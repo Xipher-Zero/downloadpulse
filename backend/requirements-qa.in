@@ -11,6 +11,6 @@
 # (the `test` job) or requirements.txt (the `security` job).
 -c requirements-dev.txt
 
-ruff==0.17.5
+ruff==0.17.6
 bandit==1.9.4
 pip-audit==2.10.1
