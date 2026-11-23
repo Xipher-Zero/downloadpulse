@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "無法瀏覽目前的備份資料夾，改為顯示伺服器的備用位置；「設定」中的欄位並未變更。",
   "directory_picker.accept": "使用此資料夾",
   "directory_picker.current": "目前的伺服器路徑",
+  "directory_picker.current_folder": "目前資料夾",
   "directory_picker.not_validated": "尚未驗證",
   "directory_picker.not_selectable": "無法選擇——{reason}",
   "directory_picker.up": "上一層",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "儲存空間I/O無法使用",
   "directory_picker.reason.sqlite_io_error": "儲存空間I/O無法使用",
   "directory_picker.reason.sqlite_open_failed": "儲存空間無法使用",
+  "directory_picker.reason.not_persistent": "DownloadPulse關閉後，此處的檔案會遺失",
   "directory_picker.error.invalid_path": "要求的資料夾路徑無效。",
   "directory_picker.error.relative_path": "只能瀏覽伺服器上的絕對路徑。",
   "directory_picker.error.not_directory": "要求的路徑不是資料夾。",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

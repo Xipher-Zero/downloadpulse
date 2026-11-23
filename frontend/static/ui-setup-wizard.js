@@ -723,11 +723,15 @@
   function open(mode, state, data, opener = null, {preview = false} = {}) {
     const deploymentNow = deploymentType();
     // The installed desktop application (server state, ``setup.state``): it is
-    // Standalone, so it has no Deployment Type page, and the folder field
-    // starts empty until a folder is chosen -- never the container default.
+    // Standalone, so it has no Deployment Type page, and until a folder is
+    // chosen the field holds the folder the server suggests (the person's
+    // Downloads, one the desktop's sandbox keeps; 1.0.3) -- never the container
+    // default. It is only a draft: Next saves it, as a typed folder.
     let pages = state.desktop ? ROSTERS[mode][deploymentNow].filter((page) => page !== 'deployment')
       : ROSTERS[mode][deploymentNow];
-    if (state.desktop && !state.download_folder_chosen) data = {...data, folder: ''};
+    if (state.desktop && !state.download_folder_chosen) {
+      data = {...data, folder: '', folderDraft: String(state.suggested_download_folder ?? '')};
+    }
     let recorded = mode === 'initial' ? state.initial.phase : state.rerun?.phase;
     // A deployment change whose resume page was never recorded (interrupted
     // between its two writes) leaves the other type's page: one this roster

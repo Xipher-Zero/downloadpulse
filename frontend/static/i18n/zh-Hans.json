@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "无法浏览当前的备份文件夹。现改为显示服务器的备用位置；“设置”中的该字段未被更改。",
   "directory_picker.accept": "使用此文件夹",
   "directory_picker.current": "当前服务器路径",
+  "directory_picker.current_folder": "当前文件夹",
   "directory_picker.not_validated": "未验证",
   "directory_picker.not_selectable": "不可选择——{reason}",
   "directory_picker.up": "上一级",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "存储I/O不可用",
   "directory_picker.reason.sqlite_io_error": "存储I/O不可用",
   "directory_picker.reason.sqlite_open_failed": "存储不可用",
+  "directory_picker.reason.not_persistent": "DownloadPulse关闭后，此处的文件会丢失",
   "directory_picker.error.invalid_path": "请求的目录路径无效。",
   "directory_picker.error.relative_path": "只能浏览服务器上的绝对路径。",
   "directory_picker.error.not_directory": "请求的路径不是目录。",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

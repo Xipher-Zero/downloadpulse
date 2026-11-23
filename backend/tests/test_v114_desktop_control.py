@@ -373,6 +373,9 @@ async def test_the_desktop_folder_browser_opens_in_the_users_downloads_until_a_f
     try:
         assert await backend.ready()
         assert await opened(backend) == str(downloads)
+        # The wizard's field holds the same folder, only as a suggestion (1.0.3).
+        state = (await backend.exchange("GET", "/api/setup/state"))[1]
+        assert state["suggested_download_folder"] == str(downloads) and state["download_folder_chosen"] is False
         downloads.chmod(0)                               # there, but not browsable: the home
         try:
             assert await opened(backend) == str(home)
@@ -391,6 +394,7 @@ async def test_the_desktop_folder_browser_opens_in_the_users_downloads_until_a_f
     try:
         assert await chosen.ready()
         assert await opened(chosen) == str(tmp_path / "desktop" / "downloads")
+        assert (await chosen.exchange("GET", "/api/setup/state"))[1]["suggested_download_folder"] is None
     finally:
         await chosen.stop()
     # A server keeps its own default: the nearest browsable ancestor of its folder.
@@ -398,6 +402,7 @@ async def test_the_desktop_folder_browser_opens_in_the_users_downloads_until_a_f
     try:
         assert await server.ready()
         assert await opened(server) == "/"
+        assert (await server.exchange("GET", "/api/setup/state"))[1]["suggested_download_folder"] is None
     finally:
         await server.stop()
 

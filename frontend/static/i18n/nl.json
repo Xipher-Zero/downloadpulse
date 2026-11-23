@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "De huidige back-upmap kan niet worden doorbladerd. In plaats daarvan wordt de reservelocatie van de server getoond; het veld in Instellingen is niet gewijzigd.",
   "directory_picker.accept": "Deze map gebruiken",
   "directory_picker.current": "Huidig serverpad",
+  "directory_picker.current_folder": "Huidige map",
   "directory_picker.not_validated": "Niet gecontroleerd",
   "directory_picker.not_selectable": "Niet selecteerbaar — {reason}",
   "directory_picker.up": "Omhoog",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "Opslag-I/O niet beschikbaar",
   "directory_picker.reason.sqlite_io_error": "Opslag-I/O niet beschikbaar",
   "directory_picker.reason.sqlite_open_failed": "Opslag niet beschikbaar",
+  "directory_picker.reason.not_persistent": "Bestanden hier gaan verloren wanneer DownloadPulse sluit",
   "directory_picker.error.invalid_path": "Het opgevraagde mappad is ongeldig.",
   "directory_picker.error.relative_path": "Alleen absolute serverpaden kunnen worden doorbladerd.",
   "directory_picker.error.not_directory": "Het opgevraagde pad is geen map.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

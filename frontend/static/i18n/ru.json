@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Текущую папку резервных копий невозможно просмотреть. Вместо неё показано резервное расположение на сервере; поле в настройках не изменено.",
   "directory_picker.accept": "Выбрать эту папку",
   "directory_picker.current": "Текущий путь на сервере",
+  "directory_picker.current_folder": "Текущая папка",
   "directory_picker.not_validated": "Не проверена",
   "directory_picker.not_selectable": "Нельзя выбрать — {reason}",
   "directory_picker.up": "Вверх",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "Ввод-вывод хранилища недоступен",
   "directory_picker.reason.sqlite_io_error": "Ввод-вывод хранилища недоступен",
   "directory_picker.reason.sqlite_open_failed": "Хранилище недоступно",
+  "directory_picker.reason.not_persistent": "Файлы здесь теряются при закрытии DownloadPulse",
   "directory_picker.error.invalid_path": "Запрошенный путь к папке недопустим.",
   "directory_picker.error.relative_path": "Просматривать можно только абсолютные пути на сервере.",
   "directory_picker.error.not_directory": "Запрошенный путь не является папкой.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

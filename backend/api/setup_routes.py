@@ -76,10 +76,18 @@ async def setup_state(request: Request):
     # installed desktop application (core.config.desktop_installation), whose
     # wizard has no Deployment Type page and whose folder must be chosen
     # (``download_folder_chosen``) before its setup goes on.
+    # ``suggested_download_folder``: until it has, the folder its wizard
+    # offers (core.desktop_storage: the user's Downloads, one the sandbox
+    # keeps) -- shown for the person to keep or change, saved only by Next.
     from core.config import desktop_installation, download_folder_chosen, get_settings
+    from core.desktop_storage import desktop_start_directory
     state = await setup_lifecycle.state(request.state.principal.account_id)
+    desktop = desktop_installation()
+    chosen = download_folder_chosen(get_settings())
+    suggested = desktop_start_directory() if desktop and not chosen else None
     return _no_store({**state, "development_build": is_development_build(), "setup_preview": setup_preview_offered(),
-                      "desktop": desktop_installation(), "download_folder_chosen": download_folder_chosen(get_settings())})
+                      "desktop": desktop, "download_folder_chosen": chosen,
+                      "suggested_download_folder": str(suggested) if suggested else None})
 
 
 @router.put("/setup/initial/phase")

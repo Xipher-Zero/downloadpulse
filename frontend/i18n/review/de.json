@@ -34614,6 +34614,22 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "directory_picker.current_folder": {
+   "source": "1a5db52359a6d813",
+   "translation": "b18c3700682d9bae",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "directory_picker.reason.not_persistent": {
+   "source": "81d4ca3f5b4fe665",
+   "translation": "1045dffca7f9dc74",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

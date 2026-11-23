@@ -31,6 +31,8 @@ from transfers.errors import (
     TransferError,
 )
 
+from core.desktop_storage import persists, sandbox_persistent_roots
+
 logger = logging.getLogger("downloadpulse.storage")
 _GIB = 1024 ** 3
 _PROBE_PAYLOAD = b"downloadpulse-storage-probe\n"
@@ -43,6 +45,9 @@ _FSYNC_UNSUPPORTED_ERRNOS = frozenset(
     )
     if code is not None
 )
+
+
+_SANDBOX = object()   # DiskCapacity(persistent_roots=...) default: the sandbox's own
 
 
 class StorageDomain(StrEnum):
@@ -71,6 +76,9 @@ class StorageReason(StrEnum):
     IO_ERROR = "io_error"
     SQLITE_IO_ERROR = "sqlite_io_error"
     SQLITE_OPEN_FAILED = "sqlite_open_failed"
+    # Outside the folders the installed desktop application's sandbox keeps:
+    # files written there are lost when it exits (core.desktop_storage).
+    NOT_PERSISTENT = "not_persistent"
 
 
 _HARD_STATES = frozenset({StorageState.FULL, StorageState.READ_ONLY, StorageState.UNAVAILABLE})
@@ -234,8 +242,12 @@ class DiskCapacity:
     filesystem is monitored independently.
     """
 
-    def __init__(self, root, minimum_gb=0, hysteresis_gb=0.5, *, application_path=None, clock=time.time):
+    def __init__(self, root, minimum_gb=0, hysteresis_gb=0.5, *, application_path=None, clock=time.time,
+                 persistent_roots=_SANDBOX):
         self._lock = threading.RLock()
+        # Where downloads may be kept at all (``None``: anywhere). By default
+        # the installed desktop application's sandbox (core.desktop_storage).
+        self.persistent_roots = sandbox_persistent_roots() if persistent_roots is _SANDBOX else persistent_roots
         self._clock = clock
         self.root = str(root)
         self.minimum_gb = max(0.0, float(minimum_gb or 0))
@@ -436,6 +448,13 @@ class DiskCapacity:
             return self._fault_snapshot(base, exc, fallback_reason=StorageReason.INACCESSIBLE,
                                         exists=True, is_directory=True, accessible=False,
                                         filesystem_id=filesystem_id)
+
+        # A folder the sandbox does not keep: it can be browsed through, never
+        # chosen, and nothing is written there (not even this probe).
+        if not persists(path, self.persistent_roots):
+            return replace(base, state=StorageState.UNAVAILABLE, reason=StorageReason.NOT_PERSISTENT,
+                           exists=True, is_directory=True, accessible=True, writable=None,
+                           filesystem_id=filesystem_id)
 
         fd: int | None = None
         handle = None

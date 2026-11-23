@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Impossibile sfogliare la cartella di backup attuale. Viene mostrata la posizione di riserva del server; il campo delle Opzioni non è stato modificato.",
   "directory_picker.accept": "Usa questa cartella",
   "directory_picker.current": "Percorso attuale sul server",
+  "directory_picker.current_folder": "Cartella attuale",
   "directory_picker.not_validated": "Non convalidata",
   "directory_picker.not_selectable": "Non selezionabile — {reason}",
   "directory_picker.up": "Su",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "I/O di archiviazione non disponibile",
   "directory_picker.reason.sqlite_io_error": "I/O di archiviazione non disponibile",
   "directory_picker.reason.sqlite_open_failed": "Archiviazione non disponibile",
+  "directory_picker.reason.not_persistent": "I file qui vanno persi alla chiusura di DownloadPulse",
   "directory_picker.error.invalid_path": "Il percorso della cartella richiesta non è valido.",
   "directory_picker.error.relative_path": "È possibile sfogliare solo percorsi assoluti del server.",
   "directory_picker.error.not_directory": "Il percorso richiesto non è una cartella.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

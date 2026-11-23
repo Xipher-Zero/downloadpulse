@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "No se puede explorar la carpeta de copias de seguridad actual. Se muestra en su lugar la ubicación alternativa del servidor; el campo de Ajustes no se ha modificado.",
   "directory_picker.accept": "Usar esta carpeta",
   "directory_picker.current": "Ruta actual del servidor",
+  "directory_picker.current_folder": "Carpeta actual",
   "directory_picker.not_validated": "Sin validar",
   "directory_picker.not_selectable": "No seleccionable — {reason}",
   "directory_picker.up": "Subir",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "E/S de almacenamiento no disponible",
   "directory_picker.reason.sqlite_io_error": "E/S de almacenamiento no disponible",
   "directory_picker.reason.sqlite_open_failed": "Almacenamiento no disponible",
+  "directory_picker.reason.not_persistent": "Los archivos de aquí se pierden al cerrar DownloadPulse",
   "directory_picker.error.invalid_path": "La ruta de directorio solicitada no es válida.",
   "directory_picker.error.relative_path": "Solo se pueden explorar rutas absolutas del servidor.",
   "directory_picker.error.not_directory": "La ruta solicitada no es un directorio.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

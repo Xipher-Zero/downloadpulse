@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Не вдається переглянути поточну теку резервних копій. Натомість показано резервне розташування на сервері; поле налаштувань не змінено.",
   "directory_picker.accept": "Використати цю теку",
   "directory_picker.current": "Поточний шлях на сервері",
+  "directory_picker.current_folder": "Поточна тека",
   "directory_picker.not_validated": "Не перевірено",
   "directory_picker.not_selectable": "Не можна вибрати — {reason}",
   "directory_picker.up": "Вгору",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "Введення-виведення сховища недоступне",
   "directory_picker.reason.sqlite_io_error": "Введення-виведення сховища недоступне",
   "directory_picker.reason.sqlite_open_failed": "Сховище недоступне",
+  "directory_picker.reason.not_persistent": "Файли тут втрачаються після закриття DownloadPulse",
   "directory_picker.error.invalid_path": "Запитаний шлях до теки недійсний.",
   "directory_picker.error.relative_path": "Переглядати можна лише абсолютні шляхи на сервері.",
   "directory_picker.error.not_directory": "Запитаний шлях не є текою.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Nie można przeglądać bieżącego folderu kopii zapasowych. Zamiast niego wyświetlana jest zapasowa lokalizacja na serwerze; pole w Ustawieniach nie zostało zmienione.",
   "directory_picker.accept": "Użyj tego folderu",
   "directory_picker.current": "Bieżąca ścieżka na serwerze",
+  "directory_picker.current_folder": "Bieżący folder",
   "directory_picker.not_validated": "Nie sprawdzono",
   "directory_picker.not_selectable": "Nie można wybrać — {reason}",
   "directory_picker.up": "W górę",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "We/wy pamięci masowej niedostępne",
   "directory_picker.reason.sqlite_io_error": "We/wy pamięci masowej niedostępne",
   "directory_picker.reason.sqlite_open_failed": "Pamięć masowa niedostępna",
+  "directory_picker.reason.not_persistent": "Pliki w tym miejscu znikają po zamknięciu DownloadPulse",
   "directory_picker.error.invalid_path": "Żądana ścieżka katalogu jest nieprawidłowa.",
   "directory_picker.error.relative_path": "Przeglądać można tylko bezwzględne ścieżki na serwerze.",
   "directory_picker.error.not_directory": "Żądana ścieżka nie jest katalogiem.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

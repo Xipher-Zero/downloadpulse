@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "वर्तमान बैकअप फ़ोल्डर ब्राउज़ नहीं किया जा सकता। इसके बजाय सर्वर का वैकल्पिक स्थान दिखाया जा रहा है; सेटिंग्स का फ़ील्ड बदला नहीं गया है।",
   "directory_picker.accept": "यह फ़ोल्डर उपयोग करें",
   "directory_picker.current": "वर्तमान सर्वर पथ",
+  "directory_picker.current_folder": "वर्तमान फ़ोल्डर",
   "directory_picker.not_validated": "सत्यापित नहीं",
   "directory_picker.not_selectable": "चयन योग्य नहीं — {reason}",
   "directory_picker.up": "ऊपर",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "स्टोरेज I/O अनुपलब्ध",
   "directory_picker.reason.sqlite_io_error": "स्टोरेज I/O अनुपलब्ध",
   "directory_picker.reason.sqlite_open_failed": "स्टोरेज अनुपलब्ध",
+  "directory_picker.reason.not_persistent": "DownloadPulse बंद होने पर यहाँ की फ़ाइलें खो जाती हैं",
   "directory_picker.error.invalid_path": "अनुरोधित निर्देशिका पथ अमान्य है।",
   "directory_picker.error.relative_path": "केवल निरपेक्ष सर्वर पथ ब्राउज़ किए जा सकते हैं।",
   "directory_picker.error.not_directory": "अनुरोधित पथ कोई निर्देशिका नहीं है।",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

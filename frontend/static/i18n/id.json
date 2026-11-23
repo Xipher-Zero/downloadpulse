@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Folder cadangan saat ini tidak dapat dijelajahi. Lokasi alternatif server ditampilkan sebagai gantinya; kolom Pengaturan tidak diubah.",
   "directory_picker.accept": "Gunakan folder ini",
   "directory_picker.current": "Jalur server saat ini",
+  "directory_picker.current_folder": "Folder saat ini",
   "directory_picker.not_validated": "Belum divalidasi",
   "directory_picker.not_selectable": "Tidak dapat dipilih — {reason}",
   "directory_picker.up": "Naik",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "I/O penyimpanan tidak tersedia",
   "directory_picker.reason.sqlite_io_error": "I/O penyimpanan tidak tersedia",
   "directory_picker.reason.sqlite_open_failed": "Penyimpanan tidak tersedia",
+  "directory_picker.reason.not_persistent": "File di sini hilang saat DownloadPulse ditutup",
   "directory_picker.error.invalid_path": "Jalur direktori yang diminta tidak valid.",
   "directory_picker.error.relative_path": "Hanya jalur server absolut yang dapat dijelajahi.",
   "directory_picker.error.not_directory": "Jalur yang diminta bukan direktori.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

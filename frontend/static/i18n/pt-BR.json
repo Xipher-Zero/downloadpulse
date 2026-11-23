@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Não é possível navegar pela Pasta de backup atual. Exibindo o local alternativo do servidor; o campo nos Ajustes não foi alterado.",
   "directory_picker.accept": "Usar esta pasta",
   "directory_picker.current": "Caminho atual no servidor",
+  "directory_picker.current_folder": "Pasta atual",
   "directory_picker.not_validated": "Não validada",
   "directory_picker.not_selectable": "Não selecionável — {reason}",
   "directory_picker.up": "Subir",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "E/S de armazenamento indisponível",
   "directory_picker.reason.sqlite_io_error": "E/S de armazenamento indisponível",
   "directory_picker.reason.sqlite_open_failed": "Armazenamento indisponível",
+  "directory_picker.reason.not_persistent": "Os arquivos aqui são perdidos quando o DownloadPulse fecha",
   "directory_picker.error.invalid_path": "O caminho de pasta solicitado é inválido.",
   "directory_picker.error.relative_path": "Só é possível navegar por caminhos absolutos do servidor.",
   "directory_picker.error.not_directory": "O caminho solicitado não é uma pasta.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

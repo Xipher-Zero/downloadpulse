@@ -22,7 +22,7 @@
   // unknown code is shown as its own words.
   const t = (key, values) => window.DPI18n.t(key, values);
   const REASONS = new Set(['none', 'low_space', 'capacity_exhausted', 'quota_exhausted', 'read_only', 'missing', 'invalid_path',
-    'inaccessible', 'stat_failed', 'io_error', 'sqlite_io_error', 'sqlite_open_failed']);
+    'inaccessible', 'stat_failed', 'io_error', 'sqlite_io_error', 'sqlite_open_failed', 'not_persistent']);
   const ERRORS = new Set(['invalid_path', 'relative_path', 'not_directory', 'symlink_loop', 'path_inaccessible', 'path_unavailable',
     'browser_unavailable']);
 
@@ -92,11 +92,13 @@
     let lastPayload = null;   // said again on a language change
     let errorWords = null;    // {key} or {text}: the error shown, if any
     let noticeShown = false;
+    // The installed desktop application browses this computer's own folders, not a server's.
+    const currentKey = window.downloadPulseDesktop === true ? 'directory_picker.current_folder' : 'directory_picker.current';
     body.innerHTML = `
       <div class="dp-settings-directory-browser">
         <div class="dp-settings-directory-notice" data-directory-notice hidden></div>
         <div class="dp-settings-directory-current">
-          <span class="dp-settings-directory-current-label" data-i18n="directory_picker.current">${esc(t('directory_picker.current'))}</span>
+          <span class="dp-settings-directory-current-label" data-i18n="${currentKey}">${esc(t(currentKey))}</span>
           <code class="dp-settings-directory-current-path" data-directory-current-path>—</code>
           <div class="dp-settings-directory-current-meta">
             <span class="dp-settings-directory-current-state" data-directory-current-state data-selectable="false">${esc(t('directory_picker.not_validated'))}</span>

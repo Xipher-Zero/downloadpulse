@@ -32828,6 +32828,22 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "directory_picker.current_folder": {
+   "source": "1a5db52359a6d813",
+   "translation": "e29162e846b734df",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "directory_picker.reason.not_persistent": {
+   "source": "81d4ca3f5b4fe665",
+   "translation": "22acf974ea60d562",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

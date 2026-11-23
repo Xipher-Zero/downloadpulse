@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "يتعذر استعراض مجلد النسخ الاحتياطية الحالي. يُعرض بدلًا منه الموقع البديل على الخادم؛ ولم يتغير الحقل في الإعدادات.",
   "directory_picker.accept": "استخدام هذا المجلد",
   "directory_picker.current": "المسار الحالي على الخادم",
+  "directory_picker.current_folder": "المجلد الحالي",
   "directory_picker.not_validated": "لم يتم التحقق منه",
   "directory_picker.not_selectable": "غير قابل للاختيار — {reason}",
   "directory_picker.up": "للأعلى",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "الإدخال/الإخراج في التخزين غير متاح",
   "directory_picker.reason.sqlite_io_error": "الإدخال/الإخراج في التخزين غير متاح",
   "directory_picker.reason.sqlite_open_failed": "التخزين غير متاح",
+  "directory_picker.reason.not_persistent": "تُفقد الملفات هنا عند إغلاق DownloadPulse",
   "directory_picker.error.invalid_path": "مسار المجلد المطلوب غير صالح.",
   "directory_picker.error.relative_path": "لا يمكن استعراض إلا المسارات المطلقة على الخادم.",
   "directory_picker.error.not_directory": "المسار المطلوب ليس مجلدًا.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

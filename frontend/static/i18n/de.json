@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Der aktuelle Backup-Ordner kann nicht durchsucht werden. Stattdessen wird der Ausweichort des Servers angezeigt; das Feld in den Optionen wurde nicht geändert.",
   "directory_picker.accept": "Diesen Ordner verwenden",
   "directory_picker.current": "Aktueller Serverpfad",
+  "directory_picker.current_folder": "Aktueller Ordner",
   "directory_picker.not_validated": "Nicht geprüft",
   "directory_picker.not_selectable": "Nicht wählbar — {reason}",
   "directory_picker.up": "Nach oben",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "Speicher-E/A nicht verfügbar",
   "directory_picker.reason.sqlite_io_error": "Speicher-E/A nicht verfügbar",
   "directory_picker.reason.sqlite_open_failed": "Speicher nicht verfügbar",
+  "directory_picker.reason.not_persistent": "Dateien hier gehen beim Schließen von DownloadPulse verloren",
   "directory_picker.error.invalid_path": "Der angeforderte Verzeichnispfad ist ungültig.",
   "directory_picker.error.relative_path": "Nur absolute Serverpfade können durchsucht werden.",
   "directory_picker.error.not_directory": "Der angeforderte Pfad ist kein Verzeichnis.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

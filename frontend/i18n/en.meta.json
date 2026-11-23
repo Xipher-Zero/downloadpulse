@@ -23909,6 +23909,18 @@
    "args": {
     "token": "string: the connected browser's name"
    }
+  },
+  "directory_picker.current_folder": {
+   "category": "label",
+   "context": "Label of the folder shown, in the installed desktop application (this computer's own folders, not a server's).",
+   "owner": "frontend/static/ui-settings-directory-picker.js",
+   "criticality": "normal"
+  },
+  "directory_picker.reason.not_persistent": {
+   "category": "status-chip",
+   "context": "A folder's state (server code 'not_persistent'): the installed desktop application's sandbox does not keep files written there; they would be lost when the application closes. Keep the consequence.",
+   "owner": "frontend/static/ui-settings-directory-picker.js",
+   "criticality": "normal"
   }
  }
 }

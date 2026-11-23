@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "현재 백업 폴더를 탐색할 수 없습니다. 대신 서버의 대체 위치를 표시합니다. 설정 필드는 변경되지 않았습니다.",
   "directory_picker.accept": "이 폴더 사용",
   "directory_picker.current": "현재 서버 경로",
+  "directory_picker.current_folder": "현재 폴더",
   "directory_picker.not_validated": "검증 안 됨",
   "directory_picker.not_selectable": "선택 불가 — {reason}",
   "directory_picker.up": "상위 폴더",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "저장소 I/O 사용 불가",
   "directory_picker.reason.sqlite_io_error": "저장소 I/O 사용 불가",
   "directory_picker.reason.sqlite_open_failed": "저장소 사용 불가",
+  "directory_picker.reason.not_persistent": "DownloadPulse를 닫으면 이곳의 파일이 사라집니다",
   "directory_picker.error.invalid_path": "요청한 디렉터리 경로가 잘못되었습니다.",
   "directory_picker.error.relative_path": "절대 서버 경로만 탐색할 수 있습니다.",
   "directory_picker.error.not_directory": "요청한 경로는 디렉터리가 아닙니다.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

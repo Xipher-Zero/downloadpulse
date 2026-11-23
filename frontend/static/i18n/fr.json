@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "Le dossier de sauvegarde actuel ne peut pas être parcouru. L’emplacement de secours du serveur est affiché à la place ; le champ des paramètres n’a pas été modifié.",
   "directory_picker.accept": "Utiliser ce dossier",
   "directory_picker.current": "Chemin actuel sur le serveur",
+  "directory_picker.current_folder": "Dossier actuel",
   "directory_picker.not_validated": "Non vérifié",
   "directory_picker.not_selectable": "Non sélectionnable — {reason}",
   "directory_picker.up": "Dossier parent",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "E/S de stockage indisponibles",
   "directory_picker.reason.sqlite_io_error": "E/S de stockage indisponibles",
   "directory_picker.reason.sqlite_open_failed": "Stockage indisponible",
+  "directory_picker.reason.not_persistent": "Les fichiers ici sont perdus à la fermeture de DownloadPulse",
   "directory_picker.error.invalid_path": "Le chemin de dossier demandé n’est pas valide.",
   "directory_picker.error.relative_path": "Seuls les chemins absolus du serveur peuvent être parcourus.",
   "directory_picker.error.not_directory": "Le chemin demandé n’est pas un dossier.",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }

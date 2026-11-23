@@ -1090,6 +1090,7 @@
   "directory_picker.backup.fallback_notice": "現在のバックアップフォルダーは参照できません。代わりにサーバーの代替の場所を表示しています。設定の項目は変更されていません。",
   "directory_picker.accept": "このフォルダーを使用",
   "directory_picker.current": "現在のサーバーパス",
+  "directory_picker.current_folder": "現在のフォルダー",
   "directory_picker.not_validated": "未検証",
   "directory_picker.not_selectable": "選択不可 — {reason}",
   "directory_picker.up": "上へ",
@@ -1109,6 +1110,7 @@
   "directory_picker.reason.io_error": "ストレージ I/O 利用不可",
   "directory_picker.reason.sqlite_io_error": "ストレージ I/O 利用不可",
   "directory_picker.reason.sqlite_open_failed": "ストレージ利用不可",
+  "directory_picker.reason.not_persistent": "DownloadPulse を閉じるとここのファイルは失われます",
   "directory_picker.error.invalid_path": "指定されたフォルダーのパスが無効です。",
   "directory_picker.error.relative_path": "参照できるのはサーバー上の絶対パスのみです。",
   "directory_picker.error.not_directory": "指定されたパスはフォルダーではありません。",
@@ -7341,6 +7343,8 @@
   "settings.account.browsers": "b446b885a79eb15d",
   "settings.account.browsers_none": "811d17c2926baee3",
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
-  "details.requested_by.browser": "300c01978179dabe"
+  "details.requested_by.browser": "300c01978179dabe",
+  "directory_picker.current_folder": "1a5db52359a6d813",
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
  }
 }
