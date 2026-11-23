@@ -1588,6 +1588,20 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
     minimized = False                           # the shell says it is minimized (its own events)
     next_poll = time.monotonic() + POLL_SECONDS
     next_show = time.monotonic() + SHOW_POLL_SECONDS
+    # Work this loop starts and does not wait for (a Show in folder, a save's
+    # dialog): each task is held here until it ends, so it cannot be collected
+    # while it runs, and a failure is logged, never left unretrieved.
+    running: set[asyncio.Task] = set()
+
+    def in_background(work, what: str) -> None:
+        task = asyncio.ensure_future(work)
+        running.add(task)
+
+        def ended(done: asyncio.Task) -> None:
+            running.discard(done)
+            if not done.cancelled() and done.exception() is not None:
+                logger.error("%s failed", what, exc_info=done.exception())
+        task.add_done_callback(ended)
 
     async def bring_forward(why: str) -> None:
         # What Open can do depends on what the window is: a window this
@@ -1666,7 +1680,7 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
                 await bring_forward("Open (a connected browser)")
             # Show in folder, asked in the window: the file manager, on its own.
             if asked.get("reveal"):
-                asyncio.ensure_future(show_in_folder(asked["reveal"]))
+                in_background(show_in_folder(asked["reveal"]), "Show in folder")
             next_show = time.monotonic() + SHOW_POLL_SECONDS
         if time.monotonic() >= next_poll:
             batch = await channel.ask("events", after=cursor)
@@ -1690,7 +1704,7 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
             # Desktop saves waiting for a destination: each in its own task, so
             # the window and tray stay live while its dialog is open.
             for waiting in (await channel.ask("saves")).get("saves") or []:
-                asyncio.ensure_future(_save(channel, native, words, waiting))
+                in_background(_save(channel, native, words, waiting), "A desktop save")
             next_poll = time.monotonic() + POLL_SECONDS
     logger.error("the DownloadPulse backend ended on its own (%s)", backend.process.returncode)
     return 1

@@ -61,6 +61,25 @@ async function open(page) {
   await page.locator('#view-torrents tr[data-torrent-id="10"]:visible').first().click();
   await expect(page.locator('#modal-body .detail-grid')).toBeVisible();
 }
+/* The positive boundary after something that must read nothing: a semantic
+ * change of the open transfer reads it exactly once and draws it. Events are
+ * handled in the order they are sent and reads are coalesced, so once this
+ * one's answer is drawn, every read an earlier event started has been made. */
+async function probe(page, state, name = 'Probe release') {
+  state.rows.set(10, detail(10, {name}));
+  await emit(page, {id: 10, status: 'downloading'});
+  await expect(page.locator('#modal-title')).toHaveText(name);
+}
+// The answer Details holds while a pointer is pressed or its menu is open.
+const held = page => page.evaluate(() => dpDetailHeld?.t?.name ?? null);
+// Every title Details says from now on.
+const recordTitles = page => page.evaluate(() => {
+  const title = document.getElementById('modal-title');
+  window.__dpTitles = [];
+  new MutationObserver(() => window.__dpTitles.push(title.textContent))
+    .observe(title, {childList: true, characterData: true, subtree: true});
+});
+const titles = page => page.evaluate(() => window.__dpTitles);
 
 test('a state change of the open transfer updates its status in Details, as the row says it, without reopening', async ({page}) => {
   const state = await boot(page);
@@ -96,8 +115,8 @@ test('reads coalesce: one in flight, and one trailing read for changes meanwhile
   state.rows.set(10, detail(10, {progress: 44}));
   release();
   await expect.poll(() => reads(state, 10)).toBe(counted + 2);
-  await page.waitForTimeout(300);
-  expect(reads(state, 10)).toBe(counted + 2);
+  await probe(page, state);
+  expect(reads(state, 10)).toBe(counted + 3);
 });
 
 test('another transfer\'s change reads nothing for the open Details', async ({page}) => {
@@ -108,8 +127,8 @@ test('another transfer\'s change reads nothing for the open Details', async ({pa
   await emit(page, {id: 11, status: 'paused'});
   await emit(page, {progress_only: true, items: [{id: 11, progress: 55}]});
   await expect(page.locator('#view-torrents tr[data-torrent-id="11"]:visible .badge').first()).toHaveText(/./);
-  await page.waitForTimeout(400);
-  expect(reads(state, 10)).toBe(counted);
+  await probe(page, state);
+  expect(reads(state, 10)).toBe(counted + 1);
   expect(reads(state, 11)).toBe(0);
 });
 
@@ -124,13 +143,20 @@ test('after closing, a change of that transfer reads nothing, and a read answere
   await expect.poll(() => reads(state, 10)).toBe(counted + 1);
   await page.keyboard.press('Escape');
   await expect(page.locator('#overlay')).not.toHaveClass(/\bopen\b/);
+  await recordTitles(page);
   state.gate = null;
+  const answered = page.waitForResponse(response => new URL(response.url()).pathname === '/api/torrents/10');
   release();
+  await answered;
   await emit(page, {id: 10, status: 'paused'});
   await emit(page, {progress_only: true, items: [{id: 10, progress: 60}]});
-  await page.waitForTimeout(400);
-  expect(reads(state, 10)).toBe(counted + 1);
   await expect(page.locator('#overlay')).not.toHaveClass(/\bopen\b/);
+  // The boundary: opening it again reads it once and draws that answer alone.
+  state.rows.set(10, detail(10, {name: 'Reopened release'}));
+  await page.evaluate(() => showDetail(10));
+  await expect(page.locator('#modal-title')).toHaveText('Reopened release');
+  expect(reads(state, 10)).toBe(counted + 2);
+  expect(await titles(page)).not.toContain('Release 10');
 });
 
 test('a refresh keeps the reader\'s scroll, focus and Original Resource element', async ({page}) => {
@@ -161,8 +187,11 @@ test('a transfer deleted while open shows Details\' own failure and is not read 
   // (A progress batch: Details' own signal. A semantic one is also Common
   // Sources' own re-read of its launcher, outside Details' refresh.)
   await emit(page, {progress_only: true, items: [{id: 10, progress: 80}]});
-  await page.waitForTimeout(300);
-  expect(reads(state, 10)).toBe(counted);
+  // The boundary: opening it again (it is back) reads it once.
+  state.rows.set(10, detail(10, {name: 'Restored release'}));
+  await page.evaluate(() => showDetail(10));
+  await expect(page.locator('#modal-title')).toHaveText('Restored release');
+  expect(reads(state, 10)).toBe(counted + 1);
 });
 
 const item = (id, extra) => ({id, status: 'downloading', progress: 40, active_execution_progress: null,
@@ -178,9 +207,10 @@ test('a progress item without a status change re-says Progress only: no read, th
   await expect(page.locator('#modal-body .dp-detail-progress .dv')).toContainText('73.5');
   await emit(page, {progress_only: true, items: [item(10, {progress: 74.5})]});
   await expect(page.locator('#modal-body .dp-detail-progress .dv')).toContainText('74.5');
-  await page.waitForTimeout(300);
-  expect(reads(state, 10)).toBe(counted);
   expect(await page.evaluate(() => window.__dpFiles.isConnected && window.__dpGrid.isConnected)).toBe(true);
+  // No read was made for them (so no answer can redraw the table later).
+  await probe(page, state);
+  expect(reads(state, 10)).toBe(counted + 1);
 });
 
 test('a progress item whose status changed reads the transfer once', async ({page}) => {
@@ -190,8 +220,8 @@ test('a progress item whose status changed reads the transfer once', async ({pag
   state.rows.set(10, detail(10, {status: 'paused'}));
   await emit(page, {progress_only: true, items: [item(10, {status: 'paused', status_changed: true}), item(11, {progress: 50})]});
   await expect(detailStatus(page)).not.toHaveText(/Downloading/);
-  await page.waitForTimeout(300);
-  expect(reads(state, 10)).toBe(counted + 1);
+  await probe(page, state);
+  expect(reads(state, 10)).toBe(counted + 2);
 });
 
 test('an answer arriving while a pointer is pressed in Details, or its menu is open, is drawn on release', async ({page}) => {
@@ -205,8 +235,7 @@ test('an answer arriving while a pointer is pressed in Details, or its menu is o
   let counted = reads(state, 10);
   state.rows.set(10, detail(10, {name: 'Pressed release'}));
   await emit(page, {id: 10, status: 'downloading'});
-  await expect.poll(() => reads(state, 10)).toBe(counted + 1);
-  await page.waitForTimeout(200);
+  await expect.poll(() => held(page)).toBe('Pressed release');      // the answer is here, and held
   await expect(title).toHaveText('Release 10');
   await page.mouse.up();
   await expect(title).toHaveText('Pressed release');
@@ -216,8 +245,7 @@ test('an answer arriving while a pointer is pressed in Details, or its menu is o
   counted = reads(state, 10);
   state.rows.set(10, detail(10, {name: 'Menu release'}));
   await emit(page, {id: 10, status: 'downloading'});
-  await expect.poll(() => reads(state, 10)).toBe(counted + 1);
-  await page.waitForTimeout(200);
+  await expect.poll(() => held(page)).toBe('Menu release');
   await expect(title).toHaveText('Pressed release');
   await page.keyboard.press('Escape');
   await expect(page.locator('.dp-row-menu')).toHaveCount(0);
@@ -240,9 +268,14 @@ test('an answer held for an earlier opening is never drawn over a reopening', as
   state.rows.set(10, detail(10, {name: 'Fresh release'}));
   await page.evaluate(() => showDetail(10));
   await expect(title).toHaveText('Fresh release');
+  await recordTitles(page);
   await page.mouse.up();
-  await page.waitForTimeout(300);
+  // A held answer is drawn in the frame after the release: the owner's own.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve())));
   await expect(title).toHaveText('Fresh release');
+  // Whatever the earlier opening's read answered has been handled before this one's.
+  await probe(page, state);
+  expect(await titles(page)).not.toContain('Stale release');
 });
 
 test('a consolidation into the open transfer re-reads it, though its torrent_updated names the source', async ({page}) => {
@@ -254,6 +287,6 @@ test('a consolidation into the open transfer re-reads it, though its torrent_upd
   await page.evaluate(() => window.__dpFakeEventSource.emit('duplicate_consolidated',
     {source_transfer_id: 11, canonical_transfer_ids: [10], material_count: 1, matched_count: 1}));
   await expect(page.locator('#modal-title')).toHaveText('Consolidated release');
-  await page.waitForTimeout(300);
-  expect(reads(state, 10)).toBe(counted + 1);
+  await probe(page, state);
+  expect(reads(state, 10)).toBe(counted + 2);
 });

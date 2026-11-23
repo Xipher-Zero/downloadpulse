@@ -324,7 +324,7 @@ def test_the_flatpak_builds_the_shell_from_the_pinned_commit_with_the_linux_patc
         "install -m755 /app/lib/neutralino/downloadpulse-shell /app/lib/downloadpulse/desktop/shell/downloadpulse-shell") + 1
     assert 'installed == shell["binary_sha256"] or sys.exit(' in record and 'info["shell"] = shell' in record
     script = (ROOT / "packaging/desktop/flatpak/ci-build.sh").read_text(encoding="utf-8")
-    assert "zstd git >/dev/null" in script                     # flatpak-builder's git source
+    assert "zstd git appstream >/dev/null" in script           # flatpak-builder's git source; appstreamcli
     assert 'echo "shell: $shell (/app/lib/downloadpulse/desktop/shell/downloadpulse-shell)"' in script
     assert '[ "${recorded%% *}" = "$shell" ] || { echo "BUILD-INFO.json names another shell' in script
 

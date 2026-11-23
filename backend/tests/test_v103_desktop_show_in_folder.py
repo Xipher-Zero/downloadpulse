@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -280,8 +281,8 @@ async def test_linux_opens_no_folder_that_is_not_there(monkeypatch, tmp_path):
     assert await supervisor.show_in_folder({"path": str(tmp_path / "gone"), "folder": True}, "linux") is False
 
 
-@pytest.mark.asyncio
-async def test_the_supervisor_shows_what_its_next_look_carries(monkeypatch):
+async def _serve_one_reveal(monkeypatch, show):
+    """``_serve`` for three looks, its first carrying one Show in folder."""
     class Channel:
         def __init__(self):
             self.answered = False
@@ -292,12 +293,6 @@ async def test_the_supervisor_shows_what_its_next_look_carries(monkeypatch):
                 return {"show": False, "quit": False, "reveal": reveal}
             return {"events": {"cursor": 0, "events": []}, "status": {"status": {"active": 0, "queued": 0}},
                     "locale": {"locale": "en"}, "frame": {"frame": None}, "saves": {"saves": []}}[op]
-
-    shown = []
-
-    async def show(reveal, platform=sys.platform):
-        shown.append(reveal)
-        return True
 
     class Shell:
         def __init__(self):
@@ -330,10 +325,37 @@ async def test_the_supervisor_shows_what_its_next_look_carries(monkeypatch):
     task = asyncio.ensure_future(supervisor._serve(Shell(), Channel(), Words(), Running(), Native()))
     try:
         await asyncio.sleep(supervisor.SHOW_POLL_SECONDS * 3)
-        assert shown == [{"path": "/D/film.mkv", "folder": False}]
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_the_supervisor_shows_what_its_next_look_carries(monkeypatch):
+    shown = []
+
+    async def show(reveal, platform=sys.platform):
+        shown.append(reveal)
+        return True
+
+    await _serve_one_reveal(monkeypatch, show)
+    assert shown == [{"path": "/D/film.mkv", "folder": False}]
+
+
+@pytest.mark.asyncio
+async def test_a_show_in_folder_that_fails_is_logged_by_the_loop_that_started_it(monkeypatch, caplog):
+    async def show(reveal, platform=sys.platform):
+        raise RuntimeError("the file manager went away")
+
+    with caplog.at_level(logging.ERROR, logger="downloadpulse.desktop.supervisor"):
+        await _serve_one_reveal(monkeypatch, show)
+    failed = [record for record in caplog.records if record.getMessage() == "Show in folder failed"]
+    assert len(failed) == 1 and isinstance(failed[0].exc_info[1], RuntimeError)
+    # The loop holds each task it starts until it ends (never an unreferenced future).
+    source = (ROOT / "desktop" / "supervisor.py").read_text(encoding="utf-8")
+    serve = source[source.index("async def _serve("):source.index("async def apply_frame(")]
+    assert "asyncio.ensure_future(show_in_folder" not in serve and "asyncio.ensure_future(_save" not in serve
+    assert "running.add(task)" in serve and "running.discard(done)" in serve
 
 
 def test_nothing_reaches_the_file_manager_through_a_shell():

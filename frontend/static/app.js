@@ -171,10 +171,11 @@ function navigateTo(el, {heading = true, address = 'push'} = {}) {
   setSidebarOverlay(false);
 }
 
-/* The address of each page. The server serves the shell at exactly these
- * paths (main.py SHELL_SURFACE_PATHS); Dashboard is the shell's own "/". */
-const VIEW_PATHS = Object.freeze({dashboard: '/', torrents: '/downloads', events: '/activity',
-  stats: '/statistics', settings: '/settings', help: '/help'});
+/* The address of each page, by view: the server's one list
+ * (api/auth_routes.py PAGE_ADDRESSES), given to this bundle before it runs.
+ * The server serves the shell at exactly these paths; Dashboard is the
+ * shell's own "/". */
+const VIEW_PATHS = window.downloadPulsePageAddresses;
 /* The sidebar entry an address names, or null: an unknown address, or a page
  * this session does not show (its entry was never mounted). */
 function navEntryForPath(pathname) {
@@ -1645,6 +1646,17 @@ function notifyExtractionFailure(data) {
   toast(DPI18n.t('extraction.failed', {reason}), 'error');
 }
 
+/* A progress batch item's live figures merged into a transfer: the one merge
+ * of the backend's progress fields, for the rows (patchProgressOnlyTransferEvent)
+ * and the open Details (dpDetailProgressChanged). A field the item does not
+ * carry keeps the transfer's value. */
+const TRANSFER_PROGRESS_FIELDS = ['progress', 'active_execution_progress', 'active_execution_basis', 'acquisition_eta'];
+function mergeTransferProgress(t, item) {
+  return {...t, ...Object.fromEntries(TRANSFER_PROGRESS_FIELDS.filter(key => key in item).map(key => [key, item[key]]))};
+}
+// What a row draws when a progress item carries no figure for it.
+const NO_TRANSFER_PROGRESS = Object.freeze(Object.fromEntries(TRANSFER_PROGRESS_FIELDS.map(key => [key, null])));
+
 function patchProgressOnlyTransferEvent(data) {
   const updates = Array.isArray(data?.items) ? data.items : [];
 
@@ -1660,10 +1672,11 @@ function patchProgressOnlyTransferEvent(data) {
 
   for (const update of updates) {
     const id = Number(update?.id ?? update?.torrent_id);
-    const nextProgress = update?.progress == null ? null : Number(update.progress);
-    const nextActivity = update?.active_execution_progress == null ? null : Number(update.active_execution_progress);
-    const nextBasis = update?.active_execution_basis ?? null;
-    const nextEta = update?.acquisition_eta ?? null;
+    const figures = mergeTransferProgress(NO_TRANSFER_PROGRESS, update || {});
+    const nextProgress = figures.progress == null ? null : Number(figures.progress);
+    const nextActivity = figures.active_execution_progress == null ? null : Number(figures.active_execution_progress);
+    const nextBasis = figures.active_execution_basis ?? null;
+    const nextEta = figures.acquisition_eta ?? null;
 
     if (!Number.isFinite(id) || (nextProgress !== null && !Number.isFinite(nextProgress))) {
       continue;
@@ -3123,13 +3136,19 @@ async function resumeT(id, button) {
 // `contain: true` declares a blocking dialog: focus moves onto the dialog when
 // it opens and Tab / Shift+Tab stay inside it until it closes.
 // `escape: true` lets Escape ask to close it, as its close button does
-// (reason 'escape', which the owner's onClose may veto) -- unless something
-// above or inside it took the key first (a menu, a dialog of DPSettingsModal).
+// (reason 'escape', which the owner's onClose may veto). Escape has one
+// precedence, whatever order its listeners were added in: the tooltip hears
+// it first (ui-tooltip.js, capture) and claims nothing; every owner on the
+// document -- a menu, the top-most dialog of DPSettingsModal -- claims the key
+// it acts on (preventDefault) and leaves a claimed one alone; Details listens
+// on the window, so it hears only what all of them left: an Escape nobody
+// claimed, that dismissed no tooltip, while no DPSettingsModal dialog (a
+// leaving one too) is above it.
 const DPModal = (function () {
   const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
   let activeMode = null;            // 'details' | 'file-selection' | null
   let onCloseCallback = null;
-  let focusReturnTarget = null;
+  let focusOrigin = null;           // where focus returns (DPSettingsModal.focusOrigin)
   let containFocus = false;
   let closeOnEscape = false;
   let exits = 0;                    // the exit in progress; a reopening supersedes it
@@ -3140,17 +3159,6 @@ const DPModal = (function () {
     if (window.DPTooltip?.dismissedBy(event)) return;   // this Escape dismissed a tooltip; the next is Details'
     event.preventDefault();
     requestModalClose('escape');
-  }
-
-  // The control focus returns to on closing. A list row re-rendered while the
-  // dialog was open (Downloads redraws its rows) is replaced by the row now
-  // drawn for the same transfer.
-  function returnTargetNow(target) {
-    const id = target && !target.isConnected ? target.dataset?.torrentId : null;
-    if (!id) return target;
-    const successor = Array.from(document.querySelectorAll(`[data-torrent-id="${CSS.escape(id)}"]`))
-      .find(node => node.tagName === target.tagName && node.hasAttribute('tabindex'));
-    return successor || target;
   }
 
   function containTab(event) {
@@ -3185,11 +3193,14 @@ const DPModal = (function () {
     // Opened again while it is open (Details redrawn in place), it keeps the
     // page control it returns to; opened while a dialog is still fading out,
     // it inherits that one's return target.
-    const reopened = activeMode !== null && focusReturnTarget;
+    // The return follows the dialog shell's one focus contract: the control
+    // itself, else the control redrawn in its place (a Downloads row), else
+    // the nearest surviving region.
+    const reopened = activeMode !== null && focusOrigin;
     activeMode = opts.mode || 'details';
     onCloseCallback = typeof opts.onClose === 'function' ? opts.onClose : null;
-    focusReturnTarget = opts.focusReturn || reopened || (window.DPMotion ? window.DPMotion.focusOrigin()
-      : document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    focusOrigin = (opts.focusReturn && window.DPSettingsModal.focusOrigin(opts.focusReturn)) || reopened
+      || window.DPSettingsModal.focusOrigin();
     exits += 1;                     // a closing shell reopened: it fades back from where it is
     if (overlay) overlay.classList.remove('is-closing');
     if (modal) {
@@ -3210,8 +3221,8 @@ const DPModal = (function () {
     }
     if (footer) { footer.hidden = true; footer.innerHTML = ''; }
     closeOnEscape = opts.escape === true;
-    if (closeOnEscape) document.addEventListener('keydown', escapeClose);
-    else document.removeEventListener('keydown', escapeClose);
+    if (closeOnEscape) window.addEventListener('keydown', escapeClose);
+    else window.removeEventListener('keydown', escapeClose);
     containFocus = opts.contain === true && Boolean(modal);
     if (containFocus) {
       modal.tabIndex = -1;
@@ -3243,14 +3254,15 @@ const DPModal = (function () {
     activeMode = null;
     onCloseCallback = null;
     closeOnEscape = false;
-    document.removeEventListener('keydown', escapeClose);
-    const returnTarget = focusReturnTarget;
-    focusReturnTarget = null;
+    window.removeEventListener('keydown', escapeClose);
+    const origin = focusOrigin;
+    focusOrigin = null;
     // The shell fades away in place, still covering the page and holding the
     // keyboard; only once it is gone is it put away, Tab containment released
     // and focus returned, once -- unless it was opened again meanwhile.
     const exit = ++exits;
-    const leaving = window.DPMotion ? window.DPMotion.leave(overlay, modal, returnTarget) : Promise.resolve();
+    const leaving = window.DPMotion ? window.DPMotion.leave(overlay, modal, window.DPSettingsModal.focusTarget(origin))
+      : Promise.resolve();
     leaving.then(() => {
       if (exit !== exits) return;
       if (overlay) overlay.classList.remove('is-closing');
@@ -3261,7 +3273,7 @@ const DPModal = (function () {
         document.removeEventListener('keydown', containTab);
         if (modal) modal.removeAttribute('tabindex');
       }
-      const target = returnTargetNow(returnTarget);
+      const target = window.DPSettingsModal.focusTarget(origin);   // where it belongs now, after the exit
       if (window.DPMotion) window.DPMotion.restore(overlay, target, {remove: false});
       else if (target && typeof target.focus === 'function') {
         try { target.focus({preventScroll: true}); } catch (_) {}
@@ -3597,12 +3609,10 @@ function dpDetailTransfersChanged(ids) {
  * (the scheduler publishes one about every half second while it downloads)
  * reads nothing and draws nothing else: its figures join the payload Details
  * holds, and only the Progress value is said again, by its own owner. */
-const DP_DETAIL_PROGRESS_FIELDS = ['progress', 'active_execution_progress', 'active_execution_basis', 'acquisition_eta'];
 function dpDetailProgressChanged(item) {
   if (DPModal.mode !== 'details' || Number(dpDetailShown?.id) !== Number(item?.id ?? item?.torrent_id)) return;
-  const figures = Object.fromEntries(DP_DETAIL_PROGRESS_FIELDS.filter(key => key in item).map(key => [key, item[key]]));
-  dpDetailShown = {...dpDetailShown, ...figures};
-  if (dpDetailHeld && Number(dpDetailHeld.t.id) === Number(dpDetailShown.id)) dpDetailHeld.t = {...dpDetailHeld.t, ...figures};
+  dpDetailShown = mergeTransferProgress(dpDetailShown, item);
+  if (dpDetailHeld && Number(dpDetailHeld.t.id) === Number(dpDetailShown.id)) dpDetailHeld.t = mergeTransferProgress(dpDetailHeld.t, item);
   const value = document.querySelector('#modal-body .dp-detail-progress .dv');
   const said = dpDetailProgress(dpDetailShown);
   if (value && value.innerHTML !== said) value.innerHTML = said;

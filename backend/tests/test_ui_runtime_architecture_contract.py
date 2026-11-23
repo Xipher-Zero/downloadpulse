@@ -61,7 +61,9 @@ def test_settings_page_is_authoritative_clean_room_owner() -> None:
     assert "window.DPSettingsModal.open(" in picker
     # DP 1.0.13 work item B: the canonical owner gained the missing
     # single-text-field dialog shape rather than a second modal owner.
-    assert "window.DPSettingsModal = Object.freeze({open, confirm, prompt, progress, showing});" in read("ui-settings-modal.js")
+    # Its focus contract is the one focus-return search, for the shared #modal shell too.
+    assert ("window.DPSettingsModal = Object.freeze({open, confirm, prompt, progress, showing,\n"
+            "    focusOrigin: captureFocusOrigin, focusTarget: resolveFocusTarget});") in read("ui-settings-modal.js")
     assert "window.loadSettings = load;" in settings
     assert "view.innerHTML =" in settings
     assert "request('GET', '/settings'" in settings

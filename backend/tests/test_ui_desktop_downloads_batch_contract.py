@@ -72,7 +72,7 @@ def test_new_contract_layers_live_in_correct_cascade_sections():
     shell = style.index("ui-shell.css?v=24")
     provider = style.index("ui-shell-provider-status.css?v=25")
     downloads_base = style.index("ui-downloads-page.css?v=30")
-    transfer = style.index("ui-transfer-contract.css?v=33")
+    transfer = style.index("ui-transfer-contract.css?v=34")
     assert modal < shell < provider
     assert downloads_base < transfer
     assert "ui-downloads-desktop.css" not in style

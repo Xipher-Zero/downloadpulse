@@ -31,8 +31,9 @@
   is said in a notification (Linux and Windows) and logged.
 - **Rows say why.** Failed, Requires attention and Waiting for retry rows show the reason under
   their status (and when the next attempt is), the same reason Details gives.
-- **Sizes in the units they are labelled in.** Sizes were counted in 1024s but labelled MB; they
-  are now decimal (140,064,536 bytes is 140.1 MB). A multi-file download has one name ("+ N
+- **File sizes in the units they are labelled in.** File and download sizes were counted in
+  1024s but labelled MB; they are now decimal (140,064,536 bytes is 140.1 MB). Speeds and speed
+  caps are unchanged. A multi-file download has one name ("+ N
   more") everywhere, and a route whose download then failed shows as failed in Route History.
 - **First run.** Users & Access names the built-in Administrator for what it is ("Built-in ·
   used when sign-in is off") instead of an account with no sign-in method. A browser that tries
@@ -42,7 +43,12 @@
 - **No deprecation warning from sign-in at startup.** OpenID Connect sign-in uses the HTTP
   library its sign-in component asks for. On Linux it now checks the provider's certificate
   against the system's trust store, as macOS and Windows already did.
-- **The database file is private** (mode 0600, with its journal files).
+- **The database file is private.** The database and its journal files (`-wal`, `-shm`) are
+  now mode 0600, set again at every start. In the container the data folder was already 0700
+  (also set at every start), so a backup tool there still has to run as `PUID:PGID` (99:100 on
+  Unraid) or as root, as before. On the desktop the data folder itself is not made private,
+  so where your home folder is readable by other accounts, the file mode is now what keeps
+  them out of the database.
 
 ### Added
 

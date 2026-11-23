@@ -691,6 +691,14 @@ async def _presentation(principal: Principal) -> dict:
     return {"owned": True, "mode": mode}
 
 
+# The address of each interface page, by the shell's view: the one list. The
+# server serves the shell at each of them (``main.SHELL_SURFACE_PATHS``: "/" is
+# the shell's own), and the page's navigation reads them from its bootstrap
+# (``window.downloadPulsePageAddresses``, app.js ``VIEW_PATHS``).
+PAGE_ADDRESSES = {"dashboard": "/", "torrents": "/downloads", "events": "/activity",
+                  "stats": "/statistics", "settings": "/settings", "help": "/help"}
+
+
 @router.get("/app.js", include_in_schema=False)
 async def application_javascript_bundle(request: Request):
     """Serve the protected browser bootstrap before the existing app script.
@@ -698,15 +706,18 @@ async def application_javascript_bundle(request: Request):
     The bootstrap starts with the caller's authority (``_authority``, the
     same projection ``/api/auth/session`` serves, without its CSRF token), so
     the interface is composed for that authority before any other script
-    runs. It is per-request and never stored."""
+    runs, then the pages' addresses (``PAGE_ADDRESSES``). It is per-request
+    and never stored."""
     auth_js = _static_asset("auth.js").read_text(encoding="utf-8")
     app_js = _static_asset("app.js").read_text(encoding="utf-8")
     principal = getattr(request.state, "principal", Principal.anonymous())
     authority = json.dumps(_authority(principal), separators=(",", ":"))
     presentation = json.dumps(await _presentation(principal), separators=(",", ":"))
+    addresses = json.dumps(PAGE_ADDRESSES, separators=(",", ":"))
     response = Response(
         content=(f"window.downloadPulseAuthority=Object.freeze({authority});\n"
-                 f"window.downloadPulsePresentation=Object.freeze({presentation});\n{auth_js}\n;\n{app_js}"),
+                 f"window.downloadPulsePresentation=Object.freeze({presentation});\n"
+                 f"window.downloadPulsePageAddresses=Object.freeze({addresses});\n{auth_js}\n;\n{app_js}"),
         media_type="application/javascript",
     )
     response.headers["Cache-Control"] = "no-store"

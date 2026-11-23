@@ -4,7 +4,8 @@
 # v6.10.0, the bundled tools), installed as-is under /app. Build:
 #   python3 packaging/desktop/assemble.py --out build/layout --usenet
 #   tar -C build -czf build/layout.tar.gz layout
-#   python3 packaging/desktop/flatpak/metainfo.py build/net.downloadpulse.desktop.metainfo.xml   (release tags fetched)
+#   python3 packaging/desktop/flatpak/metainfo.py build/net.downloadpulse.desktop.metainfo.xml   (release tags fetched;
+#     ci-build.sh, the whole build, runs this itself and validates the result with appstreamcli)
 #   <prepare-sources.sh output> -> build/flatpak-sources/   (the macOS recipes' prepared sources)
 #   flatpak-builder --user --repo=build/repo build/app packaging/desktop/flatpak/net.downloadpulse.desktop.yml
 #   flatpak build-bundle build/repo DownloadPulse-<version>-linux-x86_64.flatpak net.downloadpulse.desktop
@@ -119,7 +120,7 @@ modules:
         path: ../../../build/layout.tar.gz
       - type: file
         path: net.downloadpulse.desktop.desktop
-      # The metainfo template with its releases filled from CHANGELOG.md (metainfo.py).
+      # The metainfo template with its releases filled from CHANGELOG.md (metainfo.py, run by ci-build.sh).
       - type: file
         path: ../../../build/net.downloadpulse.desktop.metainfo.xml
       - type: script

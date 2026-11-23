@@ -182,6 +182,7 @@ A release is ready for promotion only when all applicable gates are green:
 - release-surface/version audit
 - permanent CI/security/image matrix
 - exact-head local behavioral acceptance
+- the Flatpak metainfo's screenshot and `<url>` addresses opened once by hand (CI validates it with `appstreamcli validate --no-net`, which never fetches them)
 
 Behavioral acceptance should exercise the subsystems materially changed by the release. A green unit suite is not a substitute for the relevant real runtime path.
 

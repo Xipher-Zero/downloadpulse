@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The template the Flatpak's metainfo is built from: metainfo.py fills the releases element
-     from CHANGELOG.md at build time (desktop-artifacts.yml, before ci-build.sh). -->
+     from CHANGELOG.md at build time (ci-build.sh, which then validates it with appstreamcli). -->
 <component type="desktop-application">
   <id>net.downloadpulse.desktop</id>
   <name>DownloadPulse</name>

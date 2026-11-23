@@ -90,8 +90,10 @@
   const OVERLAY_SELECTOR = '.dp-modal-overlay';
   const BODY_OPEN_CLASS = 'dp-modal-open';
   const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
-  // Attributes that describe presentation or transient state, not identity.
-  const NON_IDENTITY_ATTRIBUTE = /^(class|style|tabindex|disabled|hidden|autofocus)$|^on|^aria-(?!label$)/;
+  // Attributes that describe presentation or transient state, not identity (a
+  // transfer row's lifecycle and queue state change while a dialog is open; its
+  // data-torrent-id stays).
+  const NON_IDENTITY_ATTRIBUTE = /^(class|style|tabindex|disabled|hidden|autofocus|data-status|data-presentation-status|data-queue-member)$|^on|^aria-(?!label$)/;
 
   const mounted = [];
   let sequence = 0;
@@ -124,8 +126,7 @@
 
   // The initiating control and the identities of everything it sits under, captured at open
   // (a dialog opened while another is still leaving returns where that one would have).
-  function captureFocusOrigin() {
-    const opener = window.DPMotion ? window.DPMotion.focusOrigin() : document.activeElement;
+  function captureFocusOrigin(opener = window.DPMotion ? window.DPMotion.focusOrigin() : document.activeElement) {
     if (!(opener instanceof HTMLElement) || opener === document.body) return null;
     const chain = [];
     for (let node = opener; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
@@ -201,8 +202,11 @@
     }
   }
 
-  // The one Escape owner and the one focus-trap owner, for the top-most dialog only
-  // (a leaving dialog holds the keyboard itself until it has gone).
+  // Escape and the focus trap of these dialogs, for the top-most dialog only (a
+  // leaving dialog holds the keyboard itself until it has gone). It claims the
+  // Escape it acts on (preventDefault) and leaves one a menu inside it claimed;
+  // the shared #modal shell (app.js DPModal) hears Escape after it, on the
+  // window, and yields to any dialog of this owner.
   function onKeydown(event) {
     const entry = mounted[mounted.length - 1];
     if (!entry || entry.leaving || event.defaultPrevented) return;
@@ -639,5 +643,10 @@
   // one else needs to know this owner's markup.
   const showing = () => mounted.length > 0;
 
-  window.DPSettingsModal = Object.freeze({open, confirm, prompt, progress, showing});
+  // The focus contract above, for the shared #modal shell too (app.js DPModal):
+  // `focusOrigin(opener?)` captures where focus returns (the focus origin by
+  // default) and `focusTarget(origin)` says where it belongs now -- the one
+  // search for a control's replacement.
+  window.DPSettingsModal = Object.freeze({open, confirm, prompt, progress, showing,
+    focusOrigin: captureFocusOrigin, focusTarget: resolveFocusTarget});
 })();

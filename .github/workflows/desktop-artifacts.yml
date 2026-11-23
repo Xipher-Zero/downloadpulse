@@ -436,9 +436,9 @@ jobs:
           cp desktop-inputs/macos-sources/*.tar.gz build/flatpak-sources/
           cp -a "$RUNNER_TEMP/layout" build/layout && tar -C build -czf build/layout.tar.gz layout
           cp "$RUNNER_TEMP/usenet-start.py" build/usenet-start.py
-          # The store's release list, from CHANGELOG.md; each release dated by its tag.
+          # The store's release list, from CHANGELOG.md; each release dated by its tag. ci-build.sh
+          # generates the metainfo from them (metainfo.py) and validates it (appstreamcli).
           git fetch -q --depth=1 origin '+refs/tags/v*:refs/tags/v*'
-          python packaging/desktop/flatpak/metainfo.py build/net.downloadpulse.desktop.metainfo.xml
           docker run --rm --privileged -v "$PWD:/src" -w /src -e VERSION="$version" "$DEBIAN_BASE" \
             bash packaging/desktop/flatpak/ci-build.sh
           cp build/layout/BUILD-INFO.json build/out/

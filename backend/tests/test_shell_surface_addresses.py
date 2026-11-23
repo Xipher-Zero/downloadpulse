@@ -2,12 +2,15 @@
 
 The server serves the shell at exactly ``main.SHELL_SURFACE_PATHS`` as it does
 at "/": the same bytes, headers, caching and authentication. Nothing else falls
-back to the shell, and the browser's navigation owner (``app.js``
-``VIEW_PATHS``) names the same addresses. The Details window closes on Escape
-through the shared modal owner (``DPModal``), not a second key listener.
+back to the shell. The addresses have one owner (``api.auth_routes.PAGE_ADDRESSES``):
+the server serves the shell at them and the browser's navigation owner
+(``app.js`` ``VIEW_PATHS``) reads them from the bootstrap the server prepends
+to its bundle. The Details window closes on Escape through the shared modal
+owner (``DPModal``), not a second key listener.
 """
 from __future__ import annotations
 
+import json
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -55,15 +58,23 @@ async def served(tmp_path, monkeypatch):
     session_store.clear()
 
 
-def test_server_and_navigation_owner_name_the_same_addresses():
+async def test_server_and_navigation_owner_name_the_same_addresses(served):
     import main
+    from api.auth_routes import PAGE_ADDRESSES
 
     assert main.SHELL_SURFACE_PATHS == SURFACES
+    assert PAGE_ADDRESSES == {"dashboard": "/", "torrents": "/downloads", "events": "/activity",
+                              "stats": "/statistics", "settings": "/settings", "help": "/help"}
+    # The page reads the server's list from its bundle's bootstrap; it keeps none of its own.
+    client, user = served
+    bundle = (await client.get("/app.js", headers=user)).text
+    head = bundle.split("window.downloadPulsePageAddresses=Object.freeze(", 1)[1].split(");", 1)[0]
+    paths = json.loads(head)
+    assert paths == PAGE_ADDRESSES
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
-    block = re.search(r"const VIEW_PATHS = Object\.freeze\(\{(.*?)\}\);", app_js, re.S).group(1)
-    paths = dict(re.findall(r"(\w+): '([^']+)'", block))
-    assert paths == {"dashboard": "/", "torrents": "/downloads", "events": "/activity",
-                     "stats": "/statistics", "settings": "/settings", "help": "/help"}
+    assert app_js.count("const VIEW_PATHS = window.downloadPulsePageAddresses;") == 1
+    assert bundle.index("window.downloadPulsePageAddresses=") < bundle.index("const VIEW_PATHS")
+    assert not re.search(r"'/(downloads|activity|statistics)'", app_js)
     # Every page the shell owns has an address, and no address names a page it lacks.
     index = (STATIC / "index.html").read_text(encoding="utf-8")
     assert all(f'id="view-{view}"' in index for view in paths)
@@ -118,14 +129,21 @@ async def test_nothing_else_falls_back_to_the_shell(served):
 def test_escape_closes_details_through_the_shared_modal_owner():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     modal = app_js[app_js.index("const DPModal = (function () {"):app_js.index("window.DPModal = DPModal;")]
-    # One Escape listener, the shell's own, attached only while an opening asks for it.
+    # One Escape listener, the shell's own, attached only while an opening asks for it --
+    # on the window, so every owner on the document (a menu, a DPSettingsModal dialog)
+    # hears Escape before it, whatever order they were added in.
     assert modal.count("addEventListener('keydown', escapeClose)") == 1
+    assert modal.count("window.addEventListener('keydown', escapeClose)") == 1
+    assert "document.addEventListener('keydown', escapeClose)" not in modal
     assert "requestModalClose('escape')" in modal
     assert "event.defaultPrevented" in modal and "window.DPSettingsModal?.showing()" in modal
     assert "if (window.DPTooltip?.dismissedBy(event)) return;" in modal
     # Details asks for it; no other owner adds an Escape listener for Details.
     assert re.search(r"DPModal\.open\(\{mode: 'details'[^}]*escape: true\}\)", app_js)
-    # Focus goes back to the invoking row, or the row redrawn in its place.
-    assert "returnTargetNow(returnTarget)" in modal
+    # Focus goes back to the invoking row, or the row redrawn in its place, through
+    # the dialog shell's one focus contract (no search of its own).
+    assert "window.DPSettingsModal.focusTarget(origin)" in modal
+    assert "window.DPSettingsModal.focusOrigin()" in modal
+    assert "returnTargetNow" not in app_js and "data-torrent-id=" not in modal
     index = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert index.count("/app.js?v=46") == 1
+    assert index.count("/app.js?v=47") == 1

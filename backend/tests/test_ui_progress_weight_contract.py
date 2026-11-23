@@ -22,7 +22,7 @@ def test_shared_transfer_contract_is_final_progress_geometry_owner() -> None:
     overlay = STYLE.read_text(encoding="utf-8")
     dashboard = "/ui-dashboard.css?v=24"
     downloads = "/ui-downloads-page.css?v=30"
-    transfer_path = "/ui-transfer-contract.css?v=33"
+    transfer_path = "/ui-transfer-contract.css?v=34"
 
     for layer in (dashboard, downloads, transfer_path):
         assert layer in overlay

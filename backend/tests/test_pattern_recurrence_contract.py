@@ -31,6 +31,12 @@ def test_the_browser_derives_no_transfer_status_beside_the_backend_presentation(
     # row was rendered with, never with the event's raw lifecycle state.
     patch = app.split("function patchProgressOnlyTransferEvent(data) {", 1)[1].split("\n}\n", 1)[0]
     assert "presentationStatus" in patch and "update?.status || ''" not in patch and "nextStatus" not in patch
+    # The rows and the open Details merge a progress item's figures through one
+    # owner, which alone names the backend's progress fields.
+    details = app.split("function dpDetailProgressChanged(item) {", 1)[1].split("\n}\n", 1)[0]
+    assert "mergeTransferProgress(" in patch and "mergeTransferProgress(" in details
+    assert app.count("'active_execution_basis', 'acquisition_eta'") == 1
+    assert "DP_DETAIL_PROGRESS_FIELDS" not in app
 
 
 def test_frontend_never_adjusts_a_server_derived_count_locally():

@@ -6,8 +6,10 @@
 #     bash packaging/desktop/flatpak/ci-build.sh
 # Inputs (repository root): build/layout.tar.gz (assemble.py --usenet on Linux
 # x86_64), build/flatpak-sources/ (prepare-sources.sh's tarballs),
-# build/net.downloadpulse.desktop.metainfo.xml (metainfo.py: the releases from
-# CHANGELOG.md) and build/usenet-start.py (the workflow's Usenet check).
+# build/usenet-start.py (the workflow's Usenet check) and the release tags
+# (git fetch origin '+refs/tags/v*:refs/tags/v*'), from which this script
+# writes build/net.downloadpulse.desktop.metainfo.xml (metainfo.py: the
+# releases from CHANGELOG.md) and validates it (appstreamcli) before building.
 # Outputs in build/out/: DownloadPulse-<version>-linux-x86_64.flatpak (a
 # single-file bundle, unsigned), SHA256SUMS and RESULTS.txt -- the runtime and
 # SDK commits, the installed bundle, each helper run inside the sandbox, the
@@ -17,11 +19,17 @@
 set -euo pipefail
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends flatpak flatpak-builder ca-certificates \
-  binutils elfutils patch xz-utils zstd git >/dev/null   # flatpak-builder's own Recommends it uses (strip, unpack; git: the shell's pinned source)
+  binutils elfutils patch xz-utils zstd git appstream >/dev/null   # flatpak-builder's own Recommends it uses (strip, unpack; git: the shell's pinned source and the release dates); appstreamcli
 # The launch check's virtual display, session bus and screenshot.
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends xvfb xauth dbus-x11 procps imagemagick >/dev/null
 out=build/out; mkdir -p "$out"; results="$out/RESULTS.txt"
-dpkg-query -W flatpak flatpak-builder | tee "$results"
+dpkg-query -W flatpak flatpak-builder appstream | tee "$results"
+# The store's metainfo, generated here and checked as AppStream before the
+# manifest installs it (the checkout belongs to another user than this one).
+git config --global --add safe.directory "$PWD"
+python3 packaging/desktop/flatpak/metainfo.py build/net.downloadpulse.desktop.metainfo.xml
+appstreamcli validate --no-net --explain build/net.downloadpulse.desktop.metainfo.xml | tee -a "$results"
+test "${PIPESTATUS[0]}" -eq 0
 flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak --user install -y --noninteractive flathub org.gnome.Platform//49 org.gnome.Sdk//49 >/dev/null
 for ref in org.gnome.Platform//49 org.gnome.Sdk//49; do

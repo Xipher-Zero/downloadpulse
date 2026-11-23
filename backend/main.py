@@ -39,7 +39,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from api.account_routes import router as account_router
 from api.auth_config_routes import router as auth_config_router
-from api.auth_routes import router as auth_router
+from api.auth_routes import PAGE_ADDRESSES, router as auth_router
 from api.routes import router
 from api.executor_work import router as executor_work_router
 from api.arr_qbittorrent import router as arr_qbittorrent_router
@@ -560,12 +560,13 @@ async def general_web_security_middleware(request: Request, call_next):
 # authentication boundaries receive the same correlation and baseline security
 # headers as normal application responses.
 
-# The interface's pages each have an address (app.js ``VIEW_PATHS``), so a
+# The interface's pages each have an address (``api.auth_routes.PAGE_ADDRESSES``,
+# the one list, which the page's navigation reads from its bootstrap), so a
 # page can be bookmarked and reloaded: at exactly these paths the shell is
 # served as at "/" (Dashboard's own address) -- the same file by the same
 # static owner, through the same authentication, headers and caching. No other
 # path falls back to the shell.
-SHELL_SURFACE_PATHS = ("/downloads", "/activity", "/statistics", "/settings", "/help")
+SHELL_SURFACE_PATHS = tuple(path for path in PAGE_ADDRESSES.values() if path != "/")
 
 
 @app.middleware("http")

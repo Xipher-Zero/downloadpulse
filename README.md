@@ -211,6 +211,8 @@ Adjust the paths and UID/GID for your system. `CORS_ORIGINS=*` prevents startup:
 
 **Rootless Podman.** The container starts as root, sets the ownership of `/app/config`, `/app/data` and `/download` to `PUID:PGID`, then runs DownloadPulse as that user. Under rootless Podman's default user namespace, a container UID such as 1000 is a sub-UID on the host, so those folders end up owned by an ID your host user cannot read. Run it with `--userns=keep-id --user 0:0` and set `PUID`/`PGID` to your host user's `id -u`/`id -g`: the container UID then is your own, and the files are yours. `--userns=keep-id` alone is not enough, because the container would then start as your user rather than root and could not switch users.
 
+**Private data.** `/app/config` and `/app/data` are mode 0700, and the database and its journal files (`-wal`, `-shm`) 0600, all owned by `PUID:PGID` and set again at every start. A backup tool that copies them must run as `PUID:PGID` (on Unraid the image's default, 99:100, unless you set `PUID`/`PGID`) or as root.
+
 ---
 
 ## Configuration
