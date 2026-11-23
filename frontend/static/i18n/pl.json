@@ -878,6 +878,8 @@
   "downloads.label.updated": "Zaktualizowano etykietę",
   "transfer.action.retry": "Ponów",
   "transfer.action.retry_tooltip": "Ponów to pobieranie",
+  "transfer.action.show_in_folder": "Pokaż w folderze",
+  "transfer.action.show_in_folder_tooltip": "Pokaż to pobieranie w menedżerze plików",
   "transfer.action.remove": "Usuń z listy",
   "transfer.action.remove_tooltip": "Usuń to pobranie z listy",
   "transfer.action.paused_toast": "Transfer wstrzymany",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>Filtry:</b> Wszystkie, Pobierane, Wstrzymane, Przetwarzane, Gotowe, Ukończone, Błąd. Pole <b>Szukaj</b> dopasowuje wyniki na bieżąco podczas pisania.",
   "help.using.downloads_page.order": "<b>Kolejność:</b> <b>Priorytet</b> (kolejność w kolejce, domyślnie) lub <b>Najnowsze</b>.",
   "help.using.downloads_page.row_actions": "<b>Akcje wiersza:</b> <b>Wstrzymaj</b>, <b>Wznów</b>, <b>Ponów</b> (przy nieudanym pobraniu) i <b>Usuń z listy</b>. Przycisk <b>Uruchom teraz</b> pojawia się, gdy przeniesione wyżej pobranie może się rozpocząć tylko wtedy, gdy pobrania niżej w kolejce zostaną uruchomione ponownie. Użytkownik widzi przycisk <b>Usuń z listy</b> tylko przy pobraniach, których nie potrzebuje już żadne inne konto.",
+  "help.using.downloads_page.show_in_folder": "<b>Pokaż w folderze</b> (aplikacja komputerowa): przy ukończonym pobieraniu, w jego wierszu i w szczegółach, otwiera menedżer plików tam, gdzie ono jest: z zaznaczonym plikiem albo w folderze pobierania złożonego z wielu plików.",
   "help.using.downloads_page.several_once": "<b>Kilka naraz:</b> zaznaczenie wierszy wyświetla przyciski <b>Wstrzymaj</b>, <b>Wznów</b>, <b>Zresetuj</b> (ponowienie), <b>Przenieś na początek</b> i <b>Usuń</b>. Opcja „Usuń” jest dostępna tylko wtedy, gdy można usunąć każde z zaznaczonych pobrań.",
   "help.using.downloads_page.queue_order": "<b>Kolejność w kolejce:</b> w kolejności według priorytetu, bez filtru i wyszukiwania, pobranie można przeciągnąć za nazwę, aby je przenieść, albo użyć klawiatury (Spacja lub Enter, aby chwycić, strzałki, aby przesunąć, Spacja lub Enter, aby upuścić, Escape, aby anulować). Menu pod prawym przyciskiem myszy zawiera polecenie <b>Przenieś na początek</b>. Jeśli przeniesienie przerwałoby trwające pobranie, DownloadPulse najpierw pyta o zgodę, ponieważ postęp tego pobrania zostałby utracony.",
   "help.using.downloads_page.beneath_each_name": "Pod każdą <b>nazwą</b> wiersz pokazuje, skąd pochodzi pobranie i która usługa je obsługuje (sposób przesłania widać w szczegółach). Tam, gdzie zmiana jest dozwolona, nazwa usługi jest przyciskiem otwierającym wybór usługi. Ikona sieci z liczbą pokazuje, ile źródeł jest znanych dla plików pobrania; gdy można wybrać inne źródło, ikona jest przyciskiem otwierającym wybór źródła. Oba elementy opisano w sekcji <b>Jak to działa → Zmiana usługi lub źródła</b>.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "Kolory ramki okna są nieprawidłowe.",
   "error.desktop.quit_only": "Tylko aplikacja desktopowa ma okno, którego zamknięcie kończy jej działanie.",
   "error.desktop.quit_refused": "To żądanie zamknięcia wygasło. Aby zamknąć aplikację, zamknij okno ponownie.",
+  "error.desktop.reveal_only": "„Pokaż w folderze” jest dostępne tylko w aplikacji komputerowej.",
+  "error.desktop.reveal_window_only": "„Pokaż w folderze” działa tylko w oknie DownloadPulse.",
+  "error.desktop.reveal_not_completed": "W folderze można pokazać tylko ukończone pobieranie.",
+  "error.desktop.reveal_missing": "Pliki tego pobierania nie znajdują się już w folderze pobierania.",
   "browser.pairing.title": "Połącz przeglądarkę",
   "browser.pairing.intro": "Przeglądarka prosi o połączenie z tym kontem. Po połączeniu może wysyłać tutaj pobrania i wyświetlać wysłane przez siebie pobrania.",
   "browser.pairing.field.browser": "Przeglądarka",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

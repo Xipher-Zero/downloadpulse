@@ -26,8 +26,11 @@ The tray asks four things, each answered by its existing owner:
   chose, or none (cancelled);
 * ``show`` -- whether the window was asked to come forward since the
   supervisor last asked (``request_show``: a connected browser's Open
-  DownloadPulse), and ``quit``: whether the person confirmed Quit in the
-  window since then (``request_quit``); each answered once;
+  DownloadPulse), ``quit``: whether the person confirmed Quit in the
+  window since then (``request_quit``), and ``reveal``: the completed
+  download the window's page asked to see in the file manager
+  (``request_reveal``: Show in folder) -- its path and whether it is a
+  folder, as the backend itself resolved it -- or none; each answered once;
 * ``quit_prompt`` -- the window was closed where no tray can open it again
   (Linux): ask the window's own page -- never a browser tab or a Local Port
   client (``api.routes._sse_prompt_window``) -- whether to quit, with a fresh
@@ -142,6 +145,22 @@ _quit_nonce: str | None = None
 _quit_requested = False
 
 
+# Show in folder (POST /desktop/reveal): the one completed download waiting for
+# the supervisor's next look (op ``show``: ``reveal``), as
+# ``ApplicationService.completed_location`` resolved it -- never a path a page
+# sent. Asked again before it looks: the latest is shown.
+_reveal: dict | None = None
+
+
+def request_reveal(path: str, folder: bool) -> None:
+    """Ask the supervisor to show ``path`` in the file manager on its next look:
+    a folder opened (``folder``), or a file's folder with the file selected."""
+    global _reveal
+    if not isinstance(path, str) or not os.path.isabs(path) or len(path) > MAX_PATH or not isinstance(folder, bool):
+        raise ValueError(path)
+    _reveal = {"path": path, "folder": folder}
+
+
 def request_quit(nonce) -> bool:
     """Quit, as the window's page confirmed it: only with the nonce of the
     prompt pending, and only once (that prompt is then answered). False -- and
@@ -226,10 +245,11 @@ async def answer(application, request) -> dict:
         result = await (application.pause_all() if op == "pause" else application.resume_all())
         return {"id": ident, "ok": bool(result.get("ok")), "paused": bool(result.get("paused"))}
     if op == "show":
-        global _show_requested, _quit_requested
+        global _show_requested, _quit_requested, _reveal
         asked, _show_requested = _show_requested, False
         quit_confirmed, _quit_requested = _quit_requested, False
-        return {"id": ident, "show": asked, "quit": quit_confirmed}
+        reveal, _reveal = _reveal, None
+        return {"id": ident, "show": asked, "quit": quit_confirmed, "reveal": reveal}
     if op == "quit_prompt":
         # A new prompt replaces any earlier one: only its nonce is accepted.
         global _quit_nonce

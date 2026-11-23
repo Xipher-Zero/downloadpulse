@@ -33052,6 +33052,62 @@
     "ai-review"
    ],
    "identical": "'file' is the Indonesian term this catalog uses throughout; the noun does not inflect for number."
+  },
+  "transfer.action.show_in_folder": {
+   "source": "da478765741ebb0d",
+   "translation": "629097800a1abb6b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.action.show_in_folder_tooltip": {
+   "source": "c72898dc546098d1",
+   "translation": "dcfc2138dd47598d",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_only": {
+   "source": "2f71f705a5f52fd5",
+   "translation": "295e54b7a59143ca",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_window_only": {
+   "source": "1a475f536d481127",
+   "translation": "d4a9f65ad3aecaa9",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_not_completed": {
+   "source": "bb8d162759a94436",
+   "translation": "48252985bcd9c2f2",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_missing": {
+   "source": "53f6f481984d1cd6",
+   "translation": "fad59ed0b59143b3",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.using.downloads_page.show_in_folder": {
+   "source": "33419ed9b741d45d",
+   "translation": "e0bab8a7c15dd592",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

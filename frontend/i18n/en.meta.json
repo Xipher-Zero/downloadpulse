@@ -24010,6 +24010,48 @@
     "name": "string: the files' shared collection name, as given",
     "count": "plural: how many files in all"
    }
+  },
+  "transfer.action.show_in_folder": {
+   "category": "action",
+   "context": "Button on a completed download's row in Downloads and in its Details (installed desktop application only): opens the system file manager at the downloaded file (selected) or, for a download of several files, at its folder.",
+   "owner": "frontend/static/ui-downloads.js",
+   "criticality": "normal"
+  },
+  "transfer.action.show_in_folder_tooltip": {
+   "category": "tooltip/aria",
+   "context": "Tooltip of a completed download's Show in folder (desktop application only): the system's file manager opens where the download is.",
+   "owner": "frontend/static/ui-downloads.js",
+   "criticality": "normal"
+  },
+  "error.desktop.reveal_only": {
+   "category": "error",
+   "context": "Refusal of Show in folder (a completed download's row or Details in the desktop application), shown as an error message: a server installation has no file manager to open (sent by the page itself, never shown in normal use).",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
+  "error.desktop.reveal_window_only": {
+   "category": "error",
+   "context": "Refusal of Show in folder (a completed download's row or Details in the desktop application), shown as an error message: it was asked from a browser connected through Local Port rather than from the desktop application's own window. 'DownloadPulse' is the product name: keep it untranslated.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
+  "error.desktop.reveal_not_completed": {
+   "category": "error",
+   "context": "Refusal of Show in folder (a completed download's row or Details in the desktop application), shown as an error message: the download is not completed (it was still in progress, failed or was removed when asked).",
+   "owner": "backend/application/service.py",
+   "criticality": "normal"
+  },
+  "error.desktop.reveal_missing": {
+   "category": "error",
+   "context": "Refusal of Show in folder (a completed download's row or Details in the desktop application), shown as an error message: the completed download's files are no longer where DownloadPulse put them inside the download folder (moved, renamed or deleted since).",
+   "owner": "backend/application/service.py",
+   "criticality": "normal"
+  },
+  "help.using.downloads_page.show_in_folder": {
+   "category": "long-form-help",
+   "context": "Field Manual (the Help page), Everyday Use → Downloads page: a list item shown only in the installed desktop application. Bold words name the interface's own labels; use the words the interface itself shows ('Show in folder').",
+   "owner": "frontend/static/ui-help-page.js",
+   "criticality": "normal"
   }
  }
 }

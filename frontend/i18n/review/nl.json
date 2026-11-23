@@ -33100,6 +33100,62 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.action.show_in_folder": {
+   "source": "da478765741ebb0d",
+   "translation": "4ac459e7df446c9b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "transfer.action.show_in_folder_tooltip": {
+   "source": "c72898dc546098d1",
+   "translation": "9a2a7195b0505c02",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_only": {
+   "source": "2f71f705a5f52fd5",
+   "translation": "9ce7994d9940cd5b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_window_only": {
+   "source": "1a475f536d481127",
+   "translation": "ceacb8d89e5a7171",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_not_completed": {
+   "source": "bb8d162759a94436",
+   "translation": "67cb850f11fe1e3a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.reveal_missing": {
+   "source": "53f6f481984d1cd6",
+   "translation": "2dac98d4a9467707",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.using.downloads_page.show_in_folder": {
+   "source": "33419ed9b741d45d",
+   "translation": "d9acb2142f005c95",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

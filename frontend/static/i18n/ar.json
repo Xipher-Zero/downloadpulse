@@ -878,6 +878,8 @@
   "downloads.label.updated": "تم تحديث التسمية",
   "transfer.action.retry": "إعادة المحاولة",
   "transfer.action.retry_tooltip": "إعادة محاولة هذا التنزيل",
+  "transfer.action.show_in_folder": "إظهار في المجلد",
+  "transfer.action.show_in_folder_tooltip": "إظهار هذا التنزيل في مدير الملفات",
   "transfer.action.remove": "إزالة",
   "transfer.action.remove_tooltip": "إزالة هذا التنزيل",
   "transfer.action.paused_toast": "تم إيقاف النقل مؤقتًا",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>عوامل التصفية:</b> الكل، قيد التنزيل، متوقف مؤقتًا، قيد المعالجة، جاهز، مكتمل، خطأ. يطابق <b>البحث</b> النتائج أثناء الكتابة.",
   "help.using.downloads_page.order": "<b>الترتيب:</b> <b>الأولوية</b> (ترتيب قائمة الانتظار، وهو الافتراضي) أو <b>الأحدث</b>.",
   "help.using.downloads_page.row_actions": "<b>إجراءات الصف:</b> <b>إيقاف مؤقت</b> و<b>استئناف</b> و<b>إعادة المحاولة</b> (على تنزيل فاشل) و<b>إزالة</b>. يظهر <b>البدء الآن</b> عندما لا يمكن لتنزيل نقلته إلى الأعلى أن يبدأ إلا إذا أُعيد تشغيل التنزيلات التي تحته. وبالنسبة إلى المستخدم، لا يظهر <b>إزالة</b> إلا على التنزيلات التي لم يعد أي حساب آخر يحتاج إليها.",
+  "help.using.downloads_page.show_in_folder": "<b>إظهار في المجلد</b> (تطبيق سطح المكتب): على تنزيل مكتمل، في صفه وفي تفاصيله، يفتح مدير الملفات حيث يوجد: الملف محددًا، أو مجلد التنزيل الذي يضم عدة ملفات.",
   "help.using.downloads_page.several_once": "<b>عدة تنزيلات معًا:</b> حدّد الصفوف لإظهار <b>إيقاف مؤقت</b> و<b>استئناف</b> و<b>إعادة تعيين</b> (إعادة المحاولة) و<b>تحريك إلى الأعلى</b> و<b>حذف</b>. لا يُتاح «حذف» إلا إذا كان مسموحًا لك بإزالة كل تنزيل محدد.",
   "help.using.downloads_page.queue_order": "<b>ترتيب قائمة الانتظار:</b> في ترتيب «الأولوية» ومن دون أي عامل تصفية أو بحث، اسحب تنزيلًا من اسمه لتحريكه، أو استخدم لوحة المفاتيح (Space أو Enter للالتقاط، ومفاتيح الأسهم للتحريك، و Space أو Enter للإفلات، و Escape للإلغاء). ويوفّر النقر بزر الماوس الأيمن الأمر <b>تحريك إلى الأعلى</b>. إذا كان التحريك سيقاطع تنزيلًا قيد التشغيل، يسألك DownloadPulse أولًا لأن تقدّم ذلك التنزيل سيُفقد.",
   "help.using.downloads_page.beneath_each_name": "يعرض الصف أسفل كل <b>اسم</b> مصدر التنزيل والخدمة التي تتولاه (أما طريقة إرساله فتجدها في تفاصيله). وحيث يُسمح لك بتغييرها، يكون اسم الخدمة زرًّا يفتح أداة اختيار الخدمة. وتبيّن أيقونة شبكة مصحوبة برقم عدد المصادر المعروفة لملفاته؛ وعندما يمكن اختيار مصدر آخر، تصبح زرًّا يفتح أداة اختيار المصدر. ويُشرح كلاهما في <b>آلية العمل → تبديل الخدمة أو المصدر</b>.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "ألوان إطار النافذة غير صالحة.",
   "error.desktop.quit_only": "تطبيق سطح المكتب وحده لديه نافذة يمكن إنهاؤها.",
   "error.desktop.quit_refused": "انتهت صلاحية طلب الإنهاء هذا. أغلق النافذة مرة أخرى للإنهاء.",
+  "error.desktop.reveal_only": "لا تتوفر ميزة \"إظهار في المجلد\" إلا في تطبيق سطح المكتب.",
+  "error.desktop.reveal_window_only": "لا تعمل ميزة \"إظهار في المجلد\" إلا في نافذة DownloadPulse.",
+  "error.desktop.reveal_not_completed": "لا يمكن إظهار سوى التنزيل المكتمل في مجلده.",
+  "error.desktop.reveal_missing": "لم تعد ملفات هذا التنزيل موجودة في مجلد التنزيل.",
   "browser.pairing.title": "ربط متصفح",
   "browser.pairing.intro": "يطلب متصفح الارتباط بحسابك. بعد ربطه، يمكنه إرسال التنزيلات إلى هنا وعرض التنزيلات التي أرسلها.",
   "browser.pairing.field.browser": "المتصفح",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

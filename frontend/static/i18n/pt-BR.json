@@ -878,6 +878,8 @@
   "downloads.label.updated": "Rótulo atualizado",
   "transfer.action.retry": "Tentar novamente",
   "transfer.action.retry_tooltip": "Tentar este download novamente",
+  "transfer.action.show_in_folder": "Mostrar na pasta",
+  "transfer.action.show_in_folder_tooltip": "Mostrar este download no gerenciador de arquivos",
   "transfer.action.remove": "Remover",
   "transfer.action.remove_tooltip": "Remover este download",
   "transfer.action.paused_toast": "Transferência pausada",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>Filtros:</b> Todos, Baixando, Pausados, Processando, Prontos, Concluídos, Erro. A <b>Pesquisa</b> encontra resultados enquanto você digita.",
   "help.using.downloads_page.order": "<b>Ordem:</b> <b>Prioridade</b> (ordem da fila, o padrão) ou <b>Mais recentes</b>.",
   "help.using.downloads_page.row_actions": "<b>Ações da linha:</b> <b>Pausar</b>, <b>Retomar</b>, <b>Tentar novamente</b> (em um download com falha) e <b>Remover</b>. <b>Iniciar agora</b> aparece quando um download que você moveu para cima só pode começar se downloads mais abaixo forem reiniciados. Para um Usuário, <b>Remover</b> aparece somente em downloads de que nenhuma outra conta ainda precisa.",
+  "help.using.downloads_page.show_in_folder": "<b>Mostrar na pasta</b> (aplicativo para desktop): em um download concluído, na linha e nos detalhes dele, abre o gerenciador de arquivos onde ele está: com o arquivo selecionado, ou a pasta de um download de vários arquivos.",
   "help.using.downloads_page.several_once": "<b>Vários de uma vez:</b> marque linhas para exibir <b>Pausar</b>, <b>Retomar</b>, <b>Redefinir</b> (tentar novamente), <b>Mover para o topo</b> e <b>Excluir</b>. Excluir só é oferecido quando você tem permissão para remover todos os downloads selecionados.",
   "help.using.downloads_page.queue_order": "<b>Ordem da fila:</b> na ordem Prioridade, sem filtro nem pesquisa, arraste um download pelo nome para movê-lo ou use o teclado (Espaço ou Enter para pegar, setas para mover, Espaço ou Enter para soltar, Esc para cancelar). O clique com o botão direito oferece <b>Mover para o topo</b>. Se uma movimentação for interromper um download em andamento, o DownloadPulse pergunta antes, porque o progresso desse download seria perdido.",
   "help.using.downloads_page.beneath_each_name": "Abaixo de cada <b>nome</b>, a linha mostra de onde veio o download e qual serviço está cuidando dele (a forma como foi enviado aparece nos detalhes). Onde você pode alterá-lo, o nome do serviço é um botão que abre o seletor de serviço. Um ícone de rede com um número mostra quantas fontes são conhecidas para os arquivos; quando outra fonte pode ser escolhida, ele é um botão que abre o seletor de fonte. Ambos são explicados em <b>Como funciona → Troca de serviço ou de fonte</b>.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "As cores da moldura da janela não são válidas.",
   "error.desktop.quit_only": "Somente o aplicativo para desktop tem uma janela para sair.",
   "error.desktop.quit_refused": "Esta solicitação para sair expirou. Feche a janela novamente para sair.",
+  "error.desktop.reveal_only": "\"Mostrar na pasta\" só está disponível no aplicativo para desktop.",
+  "error.desktop.reveal_window_only": "\"Mostrar na pasta\" só funciona na janela do DownloadPulse.",
+  "error.desktop.reveal_not_completed": "Só é possível mostrar na pasta um download concluído.",
+  "error.desktop.reveal_missing": "Os arquivos deste download não estão mais na pasta de downloads.",
   "browser.pairing.title": "Conectar um navegador",
   "browser.pairing.intro": "Um navegador está pedindo para se conectar à sua conta. Depois de conectado, ele pode enviar downloads para cá e mostrar os downloads que enviou.",
   "browser.pairing.field.browser": "Navegador",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

@@ -294,6 +294,7 @@ ${c.submit ? `<p ${keyed('help.using.dashboard_quick_add.quick_add')}></p>
               <li ${keyed('help.using.downloads_page.filters')}></li>
               <li ${keyed('help.using.downloads_page.order')}></li>
               ${c.operate ? `<li ${keyed('help.using.downloads_page.row_actions')}></li>
+              ${c.desktop ? `<li ${keyed('help.using.downloads_page.show_in_folder')}></li>` : ''}
               <li ${keyed('help.using.downloads_page.several_once')}></li>
               <li ${keyed('help.using.downloads_page.queue_order')}></li>` : ''}
               <li ${keyed('help.using.downloads_page.beneath_each_name')}></li>

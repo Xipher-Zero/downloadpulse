@@ -878,6 +878,8 @@
   "downloads.label.updated": "Étiquette mise à jour",
   "transfer.action.retry": "Réessayer",
   "transfer.action.retry_tooltip": "Réessayer ce téléchargement",
+  "transfer.action.show_in_folder": "Afficher dans le dossier",
+  "transfer.action.show_in_folder_tooltip": "Afficher ce téléchargement dans le gestionnaire de fichiers",
   "transfer.action.remove": "Retirer",
   "transfer.action.remove_tooltip": "Retirer ce téléchargement",
   "transfer.action.paused_toast": "Transfert suspendu",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>Filtres :</b> Tous, En cours, Suspendus, Traitement, Prêts, Terminés, Erreur. La <b>recherche</b> filtre au fil de la saisie.",
   "help.using.downloads_page.order": "<b>Ordre :</b> <b>Priorité</b> (ordre de la file, par défaut) ou <b>Plus récents</b>.",
   "help.using.downloads_page.row_actions": "<b>Actions sur une ligne :</b> <b>Suspendre</b>, <b>Reprendre</b>, <b>Réessayer</b> (sur un téléchargement en échec) et <b>Retirer</b>. <b>Démarrer maintenant</b> apparaît lorsqu’un téléchargement que vous avez fait remonter ne peut démarrer que si des téléchargements situés plus bas redémarrent. Pour un Utilisateur, <b>Retirer</b> n’apparaît que sur les téléchargements dont aucun autre compte n’a encore besoin.",
+  "help.using.downloads_page.show_in_folder": "<b>Afficher dans le dossier</b> (application de bureau) : sur un téléchargement terminé, dans sa ligne et dans ses détails, ouvre le gestionnaire de fichiers là où il se trouve : le fichier sélectionné, ou le dossier d’un téléchargement de plusieurs fichiers.",
   "help.using.downloads_page.several_once": "<b>Plusieurs à la fois :</b> cochez des lignes pour afficher <b>Suspendre</b>, <b>Reprendre</b>, <b>Réinitialiser</b> (nouvelle tentative), <b>Placer en tête</b> et <b>Supprimer</b>. Supprimer n’est proposé que si vous avez le droit de retirer chacun des téléchargements sélectionnés.",
   "help.using.downloads_page.queue_order": "<b>Ordre de la file :</b> en ordre Priorité, sans filtre ni recherche, faites glisser un téléchargement par son nom pour le déplacer, ou utilisez le clavier (Espace ou Entrée pour le saisir, les touches fléchées pour le déplacer, Espace ou Entrée pour le déposer, Échap pour annuler). Le clic droit propose <b>Placer en tête</b>. Si un déplacement devait interrompre un téléchargement en cours, DownloadPulse vous le demande d’abord, car la progression de ce téléchargement serait perdue.",
   "help.using.downloads_page.beneath_each_name": "Sous chaque <b>nom</b>, la ligne indique la provenance du téléchargement et le service qui le traite (la façon dont il a été soumis figure dans ses détails). Lorsque vous pouvez le changer, le nom du service est un bouton qui ouvre le sélecteur de service. Une icône réseau accompagnée d’un nombre indique combien de sources sont connues pour ses fichiers ; lorsqu’une autre source peut être choisie, c’est un bouton qui ouvre le sélecteur de source. Les deux sont expliqués dans <b>Fonctionnement → Changer de service ou de source</b>.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "Les couleurs du cadre de la fenêtre ne sont pas valides.",
   "error.desktop.quit_only": "Seule l’application de bureau a une fenêtre à quitter.",
   "error.desktop.quit_refused": "Cette demande pour quitter a expiré. Fermez de nouveau la fenêtre pour quitter.",
+  "error.desktop.reveal_only": "« Afficher dans le dossier » n’est disponible que dans l’application de bureau.",
+  "error.desktop.reveal_window_only": "« Afficher dans le dossier » ne fonctionne que dans la fenêtre de DownloadPulse.",
+  "error.desktop.reveal_not_completed": "Seul un téléchargement terminé peut être affiché dans son dossier.",
+  "error.desktop.reveal_missing": "Les fichiers de ce téléchargement ne sont plus dans le dossier de téléchargement.",
   "browser.pairing.title": "Connecter un navigateur",
   "browser.pairing.intro": "Un navigateur demande à se connecter à votre compte. Une fois connecté, il peut envoyer des téléchargements ici et afficher les téléchargements qu’il a envoyés.",
   "browser.pairing.field.browser": "Navigateur",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

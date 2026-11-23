@@ -1529,6 +1529,40 @@ async def desktop_quit(body: DesktopQuit):
     return {"quitting": True}
 
 
+# ── Show in folder: a completed download in the desktop's file manager ─────
+# Classified ``transfers.operate``. Asked by the desktop window's own page
+# (``desktop_listener.window_request``) -- never through Local Port, so no
+# other client of this computer makes the window's desktop open anything --
+# by its one person (a desktop is Standalone: the default Admin). Where it is, is
+# core's own answer (``ApplicationService.completed_location``): a completed
+# download's file or folder inside the download root, never a path the page
+# sent. The supervisor opens it on its next look (application.desktop_control
+# ``request_reveal``, op show: reveal). A server has no file manager to open.
+
+class DesktopReveal(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    transfer_id: int
+
+
+@router.post("/desktop/reveal")
+async def desktop_reveal(body: DesktopReveal, request: Request,
+                         application: ApplicationService = Depends(get_application)):
+    _require_desktop("Show in folder is only available in the desktop application.", "desktop.reveal_only")
+    from application.desktop_control import request_reveal
+    from application.desktop_listener import window_request
+    if not window_request(request.headers.get("host", "")):
+        raise DisplayError(403, "Show in folder works only in the DownloadPulse window.",
+                           code="desktop.reveal_window_only")
+    try:
+        path, folder = await application.completed_location(body.transfer_id)
+    except KeyError:
+        raise DisplayError(404, "Transfer not found", code="transfer.not_found") from None
+    except CodedValueError as exc:
+        raise refusal(409, str(exc), exc) from None
+    request_reveal(path, folder)
+    return {"revealing": True}
+
+
 # ── Local Port (the desktop application's external address) ────────────────
 # Classified ``administer``. The port external clients reach on this computer
 # (``application.desktop_listener``): read with the clients that connected in

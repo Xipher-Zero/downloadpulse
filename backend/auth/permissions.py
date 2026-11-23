@@ -286,6 +286,8 @@ ACTIONS: dict[str, Capability] = {
     "api.routes.bulk_action": _OP,  # each target re-evaluated; delete needs TRANSFERS_DESTROY
     # Dismissing keeps every file (the default ALL), depriving no one.
     "api.file_selection_routes.dismiss_file_selection": _OP,
+    # Show in folder, in the desktop window (always Standalone: its one person).
+    "api.routes.desktop_reveal": _OP,
     # Transfers: destructive (ownership of every affected demand required).
     "api.routes.delete_torrent": _DES,
     "api.routes.cancel_torrent": _DES,

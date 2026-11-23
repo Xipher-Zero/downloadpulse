@@ -16,6 +16,9 @@ It owns, and only owns, what a desktop process needs and DownloadPulse does not:
   calls its allow-listed native methods. On Linux the tray and the notices are
   the desktop's own session-bus interfaces instead (``SessionBus``), and so is
   opening the running instance again;
+* Show in folder: a completed download the window's page asked to see, as the
+  backend itself resolved it, opened in the desktop's own file manager
+  (``show_in_folder``: a fixed command or the OpenURI portal, never a shell);
 * Quit: the native shell ends first, in order (``_end_shell``: its own
   ``app.exit`` on macOS, SIGTERM on Linux, its job on Windows; a stuck shell
   is stopped by the process owner), and its window and every connection its
@@ -1661,6 +1664,9 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
             # A connected browser's Open DownloadPulse: the tray's Open.
             if asked.get("show"):
                 await bring_forward("Open (a connected browser)")
+            # Show in folder, asked in the window: the file manager, on its own.
+            if asked.get("reveal"):
+                asyncio.ensure_future(show_in_folder(asked["reveal"]))
             next_show = time.monotonic() + SHOW_POLL_SECONDS
         if time.monotonic() >= next_poll:
             batch = await channel.ask("events", after=cursor)
@@ -1808,6 +1814,117 @@ def windows_frame(binary: str, caption: str, text: str, dark: bool) -> int:
             data = w.DWORD(value)
             dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(data), ctypes.sizeof(data))
     return len(found)
+
+
+# Show in folder: a completed download in the desktop's own file manager, as
+# the backend resolved it (``application.desktop_control`` op show: reveal) --
+# never a path from the page. Each is one process started directly, no shell:
+# Windows ``explorer /select,"<file>"`` (a folder: ``explorer "<folder>"``), as
+# one literal command line -- Explorer ignores a /select switch quoted whole,
+# which is what an argument list becomes -- that CreateProcess starts (a
+# Windows path cannot hold a ``"``); macOS ``open -R <path>``, file or folder
+# alike (revealed in Finder, never opened: a folder may be an application
+# bundle); Linux the desktop's OpenURI portal's OpenDirectory for a file (its
+# folder, the file selected; inside the Flatpak the one way out), else -- and
+# for a folder -- ``xdg-open <folder>`` (inside the Flatpak the portal's).
+REVEAL_SECONDS = 10
+
+
+def reveal_command(path: str, folder: bool, platform: str = sys.platform, environ=None) -> list[str] | str:
+    """What shows ``path`` in the file manager: on Windows the literal command
+    line, elsewhere the argument list."""
+    if platform == "win32":
+        environ = os.environ if environ is None else environ
+        root = environ.get("SystemRoot") or environ.get("SYSTEMROOT") or r"C:\Windows"
+        explorer = rf'"{root}\explorer.exe"'
+        return f'{explorer} "{path}"' if folder else f'{explorer} /select,"{path}"'
+    if platform == "darwin":
+        return ["/usr/bin/open", "-R", path]
+    return ["xdg-open", path if folder else os.path.dirname(path)]
+
+
+def portal_open_directory(path: str) -> bool:
+    """Linux: the OpenURI portal's OpenDirectory for one file -- its folder in
+    the file manager, the file selected -- handed over as an open descriptor
+    (a connection of its own: descriptors travel only on one that allows
+    them). Whether the portal accepted it."""
+    try:
+        from jeepney import DBusAddress, new_method_call
+        from jeepney.io.blocking import open_dbus_connection
+    except ImportError:
+        return False
+    try:
+        fd = os.open(path, getattr(os, "O_PATH", os.O_RDONLY) | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError as exc:
+        logger.error("Show in folder: the file could not be opened for the portal: %s", exc)
+        return False
+    try:
+        with open_dbus_connection("SESSION", enable_fds=True) as connection:
+            reply = connection.send_and_get_reply(new_method_call(
+                DBusAddress("/org/freedesktop/portal/desktop", bus_name="org.freedesktop.portal.Desktop",
+                            interface="org.freedesktop.portal.OpenURI"),
+                "OpenDirectory", "sha{sv}", ("", fd, {})), timeout=REVEAL_SECONDS)
+    except (OSError, KeyError, ValueError, TimeoutError) as exc:
+        logger.warning("Show in folder: the portal could not be asked: %s", exc)
+        return False
+    finally:
+        os.close(fd)
+    if reply.header.message_type.name == "error":
+        logger.warning("Show in folder: the portal refused: %s", reply.body)
+        return False
+    return True
+
+
+def _start_windows(command_line: str) -> None:
+    """Windows: start ``command_line`` as it is (CreateProcess, no shell).
+    Explorer's exit status says nothing (it answers 1 when it opened)."""
+    import subprocess
+    subprocess.Popen(command_line, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+
+
+async def show_in_folder(reveal, platform: str = sys.platform) -> bool:
+    """Show one completed download in the file manager (``reveal``: the
+    backend's ``{"path", "folder"}``); whether it was handed to the desktop.
+    Anything else is refused and logged."""
+    path = reveal.get("path") if isinstance(reveal, dict) else None
+    folder = reveal.get("folder") if isinstance(reveal, dict) else None
+    import ntpath
+    import posixpath
+    absolute = ntpath.isabs if platform == "win32" else posixpath.isabs
+    if not isinstance(path, str) or not isinstance(folder, bool) or not absolute(path) or "\0" in path \
+            or (platform == "win32" and '"' in path):
+        logger.error("Show in folder: refused a request that is not an absolute path")
+        return False
+    command = reveal_command(path, folder, platform)
+    if platform == "win32":
+        try:
+            await asyncio.to_thread(_start_windows, command)
+        except OSError as exc:
+            logger.error("Show in folder: Explorer could not be started: %s", exc)
+            return False
+        return True
+    if platform.startswith("linux"):
+        if not folder and await asyncio.to_thread(portal_open_directory, path):
+            return True
+        if not os.path.isdir(command[1]):
+            logger.error("Show in folder: the folder is not there")
+            return False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL)
+    except OSError as exc:
+        logger.error("Show in folder: %s could not be started: %s", command[0], exc)
+        return False
+    try:
+        code = await asyncio.wait_for(process.wait(), REVEAL_SECONDS)
+    except TimeoutError:
+        return True                                 # still opening: the file manager's own time
+    if code != 0:
+        logger.error("Show in folder: %s ended with %s", command[0], code)
+        return False
+    return True
 
 
 async def _save(channel, native, words, waiting: dict) -> None:

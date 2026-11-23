@@ -675,6 +675,28 @@ const DPDesktopSave = Object.freeze({
 });
 window.DPDesktopSave = DPDesktopSave;
 
+/* Show in folder. In the installed desktop application, a completed download
+ * (its Downloads row, its Details) can be shown in the system's file manager:
+ * the page names only the transfer (POST /desktop/reveal); the backend works
+ * out where it is from its own records -- nothing here sends a path -- and the
+ * desktop supervisor opens the file manager there. A refusal is said. A
+ * server never offers it. */
+const DPDesktopReveal = Object.freeze({
+  offered: t => window.downloadPulseDesktop === true && Boolean(t) && t.status === 'completed'
+    && dpCan('transfers.operate'),
+  async show(id, button) {
+    setButtonPending(button, true);
+    try {
+      await api('POST', '/desktop/reveal', {transfer_id: Number(id)});
+    } catch (error) {
+      toast(sanitizeErrorMsg(error.message), 'error');
+    } finally {
+      setButtonPending(button, false);
+    }
+  },
+});
+window.DPDesktopReveal = DPDesktopReveal;
+
 /* Desktop frame. The installed desktop application's own window frame (the
  * title bar on Windows; its background on macOS) takes the page's theme: the
  * canvas and text colours the page is drawn in, dark or light. Said to the
@@ -3412,6 +3434,7 @@ function dpPaintDetail(t, relabel) {
     dpRenderOriginalResource(modalBody, t);
     dpRenderErrorDisclosure(modalBody, t);
     dpRenderWithdrawal(t);
+    dpRenderReveal(t);
 
     // ``relabel``: the same transfer re-said in another language; the Files
     // header owners re-word from what they hold instead of re-reading.
@@ -3470,6 +3493,7 @@ async function showDetail(id) {
   const slow = setTimeout(() => { if (current()) DPModal.reveal({hold: true}); }, DETAIL_LOADING_GRACE_MS);
   const traceButton = document.querySelector('#modal .dp-detail-trace');
   if (traceButton) traceButton.dataset.dpTransferId = String(id);
+  document.querySelector('#modal .dp-detail-reveal')?.remove();     // the transfer shown says whether it has one
 
   if (modalBody) {
     modalBody.innerHTML =
@@ -3587,6 +3611,27 @@ function dpRequestedByMarkup(requested) {
           </details>` : ''}
         </div></div>`;
 }
+
+// Show in folder (DPDesktopReveal), a Details header action left of the
+// Transfer Trace Log: only for a completed download in the desktop
+// application; said again in a new language with the rest of Details.
+function dpRenderReveal(t) {
+  const header = document.querySelector('#modal .modal-hdr');
+  let button = header && header.querySelector('.dp-detail-reveal');
+  if (!header || !DPDesktopReveal.offered(t)) { button?.remove(); return; }
+  if (!button) {
+    button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-ghost btn-sm dp-detail-reveal';
+    button.addEventListener('click', () => DPDesktopReveal.show(button.dataset.dpTransferId, button));
+    header.insertBefore(button, header.querySelector('.dp-detail-trace') || header.querySelector('.dp-detail-close'));
+  }
+  button.dataset.dpTransferId = String(t.id);
+  button.dataset.defaultLabel = DPI18n.t('transfer.action.show_in_folder');
+  button.dataset.tooltip = DPI18n.t('transfer.action.show_in_folder_tooltip');
+  if (button.dataset.pending !== '1') button.innerHTML = window.DPIcons.iconLabel('folder', button.dataset.defaultLabel);
+}
+document.addEventListener('downloadpulse:detail-closed', () => document.querySelector('#modal .dp-detail-reveal')?.remove());
 
 // The caller's own outstanding requests that this transfer serves (the
 // server's access projection, directly or through consolidation) can be

@@ -878,6 +878,8 @@
   "downloads.label.updated": "Label diperbarui",
   "transfer.action.retry": "Coba lagi",
   "transfer.action.retry_tooltip": "Coba lagi unduhan ini",
+  "transfer.action.show_in_folder": "Tampilkan di folder",
+  "transfer.action.show_in_folder_tooltip": "Tampilkan unduhan ini di pengelola file",
   "transfer.action.remove": "Keluarkan",
   "transfer.action.remove_tooltip": "Keluarkan unduhan ini",
   "transfer.action.paused_toast": "Transfer dijeda",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>Filter:</b> Semua, Mengunduh, Dijeda, Diproses, Siap, Selesai, Kesalahan. <b>Pencarian</b> mencocokkan saat Anda mengetik.",
   "help.using.downloads_page.order": "<b>Urutan:</b> <b>Prioritas</b> (urutan antrean, bawaan) atau <b>Terbaru</b>.",
   "help.using.downloads_page.row_actions": "<b>Tindakan baris:</b> <b>Jeda</b>, <b>Lanjutkan</b>, <b>Coba lagi</b> (pada unduhan yang gagal), dan <b>Keluarkan</b>. <b>Mulai sekarang</b> muncul saat unduhan yang Anda pindahkan ke atas hanya dapat dimulai jika unduhan di bawahnya dimulai ulang. Bagi Pengguna, <b>Keluarkan</b> hanya muncul pada unduhan yang tidak lagi diperlukan akun lain.",
+  "help.using.downloads_page.show_in_folder": "<b>Tampilkan di folder</b> (aplikasi desktop): pada unduhan yang sudah selesai, di barisnya dan di detailnya, membuka pengelola file di tempatnya berada: dengan file terpilih, atau folder unduhan yang terdiri dari beberapa file.",
   "help.using.downloads_page.several_once": "<b>Beberapa sekaligus:</b> centang baris untuk menampilkan <b>Jeda</b>, <b>Lanjutkan</b>, <b>Atur ulang</b> (coba lagi), <b>Pindahkan ke atas</b>, dan <b>Hapus</b>. Hapus hanya ditawarkan jika Anda berhak mengeluarkan setiap unduhan yang dipilih.",
   "help.using.downloads_page.queue_order": "<b>Urutan antrean:</b> dalam urutan Prioritas tanpa filter atau pencarian, seret unduhan pada namanya untuk memindahkannya, atau gunakan keyboard (Spasi atau Enter untuk mengambil, tombol panah untuk memindahkan, Spasi atau Enter untuk melepas, Escape untuk membatalkan). Klik kanan menawarkan <b>Pindahkan ke atas</b>. Jika suatu pemindahan akan menginterupsi unduhan yang sedang berjalan, DownloadPulse bertanya terlebih dahulu karena kemajuan unduhan tersebut akan hilang.",
   "help.using.downloads_page.beneath_each_name": "Di bawah setiap <b>nama</b>, baris menampilkan asal unduhan dan layanan yang sedang menanganinya (cara pengirimannya ada di detailnya). Jika Anda berhak mengubahnya, nama layanan berupa tombol yang membuka pemilih layanan. Ikon jaringan dengan angka menunjukkan berapa banyak sumber yang diketahui untuk file-nya; jika sumber lain dapat dipilih, ikon itu berupa tombol yang membuka pemilih sumber. Keduanya dijelaskan di <b>Cara kerja → Beralih layanan atau sumber</b>.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "Warna bingkai jendela tidak valid.",
   "error.desktop.quit_only": "Hanya aplikasi desktop yang memiliki jendela untuk keluar.",
   "error.desktop.quit_refused": "Permintaan keluar ini sudah kedaluwarsa. Tutup jendela lagi untuk keluar.",
+  "error.desktop.reveal_only": "\"Tampilkan di folder\" hanya tersedia di aplikasi desktop.",
+  "error.desktop.reveal_window_only": "\"Tampilkan di folder\" hanya berfungsi di jendela DownloadPulse.",
+  "error.desktop.reveal_not_completed": "Hanya unduhan yang sudah selesai yang dapat ditampilkan di foldernya.",
+  "error.desktop.reveal_missing": "File unduhan ini sudah tidak ada di folder unduhan.",
   "browser.pairing.title": "Hubungkan peramban",
   "browser.pairing.intro": "Sebuah peramban meminta untuk terhubung ke akun Anda. Setelah terhubung, peramban ini dapat mengirim unduhan ke sini dan menampilkan unduhan yang dikirimnya.",
   "browser.pairing.field.browser": "Peramban",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

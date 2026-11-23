@@ -878,6 +878,8 @@
   "downloads.label.updated": "標籤已更新",
   "transfer.action.retry": "重試",
   "transfer.action.retry_tooltip": "重試此下載項目",
+  "transfer.action.show_in_folder": "在資料夾中顯示",
+  "transfer.action.show_in_folder_tooltip": "在檔案管理員中顯示此下載",
   "transfer.action.remove": "移除",
   "transfer.action.remove_tooltip": "移除此下載項目",
   "transfer.action.paused_toast": "傳輸已暫停",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>篩選：</b>全部、下載中、已暫停、處理中、就緒、已完成、錯誤。<b>搜尋</b>會隨著您輸入即時比對。",
   "help.using.downloads_page.order": "<b>排序：</b><b>優先順序</b>（佇列順序，預設值）或<b>最新</b>。",
   "help.using.downloads_page.row_actions": "<b>列動作：</b><b>暫停</b>、<b>繼續</b>、<b>重試</b>（用於失敗的下載項目）及<b>移除</b>。當您往上移動的下載項目必須讓較下方的下載項目重新開始才能啟動時，便會出現<b>立即開始</b>。對使用者而言，<b>移除</b>只會出現在其他帳戶都已不再需要的下載項目上。",
+  "help.using.downloads_page.show_in_folder": "<b>在資料夾中顯示</b>（桌面應用程式）：在已完成下載的列與詳細資料中，於其所在位置開啟檔案管理員：選取該檔案，或開啟多檔案下載的資料夾。",
   "help.using.downloads_page.several_once": "<b>一次處理多個：</b>勾選多列即可顯示<b>暫停</b>、<b>繼續</b>、<b>重設</b>（重試）、<b>移至頂端</b>及<b>刪除</b>。只有在您有權移除所有已選取的下載項目時，才會提供「刪除」。",
   "help.using.downloads_page.queue_order": "<b>佇列順序：</b>在「優先順序」排序下且未使用篩選或搜尋時，拖曳下載項目的名稱即可移動它，也可以使用鍵盤（按空白鍵或Enter拿起，按方向鍵移動，按空白鍵或Enter放下，按Esc取消）。按一下滑鼠右鍵可使用<b>移至頂端</b>。如果移動會中斷正在執行的下載項目，DownloadPulse會先詢問您，因為該下載項目的進度將會遺失。",
   "help.using.downloads_page.beneath_each_name": "每個<b>名稱</b>下方，該列會顯示下載項目的來處，以及由哪個服務處理（提交形式則列在其詳細資料中）。在您可以變更的情況下，服務名稱會是一個按鈕，可開啟服務選擇器。帶有數字的網路圖示表示其檔案已知的來源數量；當可以選擇其他來源時，該圖示會是一個按鈕，可開啟來源選擇器。兩者的說明請參閱<b>運作方式 → 切換服務或來源</b>。",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "視窗框架色彩無效。",
   "error.desktop.quit_only": "只有桌面應用程式有可結束的視窗。",
   "error.desktop.quit_refused": "此結束要求已過期。若要結束，請再次關閉視窗。",
+  "error.desktop.reveal_only": "「在資料夾中顯示」僅在桌面應用程式中提供。",
+  "error.desktop.reveal_window_only": "「在資料夾中顯示」僅能在 DownloadPulse 視窗中使用。",
+  "error.desktop.reveal_not_completed": "只有已完成的下載才能在其資料夾中顯示。",
+  "error.desktop.reveal_missing": "此下載的檔案已不在下載資料夾中。",
   "browser.pairing.title": "連線瀏覽器",
   "browser.pairing.intro": "有瀏覽器正在要求連線到您的帳戶。連線後，它可以將下載傳送到這裡，並顯示它傳送的下載。",
   "browser.pairing.field.browser": "瀏覽器",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

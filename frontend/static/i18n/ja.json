@@ -878,6 +878,8 @@
   "downloads.label.updated": "ラベルを更新しました",
   "transfer.action.retry": "再試行",
   "transfer.action.retry_tooltip": "このダウンロードを再試行",
+  "transfer.action.show_in_folder": "フォルダーに表示",
+  "transfer.action.show_in_folder_tooltip": "このダウンロードをファイル マネージャーで表示",
   "transfer.action.remove": "除去",
   "transfer.action.remove_tooltip": "このダウンロードを除去",
   "transfer.action.paused_toast": "転送を一時停止しました",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>フィルター：</b>すべて、ダウンロード中、一時停止中、処理中、準備完了、完了、エラー。<b>検索</b>では、入力に合わせて一致するダウンロードが表示されます。",
   "help.using.downloads_page.order": "<b>並び順：</b><b>優先度</b>（キューの順序。既定）または<b>新しい順</b>。",
   "help.using.downloads_page.row_actions": "<b>行の操作：</b><b>一時停止</b>、<b>再開</b>、<b>再試行</b>（失敗したダウンロードの場合）、<b>除去</b>。<b>今すぐ開始</b>は、上に移動したダウンロードが、それより下にあるダウンロードを再始動しなければ開始できない場合に表示されます。ユーザーの場合、<b>除去</b>は、ほかのどのアカウントも必要としていないダウンロードにのみ表示されます。",
+  "help.using.downloads_page.show_in_folder": "<b>フォルダーに表示</b>（デスクトップアプリ）：完了したダウンロードの行と詳細で、ファイル マネージャーをその場所で開きます。ファイルが選択された状態で開くか、複数ファイルのダウンロードではそのフォルダーを開きます。",
   "help.using.downloads_page.several_once": "<b>一括操作：</b>行にチェックを入れると、<b>一時停止</b>、<b>再開</b>、<b>リセット</b>（再試行）、<b>先頭へ移動</b>、<b>削除</b>が表示されます。「削除」は、選択したすべてのダウンロードを取り除く権限がある場合にのみ表示されます。",
   "help.using.downloads_page.queue_order": "<b>キューの順序：</b>「優先度」順で、フィルターも検索も使用していないときは、ダウンロードを名前の部分でドラッグして移動できます。キーボードも使用できます（Space または Enter で持ち上げ、矢印キーで移動し、Space または Enter で配置、Escape で取り消し）。右クリックすると<b>先頭へ移動</b>が表示されます。移動によって実行中のダウンロードが中断される場合は、そのダウンロードの進捗が失われるため、DownloadPulse が事前に確認します。",
   "help.using.downloads_page.beneath_each_name": "各<b>名前</b>の下には、ダウンロードの取得元と、それを処理しているサービスが表示されます（送信方法は詳細で確認できます）。変更が許可されている場合、サービス名はサービスの選択画面を開くボタンになります。数字付きのネットワークアイコンは、そのファイルについて把握しているソースの数を示します。別のソースを選択できる場合、このアイコンはソースの選択画面を開くボタンになります。どちらについても、<b>仕組み → サービスやソースの切り替え</b>で説明しています。",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "ウィンドウ フレームの色が無効です。",
   "error.desktop.quit_only": "終了するウィンドウがあるのはデスクトップ アプリケーションだけです。",
   "error.desktop.quit_refused": "この終了の要求は期限切れです。終了するには、もう一度ウィンドウを閉じてください。",
+  "error.desktop.reveal_only": "「フォルダーに表示」はデスクトップアプリでのみ使用できます。",
+  "error.desktop.reveal_window_only": "「フォルダーに表示」は DownloadPulse のウィンドウでのみ使用できます。",
+  "error.desktop.reveal_not_completed": "フォルダーに表示できるのは、完了したダウンロードだけです。",
+  "error.desktop.reveal_missing": "このダウンロードのファイルは、もうダウンロードフォルダーにありません。",
   "browser.pairing.title": "ブラウザーを接続",
   "browser.pairing.intro": "ブラウザーがあなたのアカウントへの接続を求めています。接続すると、そのブラウザーからここにダウンロードを送信し、送信したダウンロードを表示できるようになります。",
   "browser.pairing.field.browser": "ブラウザー",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

@@ -878,6 +878,8 @@
   "downloads.label.updated": "레이블이 업데이트되었습니다",
   "transfer.action.retry": "다시 시도",
   "transfer.action.retry_tooltip": "이 다운로드 다시 시도",
+  "transfer.action.show_in_folder": "폴더에서 보기",
+  "transfer.action.show_in_folder_tooltip": "이 다운로드를 파일 관리자에서 보기",
   "transfer.action.remove": "제거",
   "transfer.action.remove_tooltip": "이 다운로드 제거",
   "transfer.action.paused_toast": "전송이 일시 중지되었습니다",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>필터:</b> 전체, 다운로드 중, 일시 중지됨, 처리 중, 준비됨, 완료, 오류. <b>검색</b>은 입력하는 즉시 결과를 찾습니다.",
   "help.using.downloads_page.order": "<b>정렬:</b> <b>우선순위</b>(대기열 순서, 기본값) 또는 <b>최신순</b>.",
   "help.using.downloads_page.row_actions": "<b>행 작업:</b> <b>일시 중지</b>, <b>재개</b>, <b>다시 시도</b>(실패한 다운로드에 표시) 및 <b>제거</b>. <b>지금 시작</b>은 위로 옮긴 다운로드가 그 아래에 있는 다운로드를 다시 시작해야만 시작될 수 있을 때 표시됩니다. 사용자에게는 다른 계정이 더 이상 필요로 하지 않는 다운로드에만 <b>제거</b>가 표시됩니다.",
+  "help.using.downloads_page.show_in_folder": "<b>폴더에서 보기</b>(데스크톱 앱): 완료된 다운로드의 행과 세부 정보에서 파일 관리자를 해당 위치에서 엽니다. 파일이 선택된 상태로 열리거나, 여러 파일로 된 다운로드는 그 폴더가 열립니다.",
   "help.using.downloads_page.several_once": "<b>여러 개 한꺼번에:</b> 행을 선택하면 <b>일시 중지</b>, <b>재개</b>, <b>초기화</b>(다시 시도), <b>맨 위로 이동</b>, <b>삭제</b>가 표시됩니다. 삭제는 선택한 다운로드를 모두 제거할 권한이 있는 경우에만 제공됩니다.",
   "help.using.downloads_page.queue_order": "<b>대기열 순서:</b> 필터나 검색 없이 우선순위 순서로 볼 때 다운로드 이름을 끌어서 옮기거나 키보드를 사용할 수 있습니다(Space 또는 Enter 키로 집기, 화살표 키로 이동, Space 또는 Enter 키로 놓기, Escape 키로 취소). 마우스 오른쪽 버튼을 클릭하면 <b>맨 위로 이동</b>을 사용할 수 있습니다. 이동하면 실행 중인 다운로드가 중단되는 경우, 그 다운로드의 진행 상황이 손실되므로 DownloadPulse가 먼저 확인을 요청합니다.",
   "help.using.downloads_page.beneath_each_name": "각 <b>이름</b> 아래에는 다운로드의 출처와 다운로드를 처리하는 서비스가 표시됩니다(제출 방식은 세부 정보에서 확인할 수 있습니다). 변경할 수 있는 경우 서비스 이름은 서비스 선택기를 여는 버튼입니다. 숫자가 붙은 네트워크 아이콘은 해당 파일에 대해 알려진 소스의 수를 나타내며, 다른 소스를 선택할 수 있으면 소스 선택기를 여는 버튼이 됩니다. 두 가지 모두 <b>작동 방식 → 서비스 또는 소스 전환</b>에서 설명합니다.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "창 프레임 색상이 올바르지 않습니다.",
   "error.desktop.quit_only": "종료할 창은 데스크톱 애플리케이션에만 있습니다.",
   "error.desktop.quit_refused": "이 종료 요청은 만료되었습니다. 종료하려면 창을 다시 닫으세요.",
+  "error.desktop.reveal_only": "'폴더에서 보기'는 데스크톱 앱에서만 사용할 수 있습니다.",
+  "error.desktop.reveal_window_only": "'폴더에서 보기'는 DownloadPulse 창에서만 작동합니다.",
+  "error.desktop.reveal_not_completed": "완료된 다운로드만 폴더에서 볼 수 있습니다.",
+  "error.desktop.reveal_missing": "이 다운로드의 파일이 더 이상 다운로드 폴더에 없습니다.",
   "browser.pairing.title": "브라우저 연결",
   "browser.pairing.intro": "브라우저가 계정에 연결을 요청하고 있습니다. 연결되면 이 브라우저에서 여기로 다운로드를 보내고, 보낸 다운로드를 표시할 수 있습니다.",
   "browser.pairing.field.browser": "브라우저",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

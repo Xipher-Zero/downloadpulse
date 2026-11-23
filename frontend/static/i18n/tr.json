@@ -878,6 +878,8 @@
   "downloads.label.updated": "Etiket güncellendi",
   "transfer.action.retry": "Yeniden dene",
   "transfer.action.retry_tooltip": "Bu indirmeyi yeniden dene",
+  "transfer.action.show_in_folder": "Klasörde göster",
+  "transfer.action.show_in_folder_tooltip": "Bu indirmeyi dosya yöneticisinde göster",
   "transfer.action.remove": "Kaldır",
   "transfer.action.remove_tooltip": "Bu indirmeyi kaldır",
   "transfer.action.paused_toast": "Aktarım duraklatıldı",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>Filtreler:</b> Tümü, İndiriliyor, Duraklatıldı, İşleniyor, Hazır, Tamamlandı, Hata. <b>Arama</b> siz yazdıkça eşleşir.",
   "help.using.downloads_page.order": "<b>Sıralama:</b> <b>Öncelik</b> (kuyruk sırası, varsayılan) veya <b>En yeni</b>.",
   "help.using.downloads_page.row_actions": "<b>Satır eylemleri:</b> <b>Duraklat</b>, <b>Sürdür</b>, <b>Yeniden dene</b> (başarısız bir indirmede) ve <b>Kaldır</b>. <b>Şimdi başlat</b>, yukarı taşıdığınız bir indirme ancak daha alttaki indirmeler yeniden başlatılırsa başlayabiliyorsa görünür. Bir Kullanıcı için <b>Kaldır</b> yalnızca başka hiçbir hesabın hâlâ ihtiyaç duymadığı indirmelerde görünür.",
+  "help.using.downloads_page.show_in_folder": "<b>Klasörde göster</b> (masaüstü uygulaması): tamamlanmış bir indirmenin satırında ve ayrıntılarında, dosya yöneticisini indirmenin bulunduğu yerde açar: dosya seçili olarak ya da birden çok dosyalı bir indirmede klasörünü açar.",
   "help.using.downloads_page.several_once": "<b>Toplu işlemler:</b> satırları işaretlediğinizde <b>Duraklat</b>, <b>Sürdür</b>, <b>Sıfırla</b> (yeniden deneme), <b>En üste taşı</b> ve <b>Sil</b> görünür. Sil yalnızca seçili indirmelerin tümünü kaldırma izniniz olduğunda sunulur.",
   "help.using.downloads_page.queue_order": "<b>Kuyruk sırası:</b> filtre veya arama olmadan Öncelik sıralamasındayken bir indirmeyi taşımak için adından tutup sürükleyin ya da klavyeyi kullanın (almak için Boşluk veya Enter, taşımak için ok tuşları, bırakmak için Boşluk veya Enter, iptal etmek için Escape). Sağ tıklama <b>En üste taşı</b> seçeneğini sunar. Bir taşıma çalışan bir indirmeyi kesintiye uğratacaksa DownloadPulse önce sorar, çünkü o indirmenin ilerlemesi kaybolur.",
   "help.using.downloads_page.beneath_each_name": "Her satırda <b>adın</b> altında, indirmenin nereden geldiği ve onu hangi hizmetin işlediği gösterilir (nasıl gönderildiği ayrıntılarında yer alır). Değiştirmenize izin verilen durumlarda hizmet adı, hizmet seçiciyi açan bir düğmedir. Sayı içeren bir ağ simgesi, dosyaları için kaç kaynağın bilindiğini gösterir; başka bir kaynak seçilebildiğinde bu simge, kaynak seçiciyi açan bir düğmedir. Her ikisi de <b>Nasıl çalışır → Hizmet veya kaynak değiştirme</b> bölümünde açıklanmıştır.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "Pencere çerçevesinin renkleri geçerli değil.",
   "error.desktop.quit_only": "Çıkılacak bir pencere yalnızca masaüstü uygulamasında vardır.",
   "error.desktop.quit_refused": "Bu çıkış isteğinin süresi doldu. Çıkmak için pencereyi yeniden kapatın.",
+  "error.desktop.reveal_only": "\"Klasörde göster\" yalnızca masaüstü uygulamasında kullanılabilir.",
+  "error.desktop.reveal_window_only": "\"Klasörde göster\" yalnızca DownloadPulse penceresinde çalışır.",
+  "error.desktop.reveal_not_completed": "Yalnızca tamamlanmış bir indirme klasöründe gösterilebilir.",
+  "error.desktop.reveal_missing": "Bu indirmenin dosyaları artık indirme klasöründe değil.",
   "browser.pairing.title": "Tarayıcı bağla",
   "browser.pairing.intro": "Bir tarayıcı hesabınıza bağlanmak istiyor. Bağlandıktan sonra buraya indirmeler gönderebilir ve gönderdiği indirmeleri gösterebilir.",
   "browser.pairing.field.browser": "Tarayıcı",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

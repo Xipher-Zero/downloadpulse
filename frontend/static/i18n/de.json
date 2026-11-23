@@ -878,6 +878,8 @@
   "downloads.label.updated": "Label aktualisiert",
   "transfer.action.retry": "Erneut versuchen",
   "transfer.action.retry_tooltip": "Diesen Download erneut versuchen",
+  "transfer.action.show_in_folder": "Im Ordner anzeigen",
+  "transfer.action.show_in_folder_tooltip": "Diesen Download im Dateimanager anzeigen",
   "transfer.action.remove": "Entfernen",
   "transfer.action.remove_tooltip": "Diesen Download entfernen",
   "transfer.action.paused_toast": "Transfer pausiert",
@@ -2731,6 +2733,7 @@
   "help.using.downloads_page.filters": "<b>Filter:</b> Alle, Lädt, Pausiert, Verarbeitung, Bereit, Fertig, Fehler. <b>Suche</b> findet Treffer schon während der Eingabe.",
   "help.using.downloads_page.order": "<b>Reihenfolge:</b> <b>Priorität</b> (Reihenfolge der Warteschlange, Standard) oder <b>Neueste</b>.",
   "help.using.downloads_page.row_actions": "<b>Zeilenaktionen:</b> <b>Pausieren</b>, <b>Fortsetzen</b>, <b>Erneut versuchen</b> (bei einem fehlgeschlagenen Download) und <b>Entfernen</b>. <b>Jetzt starten</b> erscheint, wenn ein Download, den Sie nach oben verschoben haben, nur starten kann, wenn weiter unten stehende Downloads neu starten. Für einen Benutzer erscheint <b>Entfernen</b> nur bei Downloads, die kein anderes Konto mehr benötigt.",
+  "help.using.downloads_page.show_in_folder": "<b>Im Ordner anzeigen</b> (Desktop-Anwendung): Bei einem abgeschlossenen Download, in seiner Zeile und in seinen Details, öffnet den Dateimanager dort, wo er liegt: mit der Datei ausgewählt oder im Ordner eines Downloads aus mehreren Dateien.",
   "help.using.downloads_page.several_once": "<b>Mehrere gleichzeitig:</b> Haken Sie Zeilen an, um <b>Pausieren</b>, <b>Fortsetzen</b>, <b>Zurücksetzen</b> (erneut versuchen), <b>Ganz nach oben</b> und <b>Löschen</b> anzuzeigen. „Löschen“ wird nur angeboten, wenn Sie jeden ausgewählten Download entfernen dürfen.",
   "help.using.downloads_page.queue_order": "<b>Reihenfolge der Warteschlange:</b> In der Sortierung nach Priorität ohne Filter oder Suche ziehen Sie einen Download an seinem Namen, um ihn zu verschieben, oder verwenden die Tastatur (Leertaste oder Eingabe zum Aufnehmen, Pfeiltasten zum Verschieben, Leertaste oder Eingabe zum Ablegen, Escape zum Abbrechen). Ein Rechtsklick bietet <b>Ganz nach oben</b> an. Würde eine Verschiebung einen laufenden Download unterbrechen, fragt DownloadPulse zuerst nach, weil der Fortschritt dieses Downloads verloren ginge.",
   "help.using.downloads_page.beneath_each_name": "Unter jedem <b>Namen</b> zeigt die Zeile, woher der Download stammt und welcher Dienst ihn bearbeitet (wie er übermittelt wurde, steht in seinen Details). Wo Sie den Dienst ändern dürfen, ist sein Name eine Schaltfläche, die die Dienstauswahl öffnet. Ein Netzwerksymbol mit einer Zahl zeigt, wie viele Quellen für seine Dateien bekannt sind; wenn eine andere Quelle gewählt werden kann, ist es eine Schaltfläche, die die Quellenauswahl öffnet. Beides wird unter <b>Funktionsweise → Dienst oder Quelle wechseln</b> erklärt.",
@@ -3641,6 +3644,10 @@
   "error.desktop.frame_invalid": "Die Farben des Fensterrahmens sind ungültig.",
   "error.desktop.quit_only": "Nur die Desktop-Anwendung hat ein Fenster, das beendet werden kann.",
   "error.desktop.quit_refused": "Diese Anfrage zum Beenden ist abgelaufen. Schließen Sie das Fenster erneut, um DownloadPulse zu beenden.",
+  "error.desktop.reveal_only": "„Im Ordner anzeigen“ ist nur in der Desktop-Anwendung verfügbar.",
+  "error.desktop.reveal_window_only": "„Im Ordner anzeigen“ funktioniert nur im DownloadPulse-Fenster.",
+  "error.desktop.reveal_not_completed": "Nur ein abgeschlossener Download kann im Ordner angezeigt werden.",
+  "error.desktop.reveal_missing": "Die Dateien dieses Downloads befinden sich nicht mehr im Download-Ordner.",
   "browser.pairing.title": "Browser verbinden",
   "browser.pairing.intro": "Ein Browser möchte sich mit Ihrem Konto verbinden. Nach dem Verbinden kann er Downloads hierher senden und die von ihm gesendeten Downloads anzeigen.",
   "browser.pairing.field.browser": "Anfragender Browser",
@@ -7369,6 +7376,13 @@
   "settings.users.signin.builtin": "81e8973aee4c4b53",
   "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd",
   "transfer.name.more": "fbdde7f840789ff9",
-  "transfer.name.files": "6dc4db36859f7cd9"
+  "transfer.name.files": "6dc4db36859f7cd9",
+  "transfer.action.show_in_folder": "da478765741ebb0d",
+  "transfer.action.show_in_folder_tooltip": "c72898dc546098d1",
+  "error.desktop.reveal_only": "2f71f705a5f52fd5",
+  "error.desktop.reveal_window_only": "1a475f536d481127",
+  "error.desktop.reveal_not_completed": "bb8d162759a94436",
+  "error.desktop.reveal_missing": "53f6f481984d1cd6",
+  "help.using.downloads_page.show_in_folder": "33419ed9b741d45d"
  }
 }

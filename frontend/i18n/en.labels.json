@@ -1251,6 +1251,14 @@
     "reason": "Per-row Remove button for a User, not the API key, Usenet, backup or user Remove."
    }
   ],
+  "help.using.downloads_page.show_in_folder": [
+   {
+    "text": "Show in folder",
+    "kind": "control",
+    "key": "transfer.action.show_in_folder",
+    "reason": "The Show in folder button of a completed download's row and Details (desktop application only)."
+   }
+  ],
   "help.using.downloads_page.several_once": [
    {
     "text": "Several at once:",
