@@ -268,7 +268,11 @@ def test_every_fullscreen_modal_fades_in_place_through_its_own_owner() -> None:
     assert close.count("classList.remove('dp-help-legal-modal-open')") == 1
     app = read("app.js")
     close = app[app.index("function finishClose(reason) {"):app.index("// The pending shell's content has arrived")]
-    assert "window.DPMotion.leave(overlay, modal, window.DPSettingsModal.focusTarget(origin))" in close and "if (exit !== exits) return;" in close
+    assert "window.DPMotion.leave(overlay, modal, returnTarget)" in close and "if (exit !== exits) return;" in close
+    # The return target is resolved (a layout read) while the shell is still drawn open: a
+    # style flush between taking `open` away and leave()'s `is-closing` would end the fade.
+    resolve = "const returnTarget = window.DPSettingsModal.focusTarget(focusOrigin);"
+    assert close.count(resolve) == 1 and close.index(resolve) < close.index("overlay.classList.remove('open')")
     done = close[close.index("leaving.then(() => {"):close.index("if (closedMode === 'details')")]
     assert "document.removeEventListener('keydown', containTab);" in done
     # Focus returns to the invoking control, or the list row redrawn in its place.

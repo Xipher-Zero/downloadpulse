@@ -3249,6 +3249,10 @@ const DPModal = (function () {
     const footer = document.getElementById('modal-footer');
     const closedMode = activeMode;
     if (overlay && !overlay.classList.contains('open')) return;   // already closed (or closing)
+    // Where focus belongs, resolved while the shell is still drawn open: the
+    // search reads layout, and a style flush between taking `open` away and
+    // DPMotion.leave's `is-closing` would end the fade before it starts.
+    const returnTarget = window.DPSettingsModal.focusTarget(focusOrigin);
 
     if (overlay) { overlay.classList.remove('open'); delete overlay.dataset.dpModalMode; }
     if (modal) delete modal.dataset.dpModalMode;
@@ -3262,8 +3266,7 @@ const DPModal = (function () {
     // keyboard; only once it is gone is it put away, Tab containment released
     // and focus returned, once -- unless it was opened again meanwhile.
     const exit = ++exits;
-    const leaving = window.DPMotion ? window.DPMotion.leave(overlay, modal, window.DPSettingsModal.focusTarget(origin))
-      : Promise.resolve();
+    const leaving = window.DPMotion ? window.DPMotion.leave(overlay, modal, returnTarget) : Promise.resolve();
     leaving.then(() => {
       if (exit !== exits) return;
       if (overlay) overlay.classList.remove('is-closing');
