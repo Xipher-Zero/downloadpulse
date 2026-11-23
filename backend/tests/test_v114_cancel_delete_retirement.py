@@ -1,10 +1,12 @@
-"""Cancel, then Delete: the deleted transfer reclaims what its stopped
-execution owned (WS3 I-2), through the one core retirement owner.
+"""Cancel, then Delete: a cancelled or deleted transfer reclaims what its
+stopped execution owned (WS3 I-2; Cancel since 1.0.3), through the one core
+retirement owner.
 
-Cancel stops the writer and reclaims nothing. Delete then retires the
-execution-owned material -- the partial target and the declared transient
-material -- once the durable record proves the writer stopped and no cleanup
-obligation is open. A writer whose stop is unconfirmed keeps its material and
+Cancel stops the writer and retires the execution-owned material -- the partial
+target and the declared transient material -- once the durable record proves the
+writer stopped; a cancelled transfer is final, so Retry never reopens it and
+nothing is written there again. Delete afterwards finds nothing left and stays
+idempotent. A writer whose stop is unconfirmed keeps its material and
 its obligation; unowned, unrelated and delivered material is never touched;
 Delete is idempotent; a restart resolves a retained obligation from durable
 state.
@@ -34,26 +36,34 @@ def world(scenario: str, work: Path) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_partial_transfers_off_cancel_keeps_the_transient_material_and_delete_reclaims_it(tmp_path):
+def test_partial_transfers_off_cancel_reclaims_the_transient_material(tmp_path):
     report = world("partial-off", tmp_path)
     assert report["owned"]
-    assert report["after cancel"]["material"] and report["after cancel"]["cleanup"] == STOPPED
+    cancelled = report["after cancel"]
+    assert not cancelled["material"] and not cancelled["journal"] and cancelled["cleanup"] == STOPPED
+    assert cancelled["unrelated"] and cancelled["files"] == ["unrelated.bin"]
     after = report["after delete"]
     assert after["transfer"] == "deleted" and not after["journal"] and after["target"] is None
     assert after["unrelated"] and after["files"] == ["unrelated.bin"]
 
 
-def test_partial_transfers_on_cancel_keeps_the_partial_target_and_delete_reclaims_it(tmp_path):
+def test_partial_transfers_on_cancel_reclaims_the_partial_target_and_retry_never_reopens_it(tmp_path):
     report = world("partial-on", tmp_path)
     assert report["owned"]
-    assert report["after cancel"]["material"] and report["after cancel"]["cleanup"] == STOPPED
+    cancelled = report["after cancel"]
+    assert cancelled["target"] is None and cancelled["cleanup"] == STOPPED
+    assert cancelled["unrelated"] and cancelled["files"] == ["unrelated.bin"]
+    retried = report["after retry"]
+    assert retried["transfer"] == "cancelled" and retried["artifact"] == "cancelled"
+    assert not retried["material"] and retried["files"] == ["unrelated.bin"]
     after = report["after delete"]
     assert after["transfer"] == "deleted" and after["target"] is None
     assert after["unrelated"] and after["files"] == ["unrelated.bin"]
 
 
-def test_a_writer_that_may_still_be_running_keeps_its_material_through_delete(tmp_path):
+def test_a_writer_that_may_still_be_running_keeps_its_material_through_cancel_and_delete(tmp_path):
     report = world("live", tmp_path)
+    assert report["after cancel"]["material"] and report["after cancel"]["writer"] == "running"
     after = report["after delete"]
     assert after["writer"] == "running"
     assert after["material"]
@@ -62,6 +72,7 @@ def test_a_writer_that_may_still_be_running_keeps_its_material_through_delete(tm
 
 def test_an_unconfirmed_stop_keeps_material_and_obligation_until_the_stop_is_observed(tmp_path):
     report = world("lost-ack", tmp_path)
+    assert report["after cancel"]["material"]
     assert report["after delete"]["material"]
     assert report["after delete"]["cleanup"]["cleanup_state"] in {"pending", "blocked"}
     later = report["after the retained obligation's next pass"]
@@ -71,6 +82,7 @@ def test_an_unconfirmed_stop_keeps_material_and_obligation_until_the_stop_is_obs
 def test_material_the_execution_does_not_own_survives_cancel_and_delete(tmp_path):
     report = world("unowned", tmp_path)
     assert not report["owned"]
+    assert report["after cancel"]["target"] == repr(b"operator material") and report["after cancel"]["unrelated"]
     after = report["after delete"]
     assert after["target"] == repr(b"operator material") and after["unrelated"]
 
@@ -78,6 +90,9 @@ def test_material_the_execution_does_not_own_survives_cancel_and_delete(tmp_path
 def test_a_delivered_sibling_survives_while_the_cancelled_files_partial_is_reclaimed(tmp_path):
     report = world("completed", tmp_path)
     assert report["sibling before cancel"] == "completed"
+    cancelled = report["after cancel"]
+    assert cancelled["sibling"] == {"state": "completed", "payload": repr(b"done")}
+    assert cancelled["target"] is None and cancelled["files"] == ["delivered", "unrelated.bin"]
     after = report["after delete"]
     assert after["sibling"] == {"state": "completed", "payload": repr(b"done")}
     assert after["target"] is None

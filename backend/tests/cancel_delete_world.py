@@ -118,8 +118,26 @@ async def main() -> None:
 
     errors = await engine.cancel(transfer.id)
     report["after cancel"] = {"errors": [e.category.value for e in errors], "material": material.exists(),
+                              "target": target.read_bytes() if target.exists() else None,
+                              "journal": journal.exists(),
                               "cleanup": await cleanup_state(handle.attempt_id),
-                              "writer": executor.job_for(handle).state.value if executor.job_for(handle) else None}
+                              "writer": executor.job_for(handle).state.value if executor.job_for(handle) else None,
+                              "unrelated": (root / "unrelated.bin").read_bytes() == b"unrelated",
+                              "files": files(root)}
+    if scenario == "completed":
+        sibling = (await repository.artifacts(transfer.id))[1]
+        report["after cancel"]["sibling"] = {"state": sibling.state,
+                                             "payload": Path(sibling.target).read_bytes()
+                                             if Path(sibling.target).exists() else None}
+    if scenario == "partial-on":
+        # A cancelled transfer is final: Retry never reopens it, so nothing is
+        # written again where its partial files were.
+        await engine.retry(transfer.id)
+        for _ in range(3):
+            await engine.tick()
+        report["after retry"] = {"transfer": (await repository.get(transfer.id)).state.value,
+                                 "artifact": (await repository.artifacts(transfer.id))[0].state,
+                                 "material": material.exists(), "files": files(root)}
 
     await engine.delete(transfer.id)
     report["after delete"] = {"transfer": (await repository.get(transfer.id)).state.value,

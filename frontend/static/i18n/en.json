@@ -2720,7 +2720,7 @@
   "help.using.questions_downloadpulse_may.these_dialogs_do": "These dialogs do not close when you click outside them; choose one of their buttons.",
   "help.using.choosing_files.when_torrent_magnet": "When a torrent, magnet, Metalink file or folder link contains more than one file, <b>Select files</b> opens automatically once the file list is known. Every file starts ticked. Untick what you do not want and press <b>Confirm</b>.",
   "help.using.choosing_files.if_do_nothing": "If you do nothing, every file downloads when the countdown ends. <b>Close</b> also keeps all files.",
-  "help.using.choosing_files.cancel_transfer": "<b>Cancel Transfer</b> cancels the whole download.",
+  "help.using.choosing_files.cancel_transfer": "<b>Cancel Transfer</b> cancels the whole download and removes the unfinished partial files it was writing. Files that finished downloading stay in your folder.",
   "help.using.choosing_files.can_reopen_selection": "You can reopen the selection later with <b>Choose Files</b> or <b>Change Files</b> on the download, while it can still be changed.",
   "help.using.choosing_files.collection_separate_items": "For a collection of separate items (titled <b>Select entries</b>), nothing downloads until you confirm, and Close cancels the download.",
   "help.using.choosing_files.nzb_downloads_always": "NZB downloads always fetch the whole posting; there is no file selection.",

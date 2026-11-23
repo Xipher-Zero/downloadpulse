@@ -4265,9 +4265,9 @@ class TransferEngine:
                 artifact.transfer_id, artifact.id, type(exc).__name__,
             )
 
-    async def _retire_deleted_execution_material(self, executor, attempt: ExecutionAttempt) -> None:
-        """Reclaim the incomplete material a DELETED transfer's now-stopped
-        execution positively owns.
+    async def _retire_stopped_execution_material(self, executor, attempt: ExecutionAttempt) -> None:
+        """Reclaim the incomplete material a CANCELLED or DELETED transfer's
+        now-stopped execution positively owns.
 
         Ordering is the invariant, not an optimization: the caller reaches here
         only once it has positively observed that the native writer stopped, so
@@ -4279,14 +4279,17 @@ class TransferEngine:
 
         Delivered payload is out of scope twice over: a verified artifact's
         attempt is no longer a live writer and is never handed to cleanup at
-        all, and a completed artifact is skipped outright here. Cancellation
-        semantics are unchanged -- only an explicitly DELETED parent reclaims
-        local material. Anything that cannot be reconstructed from durable
+        all, and a completed artifact is skipped outright here. A cancelled
+        transfer reclaims its partial files as a deleted one does (1.0.3,
+        operator 2026-11-22: Cancel left the pre-allocated file and its control
+        file behind): a cancelled transfer is final -- Retry never reopens it
+        (``ConvergenceEngine.retry``) -- so nothing can continue from that
+        material. Anything that cannot be reconstructed from durable
         attempt facts raises instead of guessing, which leaves the caller's
         cleanup obligation open for the existing retry cadence.
         """
         transfer = await self.repository.get(attempt.transfer_id)
-        if transfer is None or transfer.state != TransferState.DELETED:
+        if transfer is None or transfer.state not in {TransferState.CANCELLED, TransferState.DELETED}:
             return
         if not await self.repository.execution_owns_target(attempt.handle):
             return
@@ -4692,7 +4695,7 @@ class TransferEngine:
                 handle = observed.handle
                 await self.repository.execution(observed)
                 if observed.stopped:
-                    await self._retire_deleted_execution_material(executor, replace(attempt, handle=handle))
+                    await self._retire_stopped_execution_material(executor, replace(attempt, handle=handle))
                     await self.repository.execution_cleanup_complete(handle.attempt_id)
                     continue
                 if observed.error is not None:
@@ -4727,7 +4730,7 @@ class TransferEngine:
                         retryability=Retryability.BACKOFF,
                     ))
 
-                await self._retire_deleted_execution_material(executor, replace(attempt, handle=handle))
+                await self._retire_stopped_execution_material(executor, replace(attempt, handle=handle))
                 await self.repository.execution_cleanup_complete(handle.attempt_id)
             except Exception as exc:
                 error = self._executor_cleanup_exception(handle.executor_id, exc)

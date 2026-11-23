@@ -1656,7 +1656,12 @@ class TransferEngine(_QualifiedTransferEngine):
             ):
                 return False
             artifacts = await self.repository.artifacts(transfer_id)
-            if artifacts and not await self._retry_actionable(artifacts):
+            # A cancelled transfer is final (1.0.3): its stopped execution's
+            # partial material is reclaimed (``_retire_stopped_execution_material``),
+            # so nothing may reopen it -- not even a recovery reason it held before
+            # the cancel. Retry re-runs its post-processing alone, as for finished work.
+            if transfer.state == TransferState.CANCELLED or (
+                    artifacts and not await self._retry_actionable(artifacts)):
                 # Nothing to reacquire: Retry re-runs post-processing alone,
                 # without a lifecycle transition to bind the reset to.
                 return await self.repository.reset_postprocessing(transfer_id)
