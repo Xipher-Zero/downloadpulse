@@ -3135,7 +3135,7 @@ const DPModal = (function () {
 
   function escapeClose(event) {
     if (event.key !== 'Escape' || event.defaultPrevented || !closeOnEscape || !activeMode) return;
-    if (document.querySelector('.dp-modal-overlay')) return;   // a dialog above it holds Escape
+    if (window.DPSettingsModal?.showing()) return;   // a dialog above it holds Escape
     event.preventDefault();
     requestModalClose('escape');
   }

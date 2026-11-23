@@ -516,7 +516,9 @@ def test_modal_shell_has_exactly_one_owner_and_one_global_assignment():
     # field, and the non-dismissible progress presentation (restore in
     # progress). A browser-native prompt() is not an option, and a second
     # implementation would be a second owner.
-    assert {name.strip() for name in exported.group(1).split(",") if name.strip()} == {"open", "confirm", "prompt", "progress"}
+    # 1.0.3: and one read-only query, whether a dialog is showing, so another
+    # surface can leave a key to the dialog above it without naming its markup.
+    assert {name.strip() for name in exported.group(1).split(",") if name.strip()} == {"open", "confirm", "prompt", "progress", "showing"}
     # No other read/rebind of the global inside the owner (no self-wrapping, no late replacement).
     assert owner.count("DPSettingsModal") == 1
 

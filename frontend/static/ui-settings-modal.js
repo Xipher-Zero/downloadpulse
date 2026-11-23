@@ -634,5 +634,10 @@
     });
   }
 
-  window.DPSettingsModal = Object.freeze({open, confirm, prompt, progress});
+  // Whether one of these dialogs is showing: for another surface that must
+  // leave a key to the dialog above it (app.js DPModal's Escape), so that no
+  // one else needs to know this owner's markup.
+  const showing = () => mounted.length > 0;
+
+  window.DPSettingsModal = Object.freeze({open, confirm, prompt, progress, showing});
 })();
