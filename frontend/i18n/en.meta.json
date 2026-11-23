@@ -14059,13 +14059,13 @@
   },
   "settings.users.default_admin_lead": {
    "category": "label",
-   "context": "Users & Access › User Accounts: field or option label.",
+   "context": "Users & Access › User Accounts: the built-in Administrator's row, in place of an Edit button. The first of two lines read together, \"Built-in account,\" over \"not editable here\" (settings.users.default_admin_rest).",
    "owner": "frontend/static/ui-settings-page.js",
    "criticality": "normal"
   },
   "settings.users.default_admin_rest": {
    "category": "label",
-   "context": "Users & Access › User Accounts: field or option label.",
+   "context": "Users & Access › User Accounts: the built-in Administrator's row, in place of an Edit button. The second of two lines read together, \"Built-in account,\" (settings.users.default_admin_lead) over \"not editable here\".",
    "owner": "frontend/static/ui-settings-page.js",
    "criticality": "normal"
   },
@@ -23978,6 +23978,18 @@
     "reason": "string: the failure category (e.g. 'Rate Limited')",
     "time": "string: the formatted date and time of the next automatic attempt"
    }
+  },
+  "settings.users.signin.builtin": {
+   "category": "label",
+   "context": "Users & Access › User Accounts: the Sign-In column of the built-in Administrator when it has no sign-in method of its own; DownloadPulse acts as this account while sign-in is off.",
+   "owner": "frontend/static/ui-settings-page.js",
+   "criticality": "normal"
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "category": "error",
+   "context": "Browser pairing: a refusal while this new installation's initial setup is not finished yet. Shown in the reader's language; API clients receive the English `detail`.",
+   "owner": "backend/api/browser_routes.py",
+   "criticality": "normal"
   }
  }
 }

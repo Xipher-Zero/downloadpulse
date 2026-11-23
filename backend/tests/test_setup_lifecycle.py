@@ -184,7 +184,13 @@ async def test_the_new_installation_decision_reads_the_setup_records_alone(insta
     assert statements and tables == {"installation_setup", "account_setup_rerun"}
 
 
-async def test_no_sign_in_page_or_public_path_reads_the_setup_state(live, monkeypatch):
+async def test_no_sign_in_page_or_public_path_reads_the_setup_state_but_pairing_starts_eligibility(live, monkeypatch):
+    """No sign-in page or public path reads the setup state -- with one
+    intended exception (1.0.3, operator-approved review): a browser pairing
+    start, which may not begin until setup is finished (api/browser_routes.py
+    start_browser_pairing). It reads only whether setup is finished, once, after
+    its rate limiter and before any pairing state exists; a refused (rate
+    limited) start reads nothing."""
     reads = []
     real = setup_lifecycle._initial
 
@@ -202,6 +208,14 @@ async def test_no_sign_in_page_or_public_path_reads_the_setup_state(live, monkey
     # And the setup state is no public path: without a session it is refused.
     assert (await live.client.get("/api/setup/state")).status_code == 401
     assert reads == []
+    # The one exception: a pairing start asks once whether setup is finished ...
+    await live.client.post("/api/browser/v1/pairings", json={"client_name": "Browser"})
+    assert reads == [True]
+    # ... and only once past its rate limiter: a refused start reads nothing.
+    from api import browser_routes
+    monkeypatch.setattr(browser_routes.pairing_start_limiter, "allow", lambda _key: False)
+    assert (await live.client.post("/api/browser/v1/pairings", json={"client_name": "Browser"})).status_code == 429
+    assert reads == [True]
 
 
 # ── classification ──────────────────────────────────────────────────────────

@@ -19026,27 +19026,19 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "a2a2b89d376f276e",
+   "source": "939cd29d7a24fa91",
+   "translation": "ff1e25f772061ea5",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "1b8ca0a525ce0355",
+   "source": "95588c71d553426c",
+   "translation": "6902c87647f60256",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: “Authentication” refers to the Authentication settings card; rendered “Autenticazione”.",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_short": {
@@ -34461,6 +34453,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "56b2f65daeaf6b07",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "bbc4449fc8e2a485",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "2921af2829ef7db5",
    "provenance": [
     "ai-generated",
     "ai-review"

@@ -18756,41 +18756,19 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "166b630c7fcf33d1",
+   "source": "939cd29d7a24fa91",
+   "translation": "69ab98d802f87c47",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: lead + rest are drawn together ('Password managed' 'in Authentication'); rendered as パスワードの管理： + 「認証」 so the pair reads naturally in Japanese order. 「認証」 assumes the Authentication tab is translated 認証.",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    },
-    {
-     "kind": "ambiguity",
-     "note": "Reviewer (open): Lead + rest render as パスワードの管理：「認証」 ('Password management: Authentication'). Readable, but whether a more natural pairing (e.g. パスワードは + 「認証」で管理) is possible depends on how the two strings are composed and styled at runtime, which I cannot verify.",
-     "status": "resolved",
-     "resolution": "Coordinator decision: Accepted: lead and rest render together on one line as パスワードの管理：「認証」, which reads naturally."
-    }
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "0b69b68d91b2655e",
+   "source": "95588c71d553426c",
+   "translation": "3b4dc0a3e300b168",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: lead + rest render 「認証」, confirmed equal to settings.tab.authentication (認証).",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_short": {
@@ -32907,6 +32885,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "4a2296a9c65cc29a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "d8d28751f9ee04d9",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "3e488ccffe3c225d",
    "provenance": [
     "ai-generated",
     "ai-review"

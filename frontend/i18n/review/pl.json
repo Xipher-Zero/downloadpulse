@@ -18850,27 +18850,19 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "e223b61300fef9e3",
+   "source": "939cd29d7a24fa91",
+   "translation": "cc74c9fb360dfd23",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "df7fa772f2c1e2c5",
+   "source": "95588c71d553426c",
+   "translation": "3300701cafc71a48",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: harmonized: a Settings tab is named „…” with \"na karcie\", copying settings.tab.* exactly",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_short": {
@@ -34089,6 +34081,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "dfb37d0c22101e4d",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "57d69857ed02d8e9",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "9fe83d572150ce79",
    "provenance": [
     "ai-generated",
     "ai-review"

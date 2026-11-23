@@ -18720,27 +18720,19 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "7346b2c975cb472e",
+   "source": "939cd29d7a24fa91",
+   "translation": "0e519511fe5f2c15",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "f923a476cdb35463",
+   "source": "95588c71d553426c",
+   "translation": "e3b0e525d690ca63",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: Authentication tab rendered as «المصادقة»; lead + rest read «كلمة المرور مُدارة في المصادقة».",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_short": {
@@ -33196,6 +33188,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "b54e5fb5d69b50fd",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "d1182b93bec28ceb",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "cb01132e2ea505ba",
    "provenance": [
     "ai-generated",
     "ai-review"

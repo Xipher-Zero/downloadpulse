@@ -18584,41 +18584,19 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "fa6ba1c0fe2881a2",
+   "source": "939cd29d7a24fa91",
+   "translation": "f8897074415847e3",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: Lead/rest pair renders \"Password managed in Authentication\"; Korean split as 비밀번호 관리 / 위치: 인증.",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    },
-    {
-     "kind": "ambiguity",
-     "note": "Reviewer (open): Lead/rest pair (“Password managed” + “in Authentication”) rendered 비밀번호 관리 + 위치: ‘인증’. Read as one line “비밀번호 관리 위치: ‘인증’” it is natural, but if the two parts render separately (e.g. lead bold, rest on another line) the lead alone reads as “Password management”. Needs a rendered-layout check.",
-     "status": "resolved",
-     "resolution": "Coordinator decision: Accepted: lead and rest render on one line as \"비밀번호 관리 위치: ‘인증’\", which reads naturally."
-    }
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "4cdcdc871592cc4b",
+   "source": "95588c71d553426c",
+   "translation": "c6a7d22dbf387638",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: harmonized: on-screen names in prose are quoted ‘…’ with the exact label",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_short": {
@@ -32756,6 +32734,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "14246008a1f2bb6b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "05b01d8eb2b45ee1",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "eef621dbcbdb1326",
    "provenance": [
     "ai-generated",
     "ai-review"

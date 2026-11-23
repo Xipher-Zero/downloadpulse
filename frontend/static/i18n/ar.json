@@ -2126,8 +2126,8 @@
   "settings.users.copy": "الأشخاص الذين يسجلون الدخول إلى DownloadPulse وأدوارهم وطريقة تسجيل دخولهم.",
   "settings.users.create": "إنشاء حساب",
   "settings.users.created": "تم إنشاء الحساب",
-  "settings.users.default_admin_lead": "كلمة المرور مُدارة",
-  "settings.users.default_admin_rest": "في المصادقة",
+  "settings.users.default_admin_lead": "حساب مضمّن،",
+  "settings.users.default_admin_rest": "لا يمكن تعديله هنا",
   "settings.users.default_admin_short": "حساب المسؤول\nالمضمّن",
   "settings.users.default_admin_shortest": "افتراضي",
   "settings.users.delete": "حذف",
@@ -3680,7 +3680,9 @@
   "settings.account.browsers_unreadable": "تعذرت قراءة المتصفحات المرتبطة.",
   "details.requested_by.browser": "المتصفح «{token}»",
   "transfer.status_with_reason": "{status} · {reason}",
-  "transfer.reason_next_attempt": "{reason} · المحاولة التالية: {time}"
+  "transfer.reason_next_attempt": "{reason} · المحاولة التالية: {time}",
+  "settings.users.signin.builtin": "مضمّن · يُستخدم عندما يكون تسجيل الدخول معطّلًا",
+  "error.browser.pairing.setup_incomplete": "أكمِل إعداد DownloadPulse أولًا، ثم اربط المتصفح مرة أخرى."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -5803,8 +5805,8 @@
   "settings.users.copy": "b92b42fade1e4c06",
   "settings.users.create": "0dffe234b44793b6",
   "settings.users.created": "f63879fd691e40d3",
-  "settings.users.default_admin_lead": "f762126dc7d05506",
-  "settings.users.default_admin_rest": "fbbf13480a379623",
+  "settings.users.default_admin_lead": "939cd29d7a24fa91",
+  "settings.users.default_admin_rest": "95588c71d553426c",
   "settings.users.default_admin_short": "c0b50a3f81aa0f39",
   "settings.users.default_admin_shortest": "21b111cbfe6e8fca",
   "settings.users.delete": "e2d0a54968ead24e",
@@ -7361,6 +7363,8 @@
   "error.desktop.quit_only": "d36e575db3e7300b",
   "error.desktop.quit_refused": "6d81e3b8d773f871",
   "transfer.status_with_reason": "0897e092bbd86238",
-  "transfer.reason_next_attempt": "c32c695a49d5c17b"
+  "transfer.reason_next_attempt": "c32c695a49d5c17b",
+  "settings.users.signin.builtin": "81e8973aee4c4b53",
+  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd"
  }
 }

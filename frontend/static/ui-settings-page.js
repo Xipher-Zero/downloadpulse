@@ -4590,7 +4590,10 @@
       methods.push(account.oidc_identities > 1 ? say('settings.users.signin.oidc_count', {count: account.oidc_identities})
         : say('settings.users.signin.oidc'));
     }
-    return methods.length ? methods : [say('settings.users.signin.none')];
+    if (methods.length) return methods;
+    // The built-in Administrator with no method of its own is still used:
+    // it is who DownloadPulse acts as while sign-in is off.
+    return [say(account.protected === 'default_admin' ? 'settings.users.signin.builtin' : 'settings.users.signin.none')];
   }
 
   // Each method keyed in its own span, so a language change says it again in place.
@@ -4616,8 +4619,8 @@
 
   /* A person's row has one entry point: Edit, which opens the one Edit User
    * dialog (editUser). The signed-in account is "You" and the protected
-   * Administrator's local credential is Authentication's; neither is editable
-   * here, and the server refuses both regardless. */
+   * built-in Administrator says it is not editable here; neither is, and the
+   * server refuses both regardless. */
   function userActions(account) {
     if (account.id === selfId()) return `<span class="dp-settings-users-self"${keyed(say('settings.users.you'))}>${html(t('settings.users.you'))}</span>`;
     // Below 780px the table may draw the notice in fewer words

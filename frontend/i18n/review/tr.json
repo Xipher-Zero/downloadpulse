@@ -18385,24 +18385,16 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "0fb5c5d294fcec40",
+   "source": "939cd29d7a24fa91",
+   "translation": "bd1272e8881d8984",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: Lead + rest read together as \"Parola yönetimi Kimlik doğrulama bölümünde\" (password management is in the Authentication section); Turkish verb-final order does not allow a literal split.",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "46a2e447f962ff70",
+   "source": "95588c71d553426c",
+   "translation": "67a3ab852850d350",
    "provenance": [
     "ai-generated",
     "ai-review"
@@ -32528,6 +32520,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "abfb98030b3b8a6b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "bf1b53561375a77e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "3bc02eea367f2d44",
    "provenance": [
     "ai-generated",
     "ai-review"

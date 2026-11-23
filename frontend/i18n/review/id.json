@@ -18514,26 +18514,26 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "37e582c0dbd30769",
+   "source": "939cd29d7a24fa91",
+   "translation": "50f4a1885ff550aa",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "dd194826328a1eb6",
+   "source": "95588c71d553426c",
+   "translation": "3209a09483476b73",
    "provenance": [
     "ai-generated",
     "ai-review"
    ],
    "findings": [
     {
-     "kind": "ambiguity",
-     "note": "Translator: Second half of “Password managed in Authentication”; Authentication tab rendered “Autentikasi” — harmonize with the tab label if it differs.",
+     "kind": "style",
+     "note": "Review: shorter, for the narrow table line.",
      "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
+     "resolution": "Corrected to the reviewer's wording."
     }
    ]
   },
@@ -33015,6 +33015,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "aded65f178b6d6a9",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "941847da24838284",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "7696b739f17e9a32",
    "provenance": [
     "ai-generated",
     "ai-review"

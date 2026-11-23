@@ -2126,8 +2126,8 @@
   "settings.users.copy": "登入DownloadPulse的人員、其角色，以及他們的登入方式。",
   "settings.users.create": "建立帳戶",
   "settings.users.created": "已建立帳戶",
-  "settings.users.default_admin_lead": "密碼由",
-  "settings.users.default_admin_rest": "「驗證」管理",
+  "settings.users.default_admin_lead": "內建帳戶，",
+  "settings.users.default_admin_rest": "無法在此編輯",
   "settings.users.default_admin_short": "內建\n管理員",
   "settings.users.default_admin_shortest": "預設",
   "settings.users.delete": "刪除",
@@ -3680,7 +3680,9 @@
   "settings.account.browsers_unreadable": "無法讀取已連線的瀏覽器。",
   "details.requested_by.browser": "瀏覽器「{token}」",
   "transfer.status_with_reason": "{status} · {reason}",
-  "transfer.reason_next_attempt": "{reason} · 下次嘗試：{time}"
+  "transfer.reason_next_attempt": "{reason} · 下次嘗試：{time}",
+  "settings.users.signin.builtin": "內建 · 登入功能關閉時使用",
+  "error.browser.pairing.setup_incomplete": "請先完成DownloadPulse的設定，然後重新連線。"
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -5803,8 +5805,8 @@
   "settings.users.copy": "b92b42fade1e4c06",
   "settings.users.create": "0dffe234b44793b6",
   "settings.users.created": "f63879fd691e40d3",
-  "settings.users.default_admin_lead": "f762126dc7d05506",
-  "settings.users.default_admin_rest": "fbbf13480a379623",
+  "settings.users.default_admin_lead": "939cd29d7a24fa91",
+  "settings.users.default_admin_rest": "95588c71d553426c",
   "settings.users.default_admin_short": "c0b50a3f81aa0f39",
   "settings.users.default_admin_shortest": "21b111cbfe6e8fca",
   "settings.users.delete": "e2d0a54968ead24e",
@@ -7361,6 +7363,8 @@
   "error.desktop.quit_only": "d36e575db3e7300b",
   "error.desktop.quit_refused": "6d81e3b8d773f871",
   "transfer.status_with_reason": "0897e092bbd86238",
-  "transfer.reason_next_attempt": "c32c695a49d5c17b"
+  "transfer.reason_next_attempt": "c32c695a49d5c17b",
+  "settings.users.signin.builtin": "81e8973aee4c4b53",
+  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd"
  }
 }

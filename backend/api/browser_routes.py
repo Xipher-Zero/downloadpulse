@@ -34,6 +34,7 @@ from application.service import ApplicationService
 from api.external_routes import _call
 from core.localization import DisplayError, refusal
 from external.service import BROWSER_SOURCE_KINDS, ExternalClients
+from services import setup_lifecycle
 
 router = APIRouter()
 
@@ -66,6 +67,12 @@ async def start_browser_pairing(request: Request,
     if not pairing_start_limiter.allow(peer_key(request)):
         raise DisplayError(429, "Too many connection requests; wait a few minutes.",
                            code="browser.pairing.rate_limited", headers={"Retry-After": "60"})
+    # Until Finish, no account a person could approve the pairing with is
+    # settled yet: refused before any pairing state is allocated. Not 401-405,
+    # which the extension reads as a server too old to pair.
+    if not (await setup_lifecycle.initial_setup()).complete:
+        raise DisplayError(409, "Finish setting up DownloadPulse first, then connect again.",
+                           code="browser.pairing.setup_incomplete")
     try:
         pairing, device_code = await pairing_store.start(client_name, peer_key(request))
     except PairingRefused as exc:

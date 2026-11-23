@@ -234,7 +234,7 @@ test('the built-in Administrator\'s notice takes the longest wording that fits, 
     await resize(page, width);
     const t = await table(page);
     wordings.add(t.admin);
-    expect(t.adminText).toBe('Password managed in Authentication');
+    expect(t.adminText).toBe('Built-in account, not editable here');
   }
   expect([...wordings].sort()).toEqual(['Built-in Admin Account', 'Default', 'full']);
   const hint = page.locator('tr[data-account-row="acct-builtin"] .dp-settings-users-hint');
@@ -243,8 +243,31 @@ test('the built-in Administrator\'s notice takes the longest wording that fits, 
   await resize(page, 320);
   expect((await table(page)).admin).toBe('Default');
   await resize(page, 1280);
-  await expect(hint).toHaveText(/Password managed\s*in Authentication/);
+  await expect(hint).toHaveText(/Built-in account,\s*not editable here/);
   expect((await table(page)).admin).toBe('full');
+  await context.close();
+});
+
+// A Server installation as its setup leaves it: the built-in Administrator
+// (no sign-in method of its own) beside the named Administrator setup
+// created, who is signed in.
+const serverSetup = self => [
+  {id: 'acct-builtin', role: 'admin', enabled: true, protected: 'default_admin', username: null, display_name: 'Administrator', has_password: false, oidc_identities: 0, email: ''},
+  {id: self, role: 'admin', enabled: true, protected: '', username: 'browser', display_name: 'Operator One', has_password: true, oidc_identities: 0, email: ''},
+];
+
+test('on a Server, the built-in Administrator is named for what it is beside the named Administrator', async ({browser}) => {
+  const {context, page} = await open(browser, {accounts: serverSetup});
+  const builtin = page.locator('tr[data-account-row="acct-builtin"]');
+  // Its stored name is kept; its Sign-In says when it is used, not that it has no method.
+  await expect(builtin.locator('.dp-settings-users-name')).toHaveText('Administrator');
+  await expect(builtin.locator(':scope > td:nth-child(3)')).toHaveText('Built-in · used when sign-in is off');
+  await expect(builtin.locator('.dp-settings-users-hint')).toHaveText('Built-in account, not editable here');
+  await expect(builtin.locator('[data-user-action="edit"]')).toHaveCount(0);
+  const named = await page.evaluate(() => window.downloadPulseAuth.authority.account_id);
+  await expect(page.locator(`tr[data-account-row="${named}"] > td:nth-child(3)`)).toHaveText('Password (browser)');
+  await expect(page.locator(`tr[data-account-row="${named}"] .dp-settings-users-self`)).toHaveText('You');
+  expect(page.__writes).toEqual([]);
   await context.close();
 });
 

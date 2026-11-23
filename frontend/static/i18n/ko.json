@@ -2126,8 +2126,8 @@
   "settings.users.copy": "DownloadPulse에 로그인하는 사람, 각자의 역할과 로그인 방법입니다.",
   "settings.users.create": "계정 만들기",
   "settings.users.created": "계정 생성됨",
-  "settings.users.default_admin_lead": "비밀번호 관리",
-  "settings.users.default_admin_rest": "위치: ‘인증’",
+  "settings.users.default_admin_lead": "기본 제공 계정:",
+  "settings.users.default_admin_rest": "여기서 편집 불가",
   "settings.users.default_admin_short": "기본 관리자\n계정",
   "settings.users.default_admin_shortest": "기본",
   "settings.users.delete": "삭제",
@@ -3680,7 +3680,9 @@
   "settings.account.browsers_unreadable": "연결된 브라우저를 읽을 수 없습니다.",
   "details.requested_by.browser": "브라우저 “{token}”",
   "transfer.status_with_reason": "{status} · {reason}",
-  "transfer.reason_next_attempt": "{reason} · 다음 시도: {time}"
+  "transfer.reason_next_attempt": "{reason} · 다음 시도: {time}",
+  "settings.users.signin.builtin": "기본 제공 · 로그인이 꺼져 있을 때 사용",
+  "error.browser.pairing.setup_incomplete": "먼저 DownloadPulse 설정을 완료한 후 다시 연결하세요."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -5803,8 +5805,8 @@
   "settings.users.copy": "b92b42fade1e4c06",
   "settings.users.create": "0dffe234b44793b6",
   "settings.users.created": "f63879fd691e40d3",
-  "settings.users.default_admin_lead": "f762126dc7d05506",
-  "settings.users.default_admin_rest": "fbbf13480a379623",
+  "settings.users.default_admin_lead": "939cd29d7a24fa91",
+  "settings.users.default_admin_rest": "95588c71d553426c",
   "settings.users.default_admin_short": "c0b50a3f81aa0f39",
   "settings.users.default_admin_shortest": "21b111cbfe6e8fca",
   "settings.users.delete": "e2d0a54968ead24e",
@@ -7361,6 +7363,8 @@
   "error.desktop.quit_only": "d36e575db3e7300b",
   "error.desktop.quit_refused": "6d81e3b8d773f871",
   "transfer.status_with_reason": "0897e092bbd86238",
-  "transfer.reason_next_attempt": "c32c695a49d5c17b"
+  "transfer.reason_next_attempt": "c32c695a49d5c17b",
+  "settings.users.signin.builtin": "81e8973aee4c4b53",
+  "error.browser.pairing.setup_incomplete": "dad5833ebf90a9bd"
  }
 }

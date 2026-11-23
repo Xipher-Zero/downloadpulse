@@ -18916,27 +18916,19 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "7697085782b96d56",
+   "source": "939cd29d7a24fa91",
+   "translation": "e6039a1b80a4a2ef",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "b519f2db10783288",
+   "source": "95588c71d553426c",
+   "translation": "b2c79b29a93e702b",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: Lead + rest form one sentence: 'Пароль задається у розділі «Автентифікація»'; Authentication tab assumed 'Автентифікація'.",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_short": {
@@ -34306,6 +34298,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "7807878e80e4887e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "672891d93f3075ce",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "95219a0333ad31e6",
    "provenance": [
     "ai-generated",
     "ai-review"

@@ -18536,16 +18536,16 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "2bf3fb851424dcad",
+   "source": "939cd29d7a24fa91",
+   "translation": "5186706d2ddaf81c",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "6e54bbc0eff81f47",
+   "source": "95588c71d553426c",
+   "translation": "a5f6e1e9b638f636",
    "provenance": [
     "ai-generated",
     "ai-review"
@@ -33059,6 +33059,30 @@
    "provenance": [
     "ai-generated",
     "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "adc4c302a08703d6",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "83c482f38c812e74",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "findings": [
+    {
+     "kind": "terminology",
+     "note": "Review: 'installatie' reads as installing software; the catalog says 'instellen' for setup.",
+     "status": "resolved",
+     "resolution": "Corrected to the reviewer's wording."
+    }
    ]
   }
  }

@@ -18757,16 +18757,16 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "15354717ac499b5f",
+   "source": "939cd29d7a24fa91",
+   "translation": "fd441471be5fcd2f",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "08dcbaa96b08f097",
+   "source": "95588c71d553426c",
+   "translation": "411dd0b0e826f93a",
    "provenance": [
     "ai-generated",
     "ai-review"
@@ -33546,6 +33546,22 @@
      "status": "resolved",
      "resolution": "Corrected to the reviewer's wording."
     }
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "874ad6dc38311ebd",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "72170d12431f9b7f",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
    ]
   }
  }

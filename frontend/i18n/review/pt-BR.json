@@ -18474,16 +18474,16 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "e11de261fc344d82",
+   "source": "939cd29d7a24fa91",
+   "translation": "5bbf2f49b5932a32",
    "provenance": [
     "ai-generated",
     "ai-review"
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "09ffb538efd0b3ff",
+   "source": "95588c71d553426c",
+   "translation": "d742821f4502db84",
    "provenance": [
     "ai-generated",
     "ai-review"
@@ -33386,6 +33386,30 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "27553e5f58235867",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "b03834ceb1ed8445",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "findings": [
+    {
+     "kind": "meaning",
+     "note": "Review: feminine, agreeing with the account (Conta integrada), as pt-PT.",
+     "status": "resolved",
+     "resolution": "Corrected to the reviewer's wording."
+    }
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "3c470cbd0241a532",
    "provenance": [
     "ai-generated",
     "ai-review"

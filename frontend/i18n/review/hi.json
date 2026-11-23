@@ -18814,24 +18814,16 @@
    ]
   },
   "settings.users.default_admin_lead": {
-   "source": "f762126dc7d05506",
-   "translation": "1606ca26c65ef49e",
+   "source": "939cd29d7a24fa91",
+   "translation": "34ad34d83ec8c899",
    "provenance": [
     "ai-generated",
     "ai-review"
-   ],
-   "findings": [
-    {
-     "kind": "ambiguity",
-     "note": "Translator: Lead/rest fragments form one phrase 'Password managed | in Authentication'; Hindi split as 'पासवर्ड का प्रबंधन' + 'प्रमाणीकरण में' so each fragment reads in order.",
-     "status": "resolved",
-     "resolution": "The translator chose the wording recorded in the note."
-    }
    ]
   },
   "settings.users.default_admin_rest": {
-   "source": "fbbf13480a379623",
-   "translation": "9a8e4437b2a5bc11",
+   "source": "95588c71d553426c",
+   "translation": "c8588928fbba5bc6",
    "provenance": [
     "ai-generated",
     "ai-review"
@@ -33117,6 +33109,22 @@
   "transfer.reason_next_attempt": {
    "source": "c32c695a49d5c17b",
    "translation": "ab391084eb1ad4b2",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.users.signin.builtin": {
+   "source": "81e8973aee4c4b53",
+   "translation": "bcc5810042cde4e4",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.pairing.setup_incomplete": {
+   "source": "dad5833ebf90a9bd",
+   "translation": "daf49a8c952caabc",
    "provenance": [
     "ai-generated",
     "ai-review"

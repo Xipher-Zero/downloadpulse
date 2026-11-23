@@ -1309,7 +1309,7 @@ body.light #view-settings .dp-settings-auth-kpi.dash-hero-stat {
   text-align: right;
 }
 /* The protected Administrator's notice is always the same two lines,
-   "Password managed" over "in Authentication", at every width. */
+   "Built-in account," over "not editable here", at every width. */
 #view-settings .dp-settings-users-hint > span {
   display: block;
   white-space: nowrap;

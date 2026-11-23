@@ -354,10 +354,10 @@ test('Edit is offered for every other eligible person, never the signed-in Admin
     await expect(editIn(defaultAdmin.id)).toHaveCount(0);                  // never the protected Administrator
     await expect(editIn(local.id)).toHaveCount(1);                         // another local person
     await expect(editIn(oidc.id)).toHaveCount(1);                          // an OIDC person
-    // The protected Administrator's password is Authentication's: its row
+    // The protected built-in Administrator is not editable here: its row
     // says so instead of offering an Edit.
     const protectedRow = page.locator(`tr[data-account-row="${defaultAdmin.id}"]`);
-    await expect(protectedRow.locator('.dp-settings-users-hint')).toHaveText('Password managed in Authentication');
+    await expect(protectedRow.locator('.dp-settings-users-hint')).toHaveText('Built-in account, not editable here');
     await expect(protectedRow.locator('.dp-settings-users-hint')).not.toHaveAttribute('role', /.+/);
     await expect(protectedRow.locator('button')).toHaveText([/.+/]);                // only its name opens details
     // Another local person's Edit resets its password; the OIDC person's sets

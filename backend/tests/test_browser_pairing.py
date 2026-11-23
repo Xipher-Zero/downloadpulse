@@ -40,16 +40,19 @@ def _free_port() -> int:
 
 
 class Server:
-    """One real backend on a disposable root: password sign-in, server deployment."""
+    """One real backend on a disposable root: password sign-in, server deployment.
+    ``configured=False``: a genuinely new installation (no configuration file,
+    no database), its initial setup not yet finished."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, configured: bool = True):
         self.root, self.port = root, _free_port()
         (root / "config").mkdir(parents=True)
         (root / "data").mkdir()
         (root / "downloads").mkdir()
-        (root / "config" / "config.json").write_text(json.dumps({
-            "download_folder": str(root / "downloads"), "deployment_type": "server",
-            "auth_password_enabled": True, "auth_username": "owner", "auth_password": PASSWORD}))
+        if configured:
+            (root / "config" / "config.json").write_text(json.dumps({
+                "download_folder": str(root / "downloads"), "deployment_type": "server",
+                "auth_password_enabled": True, "auth_username": "owner", "auth_password": PASSWORD}))
         env = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "LANG", "TMPDIR"}}
         env.update(DB_PATH=str(root / "data" / "downloadpulse.db"), CONFIG_PATH=str(root / "config" / "config.json"),
                    STATIC_DIR=str(ROOT / "frontend" / "static"))
@@ -464,5 +467,50 @@ def test_starting_pairings_is_rate_limited_per_peer(tmp_path):
 
         answers = asyncio.run(flood())
         assert answers[:10] == [200] * 10 and answers[10] == 429
+    finally:
+        server.stop()
+
+
+def test_a_browser_cannot_start_pairing_until_initial_setup_is_finished(tmp_path):
+    """A new installation refuses to start a pairing -- 409, its own code, not
+    a 401-405 the extension reads as a server too old to pair -- and allocates
+    nothing; once setup is finished the same browser pairs."""
+    server = Server(tmp_path, configured=False)
+    try:
+        server.wait_ready()
+
+        async def scenario():
+            status, body = await extension(server, "POST", "/api/browser/v1/pairings",
+                                           json={"client_name": "Firefox on Linux"})
+            assert status == 409, body
+            assert body["code"] == "browser.pairing.setup_incomplete"
+            assert body["detail"] == "Finish setting up DownloadPulse first, then connect again."
+            assert "device_code" not in body and "user_code" not in body
+            # Finish the new Server installation's setup as its named Administrator.
+            http = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+            try:
+                origin = {"Origin": server.base}
+                async with http.put(server.base + "/api/setup/initial/phase", json={"phase": "administrator"},
+                                    headers=origin) as reply:
+                    assert reply.status == 200, await reply.text()
+                async with http.post(server.base + "/api/setup/initial/administrator",
+                                     json={"username": "owner", "password": PASSWORD}, headers=origin) as reply:
+                    assert reply.status == 200, await reply.text()
+                async with http.get(server.base + "/api/auth/session") as reply:
+                    csrf = (await reply.json())["csrf_token"]
+                async with http.post(server.base + "/api/setup/initial/finish",
+                                     headers={**origin, "X-CSRF-Token": csrf}) as reply:
+                    assert reply.status == 200, await reply.text()
+                    assert (await reply.json())["complete"] is True
+            finally:
+                await http.close()
+            owner = await Person.sign_in(server, "owner")
+            try:
+                token, _ = await pair(server, owner, "After setup")
+                assert (await extension(server, "GET", "/api/browser/v1/session", token))[0] == 200
+            finally:
+                await owner.close()
+
+        asyncio.run(scenario())
     finally:
         server.stop()

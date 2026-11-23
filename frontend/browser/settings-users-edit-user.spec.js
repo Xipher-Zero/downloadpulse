@@ -124,15 +124,15 @@ test('each person has one right-aligned Edit; You and the protected Administrato
   await expect(row(page, SELF).locator('.dp-settings-users-actions')).toHaveText('You');
   await expect(row(page, SELF).locator('[data-user-action="edit"]')).toHaveCount(0);
   const hint = row(page, 'acct-admin').locator('.dp-settings-users-hint');
-  await expect(hint).toHaveText('Password managed in Authentication');
-  // Always exactly two lines, "Password managed" over "in Authentication", neither wrapping.
+  await expect(hint).toHaveText('Built-in account, not editable here');
+  // Always exactly two lines, "Built-in account," over "not editable here", neither wrapping.
   // Its drawn lines (its handheld shorter wording, below 780px only, is not drawn here).
   const lines = () => hint.evaluate(node => [...node.children].filter(line => line.getClientRects().length).map(line => {
     const range = document.createRange();
     range.selectNodeContents(line);
     return [line.textContent, new Set([...range.getClientRects()].map(rect => Math.round(rect.top))).size];
   }));
-  expect(await lines()).toEqual([['Password managed', 1], ['in Authentication', 1]]);
+  expect(await lines()).toEqual([['Built-in account,', 1], ['not editable here', 1]]);
   await expect(hint).toHaveCSS('text-align', 'right');
   expect(await rightGap(hint, true), 'the hint is not right-aligned').toBeLessThanOrEqual(1);
   await expect(row(page, 'acct-admin').locator('.dp-settings-users-actions button')).toHaveCount(0);
@@ -549,8 +549,8 @@ test('the footer: lifecycle at the start, Cancel and Apply at the end; keyboard 
   await page.setViewportSize({width: 390, height: 844});
   const narrow = await edit(page, 'acct-ann');
   const fit = await narrow.evaluate(node => ({width: node.getBoundingClientRect().width, overflow: node.scrollWidth - node.clientWidth}));
-  // Its words stay "Password managed in Authentication" whatever wording the narrow table draws.
-  await expect(row(page, 'acct-admin').locator('.dp-settings-users-hint > span:not(.dp-settings-users-hint-short)')).toHaveText(['Password managed', 'in Authentication']);
+  // Its words stay "Built-in account, not editable here" whatever wording the narrow table draws.
+  await expect(row(page, 'acct-admin').locator('.dp-settings-users-hint > span:not(.dp-settings-users-hint-short)')).toHaveText(['Built-in account,', 'not editable here']);
   expect(fit.width).toBeLessThanOrEqual(390);
   expect(fit.overflow).toBe(0);
   await expect(narrow.locator('.dp-modal-footer .btn:visible')).toHaveCount(4);
