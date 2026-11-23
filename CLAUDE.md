@@ -86,7 +86,7 @@ stay operator actions.
 
 `backend/requirements.in` → compiled `requirements.txt`. Key pins: `fastapi`, `uvicorn`,
 `uvloop`, `httptools`, `aiohttp`, `aiosqlite`, `pydantic` v2, `bencode2`, `google-re2`,
-`python-multipart`, `prometheus-client`, `argon2-cffi`, `authlib`, `httpx`, `joserfc`.
+`python-multipart`, `prometheus-client`, `argon2-cffi`, `authlib`, `httpx2`, `joserfc`.
 Dev (`requirements-dev.in`): `pytest`, `pytest-asyncio`, `pytest-cov`.
 Lint/security qualification tooling (`requirements-qa.in` → compiled
 `requirements-qa.txt`, full transitive closure, constrained to `requirements-dev.txt`):

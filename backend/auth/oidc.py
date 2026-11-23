@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
-import httpx
+import httpx2
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from authlib.oidc.core import CodeIDToken
 from joserfc import jwt
@@ -369,10 +369,10 @@ def _parse_discovery(config: OidcConfiguration, data: Mapping[str, Any]) -> Oidc
 async def discover_oidc(
     config: OidcConfiguration,
     *,
-    client: httpx.AsyncClient | None = None,
+    client: httpx2.AsyncClient | None = None,
 ) -> OidcDiscovery:
     owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=8.0, follow_redirects=False)
+    http = client or httpx2.AsyncClient(timeout=8.0, follow_redirects=False)
     try:
         response = await http.get(
             _discovery_url(config.issuer),
@@ -385,7 +385,7 @@ async def discover_oidc(
         return _parse_discovery(config, data)
     except OidcError:
         raise
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx2.HTTPError, ValueError) as exc:
         raise OidcProtocolError("OIDC discovery is unavailable") from exc
     finally:
         if owns_client:
@@ -445,11 +445,11 @@ async def begin_oidc_login(settings, *, return_to: str = "/") -> tuple[str, str]
 
 async def _fetch_json(url: str) -> Mapping[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+        async with httpx2.AsyncClient(timeout=8.0, follow_redirects=False) as client:
             response = await client.get(url, headers={"Accept": "application/json"})
             response.raise_for_status()
             data = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx2.HTTPError, ValueError) as exc:
         raise OidcProtocolError("OIDC key set is unavailable") from exc
     if not isinstance(data, dict):
         raise OidcProtocolError("OIDC key set did not return a JSON object")
@@ -479,7 +479,7 @@ async def _fetch_userinfo(
     if not endpoint or not access_token:
         raise OidcProtocolError("OIDC UserInfo is required but unavailable")
     try:
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+        async with httpx2.AsyncClient(timeout=8.0, follow_redirects=False) as client:
             response = await client.get(
                 endpoint,
                 headers={
@@ -489,7 +489,7 @@ async def _fetch_userinfo(
             )
             response.raise_for_status()
             data = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx2.HTTPError, ValueError) as exc:
         raise OidcProtocolError("OIDC UserInfo is unavailable") from exc
     if not isinstance(data, dict):
         raise OidcProtocolError("OIDC UserInfo did not return a JSON object")

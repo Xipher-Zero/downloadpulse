@@ -80,7 +80,7 @@ def configure_logging(level: str = "INFO", pretty: bool = False, log_format: str
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     logging.getLogger().setLevel(numeric_level)
-    for lib in ("uvicorn.access", "uvicorn.error", "httpx", "aiosqlite"):
+    for lib in ("uvicorn.access", "uvicorn.error", "httpx2", "aiosqlite"):
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 

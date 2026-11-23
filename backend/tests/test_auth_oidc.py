@@ -1,7 +1,10 @@
 import base64
 import hashlib
 import json
+import subprocess
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -527,3 +530,27 @@ async def test_oidc_only_protects_api_and_invalid_configuration_never_fails_open
     open_request = _request("GET", "/api/stats", {"Host": "pulse.example"})
     response = await enforce_authentication(open_request, _ok)
     assert response.status_code == 200
+
+
+def test_the_oidc_owner_imports_without_an_authlib_deprecation_warning():
+    """Authlib's httpx integration runs on httpx2 and warns when it has to fall
+    back to httpx; the locked environment ships httpx2, so importing the OIDC
+    owner in a fresh interpreter warns nothing and the integration's client is
+    httpx2 itself."""
+    script = (
+        "import warnings\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always')\n"
+        "    import auth.oidc\n"
+        "from authlib.deprecate import AuthlibDeprecationWarning\n"
+        "from authlib.integrations.httpx_client._compat import httpx2\n"
+        "assert httpx2.__name__ == 'httpx2', httpx2.__name__\n"
+        "assert auth.oidc.httpx2 is httpx2\n"
+        "found = [str(w.message) for w in caught if issubclass(w.category, AuthlibDeprecationWarning)]\n"
+        "assert not found, found\n"
+    )
+    backend = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=backend, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr

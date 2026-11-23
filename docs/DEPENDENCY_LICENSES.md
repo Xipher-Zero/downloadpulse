@@ -41,10 +41,10 @@ the lock file and `licenses/python-runtime.json`.
 | guessit | 4.1.0 | LGPL-3.0-or-later (bundled service dependency; see the copyleft review below) |
 | h11 | 0.16.0 | MIT |
 | hachoir | 3.3.0 | GPL-2.0-only (bundled service dependency; see the copyleft review below) |
-| httpcore | 1.0.9 | BSD-3-Clause |
+| httpcore2 | 2.16.2 | BSD-3-Clause |
 | httptools | 0.9.0 | MIT |
-| httpx | 0.28.1 | BSD-3-Clause |
-| idna | 3.15 | BSD-3-Clause |
+| httpx2 | 2.16.2 | BSD-3-Clause |
+| idna | 3.20 | BSD-3-Clause |
 | jaraco-classes | 3.4.0 | MIT |
 | jaraco-collections | 5.0.0 | MIT |
 | jaraco-context | 4.3.0 | MIT |
@@ -79,6 +79,7 @@ the lock file and `licenses/python-runtime.json`.
 | six | 1.17.0 | MIT |
 | starlette | 1.3.1 | BSD-3-Clause |
 | tempora | 5.8.1 | MIT |
+| truststore | 0.10.4 | MIT |
 | typing-extensions | 4.16.0 | PSF-2.0 |
 | typing-inspection | 0.4.5 | MIT |
 | ujson | 5.13.0 | BSD-3-Clause AND TCL |
@@ -92,7 +93,7 @@ the lock file and `licenses/python-runtime.json`.
 
 Native authentication directly depends on `argon2-cffi` for
 Argon2id local-password verification, `authlib` for OpenID Connect/JWT protocol
-handling, and `httpx` for bounded outbound OIDC discovery/token/JWKS requests.
+handling, and `httpx2` for bounded outbound OIDC discovery/token/JWKS requests.
 Provider-runtime hardening directly depends on `google-re2` so
 externally supplied AllDebrid applicability expressions execute with RE2's
 linear-time matching semantics instead of Python backtracking regex behavior.

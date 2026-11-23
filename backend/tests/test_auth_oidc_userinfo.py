@@ -236,7 +236,7 @@ async def test_userinfo_subject_mismatch_is_rejected(monkeypatch):
             assert headers["Authorization"] == "Bearer access"
             return FakeResponse()
 
-    monkeypatch.setattr(oidc.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(oidc.httpx2, "AsyncClient", lambda **kwargs: FakeClient())
     with pytest.raises(oidc.OidcProtocolError, match="subject"):
         await oidc._fetch_userinfo(
             "https://id.example/userinfo",

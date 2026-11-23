@@ -131,7 +131,9 @@ def test_the_windows_runtime_lock_keeps_every_canonical_pin():
     canonical = pins(ROOT / "backend" / "requirements.txt")
     windows = pins(ROOT / "packaging" / "desktop" / "windows" / "requirements.txt")
     assert {name: version for name, version in windows.items() if name in canonical and canonical[name] != version} == {}
-    assert set(windows) - set(canonical) == {"colorama", "pywin32", "truststore", "tzdata"}
+    # truststore is a canonical pin (httpx2 verifies with it); the Windows
+    # requirements.in still declares it for main.py's injection.
+    assert set(windows) - set(canonical) == {"colorama", "pywin32", "tzdata"}
     assert set(canonical) - set(windows) == {"uvloop"}
     assert "--hash=sha256:" in (ROOT / "packaging" / "desktop" / "windows" / "requirements.txt").read_text()
 
@@ -146,7 +148,7 @@ def test_the_macos_runtime_lock_keeps_every_canonical_pin_and_adds_only_pyobjc()
     assert {name: version for name, version in macos.items() if name in canonical and canonical[name] != version} == {}
     assert set(canonical) - set(macos) == set()
     assert {name: macos[name] for name in set(macos) - set(canonical)} == {
-        "pyobjc-core": "12.2.1", "pyobjc-framework-cocoa": "12.2.1", "truststore": "0.10.4"}
+        "pyobjc-core": "12.2.1", "pyobjc-framework-cocoa": "12.2.1"}
     # Every package line carries its hashes (pip installs it --require-hashes).
     blocks = re.split(r"(?m)^(?=[A-Za-z0-9_.-]+==)", lock.read_text(encoding="utf-8"))[1:]
     assert len(blocks) == len(macos) and all("--hash=sha256:" in block for block in blocks)

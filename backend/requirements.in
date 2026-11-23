@@ -15,7 +15,9 @@ asyncssh==2.24.1
 # KDF), the default format of ssh-keygen; required by username_private_key.
 bcrypt==5.0.0
 authlib==1.9.9
-httpx==0.28.1
+# The HTTP client Authlib's httpx integration is built on (it falls back to, and
+# deprecates, httpx when this is absent); auth/oidc.py uses the same client.
+httpx2==2.16.2
 joserfc==1.8.0
 # Safe YAML loading for a submitted link list (transfers/requests.py); already
 # shipped with apprise, declared here because DownloadPulse imports it itself.
