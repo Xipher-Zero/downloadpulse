@@ -550,13 +550,13 @@ test.describe('touch', () => {
     await expect(menu).toBeHidden();
     await expect(trigger).toHaveAccessibleName('Status filter');
     await page.locator('#t-tbody tr[data-torrent-id="9801"] .t-chk').tap();
-    // The bulk action ends by re-reading the list and then the statistics.
-    const statsRead = page.waitForResponse(response => new URL(response.url()).pathname === '/api/stats');
     await page.locator('.dp-downloads-bulk-action--resume').tap();
     await expect.poll(() => state.bulk.at(-1)).toEqual({ids: [9801], action: 'resume'});
-    // Let that read through the /api/stats route finish before the test ends,
-    // so teardown cannot dispose the response its handler is still reading.
-    await statsRead;
+    // The bulk action ends by refreshing the statistics without waiting: let a
+    // GET /stats still inside the /api/stats route finish before the test ends,
+    // so teardown cannot dispose the response its handler is reading (the
+    // dashboard-decorative-pulse precedent). No particular response is awaited:
+    // a refresh may be coalesced with one already in flight.
     await page.unrouteAll({behavior: 'wait'});
   });
 });
