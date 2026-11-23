@@ -37,6 +37,11 @@
 - **First run.** Users & Access names the built-in Administrator for what it is ("Built-in ·
   used when sign-in is off") instead of an account with no sign-in method. A browser that tries
   to connect before setup is finished is told to finish setup first.
+- **Details stays current.** An open Details window was read once and could disagree with the
+  row beside it. It now follows the download live, without losing your place.
+- **No deprecation warning from sign-in at startup.** OpenID Connect sign-in uses the HTTP
+  library its sign-in component asks for. On Linux it now checks the provider's certificate
+  against the system's trust store, as macOS and Windows already did.
 - **The database file is private** (mode 0600, with its journal files).
 
 ### Added
