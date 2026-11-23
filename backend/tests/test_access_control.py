@@ -976,15 +976,17 @@ def _sse_client_source() -> str:
 def test_a_reconnected_stream_re_reads_the_live_views_and_a_first_connection_does_not():
     """S4: events sent while the stream was down never arrive (there is no
     replay), so the connection that follows a lost one re-reads the views
-    this owner keeps live -- stats, and the Dashboard and Downloads lists --
-    while the first connection of a page (which loaded them itself) does
-    not. ``app.js``'s own EventSource owner, run under node."""
+    this owner keeps live -- stats, the Dashboard and Downloads lists, and
+    (WS20) an open Details through ``dpRefreshDetail`` -- while the first
+    connection of a page (which loaded them itself) does not. ``app.js``'s
+    own EventSource owner, run under node."""
     import subprocess
     harness = """
-const calls = {stats: 0, recent: 0, torrents: 0}, sources = [], timers = [];
+const calls = {stats: 0, recent: 0, torrents: 0, detail: 0}, sources = [], timers = [];
 global.loadStats = () => { calls.stats++; return Promise.resolve(); };
 global.loadRecent = () => { calls.recent++; return Promise.resolve(); };
 global.loadTorrents = () => { calls.torrents++; return Promise.resolve(); };
+global.dpRefreshDetail = () => { calls.detail++; return Promise.resolve(); };
 global.setTimeout = (fn) => { timers.push(fn); return timers.length; };
 global.setInterval = () => 1; global.clearInterval = () => {};
 global.CustomEvent = class { constructor(type) { this.type = type; } };
@@ -1005,5 +1007,5 @@ console.log(JSON.stringify({first, after: calls}));
     result = subprocess.run(["node", "-e", harness], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
-    assert observed["first"] == {"stats": 0, "recent": 0, "torrents": 0}
-    assert observed["after"] == {"stats": 1, "recent": 1, "torrents": 1}
+    assert observed["first"] == {"stats": 0, "recent": 0, "torrents": 0, "detail": 0}
+    assert observed["after"] == {"stats": 1, "recent": 1, "torrents": 1, "detail": 1}

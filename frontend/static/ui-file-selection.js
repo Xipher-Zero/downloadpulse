@@ -54,6 +54,7 @@
   let confirmInFlight = false;
   let detailTransferId = null;            // transfer currently shown in Details
   let detailEntryShown = null;            // {transferId, view}: the Details entry's last answer, said again on relabel
+  let detailEntryRead = 0;                // the newest Details entry read; an older answer is never shown
 
   // ── Path / tree helpers ─────────────────────────────────────────────────
   function normalizePath(value) {
@@ -645,8 +646,11 @@
   }
 
   // ── Details manual entry point (Files-section header, right side) ───────
-  // ``relabel``: Details re-said the same transfer in another language; the
-  // entry is drawn again from its last answer, without asking again.
+  // ``relabel``: Details drew the same transfer again in place (another
+  // language, or its live refresh); the entry is drawn again from its last
+  // answer, without asking again. A read still out when Details redraws its
+  // mount answers into the mount drawn now: Details' live refresh and this
+  // owner's own read of a semantic change arrive in either order.
   function renderDetailEntry(transferId, relabel) {
     const host = document.querySelector(
       '[data-dp-file-selection-mount][data-dp-transfer-id="' + transferId + '"]');
@@ -655,15 +659,19 @@
       paintDetailEntry(host, transferId, detailEntryShown.view);
       return;
     }
+    const read = ++detailEntryRead;
+    const current = function () {
+      return read === detailEntryRead && detailTransferId === transferId ? document.querySelector(
+        '[data-dp-file-selection-mount][data-dp-transfer-id="' + transferId + '"]') : null;
+    };
     mayChoose(transferId).then(function (allowed) {
       return allowed ? fetchSelection(transferId) : null;
     }).then(function (view) {
-      const currentHost = document.querySelector(
-        '[data-dp-file-selection-mount][data-dp-transfer-id="' + transferId + '"]');
-      if (currentHost !== host) return;
+      const currentHost = current();
+      if (!currentHost) return;
       detailEntryShown = {transferId: transferId, view: view};
-      paintDetailEntry(host, transferId, view);
-    }).catch(function () { host.innerHTML = ''; });
+      paintDetailEntry(currentHost, transferId, view);
+    }).catch(function () { const currentHost = current(); if (currentHost) currentHost.innerHTML = ''; });
   }
 
   function paintDetailEntry(host, transferId, view) {
