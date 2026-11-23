@@ -117,6 +117,53 @@ async def test_sampling_never_waits_for_the_reconcile_cycle(acquiring):
         assert acquiring.engine.throughput.current() == 5 * MIB
 
 
+@pytest.mark.asyncio
+async def test_the_fast_observation_reads_no_projection_while_no_writer_is_live(acquiring, monkeypatch):
+    """1.0.3 WS7 (idle CPU): with no live writer a fast observation feeds the
+    meter its empty sample and reads no active projection; with one, the
+    projection is read BEFORE the sample persists the writer's progress, so
+    the progress it persisted is published."""
+    import application.service as service_module
+    from application.service import ApplicationService
+
+    published = []
+
+    async def publish(kind, payload):
+        published.append((kind, payload))
+    monkeypatch.setattr(service_module, "publish", publish)
+    reads = []
+    active = acquiring.repository.active
+
+    async def counted(*args, **kwargs):
+        transfers = await active(*args, **kwargs)
+        reads.append(tuple(transfer.active_execution_progress for transfer in transfers))
+        return transfers
+    monkeypatch.setattr(acquiring.repository, "active", counted)
+    application = ApplicationService(acquiring.engine)
+    transfer_id = (await active())[0].id
+
+    await _moving(acquiring, 2 * MIB, application.observe_live_executions)
+    published.clear()
+    reads.clear()
+    await _moving(acquiring, 2 * MIB, application.observe_live_executions, seconds=0.5)
+    before, after = reads                                    # read once before the sample persisted, once after
+    assert before != after, "the projection was read after the sample persisted the progress"
+    [(kind, payload)] = published
+    [item] = payload["items"]
+    assert kind == "torrent_updated" and item["id"] == transfer_id and not item["status_changed"]
+    assert acquiring.engine.throughput.current() == 2 * MIB
+
+    await acquiring.engine.cancel(transfer_id)
+    assert await acquiring.repository.live_execution_handles() == ()
+    assert acquiring.engine.throughput.current() == 2 * MIB  # nothing has fed the meter since
+    published.clear()
+    reads.clear()
+    acquiring.engine.throughput.clock.now += 0.5             # the next tick, half a second on
+    await application.observe_live_executions()
+    assert reads == [] and published == []
+    assert acquiring.engine.throughput.current() == 0        # the meter still decays
+
+
 # ── RED 1A: the speed read never waits for the slower occupancy fact ─────────
 
 @pytest.mark.asyncio

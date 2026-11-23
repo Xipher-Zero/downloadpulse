@@ -413,10 +413,20 @@ class ApplicationService:
     async def observe_live_executions(self):
         """The fast observation of live writers (``TransferEngine.sample_throughput``):
         it persists factual activity, so it is admitted like every other
-        DB-backed operation and drained by maintenance."""
+        DB-backed operation and drained by maintenance.
+
+        With no live writer nothing can have moved: only the meter is fed
+        (its empty sample), and neither projection is read nor anything
+        published -- the reconcile cycle publishes the end of the last
+        writer. With some, the projection is read BEFORE the sample persists
+        their progress, so what moved is published."""
         async with self.application_operation():
+            live = await self.repository.live_execution_handles()
+            if not live:
+                await self.engine.sample_throughput(live)
+                return
             before = await self.repository.active()
-            await self.engine.sample_throughput()
+            await self.engine.sample_throughput(live)
             await self._publish_active_changes(before, stats=False)
 
     async def execution_throughput(self) -> dict:

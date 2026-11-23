@@ -359,11 +359,14 @@ async def test_startup_reconciliation_reuses_surviving_execution(runtime):
 
 
 @pytest.mark.asyncio
-async def test_startup_missing_gid_backs_off_then_reconstructs_once_on_same_target(runtime):
+async def test_startup_missing_gid_reconstructs_once_on_same_target_without_backoff(runtime):
+    """1.0.3 WS7: the previous process's writer found ABSENT at startup is
+    rebuilt in the same cycle -- no orphan backoff, no counted failure."""
     repository, registry, _provider, executor, engine, now = runtime
     transfer, artifact = await start_transfer(runtime)
     original = artifact.execution
     target = artifact.target
+    budget = await repository.recovery_budget(artifact.id)
     executor.jobs.pop(original.attempt_id)
 
     restarted = TransferEngine(
@@ -372,20 +375,32 @@ async def test_startup_missing_gid_backs_off_then_reconstructs_once_on_same_targ
     )
     await restarted.initialize()
     await restarted.reconcile_executions()
-    waiting = (await repository.artifacts(transfer.id))[0]
-    assert waiting.execution is None
-    assert waiting.target == target
-    assert waiting.state == "recovery_wait"
-    retry_at = waiting.retry_at
-    assert retry_at > now[0]
-
-    now[0] = retry_at
-    await restarted.reconcile_executions()
     rebuilt = (await repository.artifacts(transfer.id))[0]
     assert rebuilt.execution is not None
     assert rebuilt.execution != original
     assert rebuilt.target == target
-    assert len(await repository.executions(transfer.id)) == 2
+    attempts = await repository.executions(transfer.id)
+    assert len(attempts) == 2
+    old = next(item for item in attempts if item.handle.attempt_id == original.attempt_id)
+    assert old.state == ExecutionState.ABSENT.value
+    assert original.attempt_id not in {item.handle.attempt_id for item in await repository.live_executions()}
+    context = await repository.recovery_context(rebuilt.id)
+    assert context["last_execution_retirement_reason"] == "startup_writer_lost"
+    assert await repository.recovery_budget(rebuilt.id) == budget
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", [RecoveryTrigger.EXECUTOR_RECOVERY, RecoveryTrigger.AUTO_RETRY])
+async def test_missing_gid_outside_startup_still_backs_off_as_an_orphan(runtime, trigger):
+    repository, _registry, _provider, executor, engine, now = runtime
+    transfer, artifact = await start_transfer(runtime)
+    executor.jobs.pop(artifact.execution.attempt_id)
+    await engine.recover_artifact(artifact, trigger=trigger)
+    waiting = (await repository.artifacts(transfer.id))[0]
+    assert waiting.execution is None
+    assert waiting.state == "recovery_wait"
+    assert waiting.retry_at > now[0]
+    assert len(await repository.executions(transfer.id)) == 1
 
 
 @pytest.mark.asyncio

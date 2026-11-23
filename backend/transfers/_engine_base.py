@@ -1514,7 +1514,7 @@ class TransferEngine:
         # cycle lock released: the fast observation keeps running meanwhile.
         await self._verify_pending()
 
-    async def sample_throughput(self) -> None:
+    async def sample_throughput(self, writers: tuple | None = None) -> None:
         """THE fast observation of live writers, at presentation cadence.
 
         The reconcile cycle walks every artifact and its pace grows with the
@@ -1533,11 +1533,19 @@ class TransferEngine:
         It decides nothing: no terminal handling, recovery, verification,
         candidate, provider or admission decision -- an UNKNOWN, terminal or
         erroring observation is left to the reconcile cycle. It never waits
-        for the cycle."""
+        for the cycle.
+
+        ``writers``: the live writers (``live_execution_handles``) when the
+        caller has just read them -- the application reads them first, so
+        that with none it reads nothing else and with some it reads its
+        projection before this persists their progress. With none, the
+        meter still records the empty sample, so the speed decays to zero."""
         statuses = {ExecutionState.RUNNING: "downloading", ExecutionState.QUEUED: "queued",
                     ExecutionState.PAUSED: "paused"}
+        if writers is None:
+            writers = await self.repository.live_execution_handles()
         grouped: dict[str, list] = {}
-        for transfer_id, status, handle in await self.repository.live_execution_handles():
+        for transfer_id, status, handle in writers:
             grouped.setdefault(handle.executor_id, []).append((transfer_id, status, handle))
         samples, moved = {}, set()
         for executor_id, live in grouped.items():
@@ -1819,7 +1827,8 @@ class TransferEngine:
 
                     if observed.state in {ExecutionState.UNKNOWN, ExecutionState.FAILED, ExecutionState.ABSENT,
                                           ExecutionState.CANCELLED, ExecutionState.SUCCEEDED}:
-                        if desired_paused and await self._retire_lost_parked_writer(current, observed):
+                        if desired_paused and await self._retire_lost_writer(
+                                current, observed, prior_states=frozenset({ExecutionState.PAUSED})):
                             return observed
                         if persist_passive:
                             await self.repository.execution(observed)
@@ -3254,21 +3263,34 @@ class TransferEngine:
             await self.repository.detach_retired_writer(artifact.id, artifact.execution.attempt_id, state="paused")
         return None
 
-    async def _retire_lost_parked_writer(self, artifact: Artifact, observed: ExecutionObservation) -> bool:
-        """A writer Pause parked whose native job is then found gone -- an
-        executor that keeps no paused job across its own restart -- lost
-        nothing DownloadPulse owns: its material was checkpointed when it parked.
-        That is not a failure of the transfer, so it is not handed to recovery
-        as an orphan. The absence is recorded and the writer detached exactly
-        as Pause detaches a writer it retired outright; the next start plans
-        from DownloadPulse material alone. Applies only to the artifact's current
-        writer whose durable state is still the PAUSED its parking left
-        (read before this observation is recorded). Returns whether it did."""
+    async def _retire_lost_writer(self, artifact: Artifact, observed: ExecutionObservation,
+                                  *, prior_states: frozenset) -> bool:
+        """A writer whose native job is found gone where that is expected, not
+        a failure of the transfer, so it is not handed to recovery as an
+        orphan (no failure counted, no backoff). Two cases, by the durable
+        state the writer last had (``prior_states``, read before this
+        observation is recorded):
+
+        * PAUSED -- a writer Pause parked, of an executor that keeps no paused
+          job across its own restart: its material was checkpointed when it
+          parked, so it lost nothing DownloadPulse owns;
+        * any nonterminal state, at startup reconciliation -- the writer of
+          the previous process, whose executor no longer holds the job. It is
+          rebuilt from the material startup reconciliation just established,
+          as the post-backoff orphan path would rebuild it, minus the backoff
+          wait and the counted failure (so a crash loop around one writer is
+          no longer bounded by the orphan budget). An executor whose first
+          answer after its restart is UNKNOWN never reaches here.
+
+        The absence is recorded and the writer detached exactly as Pause
+        detaches a writer it retired outright; the next start plans from
+        DownloadPulse material alone. Applies only to the artifact's current
+        writer. Returns whether it did."""
         if observed.state != ExecutionState.ABSENT:
             return False
         prior = await self.repository.previous_writer(artifact.id)
         if (prior is None or prior.handle.attempt_id != observed.handle.attempt_id
-                or ExecutionState(prior.state) != ExecutionState.PAUSED):
+                or ExecutionState(prior.state) not in prior_states):
             return False
         await self.repository.execution(observed)
         transfer = await self.repository.get(artifact.transfer_id)

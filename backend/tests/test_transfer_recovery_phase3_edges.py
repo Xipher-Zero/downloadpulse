@@ -262,7 +262,9 @@ async def test_two_reconstruction_triggers_create_one_replacement(runtime):
     original = artifact.execution
     target = artifact.target
     executor.jobs.pop(original.attempt_id)
-    await engine.recover_artifact(artifact, trigger=RecoveryTrigger.STARTUP_RECONCILE)
+    # A writer lost outside startup is an orphan, backed off (at startup it is
+    # rebuilt at once: test_transfer_recovery_phase3).
+    await engine.recover_artifact(artifact, trigger=RecoveryTrigger.EXECUTOR_RECOVERY)
     waiting = (await repository.artifacts(transfer.id))[0]
     assert waiting.execution is None
     now[0] = waiting.retry_at

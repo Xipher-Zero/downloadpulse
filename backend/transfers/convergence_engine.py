@@ -55,6 +55,17 @@ _INFRASTRUCTURE_CATEGORIES = frozenset({
 _TRANSIENT_HANDOFF_REFUSALS = frozenset({
     "claim_not_current", "execution_changed_concurrently", "writer_start_in_flight", "commit_conflict",
 })
+# The triggers at which a writer found ABSENT is detached and rebuilt from DP
+# material instead of handed to recovery as an orphan, by the durable state it
+# last had (``_retire_lost_writer``): Resume, of a writer Pause parked; startup
+# reconciliation, of any nonterminal writer of the previous process. Any other
+# ABSENT is an orphan.
+_LOST_WRITER_PRIOR_STATES = {
+    RecoveryTrigger.RESUME: frozenset({ExecutionState.PAUSED}),
+    RecoveryTrigger.STARTUP_RECONCILE: frozenset({
+        ExecutionState.QUEUED, ExecutionState.RUNNING, ExecutionState.PAUSED, ExecutionState.UNKNOWN,
+    }),
+}
 
 
 @dataclass(frozen=True)
@@ -1289,9 +1300,11 @@ class TransferEngine(_QualifiedTransferEngine):
                         factual_terminal_error = True
                     retirement_reason = "execution_succeeded_but_verification_failed"
 
-                elif (trigger == RecoveryTrigger.RESUME
-                      and await self._retire_lost_parked_writer(current, observed)):
-                    # Resume found the job Pause parked gone: no orphan, no
+                elif (trigger in _LOST_WRITER_PRIOR_STATES
+                      and await self._retire_lost_writer(
+                          current, observed, prior_states=_LOST_WRITER_PRIOR_STATES[trigger])):
+                    # Resume found the job Pause parked gone, or startup found
+                    # the previous process's writer gone: no orphan, no
                     # backoff -- a fresh writer continues from DP material.
                     current = await self._current_artifact(current.transfer_id, current.id)
                     if current is None:
@@ -1299,7 +1312,8 @@ class TransferEngine(_QualifiedTransferEngine):
                             True, False, RecoveryAction.RECONCILE.value,
                             "artifact_disappeared", "terminal_or_missing",
                         ), None
-                    retirement_reason = "parked_writer_lost"
+                    retirement_reason = ("parked_writer_lost" if trigger == RecoveryTrigger.RESUME
+                                         else "startup_writer_lost")
 
                 elif observed.state in {
                     ExecutionState.FAILED, ExecutionState.ABSENT, ExecutionState.CANCELLED,
