@@ -194,6 +194,8 @@
   "desktop.tray.open": "فتح DownloadPulse",
   "desktop.tray.quit": "إنهاء DownloadPulse",
   "desktop.tray.status": "نشطة: {active} · في قائمة الانتظار: {queued}",
+  "desktop.quit.title": "إنهاء DownloadPulse؟",
+  "desktop.quit.message": "ستتوقف التنزيلات النشطة.",
   "desktop.notice.accepted": "تم قبول النقل",
   "desktop.notice.completed": "اكتمل النقل",
   "desktop.notice.paused_many": "عمليات النقل الموقوفة مؤقتًا: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "المنفذ المحلي متاح فقط في تطبيق سطح المكتب.",
   "desktop.local_port.unavailable_title": "المنفذ المحلي غير متاح",
   "desktop.local_port.unavailable": "المنفذ {port} يستخدمه برنامج آخر. لا يمكن للتطبيقات الخارجية الوصول إلى DownloadPulse حتى يصبح متاحًا أو يتم تغييره في الإعدادات.",
+  "desktop.error.start_failed_title": "تعذّر بدء تشغيل DownloadPulse",
+  "desktop.error.start_failed": "السبب مسجَّل في logs/desktop.log في مجلد بيانات DownloadPulse.",
   "help.topic.heading.local_port": "المنفذ المحلي",
   "help.topic.deployment_type.local_port.what": "<b>المنفذ المحلي</b> هو المكان الذي تصل منه التطبيقات الخارجية، مثل Sonarr أو Radarr، إلى DownloadPulse: اتصالات عميل التنزيل SABnzbd وqBittorrent وواجهة API الخارجية، كل منها برمز حساب تكامل. أعطها العنوان الذي يعرضه التلميح.",
   "help.topic.deployment_type.local_port.this_computer": "يمكن استخدامه من البرامج على هذا الكمبيوتر فقط؛ ولا يمكن ذلك من أجهزة الكمبيوتر الأخرى على الشبكة.",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "تطبيق سطح المكتب دائمًا «مستقل»؛ ولا يتغير نوع النشر الخاص به",
   "error.desktop.frame_only": "إطار النافذة موجود في تطبيق سطح المكتب فقط.",
   "error.desktop.frame_invalid": "ألوان إطار النافذة غير صالحة.",
+  "error.desktop.quit_only": "تطبيق سطح المكتب وحده لديه نافذة يمكن إنهاؤها.",
+  "error.desktop.quit_refused": "انتهت صلاحية طلب الإنهاء هذا. أغلق النافذة مرة أخرى للإنهاء.",
   "browser.pairing.title": "ربط متصفح",
   "browser.pairing.intro": "يطلب متصفح الارتباط بحسابك. بعد ربطه، يمكنه إرسال التنزيلات إلى هنا وعرض التنزيلات التي أرسلها.",
   "browser.pairing.field.browser": "المتصفح",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

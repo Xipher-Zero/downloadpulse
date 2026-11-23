@@ -194,6 +194,8 @@
   "desktop.tray.open": "Abrir DownloadPulse",
   "desktop.tray.quit": "Salir de DownloadPulse",
   "desktop.tray.status": "Activas: {active} · En cola: {queued}",
+  "desktop.quit.title": "¿Salir de DownloadPulse?",
+  "desktop.quit.message": "Las descargas activas se detendrán.",
   "desktop.notice.accepted": "Transferencia aceptada",
   "desktop.notice.completed": "Transferencia completada",
   "desktop.notice.paused_many": "Transferencias en pausa: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "El puerto local solo está disponible en la aplicación de escritorio.",
   "desktop.local_port.unavailable_title": "Puerto local no disponible",
   "desktop.local_port.unavailable": "Otro programa está usando el puerto {port}. Las aplicaciones externas no podrán acceder a DownloadPulse hasta que quede libre o se cambie en Ajustes.",
+  "desktop.error.start_failed_title": "No se pudo iniciar DownloadPulse",
+  "desktop.error.start_failed": "El motivo está registrado en logs/desktop.log, en la carpeta de datos de DownloadPulse.",
   "help.topic.heading.local_port": "Puerto local",
   "help.topic.deployment_type.local_port.what": "<b>Puerto local</b> es donde las aplicaciones externas, como Sonarr o Radarr, acceden a DownloadPulse: sus conexiones de cliente de descarga SABnzbd y qBittorrent y su API externa, cada una con el token de una cuenta de Integración. Indíqueles la dirección que muestra su indicación.",
   "help.topic.deployment_type.local_port.this_computer": "Solo los programas de este equipo pueden usarlo; los demás equipos de la red no.",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "La aplicación de escritorio siempre es Independiente; su tipo de implementación no cambia",
   "error.desktop.frame_only": "Solo la aplicación de escritorio tiene un marco de ventana.",
   "error.desktop.frame_invalid": "Los colores del marco de la ventana no son válidos.",
+  "error.desktop.quit_only": "Solo la aplicación de escritorio tiene una ventana desde la que salir.",
+  "error.desktop.quit_refused": "Esta solicitud para salir ha caducado. Cierre la ventana de nuevo para salir.",
   "browser.pairing.title": "Conectar un navegador",
   "browser.pairing.intro": "Un navegador solicita conectarse a su cuenta. Una vez conectado, puede enviar descargas aquí y mostrar las descargas que envió.",
   "browser.pairing.field.browser": "Navegador",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

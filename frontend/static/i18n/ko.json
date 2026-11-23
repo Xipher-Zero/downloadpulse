@@ -194,6 +194,8 @@
   "desktop.tray.open": "DownloadPulse 열기",
   "desktop.tray.quit": "DownloadPulse 종료",
   "desktop.tray.status": "진행 중: {active} · 대기 중: {queued}",
+  "desktop.quit.title": "DownloadPulse를 종료하시겠습니까?",
+  "desktop.quit.message": "진행 중인 다운로드가 중지됩니다.",
   "desktop.notice.accepted": "전송이 접수되었습니다",
   "desktop.notice.completed": "전송이 완료되었습니다",
   "desktop.notice.paused_many": "일시 중지된 전송: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "로컬 포트는 데스크톱 애플리케이션에서만 사용할 수 있습니다.",
   "desktop.local_port.unavailable_title": "로컬 포트를 사용할 수 없음",
   "desktop.local_port.unavailable": "포트 {port}을(를) 다른 프로그램이 사용하고 있습니다. 포트가 비거나 설정에서 변경될 때까지 외부 애플리케이션은 DownloadPulse에 연결할 수 없습니다.",
+  "desktop.error.start_failed_title": "DownloadPulse를 시작하지 못했습니다",
+  "desktop.error.start_failed": "원인은 DownloadPulse 데이터 폴더의 logs/desktop.log에 기록되어 있습니다.",
   "help.topic.heading.local_port": "로컬 포트",
   "help.topic.deployment_type.local_port.what": "<b>로컬 포트</b>는 Sonarr나 Radarr 같은 외부 애플리케이션이 DownloadPulse에 연결하는 곳입니다. SABnzbd 및 qBittorrent 다운로드 클라이언트 연결과 외부 API가 각각 연동 계정의 토큰으로 연결합니다. 힌트에 표시되는 주소를 알려 주십시오.",
   "help.topic.deployment_type.local_port.this_computer": "이 컴퓨터의 프로그램만 사용할 수 있으며, 네트워크의 다른 컴퓨터는 사용할 수 없습니다.",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "데스크톱 애플리케이션은 항상 독립형이며 배포 유형은 변경되지 않습니다",
   "error.desktop.frame_only": "창 프레임은 데스크톱 애플리케이션에만 있습니다.",
   "error.desktop.frame_invalid": "창 프레임 색상이 올바르지 않습니다.",
+  "error.desktop.quit_only": "종료할 창은 데스크톱 애플리케이션에만 있습니다.",
+  "error.desktop.quit_refused": "이 종료 요청은 만료되었습니다. 종료하려면 창을 다시 닫으세요.",
   "browser.pairing.title": "브라우저 연결",
   "browser.pairing.intro": "브라우저가 계정에 연결을 요청하고 있습니다. 연결되면 이 브라우저에서 여기로 다운로드를 보내고, 보낸 다운로드를 표시할 수 있습니다.",
   "browser.pairing.field.browser": "브라우저",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

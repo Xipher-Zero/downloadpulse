@@ -704,6 +704,46 @@ window.DPDesktopSave = DPDesktopSave;
   else say();
 })();
 
+/* Desktop quit. Where no tray can open the installed desktop application's
+ * window again (Linux without one), closing the window asks here whether to
+ * quit: the desktop supervisor asks the backend, which sends only this window's
+ * own page -- never a browser tab, nor a client of Local Port -- the event
+ * desktop_quit_prompt, with a single-use nonce. Quit sends that nonce back
+ * (POST /desktop/quit) and the supervisor quits, in order; Cancel leaves the
+ * window as it is. A newer prompt (closed again) replaces an open one: only its
+ * nonce is accepted. Nothing elsewhere. */
+let desktopQuitDialog = null;
+function askDesktopQuit(nonce) {
+  if (window.downloadPulseDesktop !== true || typeof nonce !== 'string' || !nonce) return;
+  if (!window.DPSettingsModal || typeof window.DPSettingsModal.open !== 'function') return;
+  if (desktopQuitDialog && desktopQuitDialog.isOpen) desktopQuitDialog.close();
+  desktopQuitDialog = window.DPSettingsModal.open({
+    role: 'alertdialog',
+    tone: 'danger',
+    title: DPI18n.t('desktop.quit.title'),
+    acceptLabel: DPI18n.t('desktop.tray.quit'),
+    cancelLabel: DPI18n.t('common.cancel'),
+    keys: {title: 'desktop.quit.title', accept: 'desktop.tray.quit', cancel: 'common.cancel'},
+    mount(body) {
+      const message = document.createElement('p');
+      message.className = 'dp-modal-message';
+      message.dataset.i18n = 'desktop.quit.message';
+      message.textContent = DPI18n.t('desktop.quit.message');
+      body.appendChild(message);
+      return message;
+    },
+    async onAccept() {
+      try {
+        await api('POST', '/desktop/quit', {nonce});
+      } catch (error) {
+        toast(sanitizeErrorMsg(error.message), 'error');
+        return false;
+      }
+      return true;
+    },
+  });
+}
+
 async function api(method, path, body, timeoutMs, options) {
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
   // A file sent as itself: the raw body, typed by the file.
@@ -4254,6 +4294,15 @@ document.addEventListener('DOMContentLoaded', () => {
             document.dispatchEvent(new CustomEvent('downloadpulse:pulse-heartbeat'));
           }
         );
+
+        // The desktop window was closed where no tray can open it again: its
+        // own page (the server sends no other) asks whether to quit, with the
+        // prompt's single-use nonce.
+        es.addEventListener('desktop_quit_prompt', function(e) {
+          let payload = {};
+          try { payload = JSON.parse(e.data || '{}'); } catch (_) {}
+          askDesktopQuit(payload.nonce);
+        });
 
         // The account's role changed: its session continues under the new
         // authority, so start over from what the server now allows.

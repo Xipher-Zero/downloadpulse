@@ -194,6 +194,8 @@
   "desktop.tray.open": "Abrir o DownloadPulse",
   "desktop.tray.quit": "Sair do DownloadPulse",
   "desktop.tray.status": "Ativas: {active} · Na fila: {queued}",
+  "desktop.quit.title": "Sair do DownloadPulse?",
+  "desktop.quit.message": "Os downloads ativos serão interrompidos.",
   "desktop.notice.accepted": "Transferência aceita",
   "desktop.notice.completed": "Transferência concluída",
   "desktop.notice.paused_many": "Transferências pausadas: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "A porta local só está disponível no aplicativo para desktop.",
   "desktop.local_port.unavailable_title": "Porta local indisponível",
   "desktop.local_port.unavailable": "A porta {port} está sendo usada por outro programa. Aplicativos externos não poderão acessar o DownloadPulse até que ela fique livre ou seja alterada em Ajustes.",
+  "desktop.error.start_failed_title": "Não foi possível iniciar o DownloadPulse",
+  "desktop.error.start_failed": "O motivo está registrado em logs/desktop.log, na pasta de dados do DownloadPulse.",
   "help.topic.heading.local_port": "Porta local",
   "help.topic.deployment_type.local_port.what": "<b>Porta local</b> é onde aplicativos externos, como o Sonarr ou o Radarr, acessam o DownloadPulse: as conexões de cliente de download SABnzbd e qBittorrent e a API externa, cada uma com o token de uma conta de Integração. Informe a eles o endereço que a dica mostra.",
   "help.topic.deployment_type.local_port.this_computer": "Só programas deste computador podem usá-la; outros computadores da rede não.",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "O aplicativo para desktop está sempre no modo Autônomo; seu tipo de implantação não muda",
   "error.desktop.frame_only": "Somente o aplicativo para desktop tem uma moldura de janela.",
   "error.desktop.frame_invalid": "As cores da moldura da janela não são válidas.",
+  "error.desktop.quit_only": "Somente o aplicativo para desktop tem uma janela para sair.",
+  "error.desktop.quit_refused": "Esta solicitação para sair expirou. Feche a janela novamente para sair.",
   "browser.pairing.title": "Conectar um navegador",
   "browser.pairing.intro": "Um navegador está pedindo para se conectar à sua conta. Depois de conectado, ele pode enviar downloads para cá e mostrar os downloads que enviou.",
   "browser.pairing.field.browser": "Navegador",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

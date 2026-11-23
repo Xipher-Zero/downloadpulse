@@ -1518,6 +1518,28 @@ async def desktop_frame(body: DesktopFrame):
         raise DisplayError(422, "The window frame colours are not valid.", code="desktop.frame_invalid") from None
 
 
+# ── the desktop application's Quit, confirmed in its window ───────────────
+# Closing the window where no tray can open it again (Linux) asks the window's
+# own page whether to quit (application.desktop_control op quit_prompt, event
+# desktop_quit_prompt); its Quit sends the prompt's single-use nonce here, and
+# the supervisor quits on its next look (op show: quit). Without the nonce of
+# the prompt pending, nothing quits. A server has no window to quit.
+
+class DesktopQuit(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    nonce: str
+
+
+@router.post("/desktop/quit")
+async def desktop_quit(body: DesktopQuit):
+    _require_desktop("Only the desktop application has a window to quit.", "desktop.quit_only")
+    from application.desktop_control import request_quit
+    if not request_quit(body.nonce):
+        raise DisplayError(409, "This request to quit has expired. Close the window again to quit.",
+                           code="desktop.quit_refused")
+    return {"quitting": True}
+
+
 # ── Local Port (the desktop application's external address) ────────────────
 # Classified ``administer``. The port external clients reach on this computer
 # (``application.desktop_listener``): read with the clients that connected in
@@ -2731,6 +2753,10 @@ async def trigger_deep_sync( application: ApplicationService = Depends(get_appli
 #                   Delivered only to a connection whose CURRENT principal may
 #                   read the Activity Log (``_SSE_GATED``): that activity
 #                   occurred is itself information other roles are not given.
+#   desktop_quit_prompt — {nonce}; the desktop window was closed with no tray
+#                   to open it again: its page asks whether to quit. Sent only
+#                   to the window's own page (``_sse_prompt_window``), never
+#                   broadcast.
 #
 # This requires NO external dependencies (no Redis, no WebSocket library).
 
@@ -2749,10 +2775,14 @@ _SSE_EVICTED = object()
 @dataclass(frozen=True)
 class _SseSubscriber:
     """Who one live connection streams to: its principal and, for a browser
-    application session, that session's address (``session_store.fingerprint``)."""
+    application session, that session's address (``session_store.fingerprint``);
+    ``window``: it was opened at the desktop window's own address
+    (``desktop_listener.window_request``), not by a browser tab or through Local
+    Port."""
     principal: Principal
     session_token: str = ""
     session: bytes = b""
+    window: bool = False
 
 
 # An event only some roles may receive, by the capability of the one action
@@ -2852,6 +2882,29 @@ def _sse_sessions_ended(fingerprints: frozenset[bytes], account_id: str | None, 
                 _sse_evict(queue, frame)            # it still learns why, then ends
 
 
+async def _sse_prompt_window(nonce: str) -> bool:
+    """The desktop window's quit prompt (``application.desktop_control`` op
+    ``quit_prompt``), sent to the window's own page alone: a connection opened
+    at the window's address (``_SseSubscriber.window``), still authorized, whose
+    current principal may answer it (POST /desktop/quit) -- never a browser
+    tab or a Local Port client. It carries the prompt's single-use nonce.
+    Whether any such page was sent it."""
+    capability = ACTIONS["api.routes.desktop_quit"]
+    frame = _SseGatedFrame(capability, f"event: desktop_quit_prompt\ndata: {_json.dumps({'nonce': nonce})}\n\n")
+    sent = False
+    async with _sse_lock:
+        for queue, subscriber in list(_sse_subscribers.items()):
+            if not subscriber.window or not _sse_still_authorized(subscriber) \
+                    or not permits(_sse_principal(subscriber), capability):
+                continue
+            try:
+                queue.put_nowait(frame)
+                sent = True
+            except asyncio.QueueFull:
+                _sse_evict(queue)
+    return sent
+
+
 bind_publisher(_sse_broadcast)
 session_store.on_revocation(_sse_sessions_ended)
 
@@ -2871,8 +2924,11 @@ def _sse_still_authorized(subscriber: _SseSubscriber) -> bool:
 async def _sse_generator(request: Request) -> AsyncGenerator[str, None]:
     """Yield SSE frames until the client disconnects or its access ends."""
     token = str(getattr(request.state, "auth_session_token", "") or "")
+    from application.desktop_listener import window_request
+    from core.config import desktop_installation
     subscriber = _SseSubscriber(request.state.principal, token,
-                                session_store.fingerprint(token) if token else b"")
+                                session_store.fingerprint(token) if token else b"",
+                                desktop_installation() and window_request(request.headers.get("host", "")))
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     async with _sse_lock:
         _sse_subscribers[queue] = subscriber

@@ -23921,6 +23921,42 @@
    "context": "A folder's state (server code 'not_persistent'): the installed desktop application's sandbox does not keep files written there; they would be lost when the application closes. Keep the consequence.",
    "owner": "frontend/static/ui-settings-directory-picker.js",
    "criticality": "normal"
+  },
+  "desktop.quit.title": {
+   "category": "modal-title",
+   "context": "Title of the dialog the desktop application's window shows when it is closed on a desktop with no tray icon to open it again (Linux without a tray): confirming quits DownloadPulse. Its buttons are 'Quit DownloadPulse' and 'Cancel'.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal"
+  },
+  "desktop.quit.message": {
+   "category": "critical-warning",
+   "context": "Body of the desktop application's quit dialog (shown when its window is closed where no tray icon can open it again): quitting stops every download in progress. Keep the warning as strong as the English.",
+   "owner": "frontend/static/app.js",
+   "criticality": "critical-warning"
+  },
+  "desktop.error.start_failed_title": {
+   "category": "toast",
+   "context": "Desktop notification title when the desktop application fails to start (its window does not open).",
+   "owner": "desktop/supervisor.py",
+   "criticality": "normal"
+  },
+  "desktop.error.start_failed": {
+   "category": "toast",
+   "context": "Desktop notification body when the desktop application fails to start. 'logs/desktop.log' is a file path inside the application's data folder: keep it exactly as written.",
+   "owner": "desktop/supervisor.py",
+   "criticality": "normal"
+  },
+  "error.desktop.quit_only": {
+   "category": "error",
+   "context": "Refusal of a request to quit the desktop application from its window (sent by the page itself, never shown in normal use): a server installation has no window to quit.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
+  "error.desktop.quit_refused": {
+   "category": "error",
+   "context": "Shown as an error message when Quit is pressed in the desktop application's quit dialog after that dialog's request expired (the window was closed again since, or DownloadPulse restarted). Tells the person to close the window again to be asked anew.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
   }
  }
 }

@@ -536,8 +536,9 @@ async def test_a_connected_browsers_open_brings_the_window_forward_as_the_trays_
         owner = await Person.sign_in(backend, "owner", PASSWORD)
         token, _ = await pair(backend, owner, "Brave on Linux")
         await owner.close()
-        # Nothing asked yet: the channel answers no, and asking does not ask.
-        assert (await backend.channel.ask("show"))["show"] is False
+        # Nothing asked yet: the channel answers no (and no Quit confirmed), and asking does not ask.
+        nothing = await backend.channel.ask("show")
+        assert nothing["show"] is False and nothing["quit"] is False
         shell = _RecordingShell()
         loop_task = asyncio.ensure_future(supervisor._serve(
             shell, backend.channel, supervisor.Words(tmp_path / "config" / "config.json"), backend.owned, _QuietTray()))

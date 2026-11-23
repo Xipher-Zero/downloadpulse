@@ -194,6 +194,8 @@
   "desktop.tray.open": "DownloadPulse を開く",
   "desktop.tray.quit": "DownloadPulse を終了",
   "desktop.tray.status": "実行中: {active} · 待機中: {queued}",
+  "desktop.quit.title": "DownloadPulse を終了しますか？",
+  "desktop.quit.message": "実行中のダウンロードは停止します。",
   "desktop.notice.accepted": "転送を受け付けました",
   "desktop.notice.completed": "転送が完了しました",
   "desktop.notice.paused_many": "一時停止した転送: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "ローカル ポートはデスクトップ アプリケーションでのみ使用できます。",
   "desktop.local_port.unavailable_title": "ローカル ポートを使用できません",
   "desktop.local_port.unavailable": "ポート {port} は別のプログラムが使用しています。ポートが空くか、設定で変更されるまで、外部アプリケーションは DownloadPulse に接続できません。",
+  "desktop.error.start_failed_title": "DownloadPulse を起動できませんでした",
+  "desktop.error.start_failed": "原因は DownloadPulse のデータ フォルダーにある logs/desktop.log に記録されています。",
   "help.topic.heading.local_port": "ローカル ポート",
   "help.topic.deployment_type.local_port.what": "<b>ローカル ポート</b>は、Sonarr や Radarr などの外部アプリケーションが DownloadPulse に接続する場所です。SABnzbd と qBittorrent のダウンロード クライアント接続、および外部 API が、それぞれ連携アカウントのトークンで接続します。ヒントに表示されるアドレスを指定してください。",
   "help.topic.deployment_type.local_port.this_computer": "使用できるのはこのコンピューター上のプログラムだけです。ネットワーク上の他のコンピューターからは使用できません。",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "デスクトップ アプリケーションは常にスタンドアロンです。展開の種類は変更されません",
   "error.desktop.frame_only": "ウィンドウ フレームがあるのはデスクトップ アプリケーションだけです。",
   "error.desktop.frame_invalid": "ウィンドウ フレームの色が無効です。",
+  "error.desktop.quit_only": "終了するウィンドウがあるのはデスクトップ アプリケーションだけです。",
+  "error.desktop.quit_refused": "この終了の要求は期限切れです。終了するには、もう一度ウィンドウを閉じてください。",
   "browser.pairing.title": "ブラウザーを接続",
   "browser.pairing.intro": "ブラウザーがあなたのアカウントへの接続を求めています。接続すると、そのブラウザーからここにダウンロードを送信し、送信したダウンロードを表示できるようになります。",
   "browser.pairing.field.browser": "ブラウザー",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

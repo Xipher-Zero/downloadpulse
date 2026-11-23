@@ -23,14 +23,20 @@ It owns, and only owns, what a desktop process needs and DownloadPulse does not:
   closing the control channel makes the backend stop itself through its own
   shutdown, bounded by uvicorn's graceful-shutdown timeout for any other open
   request; only a backend that does not end in time is ended forcibly (its
-  process group or job), the crash backstop, and the log says so.
+  process group or job), the crash backstop, and the log says so. Quit is the
+  tray's, macOS's Cmd+Q, a termination signal (``Signals``: SIGTERM, SIGINT,
+  SIGHUP on POSIX) or -- where no tray can open the window again (Linux) --
+  closing the window, once its own page has asked and the person confirmed;
+* a start that fails: logged with its cause, and said in a notice where one
+  can be shown (``start_failure_notice``).
 
 It reads no attempt marker, keeps no transfer state of its own, and calls no
 DownloadPulse HTTP API but the public health check: the tray's status, events
 and Pause/Resume All travel on the private channel to their canonical owners.
 Nothing it does signs a session in or unlocks the interface. What the native
 side refuses or fails to do is logged (``logs/desktop.log``), never assumed
-done.
+done. Its own log and the backend's and shell's output (``backend.log``,
+``shell.log``) are size-bounded: each rotates at LOG_BYTES, keeping LOG_BACKUPS.
 """
 from __future__ import annotations
 
@@ -38,7 +44,9 @@ import asyncio
 import base64
 import json
 import logging
+import logging.handlers
 import os
+import signal
 import socket
 import sys
 import time
@@ -64,6 +72,9 @@ NATIVE_METHODS = ("os.setTray", "os.showNotification", "window.show", "window.hi
                   "window.setFrameTheme")
 # How long a Save dialog may stay open: the person's own time.
 DIALOG_SECONDS = 600
+# Each log file's bound, and how many earlier files are kept beside it.
+LOG_BYTES = 5 * 1024 * 1024
+LOG_BACKUPS = 3
 logger = logging.getLogger("downloadpulse.desktop.supervisor")
 
 
@@ -613,7 +624,10 @@ class Shell:
         self.events: asyncio.Queue = asyncio.Queue()
         self._pending: dict[str, asyncio.Future] = {}
 
-    async def connect(self, auth_file: Path, deadline: float) -> None:
+    async def connect(self, auth_file: Path, deadline: float, owned) -> None:
+        """Connect to the shell ``owned`` (its owned process) once it has
+        exported its credential; a shell that ends first fails the start at
+        once, never after the whole wait."""
         while True:
             try:
                 info = read_credential(auth_file)   # read once, then deleted; it is nobody else's
@@ -621,6 +635,8 @@ class Shell:
             except PermissionError:
                 raise
             except (OSError, ValueError):
+                if owned.process.returncode is not None:
+                    raise RuntimeError(f"the native shell ended during start ({owned.process.returncode})") from None
                 if time.monotonic() > deadline:
                     raise TimeoutError("the native shell exported no credential") from None
                 await asyncio.sleep(0.2)
@@ -758,9 +774,10 @@ class SessionBus:
     **Availability.** The tray is shown (``tray_shown``) only while a watcher
     holds the item and says a host is registered; the watcher leaving, or its
     last host, takes it away at once, and it is registered again as soon as a
-    watcher or host returns. Each change is the shell's event
-    (``trayAvailability``), so the window is never left hidden where nothing
-    can open it."""
+    watcher or host returns -- the bus's own signals, never a poll: with no
+    watcher there is nothing to register with, and nothing is tried. Each
+    change is the shell's event (``trayAvailability``), so the window is never
+    left hidden where nothing can open it, and the log says it once."""
 
     # The menu entries that act, and so are the tray host's alone.
     ACTIONS = frozenset({"pause", "resume", "quit"})
@@ -778,6 +795,7 @@ class SessionBus:
         self.router, self.events, self.pixmaps = router, events, pixmaps
         self.items: list[dict] = []
         self.revision, self.notices_sent, self.tray_shown = 0, 0, False
+        self.availability_logged = False
         self.status_line = ""
         self.tasks: list[asyncio.Task] = []
         self.filters: list = []
@@ -877,8 +895,6 @@ class SessionBus:
         self.revision += 1
         await self._signal(self.MENU, "com.canonical.dbusmenu", "LayoutUpdated", "ui", (self.revision, 0))
         await self._signal(self.ITEM, "org.kde.StatusNotifierItem", "NewToolTip", "", ())
-        if not self.tray_shown:
-            await self._register()
 
     async def notice(self, title: str, body: str) -> None:
         """One new notice. Its id is never one this application used before,
@@ -886,15 +902,35 @@ class SessionBus:
         it already holds for the application, and the desktop shows such a
         replacement quietly (Plasma: no popup) -- a per-run counter restarting
         at 1 turned every later run's notices into silent replacements."""
-        from jeepney import DBusAddress, new_method_call
         self.notices_sent += 1
-        name, path, interface = self.PORTAL
-        reply = await self._ask(new_method_call(
-            DBusAddress(path, bus_name=name, interface=interface), "AddNotification", "sa{sv}",
-            (notice_id(), {"title": ("s", title), "body": ("s", body or title),
-                           "priority": ("s", "normal")})), "showing a notice")
+        reply = await self._ask(self._notification(title, body), "showing a notice")
         if reply is None:
             logger.error("a notice was not shown (%s)", title)
+
+    @classmethod
+    def _notification(cls, title: str, body: str):
+        """One new notice's ``AddNotification`` call (``notice``)."""
+        from jeepney import DBusAddress, new_method_call
+        name, path, interface = cls.PORTAL
+        return new_method_call(
+            DBusAddress(path, bus_name=name, interface=interface), "AddNotification", "sa{sv}",
+            (notice_id(), {"title": ("s", title), "body": ("s", body or title), "priority": ("s", "normal")}))
+
+    @classmethod
+    async def notice_once(cls, title: str, body: str) -> bool:
+        """One notice on a connection of its own, as ``activate_running`` asks:
+        for a run whose start failed, which may have no SessionBus open."""
+        from jeepney.io.asyncio import open_dbus_router
+        try:
+            async with open_dbus_router("SESSION") as router:
+                reply = await asyncio.wait_for(router.send_and_get_reply(cls._notification(title, body)), 10)
+        except (OSError, KeyError, ValueError, TimeoutError) as exc:
+            logger.error("the notice was not shown (%s): %s", title, exc)
+            return False
+        if reply.header.message_type.name == "error":
+            logger.error("the notice was not shown (%s): %s", title, reply.body)
+            return False
+        return True
 
     async def save_destination(self, name: str, title: str) -> str | None:
         """Where the person saves ``name``: the desktop's own Save dialog
@@ -952,6 +988,9 @@ class SessionBus:
     async def _register(self) -> None:
         from jeepney import DBusAddress, Properties, new_method_call
         name, path, interface = self.WATCHER
+        if await self._owner(name) is None:
+            self._shown(False)                      # no watcher: nothing to register with (stock GNOME)
+            return
         watcher = DBusAddress(path, bus_name=name, interface=interface)
         registered = await self._ask(new_method_call(watcher, "RegisterStatusNotifierItem", "s", (APP_ID,)),
                                      "registering the tray icon")
@@ -960,12 +999,15 @@ class SessionBus:
         self._shown(bool(registered and hosted and hosted.body[0][1]))
 
     def _shown(self, shown: bool) -> None:
-        """The tray's availability, and the shell's event when it changes."""
-        if shown == self.tray_shown:
-            return
-        self.tray_shown = shown
-        logger.info("tray icon %s", "shown" if shown else "not shown: no tray host to open the window from")
-        self.events.put_nowait(("trayAvailability", {"shown": shown}))
+        """The tray's availability: logged once per change (and once at
+        first), and the shell's event when it changes."""
+        changed = shown != self.tray_shown
+        if changed or not self.availability_logged:
+            self.availability_logged = True
+            logger.info("tray icon %s", "shown" if shown else "not shown: no tray host to open the window from")
+        if changed:
+            self.tray_shown = shown
+            self.events.put_nowait(("trayAvailability", {"shown": shown}))
 
     async def _owner(self, name: str) -> str | None:
         from jeepney import message_bus
@@ -1276,25 +1318,174 @@ def backend_argv(paths: dict[str, Path], port: int) -> list[str]:
             "--timeout-graceful-shutdown", str(GRACEFUL_SECONDS)]
 
 
+class ChildLog:
+    """One child's log file (``backend.log``, ``shell.log``): the one writer
+    both of its output drains (stdout, stderr) append to, bounded at
+    ``max_bytes`` -- beyond it the file becomes ``<name>.1`` (earlier ones move
+    up to ``.<backups>``, the oldest is dropped) and a new one starts. Shared by
+    both drains, so a rotation never leaves either writing to a renamed file."""
+
+    def __init__(self, path: Path, max_bytes: int = LOG_BYTES, backups: int = LOG_BACKUPS):
+        self.path, self.max_bytes, self.backups = path, max_bytes, backups
+        self._rotation_failed = False
+        self._limit = max_bytes      # the size that next triggers a rotation
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(path, "ab")
+
+    def write(self, chunk: bytes) -> None:
+        if self._file.tell() and self._file.tell() + len(chunk) > self._limit:
+            self._rotate()
+        self._file.write(chunk)
+        self._file.flush()
+
+    def _rotate(self) -> None:
+        """Move the full file aside. A rotation that fails (on Windows another
+        process holding the file without delete sharing refuses the rename)
+        never stops the drains: the file is reopened and written on, and the
+        failure is logged once -- an unread child output pipe would stall the
+        child."""
+        self._file.close()
+        try:
+            for index in range(self.backups - 1, 0, -1):
+                older = self.path.with_name(f"{self.path.name}.{index}")
+                if older.exists():
+                    os.replace(older, self.path.with_name(f"{self.path.name}.{index + 1}"))
+            os.replace(self.path, self.path.with_name(f"{self.path.name}.1"))
+            self._limit = self.max_bytes
+        except OSError as exc:
+            if not self._rotation_failed:
+                self._rotation_failed = True
+                logger.warning("rotating %s failed (%s); writing on to it", self.path.name, type(exc).__name__)
+        self._file = open(self.path, "ab")
+        # Not again until the file has grown by another full bound (a refused rename is not retried per write).
+        if self._file.tell() >= self._limit:
+            self._limit = self._file.tell() + self.max_bytes
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def diagnostics_handler(root: Path) -> logging.Handler:
+    """The supervisor's own log, ``logs/desktop.log``: size-rotated like the
+    children's (LOG_BYTES, LOG_BACKUPS)."""
+    (root / "logs").mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(root / "logs" / "desktop.log", maxBytes=LOG_BYTES,
+                                                   backupCount=LOG_BACKUPS, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    return handler
+
+
+class Signals:
+    """POSIX: SIGTERM, SIGINT and SIGHUP end the run as Quit does, in order,
+    by the run's phase (Windows is unchanged: no handlers):
+
+    * ``starting`` -- the first signal cancels the run once, so its own
+      ``finally`` ends whatever has started (the shell, then the backend);
+    * ``serving`` -- ``quitRequested`` on the shell's events: the loop returns
+      0 and the ordered Quit runs;
+    * ``quitting`` -- a signal is logged only: nothing interrupts the Quit
+      already under way (the shell's end, the backend's, ``forget``, the lock).
+    """
+
+    NAMES = ("SIGTERM", "SIGINT", "SIGHUP")
+
+    def __init__(self, task: asyncio.Task):
+        self.task, self.phase, self.events, self.received = task, "starting", None, None
+        self.served = False                         # the run reached its loop: its start succeeded
+
+    def install(self, loop: asyncio.AbstractEventLoop) -> None:
+        if os.name == "nt":
+            return
+        for name in self.NAMES:
+            loop.add_signal_handler(getattr(signal, name), self.signalled, name)
+
+    def remove(self, loop: asyncio.AbstractEventLoop) -> None:
+        if os.name == "nt":
+            return
+        for name in self.NAMES:
+            loop.remove_signal_handler(getattr(signal, name))
+
+    def serving(self, events: asyncio.Queue) -> None:
+        self.phase, self.events, self.served = "serving", events, True
+
+    def quitting(self) -> None:
+        self.phase = "quitting"
+
+    def signalled(self, name: str) -> None:
+        if self.phase == "quitting":
+            logger.info("%s while quitting: the shutdown goes on", name)
+            return
+        self.received = name
+        if self.phase == "starting":
+            logger.info("%s during start: stopping what has started, in order", name)
+            self.phase = "quitting"
+            self.task.cancel()
+        else:
+            logger.info("%s: quitting", name)
+            self.phase = "quitting"
+            self.events.put_nowait(("quitRequested", {"signal": name}))
+
+
+async def start_failure_notice(words: "Words | None", platform: str = sys.platform) -> None:
+    """A start that failed, said where the person sees it: Linux, a portal
+    notice on a connection of its own (``SessionBus.notice_once``: the run's
+    bus may never have opened); Windows, its toast (``windows_notice``). macOS
+    logs only: its notices are the native shell's, which is what failed or
+    never started. Without its words (they could not be read) only the log
+    says it."""
+    if words is None:
+        return
+    title, body = words("desktop.error.start_failed_title"), words("desktop.error.start_failed")
+    if platform.startswith("linux"):
+        await SessionBus.notice_once(title, body)
+    elif platform == "win32":
+        await windows_notice(title, body)
+
+
 async def run() -> int:
     paths = layout()
     root = data_root()
+    # The log first: whatever happens from here on -- another instance
+    # running, a start that fails -- is in it.
+    logger.addHandler(diagnostics_handler(root))
     lock = single_instance(root)
     if lock is None:
         if sys.platform.startswith("linux") and await SessionBus.activate_running():
             return 0      # the running instance opens its window
         logger.error("DownloadPulse is already running for this account")
         return 3
-    (root / "logs").mkdir(parents=True, exist_ok=True)
-    diagnostics = logging.FileHandler(root / "logs" / "desktop.log", encoding="utf-8")
-    diagnostics.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(diagnostics)
-    sys.path.insert(0, str(paths["backend"]))
-    os.environ["STATIC_DIR"] = str(paths["static"])
+    loop = asyncio.get_running_loop()
+    signals = Signals(asyncio.current_task())
+    signals.install(loop)
+    words = None
+    try:
+        sys.path.insert(0, str(paths["backend"]))
+        os.environ["STATIC_DIR"] = str(paths["static"])
+        config_path = root / "config" / "config.json"
+        words = Words(config_path)                  # the notices' words, a failed start's too
+        return await _run(paths, root, config_path, words, signals)
+    except asyncio.CancelledError:
+        if signals.received is None:
+            raise
+        logger.info("stopped by %s during start", signals.received)
+        return 0
+    except Exception:
+        if not signals.served:
+            logger.exception("DownloadPulse could not start")
+            await start_failure_notice(words)
+        else:
+            logger.exception("the DownloadPulse desktop run failed")
+        return 1
+    finally:
+        signals.remove(loop)
+        lock.close()
+
+
+async def _run(paths: dict[str, Path], root: Path, config_path: Path, words: Words, signals: Signals) -> int:
     import aiohttp
     from executors.process_ownership import ProcessOwnership
 
-    db_path, config_path = root / "data" / "downloadpulse.db", root / "config" / "config.json"
+    db_path = root / "data" / "downloadpulse.db"
     for directory in (db_path.parent, config_path.parent):
         directory.mkdir(parents=True, exist_ok=True)
     processes = ProcessOwnership(root / "desktop-runtime")
@@ -1323,36 +1514,40 @@ async def run() -> int:
     backend = await processes.spawn(BACKEND_ID, backend_argv(paths, port), env=env,
                                     pass_fds=(request_end, answer_end))
     channel.started()
-    drains = [asyncio.ensure_future(_drain(stream, root / "logs" / "backend.log"))
+    logs = [ChildLog(root / "logs" / "backend.log")]
+    drains = [asyncio.ensure_future(_drain(stream, logs[0]))
               for stream in (backend.process.stdout, backend.process.stderr)]
-    shell = shell_process = bus = None
+    bus = None
     try:
         async with aiohttp.ClientSession() as session:
             await _ready(session, port, backend)
-            words = Words(config_path)
             auth_file = shell_data_home() / APP_ID / ".tmp" / "auth_info.json"
             private_directory(auth_file.parent)   # before the shell writes its credential; or no shell
             auth_file.unlink(missing_ok=True)
             # The shell runs under DownloadPulse's own name (its webview keys its
             # data on it), in the environment shell_environment() gives it.
             shell_binary = shell_binary_path(paths["shell"])
+            shell = Shell(session)
+            shell.binary = str(shell_binary)
             shell_process = await processes.spawn(SHELL_ID, [
                 str(shell_binary), f"--path={paths['shell']}", "--load-dir-res",
                 f"--url=http://127.0.0.1:{port}/"], env=shell_environment(root))
-            drains += [asyncio.ensure_future(_drain(stream, root / "logs" / "shell.log"))
-                       for stream in (shell_process.process.stdout, shell_process.process.stderr)]
-            shell = Shell(session)
-            shell.binary = str(shell_binary)
-            await shell.connect(auth_file, time.monotonic() + READY_SECONDS)
-            if sys.platform.startswith("linux"):
-                bus = await SessionBus.open(shell.events, paths["shell"] / "resources" / "icons")
             try:
+                logs.append(ChildLog(root / "logs" / "shell.log"))
+                drains += [asyncio.ensure_future(_drain(stream, logs[1]))
+                           for stream in (shell_process.process.stdout, shell_process.process.stderr)]
+                await shell.connect(auth_file, time.monotonic() + READY_SECONDS, shell_process)
+                if sys.platform.startswith("linux"):
+                    bus = await SessionBus.open(shell.events, paths["shell"] / "resources" / "icons")
+                signals.serving(shell.events)
                 return await _serve(shell, channel, words, backend, bus or shell)
             finally:
                 # Quit, in order: the shell and its page first, so no request
                 # of the page is left open to hold the backend's shutdown.
+                signals.quitting()
                 await _end_shell(shell, shell_process, processes)
     finally:
+        signals.quitting()
         if bus is not None:
             await bus.close()
         channel.close()
@@ -1367,7 +1562,8 @@ async def run() -> int:
         processes.forget(SHELL_ID)
         for task in drains:
             task.cancel()
-        lock.close()
+        for log in logs:
+            log.close()
 
 
 async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) -> int:
@@ -1412,11 +1608,22 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
         if event in {"windowMinimize", "windowRestore"}:
             minimized = event == "windowMinimize"
         elif event == "windowClose":
-            # Hidden only where the tray can open it again; otherwise the
-            # window stays one click away (and DownloadPulse keeps running).
-            hidden = native.tray_shown
-            await _window(shell, "window.hide" if hidden else "window.minimize")
-            minimized = minimized or not hidden
+            if native.tray_shown:
+                # Hidden where the tray can open it again.
+                hidden = True
+                await _window(shell, "window.hide")
+            elif sys.platform.startswith("linux") and (await channel.ask("quit_prompt")).get("prompted"):
+                # No tray to open it again (a desktop without one: stock
+                # GNOME): closing is Quit, once the person confirms it in the
+                # window's own page, which stays up to ask (the answer comes
+                # with ``show``: ``quit``).
+                logger.info("the window was closed with no tray: its page asks whether to quit")
+            else:
+                # No page can ask (none loaded, signed out), or Windows and
+                # macOS: the window stays one click away, minimized, and
+                # DownloadPulse keeps running.
+                await _window(shell, "window.minimize")
+                minimized = True
         elif event == "trayAvailability" and not (data or {}).get("shown") and hidden:
             # The tray went away while it was the only way back: the window
             # returns, minimized, where the desktop can still open it.
@@ -1437,14 +1644,22 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
             elif chosen == "quit":
                 logger.info("Quit (the tray)")
                 return 0
+        elif event == "quitRequested":
+            logger.info("Quit (%s)", (data or {}).get("signal"))
+            return 0
         elif event == "shellClosed":
             # The shell ended by itself (macOS: its own termination, the Dock's
             # Quit); its exit status is recorded where it ends (_end_shell).
             logger.info("the native shell ended by itself")
             return 0
         if time.monotonic() >= next_show:
+            asked = await channel.ask("show")
+            if asked.get("quit"):
+                # The window's own page confirmed Quit (a close with no tray).
+                logger.info("Quit (confirmed in the window)")
+                return 0
             # A connected browser's Open DownloadPulse: the tray's Open.
-            if (await channel.ask("show")).get("show"):
+            if asked.get("show"):
                 await bring_forward("Open (a connected browser)")
             next_show = time.monotonic() + SHOW_POLL_SECONDS
         if time.monotonic() >= next_poll:
@@ -1676,12 +1891,9 @@ async def _ended(owned, seconds: float) -> bool:
         return False
 
 
-async def _drain(stream, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "ab") as log:
-        while chunk := await stream.read(65536):
-            log.write(chunk)
-            log.flush()
+async def _drain(stream, log: ChildLog) -> None:
+    while chunk := await stream.read(65536):
+        log.write(chunk)
 
 
 def main() -> int:

@@ -194,6 +194,8 @@
   "desktop.tray.open": "打开 DownloadPulse",
   "desktop.tray.quit": "退出 DownloadPulse",
   "desktop.tray.status": "进行中：{active} · 排队中：{queued}",
+  "desktop.quit.title": "退出 DownloadPulse？",
+  "desktop.quit.message": "进行中的下载将会停止。",
   "desktop.notice.accepted": "已接受传输",
   "desktop.notice.completed": "传输已完成",
   "desktop.notice.paused_many": "已暂停的传输：{count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "本地端口仅在桌面应用程序中可用。",
   "desktop.local_port.unavailable_title": "本地端口不可用",
   "desktop.local_port.unavailable": "端口 {port} 正被其他程序使用。在该端口空闲或在设置中更改之前，外部应用程序无法访问 DownloadPulse。",
+  "desktop.error.start_failed_title": "无法启动 DownloadPulse",
+  "desktop.error.start_failed": "原因已记录在 DownloadPulse 数据文件夹中的 logs/desktop.log 中。",
   "help.topic.heading.local_port": "本地端口",
   "help.topic.deployment_type.local_port.what": "<b>本地端口</b>是 Sonarr 或 Radarr 等外部应用程序访问 DownloadPulse 的位置：其 SABnzbd 和 qBittorrent 下载客户端连接以及外部 API，每个都使用一个集成账户的令牌。请将提示中显示的地址提供给它们。",
   "help.topic.deployment_type.local_port.this_computer": "只有这台计算机上的程序可以使用它；网络中的其他计算机不能。",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "桌面应用程序始终为独立部署；其部署类型不会更改",
   "error.desktop.frame_only": "只有桌面应用程序有窗口边框。",
   "error.desktop.frame_invalid": "窗口边框颜色无效。",
+  "error.desktop.quit_only": "只有桌面应用程序有可退出的窗口。",
+  "error.desktop.quit_refused": "此退出请求已过期。要退出，请再次关闭窗口。",
   "browser.pairing.title": "连接浏览器",
   "browser.pairing.intro": "有浏览器正在请求连接到您的账户。连接后，它可以将下载发送到这里，并显示它发送的下载。",
   "browser.pairing.field.browser": "浏览器",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

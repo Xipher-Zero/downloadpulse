@@ -176,3 +176,16 @@ def internal_port() -> int | None:
         return valid_port(int(os.environ.get(INTERNAL_PORT_ENV, "")))
     except (ValueError, PortInvalid):
         return None
+
+
+def window_request(host: str) -> bool:
+    """Whether a request came to the window's own address -- the private port
+    the supervisor loads the window from (``http://127.0.0.1:<port>/``) -- and
+    not through Local Port: the relay passes every byte as its client sent it,
+    so a Local Port client's ``Host`` names Local Port. ``host`` is the
+    request's ``Host`` header. (A browser pointed at the private port by hand
+    would name it too; that port is picked afresh each run and published
+    nowhere but the window's own address.)"""
+    from auth.policy import normalized_host_authority
+    port = internal_port()
+    return port is not None and normalized_host_authority(host) == (HOST, port)

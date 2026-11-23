@@ -194,6 +194,8 @@
   "desktop.tray.open": "Otwórz DownloadPulse",
   "desktop.tray.quit": "Zamknij DownloadPulse",
   "desktop.tray.status": "Aktywne: {active} · W kolejce: {queued}",
+  "desktop.quit.title": "Zamknąć DownloadPulse?",
+  "desktop.quit.message": "Aktywne pobrania zostaną zatrzymane.",
   "desktop.notice.accepted": "Przyjęto transfer",
   "desktop.notice.completed": "Transfer zakończony",
   "desktop.notice.paused_many": "Wstrzymane transfery: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "Port lokalny jest dostępny tylko w aplikacji desktopowej.",
   "desktop.local_port.unavailable_title": "Port lokalny niedostępny",
   "desktop.local_port.unavailable": "Port {port} jest używany przez inny program. Aplikacje zewnętrzne nie połączą się z DownloadPulse, dopóki port nie zostanie zwolniony lub zmieniony w Ustawieniach.",
+  "desktop.error.start_failed_title": "Nie udało się uruchomić DownloadPulse",
+  "desktop.error.start_failed": "Przyczyna jest zapisana w pliku logs/desktop.log w folderze danych DownloadPulse.",
   "help.topic.heading.local_port": "Port lokalny",
   "help.topic.deployment_type.local_port.what": "<b>Port lokalny</b> to miejsce, w którym aplikacje zewnętrzne, takie jak Sonarr lub Radarr, łączą się z DownloadPulse: przez połączenia klienta pobierania SABnzbd i qBittorrent oraz przez zewnętrzne API, każde z tokenem konta integracji. Podaj im adres widoczny we wskazówce.",
   "help.topic.deployment_type.local_port.this_computer": "Mogą go używać tylko programy na tym komputerze; inne komputery w sieci nie.",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "Aplikacja desktopowa ma zawsze typ wdrożenia Samodzielny; nie można go zmienić",
   "error.desktop.frame_only": "Ramkę okna ma tylko aplikacja desktopowa.",
   "error.desktop.frame_invalid": "Kolory ramki okna są nieprawidłowe.",
+  "error.desktop.quit_only": "Tylko aplikacja desktopowa ma okno, którego zamknięcie kończy jej działanie.",
+  "error.desktop.quit_refused": "To żądanie zamknięcia wygasło. Aby zamknąć aplikację, zamknij okno ponownie.",
   "browser.pairing.title": "Połącz przeglądarkę",
   "browser.pairing.intro": "Przeglądarka prosi o połączenie z tym kontem. Po połączeniu może wysyłać tutaj pobrania i wyświetlać wysłane przez siebie pobrania.",
   "browser.pairing.field.browser": "Przeglądarka",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

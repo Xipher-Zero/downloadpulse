@@ -194,6 +194,8 @@
   "desktop.tray.open": "Открыть DownloadPulse",
   "desktop.tray.quit": "Выйти из DownloadPulse",
   "desktop.tray.status": "Активные: {active} · В очереди: {queued}",
+  "desktop.quit.title": "Выйти из DownloadPulse?",
+  "desktop.quit.message": "Активные загрузки будут остановлены.",
   "desktop.notice.accepted": "Передача принята",
   "desktop.notice.completed": "Передача завершена",
   "desktop.notice.paused_many": "Приостановленные передачи: {count}",
@@ -3625,6 +3627,8 @@
   "error.local_port.desktop_only": "Локальный порт доступен только в настольном приложении.",
   "desktop.local_port.unavailable_title": "Локальный порт недоступен",
   "desktop.local_port.unavailable": "Порт {port} занят другой программой. Внешние приложения не смогут подключиться к DownloadPulse, пока порт не освободится или не будет изменён в разделе «Настройки».",
+  "desktop.error.start_failed_title": "Не удалось запустить DownloadPulse",
+  "desktop.error.start_failed": "Причина записана в logs/desktop.log в папке данных DownloadPulse.",
   "help.topic.heading.local_port": "Локальный порт",
   "help.topic.deployment_type.local_port.what": "<b>Локальный порт</b> — это место, где внешние приложения, например Sonarr или Radarr, подключаются к DownloadPulse: через подключения клиента загрузки SABnzbd и qBittorrent и через внешний API, каждое с токеном учётной записи интеграции. Укажите им адрес из подсказки.",
   "help.topic.deployment_type.local_port.this_computer": "Использовать его могут только программы на этом компьютере; другие компьютеры в сети — нет.",
@@ -3635,6 +3639,8 @@
   "error.deployment.desktop_standalone": "Тип развёртывания настольного приложения всегда «Автономный» и не меняется",
   "error.desktop.frame_only": "Рамка окна есть только у настольного приложения.",
   "error.desktop.frame_invalid": "Недопустимые цвета рамки окна.",
+  "error.desktop.quit_only": "Окно для выхода есть только у настольного приложения.",
+  "error.desktop.quit_refused": "Срок этого запроса на выход истёк. Чтобы выйти, закройте окно ещё раз.",
   "browser.pairing.title": "Подключение браузера",
   "browser.pairing.intro": "Браузер запрашивает подключение к вашей учётной записи. После подключения он сможет отправлять сюда загрузки и показывать отправленные им загрузки.",
   "browser.pairing.field.browser": "Браузер",
@@ -7345,6 +7351,12 @@
   "settings.account.browsers_unreadable": "fa61dc6313c3749f",
   "details.requested_by.browser": "300c01978179dabe",
   "directory_picker.current_folder": "1a5db52359a6d813",
-  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665"
+  "directory_picker.reason.not_persistent": "81d4ca3f5b4fe665",
+  "desktop.quit.title": "22b0ce61c5831808",
+  "desktop.quit.message": "31ff567107c313df",
+  "desktop.error.start_failed_title": "3c18e0c8b75d0e05",
+  "desktop.error.start_failed": "a85bd4dc0aa23109",
+  "error.desktop.quit_only": "d36e575db3e7300b",
+  "error.desktop.quit_refused": "6d81e3b8d773f871"
  }
 }

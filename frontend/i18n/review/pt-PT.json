@@ -32247,6 +32247,56 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "desktop.quit.title": {
+   "source": "22b0ce61c5831808",
+   "translation": "39e1fc69b471fad6",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.quit.message": {
+   "source": "31ff567107c313df",
+   "translation": "278ed4a0a5daaa0f",
+   "provenance": [
+    "ai-generated",
+    "ai-review",
+    "ai-back-translation"
+   ],
+   "backTranslation": "Active downloads will be interrupted."
+  },
+  "desktop.error.start_failed_title": {
+   "source": "3c18e0c8b75d0e05",
+   "translation": "a5bfd0afbd5e4875",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.error.start_failed": {
+   "source": "a85bd4dc0aa23109",
+   "translation": "01b7df97e5b16b0f",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.quit_only": {
+   "source": "d36e575db3e7300b",
+   "translation": "8f1e1c5ad652f455",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.quit_refused": {
+   "source": "6d81e3b8d773f871",
+   "translation": "504a35a0a108d68b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }
