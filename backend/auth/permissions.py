@@ -141,6 +141,8 @@ ACTIONS: dict[str, Capability] = {
     "api.auth_routes.application_javascript_bundle": _I,
     "api.auth_routes.theme_bootstrap_script": _I,
     "api.auth_routes.locale_catalog_script": _I,
+    # The shell at a page's own address, as the interface "/" is.
+    "main.application_shell": _I,
     "api.auth_routes.auth_session_status": _S,
     "api.auth_routes.logout": _S,
     "api.account_routes.change_own_password": _S,

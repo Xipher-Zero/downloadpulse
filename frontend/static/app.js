@@ -110,7 +110,7 @@ function renderTopbarActions() {
  * moves with the region (DPMotion's companion): it keeps naming the page that
  * is on screen until the region starts to move, and changes to the
  * destination's (showPageHeading) halfway through the same travel. */
-function nav(el, event) {
+function nav(el, event, {address = 'push'} = {}) {
   if (!el) return;
   const handheld = _shellHandheld.matches;
   const entries = handheld ? _shellDockEntries
@@ -124,16 +124,20 @@ function nav(el, event) {
                              direction: chosen ? Math.sign(to - from) : 0, distance: Math.abs(to - from),
                              companion: {element: document.querySelector('#topbar .dp-page-heading'),
                                          commit: () => showPageHeading(el)}},
-                            () => navigateTo(el, {heading: false}))
-    : (navigateTo(el), {settled: Promise.resolve()});
+                            () => navigateTo(el, {heading: false, address}))
+    : (navigateTo(el, {address}), {settled: Promise.resolve()});
   // Whatever measures the destination's layout may do so again once it is still.
   motion.settled.then(() => document.dispatchEvent(new CustomEvent('downloadpulse:navigation-settled',
     {detail: {view: document.querySelector('.view.active')?.id?.replace(/^view-/, '') || el.dataset.view}})));
 }
 
 /* `heading: false`: the page heading is not this commit's -- nav() hands it to
- * the slide, which shows it as it moves (showPageHeading, exactly once). */
-function navigateTo(el, {heading = true} = {}) {
+ * the slide, which shows it as it moves (showPageHeading, exactly once).
+ * `address`: each page has its own address (VIEW_PATHS), so it can be
+ * bookmarked and reloaded. A new page is a new history entry ('push');
+ * 'replace' corrects the current entry; 'none' is a page the address already
+ * names (start-up, Back and Forward). */
+function navigateTo(el, {heading = true, address = 'push'} = {}) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   el.classList.add('active');
   const v = el.dataset.view;
@@ -141,6 +145,10 @@ function navigateTo(el, {heading = true} = {}) {
   const activeView = document.getElementById('view-' + v);
   if (!activeView) { console.error('nav: view not found:', v); return; }
   activeView.classList.add('active');
+  const path = VIEW_PATHS[v];
+  if (path && address !== 'none' && window.location.pathname !== path) {
+    window.history[address === 'replace' ? 'replaceState' : 'pushState'](null, '', path);
+  }
   const content = document.getElementById('content');
   if (content) {
     content.classList.toggle('dashboard-active', v === 'dashboard');
@@ -162,6 +170,32 @@ function navigateTo(el, {heading = true} = {}) {
   syncShellDock();
   setSidebarOverlay(false);
 }
+
+/* The address of each page. The server serves the shell at exactly these
+ * paths (main.py SHELL_SURFACE_PATHS); Dashboard is the shell's own "/". */
+const VIEW_PATHS = Object.freeze({dashboard: '/', torrents: '/downloads', events: '/activity',
+  stats: '/statistics', settings: '/settings', help: '/help'});
+/* The sidebar entry an address names, or null: an unknown address, or a page
+ * this session does not show (its entry was never mounted). */
+function navEntryForPath(pathname) {
+  const view = Object.keys(VIEW_PATHS).find(key => VIEW_PATHS[key] === pathname);
+  return view ? document.querySelector(`#sidebar .nav-item[data-view="${view}"]`) : null;
+}
+/* The page the address names, unless it is already shown (start-up, Back
+ * and Forward). A page address this session cannot show gives way to
+ * Dashboard, whose address it then takes; any other address is left as it is. */
+function showAddressedPage() {
+  const entry = navEntryForPath(window.location.pathname);
+  if (entry) {
+    if (!entry.classList.contains('active')) nav(entry, null, {address: 'none'});
+  } else if (Object.values(VIEW_PATHS).includes(window.location.pathname)) {
+    nav(document.querySelector('#sidebar .nav-item[data-view="dashboard"]'), null, {address: 'replace'});
+  }
+}
+window.addEventListener('popstate', () => showAddressedPage());
+// A reload or a bookmark opens the page its address names, once every page's
+// owner has loaded.
+document.addEventListener('DOMContentLoaded', showAddressedPage);
 
 /* The page header's title and subtitle for a sidebar entry, in the page's
  * language (ui-i18n.js). A sidebar entry may name the page it opens (a
@@ -531,7 +565,7 @@ document.addEventListener('downloadpulse:presentation-changed', event => {
   const current = withdrawn.some(node => node.classList.contains('active'));
   withdrawn.forEach(node => { node.classList.remove('active'); node.removeAttribute('aria-current'); });
   closeShellMore();
-  if (current) navigateTo(document.querySelector('#sidebar .nav-item[data-view="dashboard"]'));
+  if (current) navigateTo(document.querySelector('#sidebar .nav-item[data-view="dashboard"]'), {address: 'replace'});
   renderShellDock();
 });
 /* The page's language changed (ui-i18n.js has rendered the markup that names
@@ -3087,13 +3121,35 @@ async function resumeT(id, button) {
 // this contract and never wrap window.closeModal or window.showDetail.
 // `contain: true` declares a blocking dialog: focus moves onto the dialog when
 // it opens and Tab / Shift+Tab stay inside it until it closes.
+// `escape: true` lets Escape ask to close it, as its close button does
+// (reason 'escape', which the owner's onClose may veto) -- unless something
+// above or inside it took the key first (a menu, a dialog of DPSettingsModal).
 const DPModal = (function () {
   const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])';
   let activeMode = null;            // 'details' | 'file-selection' | null
   let onCloseCallback = null;
   let focusReturnTarget = null;
   let containFocus = false;
+  let closeOnEscape = false;
   let exits = 0;                    // the exit in progress; a reopening supersedes it
+
+  function escapeClose(event) {
+    if (event.key !== 'Escape' || event.defaultPrevented || !closeOnEscape || !activeMode) return;
+    if (document.querySelector('.dp-modal-overlay')) return;   // a dialog above it holds Escape
+    event.preventDefault();
+    requestModalClose('escape');
+  }
+
+  // The control focus returns to on closing. A list row re-rendered while the
+  // dialog was open (Downloads redraws its rows) is replaced by the row now
+  // drawn for the same transfer.
+  function returnTargetNow(target) {
+    const id = target && !target.isConnected ? target.dataset?.torrentId : null;
+    if (!id) return target;
+    const successor = Array.from(document.querySelectorAll(`[data-torrent-id="${CSS.escape(id)}"]`))
+      .find(node => node.tagName === target.tagName && node.hasAttribute('tabindex'));
+    return successor || target;
+  }
 
   function containTab(event) {
     const modal = document.getElementById('modal');
@@ -3124,10 +3180,13 @@ const DPModal = (function () {
     const footer = document.getElementById('modal-footer');
     const closeBtn = modal ? modal.querySelector('.modal-close') : null;
 
+    // Opened again while it is open (Details redrawn in place), it keeps the
+    // page control it returns to; opened while a dialog is still fading out,
+    // it inherits that one's return target.
+    const reopened = activeMode !== null && focusReturnTarget;
     activeMode = opts.mode || 'details';
     onCloseCallback = typeof opts.onClose === 'function' ? opts.onClose : null;
-    // Opened while a dialog is still fading out, it inherits that one's return target.
-    focusReturnTarget = opts.focusReturn || (window.DPMotion ? window.DPMotion.focusOrigin()
+    focusReturnTarget = opts.focusReturn || reopened || (window.DPMotion ? window.DPMotion.focusOrigin()
       : document.activeElement instanceof HTMLElement ? document.activeElement : null);
     exits += 1;                     // a closing shell reopened: it fades back from where it is
     if (overlay) overlay.classList.remove('is-closing');
@@ -3148,6 +3207,9 @@ const DPModal = (function () {
       closeBtn.dataset.tooltip = label;
     }
     if (footer) { footer.hidden = true; footer.innerHTML = ''; }
+    closeOnEscape = opts.escape === true;
+    if (closeOnEscape) document.addEventListener('keydown', escapeClose);
+    else document.removeEventListener('keydown', escapeClose);
     containFocus = opts.contain === true && Boolean(modal);
     if (containFocus) {
       modal.tabIndex = -1;
@@ -3178,6 +3240,8 @@ const DPModal = (function () {
     if (modal) delete modal.dataset.dpModalMode;
     activeMode = null;
     onCloseCallback = null;
+    closeOnEscape = false;
+    document.removeEventListener('keydown', escapeClose);
     const returnTarget = focusReturnTarget;
     focusReturnTarget = null;
     // The shell fades away in place, still covering the page and holding the
@@ -3195,9 +3259,10 @@ const DPModal = (function () {
         document.removeEventListener('keydown', containTab);
         if (modal) modal.removeAttribute('tabindex');
       }
-      if (window.DPMotion) window.DPMotion.restore(overlay, returnTarget, {remove: false});
-      else if (returnTarget && typeof returnTarget.focus === 'function') {
-        try { returnTarget.focus({preventScroll: true}); } catch (_) {}
+      const target = returnTargetNow(returnTarget);
+      if (window.DPMotion) window.DPMotion.restore(overlay, target, {remove: false});
+      else if (target && typeof target.focus === 'function') {
+        try { target.focus({preventScroll: true}); } catch (_) {}
       }
     });
 
@@ -3489,7 +3554,7 @@ async function showDetail(id) {
   const opening = ++dpDetailOpening;
   const current = () => opening === dpDetailOpening && DPModal.mode === 'details';
 
-  DPModal.open({mode: 'details', title: DPI18n.t('common.loading'), closeLabel: DPI18n.t('a11y.close_details'), pending: true});
+  DPModal.open({mode: 'details', title: DPI18n.t('common.loading'), closeLabel: DPI18n.t('a11y.close_details'), pending: true, escape: true});
   const slow = setTimeout(() => { if (current()) DPModal.reveal({hold: true}); }, DETAIL_LOADING_GRACE_MS);
   const traceButton = document.querySelector('#modal .dp-detail-trace');
   if (traceButton) traceButton.dataset.dpTransferId = String(id);

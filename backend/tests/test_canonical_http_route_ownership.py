@@ -51,13 +51,28 @@ def _all_api_routes():
     return routes
 
 
+def _served_api_routes():
+    """(served path, APIRoute) for every APIRoute: an included router's route
+    is served beneath its ``include_router`` prefix (``/settings`` of the
+    generic router is ``/api/settings``), an application route at its own path."""
+    served = []
+    for entry in backend_main.app.routes:
+        if isinstance(entry, APIRoute):
+            served.append((entry.path, entry))
+        original = getattr(entry, "original_router", None)
+        if original is not None:
+            prefix = entry.include_context.prefix
+            served.extend((prefix + r.path, r) for r in original.routes if isinstance(r, APIRoute))
+    return served
+
+
 def test_no_unexpected_duplicate_handler_for_any_method_and_path():
     seen: dict[tuple[str, str], list[str]] = {}
-    for route in _all_api_routes():
+    for path, route in _served_api_routes():
         for method in route.methods or ():
             if method in {"HEAD", "OPTIONS"}:
                 continue
-            seen.setdefault((method, route.path), []).append(
+            seen.setdefault((method, path), []).append(
                 f"{route.endpoint.__module__}.{route.endpoint.__qualname__}"
             )
 
@@ -96,6 +111,24 @@ def test_legacy_router_no_longer_declares_migrated_collections():
         and "GET" in (getattr(route, "methods", set()) or set())
     ]
     assert sorted(r.path for r in owned) == ["/events", "/torrents"]
+
+
+def test_shell_page_addresses_have_one_owner_and_shadow_nothing():
+    """Each interface page's address (``main.SHELL_SURFACE_PATHS``) is served
+    by ``main.application_shell`` alone, as exact paths: no path parameter or
+    catch-all, nothing under ``/api`` or ``/auth``, and the static mount stays
+    the last route."""
+    served = _served_api_routes()
+    shell = [(path, route) for path, route in served if route.endpoint is backend_main.application_shell]
+    assert sorted(path for path, _route in shell) == sorted(backend_main.SHELL_SURFACE_PATHS)
+    for path, route in shell:
+        assert route.methods == {"GET", "HEAD"} and "{" not in path
+        assert not path.startswith(("/api", "/auth", "/login")) and not route.include_in_schema
+    surfaces = set(backend_main.SHELL_SURFACE_PATHS)
+    others = [path for path, route in served
+              if path in surfaces and route.endpoint is not backend_main.application_shell]
+    assert others == []
+    assert backend_main.app.routes[-1].name == "static"
 
 
 def test_main_does_not_mutate_router_route_lists_at_startup():

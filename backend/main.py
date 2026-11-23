@@ -560,6 +560,14 @@ async def general_web_security_middleware(request: Request, call_next):
 # authentication boundaries receive the same correlation and baseline security
 # headers as normal application responses.
 
+# The interface's pages each have an address (app.js ``VIEW_PATHS``), so a
+# page can be bookmarked and reloaded: at exactly these paths the shell is
+# served as at "/" (Dashboard's own address) -- the same file by the same
+# static owner, through the same authentication, headers and caching. No other
+# path falls back to the shell.
+SHELL_SURFACE_PATHS = ("/downloads", "/activity", "/statistics", "/settings", "/help")
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     req_id = str(request.headers.get("X-Request-ID") or "").strip()
@@ -580,7 +588,8 @@ async def request_id_middleware(request: Request, call_next):
     path = request.url.path
     static_frontend = (
         request.method.upper() in {"GET", "HEAD"}
-        and (path == "/" or path.endswith((".html", ".js", ".css", ".webmanifest")))
+        and (path == "/" or path in SHELL_SURFACE_PATHS
+             or path.endswith((".html", ".js", ".css", ".webmanifest")))
     )
     existing_cache = response.headers.get("Cache-Control", "")
     if static_frontend and "no-store" not in existing_cache.lower():
@@ -638,4 +647,14 @@ if _static is None:
     )
 
 logger.info("Serving static files from: %s", sanitize_log_value(_static))
-app.mount("/", StaticFiles(directory=str(_static), html=True), name="static")
+_static_files = StaticFiles(directory=str(_static), html=True)
+
+
+async def application_shell(request: Request) -> Response:
+    """A page's own address (``SHELL_SURFACE_PATHS``): the shell "/" serves."""
+    return await _static_files.get_response("index.html", request.scope)
+
+
+for _surface_path in SHELL_SURFACE_PATHS:
+    app.add_api_route(_surface_path, application_shell, methods=["GET", "HEAD"], include_in_schema=False)
+app.mount("/", _static_files, name="static")

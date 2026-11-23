@@ -97,14 +97,14 @@ def test_only_the_operators_own_navigation_moves_anything() -> None:
     # Every sidebar entry hands its event over; nav() slides only for a click.
     assert index.count('onclick="nav(this, event)"') == index.count('class="nav-item')
     assert "onclick=\"nav(this)\"" not in index
-    nav = app[app.index("function nav(el, event) {"):app.index("function navigateTo(el, {heading = true} = {}) {")]
+    nav = app[app.index("function nav(el, event, {address = 'push'} = {}) {"):app.index("function navigateTo(el, {heading = true, address = 'push'} = {}) {")]
     assert "const chosen = event?.type === 'click' && from >= 0 && to >= 0 && !sameView;" in nav
     assert "direction: chosen ? Math.sign(to - from) : 0" in nav
     assert "downloadpulse:navigation-settled" in nav
     # The page heading moves with the region: the slide runs showPageHeading
     # as its companion's commit; the region's commit leaves the heading to it.
     assert "companion: {element: document.querySelector('#topbar .dp-page-heading')," in nav
-    assert "commit: () => showPageHeading(el)}}," in nav and "() => navigateTo(el, {heading: false}))" in nav
+    assert "commit: () => showPageHeading(el)}}," in nav and "() => navigateTo(el, {heading: false, address}))" in nav
     assert "const title = heading ? showPageHeading(el) : pageTitle(el);" in app
     # One slide call per owner, each on its operator path only.
     downloads = read("ui-downloads.js")
@@ -271,14 +271,18 @@ def test_every_fullscreen_modal_fades_in_place_through_its_own_owner() -> None:
     assert "window.DPMotion.leave(overlay, modal, returnTarget)" in close and "if (exit !== exits) return;" in close
     done = close[close.index("leaving.then(() => {"):close.index("if (closedMode === 'details')")]
     assert "document.removeEventListener('keydown', containTab);" in done
-    assert "window.DPMotion.restore(overlay, returnTarget, {remove: false})" in done
-    assert close.count("removeEventListener") == 1 and close.count(".focus(") == 1          # only in the no-motion fallback
+    # Focus returns to the invoking control, or the list row redrawn in its place.
+    assert "const target = returnTargetNow(returnTarget);" in done
+    assert "window.DPMotion.restore(overlay, target, {remove: false})" in done
+    # The exit releases Tab containment once it has gone; Escape at once, with the closing.
+    assert done.count("removeEventListener") == 1 and close.count(".focus(") == 1          # only in the no-motion fallback
+    assert close.count("document.removeEventListener('keydown', escapeClose);") == 1
     # A dialog opened while another leaves returns where that one would have.
     for owner in (settings, auth, app):
         assert "window.DPMotion.focusOrigin()" in owner
     # Details: the shell appears with its content (or, slow, held at full height), one opening at a time.
     detail = app[app.index("const DETAIL_LOADING_GRACE_MS = 300;"):app.index("// Requested By:")]
     assert ("DPModal.open({mode: 'details', title: DPI18n.t('common.loading'), closeLabel: DPI18n.t('a11y.close_details'), "
-            "pending: true});") in detail
+            "pending: true, escape: true});") in detail
     assert "DPModal.reveal({hold: true})" in detail and "if (!current()) return;" in detail
     assert "modal.style.height = getComputedStyle(modal).maxHeight;" in app
