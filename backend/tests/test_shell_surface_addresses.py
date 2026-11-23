@@ -146,4 +146,4 @@ def test_escape_closes_details_through_the_shared_modal_owner():
     assert "window.DPSettingsModal.focusOrigin()" in modal
     assert "returnTargetNow" not in app_js and "data-torrent-id=" not in modal
     index = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert index.count("/app.js?v=47") == 1
+    assert index.count("/app.js?v=48") == 1
