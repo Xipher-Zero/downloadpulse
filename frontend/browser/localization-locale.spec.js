@@ -88,7 +88,10 @@ const stage = (...what) => console.log(`[probe ${LOCALE}]`, ...what);
  * critical keyed text left in English, and Help control labels. */
 /* The installation's own data, shown as it is (account names, usernames,
  * emails): never the catalog's English, even when it reads the same (the
- * default account is named "Administrator"). */
+ * default account is named "Administrator"). An Activity Log event's own
+ * message is the server's record, drawn as it was written
+ * (ui-activity-log-runtime.js: "an event's own message is the server's"), so
+ * it is data too; only the log's own words (activity.*) are probed there. */
 let DATA = [];
 async function dataWords(page) {
   const accounts = await (await page.request.get('/api/accounts')).json().catch(() => ({}));
@@ -102,7 +105,7 @@ const inspect = (page, root) => page.evaluate(({root, englishText, critical, con
   const t = key => window.DPI18n.t(key);
   const translated = text => (englishText[text] || []).every(key => t(key) !== text);
   const found = {english: [], keys: [], critical: [], labels: []};
-  const elements = [...scope.querySelectorAll('*')].filter(element => !element.closest('svg, script, style') && seen(element));
+  const elements = [...scope.querySelectorAll('*')].filter(element => !element.closest('svg, script, style, .dp-activity-message') && seen(element));
   for (const element of elements) {
     const own = [...element.childNodes].filter(node => node.nodeType === 3).map(node => node.textContent).join('').trim();
     const whole = element.textContent.trim();
