@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=DownloadPulse
-Comment=Self-hosted download and transfer manager
+Comment=Download manager for links, files and video pages
 Exec=downloadpulse
 Icon=net.downloadpulse.desktop
 Terminal=false

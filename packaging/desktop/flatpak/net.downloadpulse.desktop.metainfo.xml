@@ -1,19 +1,57 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- The template the Flatpak's metainfo is built from: metainfo.py fills the releases element
+     from CHANGELOG.md at build time (desktop-artifacts.yml, before ci-build.sh). -->
 <component type="desktop-application">
   <id>net.downloadpulse.desktop</id>
   <name>DownloadPulse</name>
-  <summary>Self-hosted download and transfer manager</summary>
+  <summary>Download manager for links, files and video pages</summary>
+  <developer id="net.downloadpulse">
+    <name>DownloadPulse</name>
+  </developer>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-2.0-or-later</project_license>
   <description>
-    <p>DownloadPulse manages downloads from direct links, magnets, torrents, NZBs and network sources through
-      debrid services, Usenet, rsync, SFTP, WebDAV and media sites, with archive extraction and delivery.</p>
+    <p>DownloadPulse is a download manager for your computer. Web links, files on file servers and supported
+      video pages all go into one queue, from the app or straight from your browser, and finished downloads
+      land in the folder you choose.</p>
+    <ul>
+      <li>One queue for every download, whatever it comes from</li>
+      <li>Pause, resume and recover downloads, one at a time or all at once</li>
+      <li>Pair the DownloadPulse browser extension to send downloads from your browser, including ones that
+        need your sign-in</li>
+      <li>With a system tray, close the window and your downloads keep going: the tray shows what is active</li>
+      <li>Notifications when downloads are added, finish, fail or are paused</li>
+      <li>Optional archive extraction, and a debrid or Usenet account when you have one</li>
+      <li>Your settings and history stay on your computer</li>
+    </ul>
   </description>
   <launchable type="desktop-id">net.downloadpulse.desktop.desktop</launchable>
+  <icon type="stock">net.downloadpulse.desktop</icon>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
   <url type="homepage">https://downloadpulse.net</url>
+  <url type="bugtracker">https://github.com/Xipher-Zero/downloadpulse/issues</url>
   <url type="vcs-browser">https://github.com/Xipher-Zero/downloadpulse</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The Dashboard: your downloads, their progress and Quick Add</caption>
+      <image type="source" width="2880" height="1800">https://downloadpulse.net/screenshots/desktop-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The Dashboard in the light theme</caption>
+      <image type="source" width="2880" height="1800">https://downloadpulse.net/screenshots/desktop-light.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The Dashboard in the Rosé Pine theme</caption>
+      <image type="source" width="2880" height="1800">https://downloadpulse.net/screenshots/desktop-rose-pine.png</image>
+    </screenshot>
+  </screenshots>
+  <branding>
+    <color type="primary" scheme_preference="light">#b45cff</color>
+    <color type="primary" scheme_preference="dark">#050814</color>
+  </branding>
   <content_rating type="oars-1.1"/>
-  <releases>
-    <release version="1.0.0" date="2026-11-20"/>
-  </releases>
+  <releases/>
 </component>

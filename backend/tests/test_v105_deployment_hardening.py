@@ -37,6 +37,32 @@ def test_install_surfaces_preserve_published_image_and_public_health_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_the_database_and_its_wal_and_shm_are_created_owner_only(tmp_path, monkeypatch):
+    import os
+    import sqlite3
+
+    import db.database as database
+
+    # The container's default UMASK (002) would otherwise leave them group-readable.
+    previous = os.umask(0o002)
+    try:
+        created = tmp_path / "data" / "downloadpulse.db"
+        await database.init_db(created)
+        with sqlite3.connect(created) as live:   # WAL: the -wal and -shm exist while it is open
+            live.execute("INSERT INTO torrents(hash, name) VALUES('mode', 'mode')")
+            members = [created, created.with_name(created.name + "-wal"), created.with_name(created.name + "-shm")]
+            assert {m.name: _mode(m) for m in members} == {m.name: 0o600 for m in members}
+        # An existing database a previous release created group- and world-readable is made owner-only.
+        existing = tmp_path / "old.db"
+        sqlite3.connect(existing).close()
+        existing.chmod(0o644)
+        await database.init_db(existing)
+        assert _mode(existing) == 0o600
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.asyncio
 async def test_online_backup_sqlite_copy_is_private(tmp_path, monkeypatch):
     import db.database as database
     import services.backup as backup

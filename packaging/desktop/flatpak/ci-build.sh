@@ -5,8 +5,9 @@
 #   docker run --rm --privileged -v "$PWD:/src" -w /src -e VERSION=<version> <pinned base> \
 #     bash packaging/desktop/flatpak/ci-build.sh
 # Inputs (repository root): build/layout.tar.gz (assemble.py --usenet on Linux
-# x86_64), build/flatpak-sources/ (prepare-sources.sh's tarballs) and
-# build/usenet-start.py (the workflow's Usenet check).
+# x86_64), build/flatpak-sources/ (prepare-sources.sh's tarballs),
+# build/net.downloadpulse.desktop.metainfo.xml (metainfo.py: the releases from
+# CHANGELOG.md) and build/usenet-start.py (the workflow's Usenet check).
 # Outputs in build/out/: DownloadPulse-<version>-linux-x86_64.flatpak (a
 # single-file bundle, unsigned), SHA256SUMS and RESULTS.txt -- the runtime and
 # SDK commits, the installed bundle, each helper run inside the sandbox, the

@@ -1431,6 +1431,18 @@ async def init_db(path: Path | None = None):
 
 async def _init_db_sqlite(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Owner-only from its creation, whatever the umask (the container's UMASK
+    # governs downloads, not the private data root): SQLite creates the -wal
+    # and -shm files with the database file's own mode. An existing database,
+    # and a -wal/-shm a previous run left, is brought to 0600 too -- where the
+    # host's mount refuses, said and not fatal, as entrypoint.sh treats it.
+    os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
+    for member in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        try:
+            if member.exists():
+                os.chmod(member, 0o600)
+        except OSError as exc:
+            logger.warning("Could not make %s owner-only (0600): %s", member, exc)
     async with aiosqlite.connect(path, timeout=30) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await _configure_sqlite_connection(db)
