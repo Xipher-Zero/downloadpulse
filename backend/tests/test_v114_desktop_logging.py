@@ -54,8 +54,11 @@ def test_a_closed_connections_reset_is_dropped_and_every_other_loop_error_is_log
 def test_the_desktop_application_verifies_certificates_with_the_systems_trust():
     """Windows and macOS: truststore is in the desktop locks and injected
     before any project module loads (so before any TLS context exists); a
-    server, Linux, or an installation without it is unchanged."""
+    server, Linux, or an installation without it is unchanged. The server lock
+    carries truststore only as httpx2's own dependency; the one injection is
+    main.py's desktop-gated _system_trust."""
     import os
+    import re
     import subprocess
     import sys
     source = (BACKEND / "main.py").read_text(encoding="utf-8")
@@ -64,7 +67,20 @@ def test_the_desktop_application_verifies_certificates_with_the_systems_trust():
     for platform in ("windows", "macos"):
         lock = (BACKEND.parent / "packaging" / "desktop" / platform / "requirements.txt").read_text(encoding="utf-8")
         assert "truststore==0.10.4 \\\n" in lock
-    assert "truststore" not in (BACKEND / "requirements.txt").read_text(encoding="utf-8")   # never the server image
+    # The only injection is main.py's desktop-gated _system_trust.
+    injecting = [path.relative_to(BACKEND).as_posix() for path in BACKEND.rglob("*.py")
+                 if "tests" not in path.relative_to(BACKEND).parts
+                 and "inject_into_ssl" in path.read_text(encoding="utf-8")]
+    assert injecting == ["main.py"]
+    gate = source.index("def _system_trust()")
+    assert gate < source.index("truststore.inject_into_ssl()") < source.index("SYSTEM_TRUST = _system_trust()")
+    assert source.count("inject_into_ssl") == 1
+    # The server lock carries truststore only because httpx2 requires it.
+    server_lock = (BACKEND / "requirements.txt").read_text(encoding="utf-8")
+    assert "truststore" not in (BACKEND / "requirements.in").read_text(encoding="utf-8")
+    entry = re.search(r"(?m)^truststore==[^\n]*\n((?:[ \t][^\n]*\n)*)", server_lock).group(1)
+    assert [line.strip() for line in entry.splitlines() if line.strip().startswith("#")] == [
+        "# via", "#   httpcore2", "#   httpx2"]
     # Here (Linux, not the desktop application): nothing is injected.
     env = {key: value for key, value in os.environ.items() if key != "DOWNLOADPULSE_DESKTOP"}
     done = subprocess.run([sys.executable, "-c", "import main; print(main.SYSTEM_TRUST)"], cwd=BACKEND, env=env,

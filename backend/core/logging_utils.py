@@ -80,7 +80,10 @@ def configure_logging(level: str = "INFO", pretty: bool = False, log_format: str
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     logging.getLogger().setLevel(numeric_level)
-    for lib in ("uvicorn.access", "uvicorn.error", "httpx2", "aiosqlite"):
+    # httpx2 (the OIDC client) and httpx both log every request's full URL,
+    # query-string secrets included, at INFO: both stay at WARNING, so no
+    # dependency that brings httpx back can put a key in the log.
+    for lib in ("uvicorn.access", "uvicorn.error", "httpx", "httpx2", "aiosqlite"):
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 
