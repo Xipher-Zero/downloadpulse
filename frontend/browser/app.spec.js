@@ -213,13 +213,25 @@ test('hard reload after representative pages returns through a clean canonical b
   const runtime = observeRuntime(page);
   await page.goto('/');
 
-  for (const [id, title] of [['settings', 'Settings'], ['stats', 'Statistics'], ['help', 'Help & License']]) {
+  // Each page has its own address (WS11): a reload bootstraps the shell afresh
+  // and opens the page the address names, as the only active view.
+  for (const [id, title, path] of [['settings', 'Settings', '/settings'], ['stats', 'Statistics', '/statistics'], ['help', 'Help & License', '/help']]) {
     await openView(page, id, title);
     await page.reload();
-    await expect(page.locator('#view-dashboard')).toHaveClass(/\bactive\b/);
-    await expect(page.locator('#page-title')).toHaveText('Dashboard');
+    await expect(page).toHaveURL(new RegExp(`${path}$`));
+    await expect(page.locator(`#view-${id}`)).toHaveClass(/\bactive\b/);
+    await expect(page.locator('#page-title')).toHaveText(title);
+    expect(await page.locator('.view.active').evaluateAll(views => views.map(view => view.id))).toEqual([`view-${id}`]);
+    if (id === 'settings') await expect(page.locator('.dp-settings-master-card')).toBeVisible();
+    if (id === 'help') await expect(page.locator('.dp-help-master-card')).toBeVisible();
     await expectCanonicalShell(page);
   }
+  // The Dashboard's own address still reloads into the Dashboard.
+  await page.goto('/');
+  await page.reload();
+  await expect(page.locator('#view-dashboard')).toHaveClass(/\bactive\b/);
+  await expect(page.locator('#page-title')).toHaveText('Dashboard');
+  await expectCanonicalShell(page);
 
   await expectNoRetiredRuntime(runtime, page);
   expect(runtime.badResponses).toEqual([]);

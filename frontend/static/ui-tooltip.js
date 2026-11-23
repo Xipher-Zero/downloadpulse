@@ -367,10 +367,13 @@
     if (dismissed === host) dismissed = null;
     if (target === host) hide();
   }, true);
-  // Escape dismisses the tooltip; whatever else listens for Escape (a dialog,
-  // a menu) still hears it, exactly as before there were tooltips.
+  // Escape dismisses a shown tooltip, and that is all this Escape does: it is
+  // marked handled (heard first, in the capture phase), so a dialog or overlay
+  // beneath that honours a handled Escape -- the Details window, a Settings
+  // dialog, the sidebar overlay -- stays open; the next Escape is theirs.
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || !target) return;
+    event.preventDefault();
     dismissed = target;
     if (dwell?.host === target) stopDwell();
     hide();

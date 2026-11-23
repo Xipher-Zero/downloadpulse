@@ -195,7 +195,9 @@ test.describe('handheld shell, open runtime (every capability)', () => {
       let free = null;
       for (inset of [0, 10, 34]) {
         await page.setViewportSize({width, height: 844});
-        await page.reload();
+        // A fresh load at the Dashboard's address (a reload would reopen the
+        // Stats page the last pass chose: each page has its own address).
+        await page.goto('/');
         await page.waitForFunction(() => document.querySelector('#shell-dock > :not(dp-signal-field)') && window.DPTheme);
         for (const view of ['dashboard', 'stats']) {
           if (view === 'stats') { await page.locator('#shell-dock .dp-shell-dock-item[data-view="stats"]').click(); await still(page); }

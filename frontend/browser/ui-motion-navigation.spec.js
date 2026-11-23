@@ -393,8 +393,9 @@ test('Sidebar: the main view slides up or down by the displayed order; chrome st
   await page.evaluate(() => nav(document.querySelector('[data-view="torrents"]')));
   await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
   await noSlide(page);
-  await page.reload();
-  await expect(page.locator('#view-dashboard')).toHaveClass(/\bactive\b/);
+  await page.reload();                                // the address (/downloads) names the page: it opens in place
+  await expect(page).toHaveURL(/\/downloads$/);
+  await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
   await noSlide(page);
 
   // Rapid choices: the last one wins, with one active view and entry.
