@@ -413,6 +413,8 @@
   "status.requires_attention": "Requires attention",
   "status.waiting_for_slot": "Waiting for execution slot",
   "status.waiting_for_retry": "Waiting for retry",
+  "transfer.status_with_reason": "{status} · {reason}",
+  "transfer.reason_next_attempt": "{reason} · next attempt: {time}",
   "status.waiting_for_provider": "Waiting for provider",
   "status.waiting_for_storage": "Waiting for storage",
   "status.waiting_for_executor": "Waiting for executor",

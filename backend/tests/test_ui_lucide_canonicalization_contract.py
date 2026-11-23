@@ -47,9 +47,9 @@ def test_lucide_runtime_is_single_semantic_glyph_authority_without_global_replac
 
     # One status projection (statusShown) feeds the runtime's badge, and the
     # handheld Transfer Summary's glyph: both drawn by DPIcons alone.
-    assert "return {tone: s, label: category ? semantics.label(category) : '', category, projected: ''};" in app
-    assert "window.DPIcons.statusBadge(shown.tone, shown.label, shown.category)" in app
-    assert "return window.DPIcons.statusGlyph(shown.tone, shown.label, shown.category);" in app
+    assert "return {tone: s, label: category ? semantics.label(category) : '', category, projected: '', reason: ''};" in app
+    assert "window.DPIcons.statusBadge(shown.tone, shown.label, shown.category, shown.reason)" in app
+    assert "return window.DPIcons.statusGlyph(shown.tone, shown.label, shown.category, shown.reason);" in app
     assert "return window.DPIcons.toast(msg, type);" in app
     assert "window.DPIcons.renderThemeGlyph(!!isLight);" in app
 

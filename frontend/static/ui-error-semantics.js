@@ -26,8 +26,12 @@
     const category = detail && detail.error && detail.error.category;
     return typeof category === 'string' && categories.has(category) ? category : 'internal_error';
   }
+  // Whether a category is one of them (a caller that must not substitute one).
+  function known(category) {
+    return categories.has(category);
+  }
   function label(category) {
     return window.DPI18n.t(`error_category.${categories.has(category) ? category : 'internal_error'}`);
   }
-  window.DPFailureSemantics = Object.freeze({label: label, classify: classify});
+  window.DPFailureSemantics = Object.freeze({label: label, classify: classify, known: known});
 })();

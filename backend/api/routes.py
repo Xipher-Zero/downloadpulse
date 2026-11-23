@@ -48,6 +48,7 @@ from transfers.models import SubmissionDemand
 from transfers.read_models import DemandChanged
 from transfers.manual_queue_move import QueueMoveRefused, RestartConfirmationRequired
 from transfers.manual_route_switch import root_switches
+from transfers.presentation_repository import failure_selection
 from transfers.settings import TransferSettings
 from core.logging_utils import sanitize_exception, sanitize_log_value
 from core.presentation_safety import safe_original_http_resource, safe_original_remote_file_resource, safe_public_host
@@ -357,47 +358,34 @@ def _error_disclosure(error, displayed, definitions) -> dict | None:
     return facts or None
 
 
-# A held artifact's states that are no longer recovering: its error is history.
-_SETTLED_ARTIFACT_STATES = frozenset({"completed", "cancelled", "error"})
-
-
 async def _error_reason(repository, transfer_id: int, transfer, displayed, wake_condition, definitions) -> dict | None:
     """The reporting integration's own words (``IntegrationPresentation
     .error_reasons``) for the failure Details shows, or ``None``.
 
-    That failure is the transfer's displayed error when it has one (bound
-    exactly as ``_error_disclosure`` binds it); otherwise the failure DownloadPulse
-    is still recovering from: a source whose resolution retry is scheduled,
-    else a held file whose acquisition failed. ``scheduled_retry_at`` is only
-    ever a real schedule -- that source's own retry time, or the recovery
-    projection's ``retry_at:`` wake -- and ``None`` when no automatic retry is
-    scheduled. Nothing here decides or changes recovery. An error is the
-    integration's by any identity it records work under (a provider's or
-    its executor's), and nothing more is read unless some integration
-    declares words at all."""
+    That failure is the one ``failure_selection`` (the presentation owner)
+    names: the transfer's displayed error when it has one (bound exactly as
+    ``_error_disclosure`` binds it), else the failure DownloadPulse is still
+    recovering from, with only its real schedule as ``scheduled_retry_at``.
+    Nothing here decides or changes recovery. An error is the integration's
+    by any identity it records work under (a provider's or its executor's),
+    and nothing more is read unless some integration declares words at all."""
     declaring = [definition for definition in definitions or () if definition.presentation.error_reasons]
     if not declaring:
         return None
-    retry_at = None
     if displayed is not None:
         error = transfer.error if transfer else None
         if error is None or not isinstance(displayed, dict) or error.as_dict() != displayed:
             return None
+        selected = failure_selection(error, (), (), wake_condition)
     else:
-        pending = next((item for item in await repository.requests(transfer_id)
-                        if item.state == "pending" and item.error and float(item.retry_at or 0) > 0), None)
-        if pending is not None:
-            error, retry_at = pending.error, float(pending.retry_at)
-        else:
-            held = next((item for item in await repository.artifacts(transfer_id)
-                         if item.error and item.state not in _SETTLED_ARTIFACT_STATES), None)
-            if held is None:
-                return None
-            error, wake = held.error, str(wake_condition or "")
-            try:
-                retry_at = float(wake.removeprefix("retry_at:")) if wake.startswith("retry_at:") else None
-            except ValueError:
-                retry_at = None
+        selected = failure_selection(
+            None,
+            [(item.state, item.error, item.retry_at) for item in await repository.requests(transfer_id)],
+            [(item.state, item.error) for item in await repository.artifacts(transfer_id)],
+            wake_condition)
+    if selected is None:
+        return None
+    error, retry_at = selected
     definition = next((item for item in declaring if error.integration_id in item.owned_identities), None)
     words = definition.presentation.error_reason(error.native_code) if definition is not None else None
     if words is None:

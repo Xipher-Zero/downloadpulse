@@ -118,23 +118,32 @@
     return key || window.DPI18n.t('status.unrecognized');
   }
 
-  function statusBadge(status, label, category) {
+  // A status with the failure its reason names says both, in one phrase.
+  function statusPhrase(words, reason) {
+    return reason ? window.DPI18n.t('transfer.status_with_reason', {status: words, reason: reason}) : words;
+  }
+
+  /* ``reason`` (optional) is the failure the status is about, in words: shown
+   * beneath the badge, and in the tooltip that speaks for a label set aside. */
+  function statusBadge(status, label, category, reason) {
     const key = String(status == null ? '' : status).trim().toLowerCase();
     const descriptor = STATUS[key] || {icon: 'info', className: key || 'pending'};
-    const text = escapeHtml(statusWords(key, descriptor, label));
+    const words = statusWords(key, descriptor, label);
+    const text = escapeHtml(words);
     return '<span class="badge badge-' + escapeHtml(descriptor.className) + '" data-dp-status="' + escapeHtml(key) + '"' + (category ? ' data-dp-failure-code="' + escapeHtml(category) + '"' : '') +
-      ' data-tooltip="' + text + '" data-tooltip-label=".dp-status-label">' +
+      ' data-tooltip="' + escapeHtml(statusPhrase(words, reason)) + '" data-tooltip-label=".dp-status-label">' +
       lucideSvg(descriptor.icon, 'dp-status-icon') +
-      '<span class="dp-status-label">' + text + '</span></span>';
+      '<span class="dp-status-label">' + text + '</span></span>' +
+      (reason ? '<span class="dp-status-reason" data-dp-status-reason="1">' + escapeHtml(reason) + '</span>' : '');
   }
 
   /* A status's glyph alone, where a handheld Transfer Summary leads its
    * metadata line with it: the badge's own icon and tone, its label the
    * glyph's accessible name and DP tooltip. */
-  function statusGlyph(status, label, category) {
+  function statusGlyph(status, label, category, reason) {
     const key = String(status == null ? '' : status).trim().toLowerCase();
     const descriptor = STATUS[key] || {icon: 'info', className: key || 'pending'};
-    const text = escapeHtml(statusWords(key, descriptor, label));
+    const text = escapeHtml(statusPhrase(statusWords(key, descriptor, label), reason));
     return '<span class="dp-status-glyph badge-' + escapeHtml(descriptor.className) + '" data-dp-status="' + escapeHtml(key) + '"' + (category ? ' data-dp-failure-code="' + escapeHtml(category) + '"' : '') +
       ' role="img" aria-label="' + text + '" data-tooltip="' + text + '">' + lucideSvg(descriptor.icon, 'dp-status-icon') + '</span>';
   }

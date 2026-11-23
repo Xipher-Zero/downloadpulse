@@ -1593,6 +1593,8 @@ window.loadTorrents = loadTorrents;
 // The one date cell markup, also drawn by Dashboard Recent Activity.
 window.downloadsDateMarkup = dateMarkup;
 window.downloadsDayMarkup = dayMarkup;
+// The same date as words alone (a status's next automatic attempt).
+window.downloadsDateLabel = formatDownloadsDate;
 // The same preference applied to calendar fields the server already bucketed (Statistics).
 window.downloadsCalendarLabel = formatCalendar;
 // The same, for one instant's day (a premium account's expiry).

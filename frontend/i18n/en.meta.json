@@ -23957,6 +23957,27 @@
    "context": "Shown as an error message when Quit is pressed in the desktop application's quit dialog after that dialog's request expired (the window was closed again since, or DownloadPulse restarted). Tells the person to close the window again to be asked anew.",
    "owner": "backend/api/routes.py",
    "criticality": "normal"
+  },
+  "transfer.status_with_reason": {
+   "category": "status-chip",
+   "context": "A transfer's status with the failure it is about, e.g. 'Failed · Rate Limited'. {status} is the status label; {reason} is the failure category, possibly with its next automatic attempt. Read as the status badge's tooltip and accessible name where the status column shows only its glyph.",
+   "owner": "frontend/static/operator-title.js",
+   "criticality": "normal",
+   "args": {
+    "status": "string: the status label (e.g. 'Failed')",
+    "reason": "string: the failure category, possibly with its next attempt"
+   }
+  },
+  "transfer.reason_next_attempt": {
+   "category": "status-chip",
+   "context": "Beneath a transfer's status badge in Downloads and Dashboard rows: the failure it is waiting to retry and when the next automatic attempt is. {reason} is the failure category (e.g. 'Rate Limited'); {time} is the formatted date and time (e.g. 'Today, 14:32').",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal",
+   "geometry": "A secondary line beneath the status badge; wraps within the status column (about 150px); hidden where the column shows only the glyph.",
+   "args": {
+    "reason": "string: the failure category (e.g. 'Rate Limited')",
+    "time": "string: the formatted date and time of the next automatic attempt"
+   }
   }
  }
 }

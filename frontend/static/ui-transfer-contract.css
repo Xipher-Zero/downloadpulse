@@ -58,6 +58,18 @@
 :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-error {
   --dp-badge-color: var(--dp-state-error);
 }
+/* The failure a status is about (DPIcons.statusBadge's reason), beneath its
+   badge: secondary words that wrap within the status column, never widen it. */
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .dp-status-reason {
+  display: block;
+  margin-top: 4px;
+  font-size: 10.5px;
+  line-height: 1.3;
+  font-weight: 500;
+  color: var(--dp-text-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody, #modal-body) .badge-pending {
   --dp-badge-color: var(--dp-state-ready);
 }
@@ -123,7 +135,7 @@
    (ui-dashboard.css narrows its tracks under the same condition), and
    Downloads narrower than 1166px (ui-downloads-page.css, likewise). */
 @container dp-recent-activity (width <= 987px) {
-  #dash-tbody :is(.badge .dp-status-label, .actions [data-dp-icon-label]) {
+  #dash-tbody :is(.badge .dp-status-label, .dp-status-reason, .actions [data-dp-icon-label]) {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -148,7 +160,7 @@
   }
 }
 @container dp-downloads-table (width < 1166px) {
-  :is(#t-tbody, .dp-downloads-styled-tbody) :is(.badge .dp-status-label, :is(.actions, .dp-queue-consent) [data-dp-icon-label]) {
+  :is(#t-tbody, .dp-downloads-styled-tbody) :is(.badge .dp-status-label, .dp-status-reason, :is(.actions, .dp-queue-consent) [data-dp-icon-label]) {
     position: absolute;
     width: 1px;
     height: 1px;

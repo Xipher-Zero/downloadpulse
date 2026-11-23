@@ -32894,6 +32894,23 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.status_with_reason": {
+   "source": "0897e092bbd86238",
+   "translation": "0897e092bbd86238",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "identical": true
+  },
+  "transfer.reason_next_attempt": {
+   "source": "c32c695a49d5c17b",
+   "translation": "4a2296a9c65cc29a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

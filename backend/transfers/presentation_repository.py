@@ -341,6 +341,80 @@ def _aggregate_presentation(raw_status, file_presentations, *, paused=False, inp
     return recovery_presentation(raw_status)
 
 
+# A held artifact's states that are no longer recovering: its error is history.
+_SETTLED_ARTIFACT_STATES = frozenset({"completed", "cancelled", "error"})
+
+
+def wake_retry_at(wake_condition) -> float | None:
+    """The time a ``retry_at:<ts>`` recovery wake names, else ``None``."""
+    wake = str(wake_condition or "")
+    if not wake.startswith("retry_at:"):
+        return None
+    try:
+        return float(wake.removeprefix("retry_at:"))
+    except ValueError:
+        return None
+
+
+def failure_selection(transfer_error, requests, artifacts, wake_condition):
+    """The one selection of the failure a transfer's reason names, as
+    ``(error, scheduled_retry_at)``, or ``None``.
+
+    That failure is the transfer's displayed error when it has one; otherwise
+    the failure DownloadPulse is still recovering from: a source whose
+    resolution retry is scheduled, else a held file whose acquisition failed.
+    ``scheduled_retry_at`` is only ever a real schedule -- that source's own
+    retry time, or the recovery projection's ``retry_at:`` wake -- and ``None``
+    when no automatic retry is scheduled.
+
+    ``requests`` are ``(state, error, retry_at)`` in the repository's request
+    order (``parent_id, ordinal``); ``artifacts`` ``(state, error)`` for the
+    transfer's canonical artifacts in id order; ``wake_condition`` is the
+    transfer's effective presentation's. An error is whatever its reader holds
+    -- the decoded ``NormalizedError`` (Details' Reason) or only its category
+    (the presentation) -- and a falsy one is none. Details' Reason and both
+    presentation projections select through this alone."""
+    if transfer_error:
+        return transfer_error, None
+    for state, error, retry_at in requests:
+        if state == "pending" and error and float(retry_at or 0) > 0:
+            return error, float(retry_at)
+    for state, error in artifacts:
+        if error and state not in _SETTLED_ARTIFACT_STATES:
+            return error, wake_retry_at(wake_condition)
+    return None
+
+
+def pending_request_failure_sql(transfer_ids: str) -> str:
+    """For each transfer in ``transfer_ids`` (an SQL id list or subquery): the
+    one request ``failure_selection`` can choose -- the first, in the
+    repository's request order, that is pending with an error and a scheduled
+    retry -- as ``transfer_id``, ``state``, ``error_category``, ``retry_at``.
+    Only the error's category is read, never the error itself."""
+    return f"""SELECT transfer_id, state, error_category, retry_at FROM (
+        SELECT r.transfer_id, r.state, CASE WHEN json_valid(r.error) THEN json_extract(r.error, '$.category') END AS error_category, r.retry_at,
+               ROW_NUMBER() OVER (PARTITION BY r.transfer_id ORDER BY r.parent_id, r.ordinal, r.id) AS rank
+        FROM transfer_requests r
+        WHERE r.transfer_id IN ({transfer_ids}) AND r.state = 'pending'
+          AND COALESCE(r.error, '') != '' AND COALESCE(r.retry_at, 0) > 0
+    ) WHERE rank = 1"""
+
+
+def _failure_presentation(aggregate, failure) -> dict:
+    """The selected failure's category and real schedule for a transfer's
+    presentation (``presentation_error_category``,
+    ``presentation_retry_at``); both ``None`` once the transfer is settled.
+    ``failure`` is ``(transfer category, requests, artifacts)`` for
+    ``failure_selection``, each error its category."""
+    selected = None
+    if aggregate.get("presentation_status") not in _TERMINAL_PRESENTATION:
+        transfer_category, requests, artifacts = failure
+        selected = failure_selection(transfer_category, requests, artifacts, aggregate.get("wake_condition"))
+    category, retry_at = selected if selected else (None, None)
+    return {"presentation_error_category": str(category) if category else None,
+            "presentation_retry_at": retry_at}
+
+
 def effective_presentation(
     raw_status,
     file_presentations,
@@ -348,6 +422,7 @@ def effective_presentation(
     paused=False,
     input_required=False,
     current_resource_state=None,
+    failure=None,
 ):
     """The one owner of a transfer's effective presentation for BOTH projections.
 
@@ -366,6 +441,12 @@ def effective_presentation(
     generic pre-provider-work presentation without ever overwriting a
     more-specific one (paused, input-required, a recovery-quiescence
     ``waiting_for_*``, ``recovering``, ``requires_attention``, failure, ...).
+
+    ``failure`` -- ``(transfer error category, requests, artifacts)`` as
+    ``failure_selection`` reads them, each error its category -- adds the
+    failure the transfer's reason names: ``presentation_error_category`` and
+    its real schedule ``presentation_retry_at`` (Details' Reason selects the
+    same failure by the same rule).
     """
     aggregate = _aggregate_presentation(
         raw_status, file_presentations, paused=paused, input_required=input_required,
@@ -375,6 +456,8 @@ def effective_presentation(
     )
     if override:
         aggregate = {**aggregate, **override}
+    if failure is not None:
+        aggregate = {**aggregate, **_failure_presentation(aggregate, failure)}
     return aggregate
 
 
@@ -656,9 +739,13 @@ class TransferRepository(_CanonicalTransferRepository):
             replacement_held = await self._replacement_held_artifacts(db, (transfer_id,))
             file_rows = await db.fetchall(
                 """SELECT id,torrent_id,request_id,status,size_bytes,blocked,mirror_state,
-                          recovery_failures,recovery_refreshes
+                          recovery_failures,recovery_refreshes,
+                          CASE WHEN json_valid(normalized_error) THEN json_extract(normalized_error,'$.category') END AS error_category
                     FROM download_files WHERE torrent_id=? ORDER BY id""", (transfer_id,)
             )
+            # The source whose scheduled resolution retry a reason may name
+            # (``failure_selection``): only its category.
+            failure_requests = await db.fetchall(pending_request_failure_sql("?"), (transfer_id,))
             # DP-valid material per artifact: the only completion truth.
             progress_rows = await db.fetchall(
                 """SELECT m.artifact_id,m.valid_ranges,m.member_ranges FROM artifact_material_state m
@@ -851,10 +938,14 @@ class TransferRepository(_CanonicalTransferRepository):
                     str(row.get("status") or "").lower() != "completed"
                     and SizeKnowledge.durable(row.get("size_bytes"), row.get("size_knowledge")) == SizeKnowledge.UNKNOWN)
 
+        transfer_error = result.get("error") if isinstance(result.get("error"), dict) else {}
         result.update(effective_presentation(
             result.get("status"), voting_presentations,
             paused=paused, input_required=challenge,
             current_resource_state=current_resource_state,
+            failure=(transfer_error.get("category"),
+                     [(row["state"], row["error_category"], row["retry_at"]) for row in failure_requests],
+                     [(row["status"], row["error_category"]) for row in file_rows if is_canonical_artifact_row(row)]),
         ))
         if str(result.get("status") or "").lower() == "consolidated":
             # A settled contributor whose association is still owed proof

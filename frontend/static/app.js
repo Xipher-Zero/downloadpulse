@@ -1226,15 +1226,17 @@ function pct(part, total) {
 }
 function badge(s, detail) {
   const shown = statusShown(s, detail);
-  const html = window.DPIcons.statusBadge(shown.tone, shown.label, shown.category);
+  const html = window.DPIcons.statusBadge(shown.tone, shown.label, shown.category, shown.reason);
   return shown.projected ? html.replace('<span class="badge ', '<span data-dp-lifecycle-status="' + esc(shown.projected) + '" class="badge ') : html;
 }
 // The same status as a glyph alone (a handheld Transfer Summary's metadata line).
 function statusGlyph(s, detail) {
   const shown = statusShown(s, detail);
-  return window.DPIcons.statusGlyph(shown.tone, shown.label, shown.category);
+  return window.DPIcons.statusGlyph(shown.tone, shown.label, shown.category, shown.reason);
 }
-// What a row's status shows: its tone, label and failure category.
+// What a row's status shows: its tone, label and failure category, and with a
+// projected status the failure its reason names (the server's one selection,
+// presentation_error_category) with that failure's real schedule.
 function statusShown(s, detail) {
   if (!window.DPIcons || typeof window.DPIcons.statusBadge !== 'function') {
     throw new Error('DownloadPulse icon runtime is unavailable');
@@ -1256,11 +1258,21 @@ function statusShown(s, detail) {
     const unverified = projected === 'consolidated' && Number(detail?.unverified_association_count) > 0;
     const key = `status.${unverified ? 'consolidated_unverified' : projected}`;
     const label = DPI18n.has(key) ? DPI18n.t(key) : served;
-    return {tone, label: label || undefined, category: '', projected};
+    const semantics = window.DPFailureSemantics;
+    const named = String(detail?.presentation_error_category || '');
+    // Only a category the catalog knows: never a substituted one.
+    const category = semantics && semantics.known(named) ? named : '';
+    const at = Number(detail?.presentation_retry_at);
+    const scheduled = category && detail?.presentation_retry_at != null && Number.isFinite(at) && at > 0;
+    const reason = !category ? '' : scheduled
+      ? DPI18n.t('transfer.reason_next_attempt', {reason: semantics.label(category),
+        time: window.downloadsDateLabel(new Date(at * 1000).toISOString())})
+      : semantics.label(category);
+    return {tone, label: label || undefined, category, projected, reason};
   }
   const semantics = window.DPFailureSemantics;
   const category = s === 'error' && semantics ? semantics.classify(detail) : '';
-  return {tone: s, label: category ? semantics.label(category) : '', category, projected: ''};
+  return {tone: s, label: category ? semantics.label(category) : '', category, projected: '', reason: ''};
 }
 // The backend's effective presentation is the one display-status authority; every
 // list and detail payload carries it. The raw lifecycle status is only what a

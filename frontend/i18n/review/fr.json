@@ -33522,6 +33522,31 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "transfer.status_with_reason": {
+   "source": "0897e092bbd86238",
+   "translation": "0897e092bbd86238",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "identical": true
+  },
+  "transfer.reason_next_attempt": {
+   "source": "c32c695a49d5c17b",
+   "translation": "88cd914690909370",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "findings": [
+    {
+     "kind": "style",
+     "note": "Review: a no-break space before the colon, as details.reason.next_attempt has, so a wrapping line never breaks before it.",
+     "status": "resolved",
+     "resolution": "Corrected to the reviewer's wording."
+    }
+   ]
   }
  }
 }

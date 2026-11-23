@@ -234,10 +234,22 @@ def _bounded_source_identity(row) -> dict[str, str]:
     return public_source_identity(request_kind, candidate_source)
 
 
-def _bounded_child_presentations(raw_facts, *, paused, input_required, capacity_only_blocked_ids):
+def _artifact_facts(raw_facts) -> list[dict]:
+    """The page's per-artifact facts (``artifact_presentation_facts``),
+    decoded; in artifact id order, the order the selection reads."""
+    try:
+        facts = json.loads(raw_facts) if raw_facts else []
+    except (TypeError, ValueError):
+        facts = []
+    if not isinstance(facts, list):
+        return []
+    return sorted((fact for fact in facts if isinstance(fact, dict)), key=lambda fact: int(fact.get("artifact_id") or 0))
+
+
+def _bounded_child_presentations(facts, *, paused, input_required, capacity_only_blocked_ids):
     """Project the page's per-artifact child presentations for the shared owner.
 
-    ``raw_facts`` is the JSON array the bounded projection built from raw
+    ``facts`` is the decoded JSON array the bounded projection built from raw
     durable facts (each artifact's id, status, plus its latest recovery-
     snapshot fields) already restricted to canonical artifact membership
     (Section 7). Each entry is passed through the same
@@ -252,16 +264,8 @@ def _bounded_child_presentations(raw_facts, *, paused, input_required, capacity_
     derived in the same one query): a file held for an operator switch's
     landing waits for that switch's provider.
     """
-    try:
-        facts = json.loads(raw_facts) if raw_facts else []
-    except (TypeError, ValueError):
-        facts = []
-    if not isinstance(facts, list):
-        return []
     presentations = []
     for fact in facts:
-        if not isinstance(fact, dict):
-            continue
         context = {key: fact.get(key) for key in ARTIFACT_PRESENTATION_SNAPSHOT_KEYS}
         artifact_id = fact.get("artifact_id")
         presentations.append(recovery_presentation(
@@ -637,11 +641,19 @@ async def list_operational_torrents(
         for name in ("completed", "total", "writers", "acquiring", "bytes_known", "units_known",
                      "units_completed", "units_total", "estimates_known", "estimated"):
             projected.pop(f"_execution_{name}", None)
+        artifact_facts = _artifact_facts(projected.pop("_artifact_presentation_facts", None))
         file_presentations = _bounded_child_presentations(
-            projected.pop("_artifact_presentation_facts", None),
+            artifact_facts,
             paused=paused, input_required=input_required,
             capacity_only_blocked_ids=capacity_only_blocked_ids,
         )
+        # The failure a reason names (``failure_selection``), each error its category.
+        request_failure = (projected.pop("_request_failure_state", None),
+                           projected.pop("_request_failure_category", None),
+                           projected.pop("_request_failure_retry_at", None))
+        failure = (projected.pop("_transfer_error_category", None),
+                   [request_failure] if request_failure[0] else [],
+                   [(fact.get("status"), fact.get("error_category")) for fact in artifact_facts])
         source_identity = _bounded_source_identity(projected)
         deferred_provider_id = projected.pop("_deferred_provider_id", None)
         deferred_source = _decode_projection_value(projected.pop("_deferred_source", None), None)
@@ -789,6 +801,7 @@ async def list_operational_torrents(
             paused=paused,
             input_required=input_required,
             current_resource_state=current_root_resource_state,
+            failure=failure,
         ))
         items.append(item)
     # The estimated time remaining of each row acquiring now, from the one

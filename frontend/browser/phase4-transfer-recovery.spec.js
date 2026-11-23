@@ -116,3 +116,55 @@ test('Details uses canonical artifact state and does not turn recovery into atte
   await expect(page.locator('#modal-body [data-dp-lifecycle-status="requires_attention"]')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('A row names the failure its status is about, with the real next attempt, and nothing without one', async ({ page }) => {
+  await isolateExternalFonts(page);
+  const errors = observeRuntime(page);
+  await page.setViewportSize({width: 1600, height: 900});
+  const retryAt = Date.UTC(2031, 0, 2, 3, 4) / 1000;
+  const failed = Object.assign(item(1001, 'failed', 'Failed', 'error'), {presentation_error_category: 'rate_limited', presentation_retry_at: null});
+  const attention = Object.assign(item(1002, 'requires_attention', 'Requires attention', 'error'), {presentation_error_category: 'connection_refused', presentation_retry_at: null});
+  const waiting = Object.assign(item(1003, 'waiting_for_retry', 'Waiting for retry', 'queued'), {presentation_error_category: 'rate_limited', presentation_retry_at: retryAt});
+  // No category, or one the catalog does not know: nothing is added, never a substituted one.
+  const plain = Object.assign(item(1004, 'waiting_for_retry', 'Waiting for retry', 'queued'), {presentation_error_category: null, presentation_retry_at: retryAt});
+  const unknown = Object.assign(item(1005, 'requires_attention', 'Requires attention', 'error'), {presentation_error_category: 'not_a_category', presentation_retry_at: null});
+  const items = [failed, attention, waiting, plain, unknown];
+  await page.route(url => url.pathname === '/api/torrents', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({items, total: items.length}),
+  }));
+  await page.goto('/');
+  await page.evaluate(async () => {
+    await window.DPI18n.ready;
+    nav(document.querySelector('#sidebar .nav-item[data-view="torrents"]'));
+    await loadTorrents();
+  });
+  const status = id => page.locator(`#t-tbody tr[data-torrent-id="${id}"] [data-role="transfer-status"]`);
+  const reason = id => status(id).locator('[data-dp-status-reason]');
+  const when = await page.evaluate(at => window.downloadsDateLabel(new Date(at * 1000).toISOString()), retryAt);
+  await expect(reason(1001)).toHaveText('Rate Limited');
+  await expect(status(1001).locator('[data-dp-failure-code]')).toHaveAttribute('data-dp-failure-code', 'rate_limited');
+  await expect(status(1001).locator('.badge')).toHaveAttribute('data-tooltip', 'Failed · Rate Limited');
+  await expect(reason(1002)).toHaveText('Connection Refused');
+  await expect(reason(1003)).toHaveText(`Rate Limited · next attempt: ${when}`);
+  for (const id of [1004, 1005]) {
+    await expect(reason(id)).toHaveCount(0);
+    await expect(status(id).locator('[data-dp-failure-code]')).toHaveCount(0);
+  }
+  await expect(status(1005)).not.toContainText('Internal');
+  // Dashboard Recent Activity draws the same status through the same owner.
+  await page.evaluate(async () => { await loadRecent(); });
+  await expect(page.locator('#dash-tbody tr[data-torrent-id="1003"] [data-role="transfer-status"] [data-dp-status-reason]'))
+    .toHaveText(`Rate Limited · next attempt: ${when}`);
+  // The expanded pseudo locale: the reason wraps inside the status column, never widening it.
+  await page.evaluate(() => window.DPI18n.setLocale('en-XA'));
+  await page.evaluate(async () => { await loadTorrents(); });
+  await expect(reason(1003)).toContainText('⟦');
+  const fit = await status(1003).evaluate(cell => {
+    const line = cell.querySelector('[data-dp-status-reason]');
+    return {cell: cell.getBoundingClientRect(), line: line.getBoundingClientRect(), overflow: cell.scrollWidth - cell.clientWidth};
+  });
+  expect(fit.overflow).toBeLessThanOrEqual(0);
+  expect(fit.line.left).toBeGreaterThanOrEqual(fit.cell.left - 0.5);
+  expect(fit.line.right).toBeLessThanOrEqual(fit.cell.right + 0.5);
+  expect(errors).toEqual([]);
+});

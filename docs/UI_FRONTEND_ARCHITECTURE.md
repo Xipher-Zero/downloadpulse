@@ -77,7 +77,7 @@ There is no `DPUICorrectionBatch1`, `DPUICorrectionBatch1Final`, or `DPUICorrect
 
 There is exactly one Downloads render pass. `ui-downloads.js` never replaces `api`, `loadTorrents`, or `renderTorrentPagination` on another owner, and never re-renders an inherited Downloads implementation and repairs its DOM afterward — the presentation-status-driven badge/progress/action-button state, the source-icon/file-selection/candidate-launcher slot, and the Downloads-local date format are all computed inline while building each row, the same way Dashboard Recent already computes them.
 
-`badge()` and `transferDisplayStatus()` (in `app.js`) natively consume the backend-projected `presentation_status`/`presentation_label`/`presentation_badge_status` fields (`transfers.presentation_repository.effective_presentation`) when present — this is part of their one canonical definition; no other owner (including `ui-processing-presentation.js`) reassigns either global.
+`badge()` and `transferDisplayStatus()` (in `app.js`) natively consume the backend-projected `presentation_status`/`presentation_label`/`presentation_badge_status` fields (`transfers.presentation_repository.effective_presentation`) when present, with the failure the status is about (`presentation_error_category` and its real schedule `presentation_retry_at`, selected by `presentation_repository.failure_selection`, the same selection Details' Reason reads) shown beneath the badge by `DPIcons.statusBadge` — this is part of their one canonical definition; no other owner (including `ui-processing-presentation.js`) reassigns either global.
 
 ## CSS composition
 

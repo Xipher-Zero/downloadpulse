@@ -19,7 +19,9 @@ from transfers import file_selection as fs  # noqa: F401 -- the page statement's
 from transfers.display_name import normalized_transfer_display_name
 from transfers.manual_failover import switch_eligible_sql
 from transfers.models import BITTORRENT_REQUEST_KINDS
-from transfers.presentation_repository import candidate_inputs_sql, public_source_identity
+from transfers.presentation_repository import (
+    candidate_inputs_sql, pending_request_failure_sql, public_source_identity,
+)
 from transfers.read_models import (
     ENDED_ROUTE_STATES as _ENDED_ROUTE_STATES, MUTATING_EXECUTION_STATES as _MUTATING_EXECUTION_STATES,
     QUEUE_MEMBER_SQL as _QUEUE_MEMBER_SQL, active_execution_progress_sql, canonical_artifact_membership_sql,
@@ -850,7 +852,8 @@ async def downloads_page(repository, *, status, plan, limit: int, offset: int, o
         -- for Details' historical/provenance file listing, which still shows
         -- every row.
         page_artifacts AS (
-            SELECT f.id AS artifact_id, f.torrent_id AS transfer_id, f.status AS status
+            SELECT f.id AS artifact_id, f.torrent_id AS transfer_id, f.status AS status,
+                   CASE WHEN json_valid(f.normalized_error) THEN json_extract(f.normalized_error, '$.category') END AS error_category
             FROM download_files f
             JOIN page ON page.id = f.torrent_id
             WHERE {_CANONICAL_ARTIFACT_SQL}
@@ -920,7 +923,8 @@ async def downloads_page(repository, *, status, plan, limit: int, offset: int, o
                     'last_applied_reason', ars.last_applied_reason,
                     'wake_condition', ars.wake_condition,
                     'recovery_claim_token', ars.recovery_claim_token,
-                    'awaiting_switched_provider', CASE WHEN replacement_held.artifact_id IS NULL THEN 0 ELSE 1 END
+                    'awaiting_switched_provider', CASE WHEN replacement_held.artifact_id IS NULL THEN 0 ELSE 1 END,
+                    'error_category', pa.error_category
                 )) AS artifacts
             FROM page_artifacts pa
             LEFT JOIN artifact_recovery_state ars
@@ -936,6 +940,11 @@ async def downloads_page(repository, *, status, plan, limit: int, offset: int, o
         -- definition, page transfers only); never completion.
         page_active_execution AS (
             {active_execution_progress_sql("f.torrent_id IN (SELECT id FROM page)")}
+        ),
+        -- The source whose scheduled resolution retry a reason may name
+        -- (presentation_repository.failure_selection): only its category.
+        page_request_failure AS (
+            {pending_request_failure_sql("SELECT id FROM page")}
         ),
         input_challenge AS (
             SELECT c.transfer_id,
@@ -1332,6 +1341,10 @@ async def downloads_page(repository, *, status, plan, limit: int, offset: int, o
             END AS provider_provenance_status,
             current_root_resource.resource_state AS _current_root_resource_state,
             artifact_presentation_facts.artifacts AS _artifact_presentation_facts,
+            CASE WHEN json_valid(t.normalized_error) THEN json_extract(t.normalized_error, '$.category') END AS _transfer_error_category,
+            page_request_failure.state AS _request_failure_state,
+            page_request_failure.error_category AS _request_failure_category,
+            page_request_failure.retry_at AS _request_failure_retry_at,
             input_challenge.challenge AS _input_challenge,
             COALESCE(pause_intent.paused, 0) AS _paused_intent,
             page_active_execution.execution_completed AS _execution_completed,
@@ -1371,6 +1384,8 @@ async def downloads_page(repository, *, status, plan, limit: int, offset: int, o
           ON current_root_resource.transfer_id = t.id
         LEFT JOIN artifact_presentation_facts
           ON artifact_presentation_facts.transfer_id = t.id
+        LEFT JOIN page_request_failure
+          ON page_request_failure.transfer_id = t.id
         LEFT JOIN input_challenge
           ON input_challenge.transfer_id = t.id
         LEFT JOIN transfer_pause_intents pause_intent
