@@ -46,7 +46,9 @@ def test_no_owner_writes_a_native_title_tooltip() -> None:
 
 def test_the_one_tooltip_owner_presents_text_only_and_keeps_to_presentation() -> None:
     owner = read("ui-tooltip.js")
-    assert "window.DPTooltip = Object.freeze({hide});" in owner
+    # 1.0.3: and one read-only query -- whether this Escape dismissed a shown
+    # tooltip -- for the Details window, whose own Escape yields to it.
+    assert "window.DPTooltip = Object.freeze({hide, dismissedBy: event => event != null && event === escaped});" in owner
     assert "const SELECTOR = '[data-tooltip]';" in owner
     assert "tip.textContent = text;" in owner and "innerHTML" not in owner and "insertAdjacentHTML" not in owner
     assert "tip.setAttribute('role', 'tooltip');" in owner and "tip.popover = 'manual';" in owner
@@ -57,7 +59,7 @@ def test_the_one_tooltip_owner_presents_text_only_and_keeps_to_presentation() ->
         assert absent not in owner, absent
     # The described element is touched only for aria-describedby while shown, and given it back.
     assert owner.count("setAttribute('aria-describedby'") == 2 and owner.count("removeAttribute('aria-describedby')") == 1
-    # Touch gets no hover tooltip; keyboard focus shows it.
+    # Touch gets no hover tooltip; keyboard focus shows it; Escape is not swallowed.
     assert "if (event.pointerType === 'touch') return;" in owner
     # (The focused element itself: a section index is also shown for focus
     # within the element it describes.)
@@ -70,18 +72,15 @@ def test_the_one_tooltip_owner_presents_text_only_and_keeps_to_presentation() ->
     assert "tab.getAttribute('aria-selected') === 'true'" in index and "part.textContent = text;" in index
     assert "tip.replaceChildren(head, all);" in index
     assert "(event.target instanceof Element && target.contains(event.target))) return;" in owner
-    # Nothing is swallowed: every listener still hears every event. Two
-    # defaults are cancelled. An Escape that dismisses a shown tooltip is
-    # marked handled (heard first, in the capture phase), so an owner beneath
-    # that honours a handled Escape -- Details, a Settings dialog, the sidebar
-    # overlay -- stays open and the next Escape is its own. And the first tap
-    # on an element that asked to show its tooltip on a tap (data-tooltip-touch,
-    # a Settings island title whose hint is out of view), so that tap activates
-    # nothing it labels; the click still reaches every listener.
-    assert "stopPropagation" not in owner and owner.count("preventDefault") == 2
+    # Nothing is swallowed: the one cancelled default is the first tap on an
+    # element that asked to show its tooltip on a tap (data-tooltip-touch, a
+    # Settings island title whose hint is out of view), so that tap activates
+    # nothing it labels; the click still reaches every listener. An Escape that
+    # dismisses a shown tooltip is only remembered (escaped), never cancelled.
+    assert "stopPropagation" not in owner and owner.count("preventDefault") == 1
     assert ("  document.addEventListener('keydown', event => {\n"
             "    if (event.key !== 'Escape' || !target) return;\n"
-            "    event.preventDefault();\n"
+            "    escaped = event;\n"
             "    dismissed = target;\n"
             "    if (dwell?.host === target) stopDwell();\n"
             "    hide();\n"
@@ -100,8 +99,8 @@ def test_the_one_tooltip_owner_presents_text_only_and_keeps_to_presentation() ->
 
 def test_it_loads_once_as_a_direct_script_and_is_styled_by_the_shared_material() -> None:
     index = read("index.html")
-    assert index.count('<script src="/ui-tooltip.js?v=3" defer></script>') == 1
-    assert index.index("/ui-motion.js?v=4") < index.index("/ui-tooltip.js?v=3") < index.index("/ui-pager.js?v=1")
+    assert index.count('<script src="/ui-tooltip.js?v=4" defer></script>') == 1
+    assert index.index("/ui-motion.js?v=4") < index.index("/ui-tooltip.js?v=4") < index.index("/ui-pager.js?v=1")
     css = read("ui-components.css")
     block = css[css.index(".dp-tooltip {"):css.index(".dp-tooltip[hidden]")]
     for token in ("var(--dp-surface-overlay)", "var(--dp-border-default)", "var(--dp-shadow-control)",

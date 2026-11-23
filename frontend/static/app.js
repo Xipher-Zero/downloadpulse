@@ -3136,6 +3136,7 @@ const DPModal = (function () {
   function escapeClose(event) {
     if (event.key !== 'Escape' || event.defaultPrevented || !closeOnEscape || !activeMode) return;
     if (window.DPSettingsModal?.showing()) return;   // a dialog above it holds Escape
+    if (window.DPTooltip?.dismissedBy(event)) return;   // this Escape dismissed a tooltip; the next is Details'
     event.preventDefault();
     requestModalClose('escape');
   }

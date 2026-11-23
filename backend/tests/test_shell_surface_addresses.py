@@ -122,9 +122,10 @@ def test_escape_closes_details_through_the_shared_modal_owner():
     assert modal.count("addEventListener('keydown', escapeClose)") == 1
     assert "requestModalClose('escape')" in modal
     assert "event.defaultPrevented" in modal and "window.DPSettingsModal?.showing()" in modal
+    assert "if (window.DPTooltip?.dismissedBy(event)) return;" in modal
     # Details asks for it; no other owner adds an Escape listener for Details.
     assert re.search(r"DPModal\.open\(\{mode: 'details'[^}]*escape: true\}\)", app_js)
     # Focus goes back to the invoking row, or the row redrawn in its place.
     assert "returnTargetNow(returnTarget)" in modal
     index = (STATIC / "index.html").read_text(encoding="utf-8")
-    assert index.count("/app.js?v=43") == 1
+    assert index.count("/app.js?v=44") == 1

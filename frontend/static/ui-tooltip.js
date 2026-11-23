@@ -58,6 +58,7 @@
   let target = null;                // the element it describes now
   let pending = null;               // {element, timer}: a hover waiting out the delay
   let dismissed = null;             // the element Escape or a press dismissed
+  let escaped = null;               // the Escape keydown that dismissed a shown tooltip
   let lastHidden = 0;
   let watch = null;                 // while shown: the element leaving the document hides it
   let bridging = false;             // the pointer is crossing between an element and its scrollable tooltip
@@ -367,13 +368,14 @@
     if (dismissed === host) dismissed = null;
     if (target === host) hide();
   }, true);
-  // Escape dismisses a shown tooltip, and that is all this Escape does: it is
-  // marked handled (heard first, in the capture phase), so a dialog or overlay
-  // beneath that honours a handled Escape -- the Details window, a Settings
-  // dialog, the sidebar overlay -- stays open; the next Escape is theirs.
+  // Escape dismisses the tooltip; whatever else listens for Escape (a dialog,
+  // a menu) still hears it, exactly as before there were tooltips. The one
+  // Escape that dismissed a shown tooltip is remembered, for an owner that
+  // would rather leave that key to the tooltip (dismissedBy: the Details
+  // window, whose own Escape is newer than tooltips).
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || !target) return;
-    event.preventDefault();
+    escaped = event;
     dismissed = target;
     if (dwell?.host === target) stopDwell();
     hide();
@@ -431,5 +433,5 @@
   window.addEventListener('blur', stopDwell);
   document.addEventListener('downloadpulse:navigation', stopDwell);
 
-  window.DPTooltip = Object.freeze({hide});
+  window.DPTooltip = Object.freeze({hide, dismissedBy: event => event != null && event === escaped});
 })();
