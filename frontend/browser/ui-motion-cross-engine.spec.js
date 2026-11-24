@@ -456,7 +456,10 @@ async function returnTrip(page, {pick, a, b}) {
     const state = el => ({inert: el.inert, hidden: el.getAttribute('aria-hidden'), kept: el.hasAttribute('data-dp-motion-outgoing'),
                           style: el.getAttribute('style'), transform: getComputedStyle(el).transform,
                           animations: el.getAnimations().filter(x => x.playState !== 'finished').length});
-    const choose = name => (0, eval)(`(${pick})`)(name);
+    // Made now, in the evaluation itself: the page's Content-Security-Policy (no 'unsafe-eval')
+    // refuses eval from its own later callbacks, where the second choice is made.
+    const chosen = (0, eval)(`(${pick})`);
+    const choose = name => chosen(name);
     const out = {};
     choose(b.name);
     requestAnimationFrame(() => requestAnimationFrame(() => {
