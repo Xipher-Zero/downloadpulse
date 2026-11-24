@@ -15,6 +15,7 @@ evidence and written material agree, as they do over the network).
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 
@@ -146,3 +147,138 @@ async def test_hashless_material_of_the_same_address_never_completes_the_update(
         assert state == TransferState.FAILED
         context = await repository.recovery_context(artifact.id)
         assert context["decision_reason"] == "integrity_failure"
+
+
+# ── the desktop route over the real engine (WS27 G9-R) ──────────────────────
+# Every state below is reached through public paths: the window's own click
+# (POST /api/desktop/update/download), the engine's own lifecycle, Delete.
+
+WINDOW_PORT = 47815
+
+
+@pytest_asyncio.fixture
+async def window(stage, monkeypatch, tmp_path):
+    import sys as _sys
+
+    import httpx
+    import main
+    import core.config as config
+    from account_support import account
+    from application import updates
+    from application.service import ApplicationService
+    from auth.accounts import DEFAULT_ADMIN_ID, Role
+    from auth.models import Principal
+    from auth.sessions import HTTP_SESSION_COOKIE, session_store
+
+    repository, engine, copier, store, now = stage
+    monkeypatch.setenv("DOWNLOADPULSE_DESKTOP", "1")
+    monkeypatch.setenv("DOWNLOADPULSE_DESKTOP_PORT", str(WINDOW_PORT))
+    monkeypatch.setenv("FLATPAK_ID", "io.github.xipher_zero.DownloadPulse")
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr(updates._platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(config, "_settings", config.AppSettings(auth_password_enabled=True))
+    monkeypatch.setattr(updates, "_record", None)
+    monkeypatch.setattr(updates, "_download", None)
+    monkeypatch.setattr(updates, "read_version", lambda: "1.0.3")
+    application = ApplicationService(engine)
+    application.staged_input = store
+    monkeypatch.setitem(main.app.state._state, "application", application)
+    session_store.clear()
+    token, _ = session_store.create(Principal.password_session(account("admin", account_id=DEFAULT_ADMIN_ID,
+                                                                       role=Role.ADMIN)), lifetime_seconds=3600)
+    transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False)
+
+    async def call(method, path):
+        async with httpx.AsyncClient(transport=transport, base_url=f"http://127.0.0.1:{WINDOW_PORT}") as client:
+            response = await client.request(method, path, headers={
+                "Cookie": f"{HTTP_SESSION_COOKIE}={token}", "X-CSRF-Token": session_store.csrf_token(token)})
+        return response.status_code, response.json()
+
+    async def fetch(_etag):
+        return 200, "", {"tag_name": "v9.9.9", "html_url": "https://github.com/Xipher-Zero/downloadpulse/releases/tag/v9.9.9",
+                         "published_at": "2026-12-01", "draft": False, "prerelease": False,
+                         "assets": [{"name": NAME, "size": len(GOOD), "digest": f"sha256:{GOOD_SHA256}",
+                                     "browser_download_url": URL}]}
+
+    monkeypatch.setattr(updates, "_fetch", fetch)
+    assert (await updates.refresh())[0]["installer"]["sha256"] == GOOD_SHA256
+
+    async def click():
+        status, body = await call("POST", "/api/desktop/update/download")
+        assert status == 200, body
+        return body["id"]
+
+    yield SimpleNamespace(repository=repository, engine=engine, copier=copier, now=now, call=call, click=click,
+                          application=application)
+    session_store.clear()
+
+
+from types import SimpleNamespace  # noqa: E402
+
+
+async def _status(window, transfer_id):
+    return (await window.repository.presentation(transfer_id))["presentation_status"]
+
+
+async def test_a_completed_installer_still_on_disk_is_reused_and_a_removed_one_is_downloaded_again(window):
+    first = await window.click()
+    await _ticks(window.engine, window.repository, first, window.now)
+    assert await _status(window, first) == "completed"
+    target = Path((await _artifact(window.repository, first)).target)
+    assert target.read_bytes() == GOOD
+    # Completed, its file present (core's completed_location answers): the same transfer.
+    assert await window.click() == first
+    # Its file removed from the download folder: a new lineage.
+    target.unlink()
+    second = await window.click()
+    assert second != first
+    await _ticks(window.engine, window.repository, second, window.now)
+    assert await _status(window, second) == "completed"
+    # Deleted (the person's own Delete): a new lineage again.
+    status, _body = await window.call("DELETE", f"/api/torrents/{second}")
+    assert status == 200
+    third = await window.click()
+    assert third not in (first, second)
+
+
+async def test_a_live_download_is_returned_and_concurrent_clicks_start_one(window):
+    first, again = await asyncio.gather(window.click(), window.click())
+    assert first == again
+    assert await window.click() == first        # still live: the same transfer
+
+
+async def test_after_an_integrity_failure_a_click_starts_a_new_lineage(window):
+    window.copier.objects[KEY] = BAD
+    first = await window.click()
+    await _ticks(window.engine, window.repository, first, window.now)
+    assert await _status(window, first) == "failed"
+    second = await window.click()
+    assert second != first
+
+
+async def test_a_download_whose_source_is_gone_does_not_hold_the_click(window):
+    # The release's only source answers "not found": the transfer ends failed.
+    window.copier.broken.add("github.com")
+    first = await window.click()
+    await _ticks(window.engine, window.repository, first, window.now)
+    assert await _status(window, first) == "failed"
+    window.copier.broken.clear()
+    second = await window.click()
+    assert second != first
+
+
+@pytest.mark.parametrize("status,serves", [
+    ("downloading", True), ("queued", True), ("paused", True), ("pending", True),
+    ("requires_attention", False), ("input_required", False), ("failed", False), ("cancelled", False),
+    ("consolidated", False), ("deleted", False),
+])
+async def test_which_earlier_download_still_answers_a_click(status, serves):
+    """A download waiting on the person (requires_attention, input_required)
+    is treated like a failure: the click starts a new download."""
+    from api.routes import _update_download_serves
+
+    class Repository:
+        async def presentation(self, _id):
+            return {"presentation_status": status}
+
+    assert await _update_download_serves(SimpleNamespace(repository=Repository()), 7) is serves

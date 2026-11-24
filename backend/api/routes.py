@@ -1581,39 +1581,50 @@ async def desktop_update_download(request: Request, application: ApplicationServ
     if installer is None or record is None:
         raise DisplayError(409, "No update is available to download.", code="desktop.update_unavailable")
     version = record["latest"]
-    earlier = updates.remembered_download(version)
-    if earlier is not None and await _update_download_serves(application, earlier):
-        # A second click while the first download still serves: that transfer.
-        item = await application.repository.presentation(earlier)
-        if item is not None:
-            return _submitted(request, item, [])
 
     async def document():
         yield updates.metalink(installer)
 
-    try:
-        demand = _demand(request)
-        result = await application.submit_meta4(document(), f"{installer['name']}.meta4", source="manual",
-                                                demand=demand)
-    except ValueError as exc:
-        raise refusal(400, _sanitize_error(exc), exc) from None
-    except Exception as exc:
-        logger.exception("desktop_update_download failed: %s", _sanitize_error(exc))
-        raise refusal(502, _sanitize_error(exc), exc)
-    updates.remember_download(version, int(result["id"]))
+    # One click at a time: reuse-or-submit and remembering the transfer are one step,
+    # so two quick clicks can never start two downloads.
+    async with updates.download_lock:
+        earlier = updates.remembered_download(version)
+        if earlier is not None and await _update_download_serves(application, earlier):
+            # A second click while the first download still serves: that transfer.
+            item = await application.repository.presentation(earlier)
+            if item is not None:
+                return _submitted(request, item, [])
+        try:
+            demand = _demand(request)
+            result = await application.submit_meta4(document(), f"{installer['name']}.meta4", source="manual",
+                                                    demand=demand)
+        except ValueError as exc:
+            raise refusal(400, _sanitize_error(exc), exc) from None
+        except Exception as exc:
+            logger.exception("desktop_update_download failed: %s", _sanitize_error(exc))
+            raise refusal(502, _sanitize_error(exc), exc)
+        updates.remember_download(version, int(result["id"]))
     return _submitted(request, result, [demand])
+
+
+# A presentation in which an earlier update download no longer answers a click:
+# it ended, or it waits on the person (the same rule as a failure: a click then
+# starts a new download rather than leaving them on a stuck one).
+_UPDATE_DOWNLOAD_ENDED = frozenset({"failed", "error", "cancelled", "deleted", "consolidated",
+                                    "requires_attention", "input_required"})
 
 
 async def _update_download_serves(application, transfer_id: int) -> bool:
     """Whether an earlier update download still answers a click: live work, or
-    completed with its file still in the download folder. A failed, cancelled
-    or removed one does not: the click starts a new download."""
-    from transfers.models import TransferState
-    transfer = await application.repository.get(transfer_id)
-    if transfer is None or transfer.state in {TransferState.FAILED, TransferState.CANCELLED,
-                                              TransferState.DELETED, TransferState.CONSOLIDATED}:
+    completed with its file still in the download folder (core's own answer,
+    ``completed_location``). One that ended or waits on the person does not."""
+    item = await application.repository.presentation(transfer_id)
+    if item is None:
         return False
-    if transfer.state != TransferState.COMPLETED:
+    status = str(item.get("presentation_status") or item.get("status") or "")
+    if status in _UPDATE_DOWNLOAD_ENDED:
+        return False
+    if status != "completed":
         return True
     try:
         await application.completed_location(transfer_id)

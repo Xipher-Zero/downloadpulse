@@ -92,9 +92,13 @@ def fresh(monkeypatch):
     return published
 
 
-def _desktop(monkeypatch, platform, *, flatpak=True):
+MACHINES = {"win32": "AMD64", "darwin": "arm64", "linux": "x86_64"}
+
+
+def _desktop(monkeypatch, platform, *, flatpak=True, machine=None):
     monkeypatch.setenv("DOWNLOADPULSE_DESKTOP", "1")
     monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(updates._platform, "machine", lambda: machine or MACHINES.get(platform, "x86_64"))
     if flatpak:
         monkeypatch.setenv("FLATPAK_ID", "io.github.xipher_zero.DownloadPulse")
 
@@ -132,6 +136,44 @@ def test_linux_outside_flatpak_and_an_unknown_platform_get_the_notice_only(monke
         monkeypatch.setattr(updates, "_fetch", GitHub((200, "", _release())))
         record, _notes = asyncio.run(updates.refresh())
         assert record["update_available"] is True and record["installer"] is None
+
+
+@pytest.mark.parametrize("platform,machine", [
+    ("darwin", "x86_64"), ("win32", "ARM64"), ("linux", "aarch64"),
+], ids=["intel-mac", "windows-on-arm", "linux-on-arm"])
+def test_another_architecture_gets_the_notice_only(monkeypatch, platform, machine):
+    _desktop(monkeypatch, platform, machine=machine)
+    monkeypatch.setattr(updates, "_fetch", GitHub((200, "", _release())))
+    record, _notes = asyncio.run(updates.refresh())
+    assert record["update_available"] is True and record["installer"] is None
+
+
+ESCAPES = [
+    f"{BASE}/download/../../../../evil/repo/releases/download/v1.0.4/DownloadPulse-1.0.4-windows-x64.exe",
+    f"{BASE}/download/v1.0.4/./DownloadPulse-1.0.4-windows-x64.exe",
+    f"{BASE}/download/v1.0.4//DownloadPulse-1.0.4-windows-x64.exe",
+    f"{BASE}/download/%2e%2e/%2e%2e/v1.0.4/DownloadPulse-1.0.4-windows-x64.exe",
+    f"{BASE}/download/v1.0.4%2FDownloadPulse-1.0.4-windows-x64.exe",
+    f"{BASE}/download/..\\..\\v1.0.4/DownloadPulse-1.0.4-windows-x64.exe",
+]
+
+
+@pytest.mark.parametrize("url", ESCAPES, ids=["dot-dot", "dot", "empty-segment", "encoded-dots", "encoded-slash",
+                                              "backslash"])
+def test_an_installer_address_that_climbs_out_of_the_release_downloads_is_refused(monkeypatch, url):
+    _desktop(monkeypatch, "win32")
+    asset = _asset("DownloadPulse-1.0.4-windows-x64.exe", url=url)
+    monkeypatch.setattr(updates, "_fetch", GitHub((200, "", _release(assets=[asset]))))
+    assert asyncio.run(updates.refresh())[0]["installer"] is None
+
+
+@pytest.mark.parametrize("page", [
+    f"{BASE}/../../evil/releases/tag/v1.0.4", f"{BASE}/tag/./v1.0.4", f"{BASE}/tag/%2e%2e/v1.0.4",
+    f"{BASE}//tag/v1.0.4",
+])
+def test_a_release_page_that_climbs_out_is_not_linked(monkeypatch, page):
+    monkeypatch.setattr(updates, "_fetch", GitHub((200, "", _release(html_url=page))))
+    assert asyncio.run(updates.refresh())[0]["release_url"] is None
 
 
 @pytest.mark.parametrize("asset", [
@@ -353,7 +395,7 @@ async def test_an_admins_page_reads_the_record_without_the_installers_address_or
 
 @pytest.mark.asyncio
 async def test_a_user_gets_no_record(desktop, monkeypatch):
-    # The desktop admits its one person; on a server an ordinary User is refused the record.
+    # A server (Server deployment): an ordinary User is refused the record, an Admin reads it.
     monkeypatch.delenv("DOWNLOADPULSE_DESKTOP")
     monkeypatch.setattr(config, "_settings", config.AppSettings(auth_password_enabled=True))
     assert config.get_settings().deployment_type == "server"
@@ -408,22 +450,24 @@ async def test_the_download_submits_the_records_metalink_and_a_second_click_is_t
                                     (transfer_id,))
     assert [(row["account_id"], row["origin"]) for row in demands] == [(DEFAULT_ADMIN_ID, "submission")]
     # A second click while the first still serves: the same transfer, nothing new admitted.
+    # (Completed, removed, deleted and failed downloads, reached through public paths over
+    # the real engine: test_v103_update_download_integrity.py.)
     status, again = await desktop.call("admin", "POST", "/api/desktop/update/download")
     assert status == 200 and again["id"] == transfer_id
-    # After it failed (the verifier's integrity failure), a click starts a new lineage.
-    async with database.get_db() as db:
-        await db.execute("UPDATE torrents SET status='error' WHERE id=?", (transfer_id,))
-        await db.commit()
-    status, renewed = await desktop.call("admin", "POST", "/api/desktop/update/download")
-    assert status == 200 and renewed["id"] != transfer_id
 
 
 # ── boundaries ──────────────────────────────────────────────────────────────
 
-def test_the_release_owner_queries_no_core_table():
-    source = (Path(__file__).resolve().parents[1] / "application" / "updates.py").read_text()
-    for forbidden in ("get_db", ".repository", "SELECT ", "from transfers", "import transfers", "from db"):
-        assert forbidden not in source, forbidden
+def test_the_release_owner_imports_neither_core_nor_the_database():
+    """Core never learns what an update is, and the release owner reads no
+    core table: by what ``application/updates.py`` imports, not its words."""
+    import ast
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "application" / "updates.py").read_text())
+    imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    imported |= {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    assert not {name for name in imported
+                if name.split(".")[0] in {"transfers", "db", "aiosqlite", "sqlite3", "application"}
+                and name != "application"}, imported
 
 
 def test_the_old_fetcher_and_its_cache_are_gone():

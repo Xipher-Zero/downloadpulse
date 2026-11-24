@@ -22,8 +22,11 @@ record, publishes nothing and logs its sanitized reason.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import platform as _platform
+import posixpath
 import re
 import sys
 import time
@@ -46,11 +49,14 @@ _RELEASES_PATH = "/Xipher-Zero/downloadpulse/releases/"
 _DOWNLOAD_PATH = _RELEASES_PATH + "download/"
 _DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
 
-# This platform's installer, by exact asset name (docs/RELEASE_PROCESS.md, Release assets).
+# This platform's installer, by exact asset name (docs/RELEASE_PROCESS.md, Release assets),
+# and the one machine architecture each is built for: macOS arm64, Windows and
+# Linux x86_64. A computer of any other architecture (an Intel Mac, Windows or
+# Linux on ARM) gets the notice only: no installer is offered.
 INSTALLERS = {
-    "win32": "DownloadPulse-{version}-windows-x64.exe",
-    "darwin": "DownloadPulse-{version}-macos-arm64.dmg",
-    "linux": "DownloadPulse-{version}-linux-x86_64.flatpak",
+    "win32": ("DownloadPulse-{version}-windows-x64.exe", {"amd64", "x86_64"}),
+    "darwin": ("DownloadPulse-{version}-macos-arm64.dmg", {"arm64", "aarch64"}),
+    "linux": ("DownloadPulse-{version}-linux-x86_64.flatpak", {"x86_64", "amd64"}),
 }
 
 _record: dict | None = None
@@ -58,6 +64,8 @@ _etag = ""
 # The update download a click started: (version, transfer id). The update's own
 # fact, so a second click returns that transfer while it still serves.
 _download: tuple[str, int] | None = None
+# One click at a time decides whether to reuse that transfer or submit a new one.
+download_lock = asyncio.Lock()
 
 
 class CheckFailed(Exception):
@@ -86,8 +94,10 @@ def _platform_installer_name(version: str) -> str | None:
     platform = "linux" if sys.platform.startswith("linux") else sys.platform
     if platform == "linux" and not _inside_flatpak():
         return None   # a desktop run from source has no installer of its own
-    pattern = INSTALLERS.get(platform)
-    return pattern.format(version=version) if pattern else None
+    pattern, machines = INSTALLERS.get(platform, (None, ()))
+    if pattern is None or _platform.machine().casefold() not in machines:
+        return None
+    return pattern.format(version=version)
 
 
 def _inside_flatpak() -> bool:
@@ -101,8 +111,12 @@ def _github_address(value, prefix: str) -> bool:
         port = parts.port
     except ValueError:
         return False
+    path = parts.path
+    # No dot segment and no escape: the path is exactly the one it names, so
+    # the prefix cannot be climbed out of (``/download/../../evil/...``).
     return (parts.scheme == "https" and parts.hostname == _HOST and parts.netloc == _HOST and port is None
-            and not parts.query and not parts.fragment and parts.path.startswith(prefix))
+            and not parts.query and not parts.fragment and "%" not in path and "\\" not in path
+            and posixpath.normpath(path) == path.rstrip("/") and path.startswith(prefix))
 
 
 def release_page(value) -> str | None:
