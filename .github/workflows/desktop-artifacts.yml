@@ -237,7 +237,7 @@ jobs:
           persist-credentials: false
       # Any CPython 3.12 runs assemble.py; the application's own runtime is the
       # pinned python-build-standalone 3.12.14 it fetches.
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: runner.os != 'macOS'
         with:
           python-version: "3.12"
