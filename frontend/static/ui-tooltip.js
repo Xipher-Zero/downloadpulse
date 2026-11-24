@@ -23,7 +23,9 @@
  * pointer through to what lies beneath. This owns presentation only: it renders
  * nothing else and changes no element but its own and the described element's
  * aria-describedby while shown. An element whose tooltip repeats a label it
- * shows (data-tooltip-label) gets it only while that label is not shown.
+ * shows (data-tooltip-label) gets it only while that label is not shown, and
+ * one whose tooltip is its own one-line text (data-tooltip-overflow) only while
+ * that text is cut off.
  *
  * A section index (data-tooltip-index, the selector of a tablist inside the
  * described element -- the compact Settings and Help navigators) shows the
@@ -253,11 +255,18 @@
     return Boolean(label) && Number(getComputedStyle(label).opacity) > 0.5;
   }
 
+  /* An element whose tooltip is its own one-line text (data-tooltip-overflow:
+   * a status reason cut to one line) has something to add only while that
+   * text is cut off. */
+  function showsWholeText(host) {
+    return host.hasAttribute('data-tooltip-overflow') && host.scrollWidth <= host.clientWidth;
+  }
+
   // The nearest described element -- passing over one that would only repeat
-  // the label it shows, so a described element around it keeps its tooltip.
+  // the label or text it shows, so a described element around it keeps its tooltip.
   function hostOf(node) {
     let host = node instanceof Element ? node.closest(SELECTOR) : null;
-    while (host && repeatsShownLabel(host)) host = host.parentElement?.closest(SELECTOR) || null;
+    while (host && (repeatsShownLabel(host) || showsWholeText(host))) host = host.parentElement?.closest(SELECTOR) || null;
     return host && textOf(host) ? host : null;
   }
 

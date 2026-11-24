@@ -134,7 +134,8 @@
       ' data-tooltip="' + escapeHtml(statusPhrase(words, reason)) + '" data-tooltip-label=".dp-status-label">' +
       lucideSvg(descriptor.icon, 'dp-status-icon') +
       '<span class="dp-status-label">' + text + '</span></span>' +
-      (reason ? '<span class="dp-status-reason" data-dp-status-reason="1">' + escapeHtml(reason) + '</span>' : '');
+      (reason ? '<span class="dp-status-reason" data-dp-status-reason="1" data-tooltip-overflow="1" data-tooltip="' +
+        escapeHtml(reason) + '">' + escapeHtml(reason) + '</span>' : '');
   }
 
   /* A status's glyph alone, where a handheld Transfer Summary leads its

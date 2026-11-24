@@ -155,16 +155,33 @@ test('A row names the failure its status is about, with the real next attempt, a
   await page.evaluate(async () => { await loadRecent(); });
   await expect(page.locator('#dash-tbody tr[data-torrent-id="1003"] [data-role="transfer-status"] [data-dp-status-reason]'))
     .toHaveText(`Rate Limited · next attempt: ${when}`);
-  // The expanded pseudo locale: the reason wraps inside the status column, never widening it.
+  // A reason that fits shows whole, so its tooltip would only repeat it: hovering it shows none.
+  expect(await reason(1001).evaluate(line => line.scrollWidth <= line.clientWidth)).toBe(true);
+  await reason(1001).hover();
+  await expect(page.locator('#dp-tooltip.is-shown')).toHaveCount(0);
+  // The expanded pseudo locale: the reason stays one line inside the status column, never
+  // widening it or growing the row; the words that do not fit end in an ellipsis, and the
+  // reason's own tooltip says them whole.
+  const rowHeight = () => page.locator('#t-tbody tr[data-torrent-id="1003"]').evaluate(row => row.getBoundingClientRect().height);
+  const before = await rowHeight();
   await page.evaluate(() => window.DPI18n.setLocale('en-XA'));
   await page.evaluate(async () => { await loadTorrents(); });
   await expect(reason(1003)).toContainText('⟦');
   const fit = await status(1003).evaluate(cell => {
     const line = cell.querySelector('[data-dp-status-reason]');
-    return {cell: cell.getBoundingClientRect(), line: line.getBoundingClientRect(), overflow: cell.scrollWidth - cell.clientWidth};
+    const style = getComputedStyle(line);
+    return {cell: cell.getBoundingClientRect(), line: line.getBoundingClientRect(), overflow: cell.scrollWidth - cell.clientWidth,
+            lineHeight: parseFloat(style.lineHeight), ellipsis: style.textOverflow, cut: line.scrollWidth > line.clientWidth};
   });
   expect(fit.overflow).toBeLessThanOrEqual(0);
   expect(fit.line.left).toBeGreaterThanOrEqual(fit.cell.left - 0.5);
   expect(fit.line.right).toBeLessThanOrEqual(fit.cell.right + 0.5);
+  expect(fit.line.height).toBeLessThanOrEqual(fit.lineHeight + 0.5);
+  expect(fit.ellipsis).toBe('ellipsis');
+  expect(fit.cut).toBe(true);
+  expect(await rowHeight()).toBeLessThanOrEqual(before + 0.5);
+  await expect(reason(1003)).toHaveAttribute('data-tooltip', await reason(1003).textContent());
+  await reason(1003).hover();
+  await expect(page.locator('#dp-tooltip.is-shown')).toHaveText(await reason(1003).textContent());
   expect(errors).toEqual([]);
 });
