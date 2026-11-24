@@ -205,3 +205,53 @@ def test_a_bullet_title_loses_its_markdown_but_keeps_a_code_spans_text(tmp_path)
         out.write_text(filled, encoding="utf-8")
         run = subprocess.run([appstreamcli, "validate", "--no-net", str(out)], capture_output=True, text=True)
         assert run.returncode == 0, run.stdout + run.stderr
+
+
+def _screenshots():
+    spec = importlib.util.spec_from_file_location("flatpak_screenshots", FLATPAK / "screenshots.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Answer:
+    def __init__(self, status, kind):
+        self.status, self.headers = status, {"Content-Type": kind}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def test_the_build_stops_unless_every_store_screenshot_is_served_and_composed(tmp_path):
+    # appstreamcli compose drops a screenshot it cannot fetch without a word, so a
+    # Flatpak built before the site served them shipped none (1.0.2 and 1.0.3).
+    import gzip
+    screenshots = _screenshots()
+    template = FLATPAK / "net.downloadpulse.desktop.metainfo.xml"
+    urls = screenshots.screenshot_urls(template)
+    assert len(urls) == 3 and all(u.startswith("https://downloadpulse.net/screenshots/") for u in urls)
+    served = {urls[0]: (200, "image/png"), urls[1]: (404, "text/html"), urls[2]: (200, "text/html")}
+    problems = screenshots.unreachable(urls, opener=lambda request, timeout: _Answer(*served[request.full_url]))
+    assert [p.split(":", 2)[2].strip() for p in problems] == ["HTTP 404, text/html", "HTTP 200, text/html"]
+    assert screenshots.unreachable(["http://downloadpulse.net/a.png"]) == ["http://downloadpulse.net/a.png: not an https URL"]
+
+    def catalog(count):
+        shots = "".join("<screenshot><image>x</image></screenshot>" for _ in range(count))
+        path = tmp_path / f"catalog-{count}.xml.gz"
+        path.write_bytes(gzip.compress(
+            f"<components><component><screenshots>{shots}</screenshots></component></components>".encode()))
+        return path
+    assert screenshots.composed_count(catalog(0)) == 0
+    assert screenshots.main(["composed", str(template), str(catalog(0))]) == 1
+    assert screenshots.main(["composed", str(template), str(catalog(3))]) == 0
+    # ci-build.sh: reachable after validation and before the build; composed right after it.
+    build = (FLATPAK / "ci-build.sh").read_text(encoding="utf-8")
+    reachable = "python3 packaging/desktop/flatpak/screenshots.py reachable build/net.downloadpulse.desktop.metainfo.xml"
+    composed = ("python3 packaging/desktop/flatpak/screenshots.py composed build/net.downloadpulse.desktop.metainfo.xml \\\n"
+                "  build/app/files/share/app-info/xmls/net.downloadpulse.desktop.xml.gz")
+    assert build.count(reachable) == 1 and build.count(composed) == 1
+    assert build.index("appstreamcli validate") < build.index(reachable) < build.index("flatpak-builder --user") \
+        < build.index(composed) < build.index("flatpak build-bundle")

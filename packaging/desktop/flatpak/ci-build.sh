@@ -30,6 +30,10 @@ git config --global --add safe.directory "$PWD"
 python3 packaging/desktop/flatpak/metainfo.py build/net.downloadpulse.desktop.metainfo.xml
 appstreamcli validate --no-net --explain build/net.downloadpulse.desktop.metainfo.xml | tee -a "$results"
 test "${PIPESTATUS[0]}" -eq 0
+# The store catalog's compose fetches each screenshot and silently drops one it
+# cannot (screenshots.py): each must be served now, and every one composed.
+python3 packaging/desktop/flatpak/screenshots.py reachable build/net.downloadpulse.desktop.metainfo.xml | tee -a "$results"
+test "${PIPESTATUS[0]}" -eq 0
 flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak --user install -y --noninteractive flathub org.gnome.Platform//49 org.gnome.Sdk//49 >/dev/null
 for ref in org.gnome.Platform//49 org.gnome.Sdk//49; do
@@ -37,6 +41,9 @@ for ref in org.gnome.Platform//49 org.gnome.Sdk//49; do
 done | tee -a "$results"
 flatpak-builder --user --disable-rofiles-fuse --force-clean --repo=build/repo build/app \
   packaging/desktop/flatpak/net.downloadpulse.desktop.yml
+python3 packaging/desktop/flatpak/screenshots.py composed build/net.downloadpulse.desktop.metainfo.xml \
+  build/app/files/share/app-info/xmls/net.downloadpulse.desktop.xml.gz | tee -a "$results"
+test "${PIPESTATUS[0]}" -eq 0
 bundle="$out/DownloadPulse-$VERSION-linux-x86_64.flatpak"
 flatpak build-bundle build/repo "$bundle" net.downloadpulse.desktop
 (cd "$out" && sha256sum "$(basename "$bundle")" > SHA256SUMS && cat SHA256SUMS)
