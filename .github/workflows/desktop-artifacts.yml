@@ -1,5 +1,8 @@
-# Desktop installers (WS6), built on native hosted runners from the pushed
-# revision, with the established recipes only:
+# Desktop installers (WS6), built on native runners from the pushed revision,
+# with the established recipes only. Windows and Linux build on hosted
+# runners; macOS builds on the project's own self-hosted Mac (labels
+# self-hosted, macOS, ARM64, dp-macos-build: an Apple M2 on macOS 27), so the
+# macOS result is evidence from that machine, not from a clean hosted image:
 #   macos-arm64  the application layout (packaging/desktop/assemble.py) on the
 #                macOS lock, WITH the native executors built here by the
 #                WS3/WS4 macOS recipes (aria2, FFmpeg/ffprobe, par2, zstd,
@@ -139,7 +142,7 @@ jobs:
           entries=(); sets=()
           for platform in $platforms; do
             case "$platform" in
-              macos) entries+=('{"name":"macos-arm64","os":"macos-15"}') ;;
+              macos) entries+=('{"name":"macos-arm64","os":["self-hosted","macOS","ARM64","dp-macos-build"]}') ;;
               windows) entries+=('{"name":"windows-x64","os":"windows-2025"}') ;;
               linux) entries+=('{"name":"linux-x64","os":"ubuntu-24.04"}') ;;
             esac
@@ -208,12 +211,21 @@ jobs:
     needs: inputs
     strategy:
       fail-fast: false
-      # macos-arm64 on macos-15, windows-x64 on windows-2025, linux-x64 on ubuntu-24.04: the ones
+      # macos-arm64 on the self-hosted Mac, windows-x64 on windows-2025, linux-x64 on ubuntu-24.04: the ones
       # this run builds (the inputs job's plan).
       matrix: ${{ fromJSON(needs.inputs.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
     steps:
+      # A self-hosted machine keeps its files between runs: a disk image a
+      # failed run left attached, or its temporary files, must not reach this one.
+      - name: Start from a clean runner (self-hosted Mac)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mnt="$RUNNER_TEMP/mnt"
+          if mount | grep -q " on $mnt "; then hdiutil detach -force "$mnt" >/dev/null; fi
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name '_*' -exec rm -rf {} +   # the runner's own _* files stay
       # The committed bytes, unconverted: Git on a Windows runner would check out text files with
       # CRLF line endings (core.autocrlf), changing pinned files (the SABnzbd patch, the vendored
       # notices) and everything the Windows layout ships.
