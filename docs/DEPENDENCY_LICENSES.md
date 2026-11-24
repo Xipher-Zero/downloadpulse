@@ -87,7 +87,7 @@ the lock file and `licenses/python-runtime.json`.
 | uvicorn | 0.54.0 | BSD-3-Clause |
 | uvloop | 0.23.0 | MIT OR Apache-2.0 |
 | yarl | 1.25.1 | Apache-2.0 |
-| yt-dlp | 2026.10.26 | Unlicense |
+| yt-dlp | 2026.11.23 | Unlicense |
 | yt-dlp-ejs | 0.8.0 | Unlicense AND MIT AND ISC |
 | zc-lockfile | 4.0 | ZPL-2.1 |
 

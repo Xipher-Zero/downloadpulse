@@ -700,12 +700,22 @@ _MASTER = (b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=320x240,CODE
 _MEDIA = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nsegment-0.ts\n#EXT-X-ENDLIST\n"
 
 
-def _screenrec_routes(description: str) -> dict:
+# An explicit extractor whose medium is all on its own page's host: Angel's
+# page names its HLS master in JSON-LD (contentUrl) and its title and
+# description in Open Graph (yt-dlp's AngelIE, unchanged since 2022).
+_HLS_HOST = "www.angel.com"
+_HLS_PAGE = "/watch/the-box/episode/AbCdEfGhIj/season-1/episode-1/put-them-in-the-box"
+_HLS_URL = "http://" + _HLS_HOST + _HLS_PAGE
+
+
+def _hls_routes(description: str) -> dict:
     page = (b'<html><head><meta property="og:title" content="Put them in the box">'
             b'<meta property="og:description" content="' + description.replace("&", "&amp;").encode() + b'">'
-            b'</head><body><script>player({customUrl: "http://screenrec.com/hls/master.m3u8"})</script>'
-            b'</body></html>')
-    return {"/share/AbCdEfGhIj": (200, {"Content-Type": "text/html"}, page),
+            b'<meta property="og:image" content="http://www.angel.com/thumb.jpg">'
+            b'<script type="application/ld+json">{"@context": "https://schema.org", "@type": "VideoObject", '
+            b'"name": "Put them in the box", "contentUrl": "http://www.angel.com/hls/master.m3u8"}</script>'
+            b'</head><body></body></html>')
+    return {_HLS_PAGE: (200, {"Content-Type": "text/html"}, page),
             "/hls/master.m3u8": (200, {"Content-Type": "application/vnd.apple.mpegurl"}, _MASTER),
             "/hls/media.m3u8": (200, {"Content-Type": "application/vnd.apple.mpegurl"}, _MEDIA),
             "/hls/segment-0.ts": (200, {"Content-Type": "video/mp2t"}, (FIXTURES / "hls.ts").read_bytes())}
@@ -717,7 +727,7 @@ async def test_an_hls_medium_whose_description_quotes_links_is_finalized_with_it
     # yt-dlp's HLS downloader probes the PATH's ffmpeg (refused, handled);
     # the confined finalizer then writes the description, links included.
     done, candidate, target, origin = await _acquired(
-        tmp_path, "screenrec.com", "http://screenrec.com/share/AbCdEfGhIj", _screenrec_routes(_DESCRIPTION))
+        tmp_path, _HLS_HOST, _HLS_URL, _hls_routes(_DESCRIPTION))
     assert done.state == ExecutionState.SUCCEEDED, done.error
     assert candidate.context[PLAN_KEY]["formats"] and target.is_file()
     tags = _tags(target)
@@ -734,7 +744,7 @@ async def test_a_failure_after_the_handled_probe_is_its_own_and_names_its_phase(
     # the finished file is installed: that failure, in that phase -- never
     # the earlier, handled refusal.
     done, _candidate, target, _origin = await _acquired(
-        tmp_path, "screenrec.com", "http://screenrec.com/share/AbCdEfGhIj", _screenrec_routes("A recording"),
+        tmp_path, _HLS_HOST, _HLS_URL, _hls_routes("A recording"),
         occupied_target=True)
     assert done.state == ExecutionState.FAILED
     assert done.error.native_code not in {"transport_unsupported", "egress_refused", "path_refused"}, done.error
@@ -960,7 +970,7 @@ class _Replay:
 
 
 def _segmented_routes(count: int) -> tuple[dict, list[bytes]]:
-    """The screenrec HLS medium with its transport stream cut into ``count``
+    """The HLS medium (``_hls_routes``) with its transport stream cut into ``count``
     segments on packet boundaries: yt-dlp joins them byte for byte."""
     stream = (FIXTURES / "hls.ts").read_bytes()
     packets = len(stream) // 188
@@ -969,7 +979,7 @@ def _segmented_routes(count: int) -> tuple[dict, list[bytes]]:
     media = (b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n"
              + b"".join(f"#EXTINF:2.5,\nsegment-{index}.ts\n".encode() for index in range(count))
              + b"#EXT-X-ENDLIST\n")
-    routes = _screenrec_routes("A recording")
+    routes = _hls_routes("A recording")
     routes.pop("/hls/segment-0.ts")
     routes["/hls/media.m3u8"] = (200, {"Content-Type": "application/vnd.apple.mpegurl"}, media)
     for index, body in enumerate(segments):
@@ -982,10 +992,10 @@ def _segmented_routes(count: int) -> tuple[dict, list[bytes]]:
 @pytest.mark.parametrize("fragments, concurrent", [(1, False), (4, True)])
 async def test_concurrent_fragments_run_through_the_one_guard_and_its_one_budget(tmp_path, fragments, concurrent):
     routes, segments = _segmented_routes(4)
-    guard = _guard({"screenrec.com": [PUBLIC]})
+    guard = _guard({_HLS_HOST: [PUBLIC]})
     budget = guard.budget("yt_dlp")
     done, _candidate, target, origin = await _acquired(
-        tmp_path, "screenrec.com", "http://screenrec.com/share/AbCdEfGhIj", routes,
+        tmp_path, _HLS_HOST, _HLS_URL, routes,
         concurrent_fragments=fragments, origin_type=_InFlightOrigin, guard=guard)
     assert done.state == ExecutionState.SUCCEEDED, done.error
     assert sorted(line for line in origin.requests if "/hls/segment-" in line) == [

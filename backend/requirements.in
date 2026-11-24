@@ -28,7 +28,7 @@ pyyaml==6.0.3
 # runs in its sandboxed worker. No extras: requests/urllib3/certifi are already
 # locked below, websockets and curl_cffi are deliberately absent (no websocket
 # or impersonated transport is in scope), and the image never updates any of it.
-yt-dlp==2026.10.26
+yt-dlp==2026.11.23
 # yt-dlp's JavaScript challenge-solver scripts, read from this package so no
 # remote component is ever fetched at run time.
 yt-dlp-ejs==0.8.0
