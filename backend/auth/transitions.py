@@ -318,3 +318,68 @@ async def settings_transition_rejection(
             )
 
     return None
+
+
+class DefaultAdminPasswordNotSaved(Exception):
+    """The default Admin's first password could not be persisted; nothing was
+    changed (``establish_default_admin_password``)."""
+
+
+async def establish_default_admin_password(new_password: str, *, peer: str, admit=None) -> None:
+    """The default Admin's first password on an open Standalone installation,
+    with Username & Password enabled by it: one change, the password and the
+    settings committed together (``accounts.commit_first_password``: the
+    configuration file is written inside the account's open transaction, which
+    then commits), or neither. The ONE owner of this transition: Settings'
+    "set a password" (``/account/first-password``) and the setup wizard's
+    password page (``/setup/initial/password``) both call it.
+
+    Argon2 runs first, outside any lock. Then, in the established order --
+    this module's authentication configuration lock, then the configuration
+    write lock every scoped Settings writer holds -- the installation must
+    still pass ``admit`` (an async check of the caller's own preconditions,
+    given the current settings, raising to refuse; also asked once before the
+    hashing, for a fast answer) and still be open Standalone; the settings written are the ones current under both, so no
+    concurrent Settings write can be lost or undo this. A process that stops
+    between the file and the commit is settled at the next start
+    (``services.setup_lifecycle.settle_interrupted_bootstrap``)."""
+    import logging
+
+    from auth import accounts
+    from auth.policy import standalone_open
+    from core.config import apply_settings, config_write_lock, get_settings, journal_configuration_change, save_settings
+
+    logger = logging.getLogger("downloadpulse.auth")
+    if admit is not None:
+        await admit(get_settings())          # a fast answer before any hashing; decided again below
+    verifier = await accounts.first_password_verifier(accounts.DEFAULT_ADMIN_ID, new_password, peer=peer)
+    async with authentication_configuration_lock, config_write_lock():
+        current = get_settings()
+        if admit is not None:
+            await admit(current)
+        if not standalone_open(current):
+            raise accounts.AccountRefused("Authentication changed meanwhile; nothing was changed",
+                                          code="account.auth_changed")
+        enabled = current.model_copy(update={"auth_password_enabled": True}, deep=True)
+        attempted = []
+
+        def persist():
+            attempted.append(True)
+            save_settings(enabled)
+
+        try:
+            await accounts.commit_first_password(accounts.DEFAULT_ADMIN_ID, verifier, settings=enabled,
+                                                 persist=persist)
+        except accounts.AccountRefused:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a persistence failure is reported, never half-applied
+            if attempted:
+                try:
+                    save_settings(current)
+                except Exception as restore_exc:  # noqa: BLE001
+                    logger.critical("Previous authentication settings could not be restored: %s",
+                                    type(restore_exc).__name__)
+            logger.error("The first password was not set: %s", type(exc).__name__)
+            raise DefaultAdminPasswordNotSaved() from None
+        apply_settings(enabled)
+    await journal_configuration_change(current, enabled)

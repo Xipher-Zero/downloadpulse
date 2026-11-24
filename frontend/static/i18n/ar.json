@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "مضمّن · يُستخدم عندما يكون تسجيل الدخول معطّلًا",
   "error.browser.pairing.setup_incomplete": "أكمِل إعداد DownloadPulse أولًا، ثم اربط المتصفح مرة أخرى.",
   "transfer.name.more": "{name} + {count, plural, zero {لا شيء آخر} one {واحد آخر} two {اثنان آخران} few {{count} أخرى} many {{count} أخرى} other {{count} أخرى}}",
-  "transfer.name.files": "{name} + {count, plural, zero {لا ملفات} one {ملف واحد} two {ملفان} few {{count} ملفات} many {{count} ملفًا} other {{count} ملف}}"
+  "transfer.name.files": "{name} + {count, plural, zero {لا ملفات} one {ملف واحد} two {ملفان} few {{count} ملفات} many {{count} ملفًا} other {{count} ملف}}",
+  "setup.password.title": "تعيين كلمة المرور",
+  "setup.password.tagline": "شخص واحد، مفتاح واحد.",
+  "setup.password.body": "يستطيع أي شخص يمكنه الوصول إلى هذا الخادم فتح DownloadPulse، لذا يطلب كلمة مرور قبل أن يكتمل الإعداد. تسجّل الدخول بكلمة المرور وحدها؛ لا يوجد اسم مستخدم.",
+  "setup.password.created": "تم تعيين كلمة المرور، وتسجيل الدخول بكلمة المرور مفعّل.",
+  "setup.password.open_later": "لاستخدام DownloadPulse دون كلمة مرور على شبكة تثق بها، اختر «مسح كلمة المرور» في «حسابي» بعد انتهاء الإعداد.",
+  "setup.from_internet.title": "أكمل الإعداد من شبكتك الخاصة",
+  "setup.from_internet.body": "لم يُعدّ DownloadPulse هذا بعد، والإعداد غير متاح من الإنترنت. افتحه من جهاز على الشبكة نفسها التي يوجد عليها الخادم، أو عبر شبكة VPN الخاصة بك، وأكمل الإعداد هناك. بعد ذلك، أنت من يقرر كيف يمكن الوصول إليه.",
+  "error.setup.from_internet": "أكمل أولًا إعداد DownloadPulse من شبكتك الخاصة: الإعداد غير متاح من الإنترنت.",
+  "error.setup.password_pending": "عيّن كلمة المرور قبل المتابعة",
+  "error.setup.deployment_locked": "لا يمكن تغيير نوع النشر بعد وجود المسؤول أثناء الإعداد؛ أكمل الإعداد أولًا",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>معالج الإعداد:</b> يفتح التثبيت الجديد معالج الإعداد، الذي يضبط اللغة و«مجلد التنزيل» ويطلب كلمة المرور التي ستسجّل الدخول بها. يفتح <b>إنهاء وفتح لوحة المعلومات</b> لوحة المعلومات. لاستخدام DownloadPulse دون كلمة مرور على شبكة تثق بها، اختر بعد ذلك <b>مسح كلمة المرور</b> في <b>حسابي</b>. شغّل معالج الإعداد مرة أخرى من <b>حسابي</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

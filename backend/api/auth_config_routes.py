@@ -635,6 +635,16 @@ async def change_deployment_type(request: Request, change: DeploymentTypeChange)
         return JSONResponse(
             {"detail": "Explicit confirmation is required to change the deployment type", "code": "deployment.confirmation_required", "params": {}}, status_code=409)
     target = change.deployment_type
+    # The setup owner says whether an unfinished setup can take this change
+    # (``services.setup_lifecycle.deployment_change_admitted``).
+    from services import setup_lifecycle
+
+    try:
+        await setup_lifecycle.deployment_change_admitted()
+    except setup_lifecycle.SetupRefused as exc:
+        from core.localization import refusal
+
+        raise refusal(exc.status, str(exc), exc) from None
     async with config_write_lock():
         current = get_settings()
         if current.deployment_type == target:

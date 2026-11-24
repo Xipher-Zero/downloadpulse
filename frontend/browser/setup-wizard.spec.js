@@ -263,13 +263,16 @@ test('W04: Open Users & Access reaches the visible Settings tab; an unsaved My A
  * rules are proven by backend/tests/test_setup_lifecycle.py and a real-backend
  * probe in the Gate 9 packet). It answers /app.js with its deployment type and
  * records every setup write the wizard sends. */
-async function emulateNewInstallation(page, {deployment, phase}) {
+async function emulateNewInstallation(page, {deployment, phase, signedIn = deployment === 'standalone'}) {
   // `interruptPhase`: how many phase writes are lost in transit (aborted, never reaching the record).
-  const server = {deployment, state: {initial: {complete: false, phase, administrator: 'none'}, rerun: null}, writes: [],
+  // `signedIn`: a Standalone server's browser part-way through setup has set its password and is
+  // signed in with it (1.0.4); a Standalone record with no password resumes at its password page.
+  const server = {deployment, signedIn, state: {initial: {complete: false, phase, administrator: 'none'}, rerun: null}, writes: [],
     interruptPhase: 0};
   await page.route(url => url.pathname === '/app.js', async route => {
     const body = (await (await route.fetch()).text()).replace(/^window\.downloadPulseAuthority=Object\.freeze\((.*)\);$/m,
-      (_, json) => `window.downloadPulseAuthority=Object.freeze(${JSON.stringify({...JSON.parse(json), deployment_type: server.deployment})});`);
+      (_, json) => `window.downloadPulseAuthority=Object.freeze(${JSON.stringify({...JSON.parse(json), deployment_type: server.deployment,
+        ...(server.signedIn && server.deployment === 'standalone' ? {authenticated: true} : {})})});`);
     await route.fulfill({status: 200, contentType: 'application/javascript', body});
   });
   await page.route(url => url.pathname === '/api/setup/state', route => route.fulfill({status: 200, contentType: 'application/json',
@@ -305,8 +308,8 @@ test('W05: Standalone at Getting Started, Back to Deployment, Server: resumes at
   const server = await emulateNewInstallation(page, {deployment: 'standalone', phase: 'getting_started'});
   await load(page);
   await expect(wizard(page).locator('.dp-setup-getting-started')).toBeVisible();
-  await step(page, 5, 5);
-  for (let i = 0; i < 3; i += 1) await wizard(page).locator('[data-modal-action="back"]').click();
+  await step(page, 6, 6);   // a Standalone server's roster has its password page (1.0.4)
+  for (let i = 0; i < 4; i += 1) await wizard(page).locator('[data-modal-action="back"]').click();
   await expect(wizard(page).locator('.dp-setup-deployment')).toBeVisible();
   await wizard(page).locator('[data-deployment="server"]').click();
   await Promise.all([page.waitForEvent('load'), wizard(page).locator('[data-modal-accept]').click()]);
@@ -329,7 +332,45 @@ test('W06: Server at Administrator Setup (none created), Back to Deployment, Sta
   await Promise.all([page.waitForEvent('load'), wizard(page).locator('[data-modal-accept]').click()]);
   expect(server.writes).toEqual(['deployment standalone', 'phase download_directory']);
   await expect(wizard(page).locator('.dp-setup-directory')).toBeVisible();
-  await step(page, 3, 5);
+  await step(page, 3, 6);
+});
+
+test('W20: a Standalone server sets its password on its own page; with none, it never resumes past it (emulated record, 1.0.4)', async ({page}) => {
+  const server = await emulateNewInstallation(page, {deployment: 'standalone', phase: 'administrator', signedIn: false});
+  const sent = [];
+  await page.route(url => url.pathname === '/api/setup/initial/password', route => {
+    sent.push(route.request().postDataJSON());
+    server.signedIn = true;
+    server.state.initial.phase = 'premium_services';
+    return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(server.state)});
+  });
+  await load(page);
+  await expect(wizard(page).locator('.dp-setup-administrator')).toBeVisible();
+  await step(page, 4, 6);
+  await expect(wizard(page).locator('[data-setup-field="username"]')).toHaveCount(0);
+  await expect(wizard(page).locator('.dp-setup-administrator')).toContainText(await t(page, 'setup.password.open_later'));
+  await wizard(page).locator('[data-setup-field="password"]').fill('synthetic-one');
+  await wizard(page).locator('[data-setup-field="confirm"]').fill('synthetic-two');
+  await wizard(page).locator('[data-modal-accept]').click();
+  await expect(wizard(page).locator('.dp-setup-error')).toContainText(await t(page, 'setup.administrator.passwords_differ'));
+  expect(sent).toEqual([]);
+  await wizard(page).locator('[data-setup-field="confirm"]').fill('synthetic-one');
+  await Promise.all([page.waitForEvent('load'), wizard(page).locator('[data-modal-accept]').click()]);
+  expect(sent).toEqual([{password: 'synthetic-one'}]);
+  // Signed in now: setup resumes after the page, and no phase was written for it.
+  await expect(wizard(page).locator('.dp-setup-premium')).toBeVisible();
+  await step(page, 5, 6);
+  expect(server.writes).toEqual([]);
+});
+
+test('W21: a Standalone server recorded past its password page without one resumes before it (emulated record, 1.0.4)', async ({page}) => {
+  const server = await emulateNewInstallation(page, {deployment: 'standalone', phase: 'getting_started', signedIn: false});
+  await load(page);
+  await expect(wizard(page).locator('.dp-setup-directory')).toBeVisible();
+  await step(page, 3, 6);
+  await expect.poll(() => server.writes).toEqual(['phase download_directory']);
+  await wizard(page).locator('[data-modal-accept]').click();
+  await expect(wizard(page).locator('[data-setup-field="password"]')).toBeVisible();
 });
 
 /* The other mutations the recovery must never send. */
@@ -348,7 +389,7 @@ test('W07: Standalone at Getting Started, changed to Server, its phase write los
   const server = await emulateNewInstallation(page, {deployment: 'standalone', phase: 'getting_started'});
   const forbidden = forbiddenWrites(page);
   await load(page);
-  for (let i = 0; i < 3; i += 1) await wizard(page).locator('[data-modal-action="back"]').click();
+  for (let i = 0; i < 4; i += 1) await wizard(page).locator('[data-modal-action="back"]').click();
   await wizard(page).locator('[data-deployment="server"]').click();
   server.interruptPhase = 1;
   await wizard(page).locator('[data-modal-accept]').click();
@@ -378,17 +419,18 @@ test('W08: Server at Administrator Setup (none created), changed to Standalone, 
   await expect(wizard(page).locator('.dp-setup-error')).toBeVisible();
   expect(server.state.initial.phase).toBe('administrator');
   await page.reload();
-  await expect(wizard(page).locator('.dp-setup-directory')).toBeVisible();
-  await step(page, 3, 5);
-  await expect.poll(() => server.state.initial.phase).toBe('download_directory');
-  expect(server.writes).toEqual(['deployment standalone', 'phase download_directory (lost)', 'phase download_directory']);
+  // The record still names Administrator Setup, which the Standalone roster has too (its password
+  // page, 1.0.4): setup resumes there, the page this installation needs next.
+  await expect(wizard(page).locator('[data-setup-field="password"]')).toBeVisible();
+  await step(page, 4, 6);
+  expect(server.writes).toEqual(['deployment standalone', 'phase download_directory (lost)']);
   expect(forbidden).toEqual([]);
 });
 
 test('W09: the phase write lost in place, Next again: only the record is retried, never the deployment change (emulated record)', async ({page}) => {
   const server = await emulateNewInstallation(page, {deployment: 'standalone', phase: 'getting_started'});
   await load(page);
-  for (let i = 0; i < 3; i += 1) await wizard(page).locator('[data-modal-action="back"]').click();
+  for (let i = 0; i < 4; i += 1) await wizard(page).locator('[data-modal-action="back"]').click();
   await wizard(page).locator('[data-deployment="server"]').click();
   server.interruptPhase = 1;
   await wizard(page).locator('[data-modal-accept]').click();
@@ -430,9 +472,9 @@ test('W10: Test First-Run Wizard previews the first-run pages of Standalone and 
     await expect(page.locator('.dp-modal-overlay')).toHaveCount(overlays);      // the same one dialog layer
     await expect(wizard(page).locator('[data-setup-preview]')).toHaveCount(0);  // not offered inside itself
     await expect(wizard(page).locator('[data-modal-cancel]')).toBeVisible();    // a preview may be left
-    const total = type === 'server' ? 6 : 5;
+    const total = 6;   // a Standalone server sets its password too (1.0.4)
     await title('setup.welcome.title');
-    await step(page, 1, deployment === 'server' ? 6 : 5);
+    await step(page, 1, 6);
     await accept();
     await title('setup.deployment.title');
     await wizard(page).locator(`[data-deployment="${type}"]`).click();
@@ -446,6 +488,10 @@ test('W10: Test First-Run Wizard previews the first-run pages of Standalone and 
       await wizard(page).locator('[data-setup-field="username"]').fill('synthetic-preview');
       await wizard(page).locator('[data-setup-field="password"]').fill('synthetic-preview-pass');
       await wizard(page).locator('[data-setup-field="confirm"]').fill('synthetic-preview-pass');
+      await accept();
+    } else {
+      await title('setup.password.title');
+      await expect(wizard(page).locator('[data-setup-field="username"]')).toHaveCount(0);
       await accept();
     }
     await expect(wizard(page).locator('.dp-setup-premium')).toBeVisible();
@@ -762,10 +808,14 @@ test('W18: an interrupted initial setup resumes with the progress its record hol
   await load(page);
   await expect(wizard(page).locator('.dp-setup-premium')).toBeVisible();
   const now = await bubbles(page);
-  expect(now.map(item => [item.state, item.current])).toEqual([['done', false], ['done', false], ['done', false], ['todo', true], ['todo', false]]);
+  expect(now.map(item => [item.state, item.current])).toEqual(
+    [['done', false], ['done', false], ['done', false], ['done', false], ['todo', true], ['todo', false]]);
+  // Back: the password page, set (its browser is signed in), done.
   await wizard(page).locator('[data-modal-action="back"]').click();
-  await expect(wizard(page).locator('.dp-setup-directory')).toBeVisible();
-  expect((await bubbles(page)).map(item => [item.state, item.current])).toEqual([['done', false], ['done', false], ['done', true], ['todo', false], ['todo', false]]);
+  await expect(wizard(page).locator('.dp-setup-administrator')).toBeVisible();
+  await expect(wizard(page).locator('[data-setup-field="password"]')).toHaveCount(0);
+  expect((await bubbles(page)).map(item => [item.state, item.current])).toEqual(
+    [['done', false], ['done', false], ['done', false], ['done', true], ['todo', false], ['todo', false]]);
   expect(server.writes).toEqual([]);
 });
 

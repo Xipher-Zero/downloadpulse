@@ -135,6 +135,10 @@ async def state(account_id: str) -> dict:
     async with get_db() as db:
         initial = await _initial(db)
         rerun = await db.fetchone("SELECT phase FROM account_setup_rerun WHERE account_id=?", (str(account_id or ""),))
+    # A Standalone server installation's password is not reported here: this
+    # state reads the setup records alone. The wizard knows it from its own
+    # session -- a Standalone browser signed in has it set -- and the pages
+    # after it are refused without it (``_administrator_required``).
     administrator = ("created" if initial.administrator_configured
                      else "pending" if initial.administrator_id else "none")
     return {
@@ -184,10 +188,51 @@ def _desktop_folder_required(settings) -> None:
         raise SetupRefused("Choose the download folder before continuing", code="setup.download_folder_required")
 
 
-def _administrator_required(initial: InitialSetup, settings) -> None:
+def _password_required(settings) -> bool:
+    """A Standalone installation that is not the desktop application: its one
+    person, the default Admin, sets a password before its first-run setup can
+    finish (operator, 2026-11-24). The desktop application is one person's, on
+    this computer only (``core.config.desktop_installation``), and needs none.
+    Afterwards the password may be cleared in Settings, leaving the
+    installation open by its owner's choice."""
+    from auth.policy import standalone_deployment
+    from core.config import desktop_installation
+
+    return standalone_deployment(settings) and not desktop_installation()
+
+
+async def _default_admin_password_set(settings) -> bool:
+    """Username & Password is in force and the default Admin can sign in with
+    it: the live fact, read from the setting and the account alone."""
+    from auth import accounts
+    from auth.policy import password_auth_enabled
+
+    if not password_auth_enabled(settings):
+        return False
+    account = await accounts.get_account(accounts.DEFAULT_ADMIN_ID)
+    return account is not None and account.has_password
+
+
+def _secured(initial: InitialSetup, settings, password_set: bool) -> bool:
+    """Whether the installation's sign-in is in place for its setup to go on:
+    a Server's named Administrator established, a Standalone server
+    installation's password set (``password_set``: ``_default_admin_password_set``,
+    read by the caller under the authentication configuration lock, which every
+    change of it holds). The desktop application has nothing to set."""
     from auth.policy import standalone_deployment
 
-    if not standalone_deployment(settings) and not initial.administrator_configured:
+    if _password_required(settings):
+        return password_set
+    return not standalone_deployment(settings) and initial.administrator_configured
+
+
+def _administrator_required(initial: InitialSetup, settings, password_set: bool) -> None:
+    from auth.policy import standalone_deployment
+
+    if _password_required(settings):
+        if not password_set:
+            raise SetupRefused("Set the password before continuing", code="setup.password_pending")
+    elif not standalone_deployment(settings) and not initial.administrator_configured:
         raise SetupRefused("Create the Administrator before continuing", code="setup.administrator_pending")
 
 
@@ -199,18 +244,19 @@ async def advance_initial(phase: str) -> None:
 
     async with _lock():
         settings = get_settings()
+        password_set = await _default_admin_password_set(settings)
         async with _transaction() as db:
             initial = await _settled(db, settings)
             _incomplete(initial)
-            if (phase == "administrator" and standalone_deployment(settings)) or (
-                    phase == "deployment" and desktop_installation()):
+            if (phase == "administrator" and standalone_deployment(settings) and not _password_required(settings)) \
+                    or (phase == "deployment" and desktop_installation()):
                 raise SetupRefused("That setup step is not available for this installation",
                                    code="setup.phase_unavailable")
             if phase in _AFTER_DOWNLOAD_DIRECTORY:
                 _desktop_folder_required(settings)
             if phase in _AFTER_ADMINISTRATOR:
-                _administrator_required(initial, settings)
-            elif initial.administrator_configured:
+                _administrator_required(initial, settings, password_set)
+            elif _secured(initial, settings, password_set):
                 # The Administrator exists: the pages that chose and created it
                 # are never where its setup resumes again.
                 raise SetupRefused("That setup step is not available for this installation",
@@ -235,11 +281,12 @@ async def finish_initial(principal) -> None:
 
     async with _lock():
         settings = get_settings()
+        password_set = await _default_admin_password_set(settings)
         async with _transaction() as db:
             initial = await _settled(db, settings)
             _incomplete(initial)
             _desktop_folder_required(settings)
-            _administrator_required(initial, settings)
+            _administrator_required(initial, settings, password_set)
             if not standalone_deployment(settings):
                 if not password_auth_enabled(settings):
                     raise SetupRefused("Username & Password must be enabled before the setup of a Server installation can finish", code="setup.finish_needs_password")
@@ -249,6 +296,36 @@ async def finish_initial(principal) -> None:
             await db.execute(
                 "UPDATE installation_setup SET initial_setup_complete=1, initial_phase=NULL, completed_at=?, "
                 "updated_at=? WHERE id=1", (_now(), _now()))
+
+
+# ── a Standalone server installation's password ─────────────────────────────
+
+async def admit_standalone_password(settings) -> None:
+    """The precondition of the setup wizard's password page, checked by
+    ``auth.transitions.establish_default_admin_password`` under its locks: the
+    initial setup is still incomplete and this is a Standalone installation
+    that is not the desktop application. Refused otherwise; nothing changed."""
+    from auth.policy import standalone_deployment
+
+    initial = await initial_setup()
+    _incomplete(initial)
+    if not (standalone_deployment(settings) and _password_required(settings)):
+        raise SetupRefused("That setup step is not available for this installation",
+                           code="setup.phase_unavailable")
+
+
+async def deployment_change_admitted() -> None:
+    """Whether the deployment type may change now (``PUT /api/auth/deployment-type``).
+    During the initial setup of a Server whose named Administrator is already
+    recorded, it may not: the change turns Username & Password off, the record
+    still names that Administrator, so neither its page nor Finish could ever
+    be passed again. Standalone to Server needs no such guard: the change also
+    removes the default Admin's password, and Standalone's own requirement is
+    that live fact. A finished installation changes freely."""
+    initial = await initial_setup()
+    if not initial.complete and initial.administrator_id:
+        raise SetupRefused("The deployment type cannot change once the Administrator exists during setup; "
+                           "finish setting up first", code="setup.deployment_locked")
 
 
 # ── the named Administrator ─────────────────────────────────────────────────
@@ -366,6 +443,8 @@ async def settle_interrupted_bootstrap() -> None:
     from core.config import apply_settings, config_write_lock, get_settings, save_settings
 
     initial = await initial_setup()
+    if not initial.complete:
+        await _settle_interrupted_standalone_password()
     if initial.complete or not initial.administrator_id or initial.administrator_configured:
         return
     async with _lock(), config_write_lock():
@@ -383,6 +462,29 @@ async def settle_interrupted_bootstrap() -> None:
             logger.warning("An interrupted initial Administrator setup was finished: Username & Password is enabled")
         async with _transaction() as db:
             await _settle(db)
+
+
+async def _settle_interrupted_standalone_password() -> None:
+    """At start, during the initial setup of a Standalone server installation:
+    Username & Password enabled with no password for the default Admin (the
+    configuration file was written, the account's transaction never committed:
+    ``auth.transitions.establish_default_admin_password``) would leave no way
+    to sign in. Username & Password is turned off again, so the wizard's
+    password page is offered once more; nothing else changes."""
+    from auth.policy import password_auth_enabled
+    from core.config import apply_settings, config_write_lock, get_settings, journal_configuration_change, save_settings
+
+    async with _lock(), config_write_lock():
+        current = get_settings()
+        if not (_password_required(current) and password_auth_enabled(current)) \
+                or await _default_admin_password_set(current):
+            return
+        cleared = current.model_copy(update={"auth_password_enabled": False}, deep=True)
+        save_settings(cleared)
+        apply_settings(cleared)
+    await journal_configuration_change(current, cleared)
+    logger.warning("An interrupted Standalone password setup was undone at start: Username & Password is off "
+                   "again until the password is set")
 
 
 # ── an Admin's rerun ────────────────────────────────────────────────────────

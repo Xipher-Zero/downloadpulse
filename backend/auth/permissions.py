@@ -174,6 +174,7 @@ ACTIONS: dict[str, Capability] = {
     "api.setup_routes.setup_state": _A,
     "api.setup_routes.advance_initial_setup": _A,
     "api.setup_routes.establish_setup_administrator": _A,
+    "api.setup_routes.establish_setup_password": _A,
     "api.setup_routes.finish_initial_setup": _A,
     "api.setup_routes.continue_own_rerun": _A,
     "api.setup_routes.end_own_rerun": _A,

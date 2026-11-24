@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Вбудований · використовується, коли вхід вимкнено",
   "error.browser.pairing.setup_incomplete": "Спершу завершіть налаштування DownloadPulse, потім підключіться знову.",
   "transfer.name.more": "{name} + {count, plural, one {ще {count}} few {ще {count}} many {ще {count}} other {ще {count}}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} файл} few {{count} файли} many {{count} файлів} other {{count} файлу}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} файл} few {{count} файли} many {{count} файлів} other {{count} файлу}}",
+  "setup.password.title": "Установіть пароль",
+  "setup.password.tagline": "Одна людина — один ключ.",
+  "setup.password.body": "Будь-хто, хто може під’єднатися до цього сервера, може відкрити DownloadPulse, тому до завершення налаштування потрібно встановити пароль. Вхід виконується лише за паролем; імені користувача немає.",
+  "setup.password.created": "Ваш пароль установлено, і вхід за паролем увімкнено.",
+  "setup.password.open_later": "Щоб користуватися DownloadPulse без пароля в мережі, якій ви довіряєте, після завершення налаштування виберіть «Очистити пароль» у вікні «Мій обліковий запис».",
+  "setup.from_internet.title": "Завершіть налаштування зі своєї мережі",
+  "setup.from_internet.body": "Цей DownloadPulse ще не налаштовано, а налаштування з інтернету недоступне. Відкрийте його з пристрою в тій самій мережі, що й сервер, або через свою VPN і завершіть налаштування там. Після цього ви самі вирішите, як до нього можна буде дістатися.",
+  "error.setup.from_internet": "Спершу завершіть налаштування DownloadPulse зі своєї мережі: налаштування з інтернету недоступне.",
+  "error.setup.password_pending": "Перш ніж продовжити, установіть пароль",
+  "error.setup.deployment_locked": "Тип розгортання не можна змінити, якщо під час налаштування адміністратор уже існує; спершу завершіть налаштування",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Майстер налаштування:</b> нова інсталяція відкриває майстер налаштування, який задає мову й теку завантажень і запитує пароль, з яким ви входитимете. Кнопка <b>Завершити й відкрити панель</b> відкриває панель. Щоб користуватися DownloadPulse без пароля в мережі, якій ви довіряєте, потім виберіть <b>Очистити пароль</b> у розділі <b>Мій обліковий запис</b>. Запустити майстер налаштування знову можна з розділу <b>Мій обліковий запис</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

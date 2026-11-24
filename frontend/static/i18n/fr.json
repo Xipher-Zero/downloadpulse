@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Intégré · utilisé quand la connexion est désactivée",
   "error.browser.pairing.setup_incomplete": "Terminez d’abord la configuration de DownloadPulse, puis connectez-vous à nouveau.",
   "transfer.name.more": "{name} + {count, plural, one {{count} autre} many {{count} autres} other {{count} autres}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} fichier} many {{count} fichiers} other {{count} fichiers}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} fichier} many {{count} fichiers} other {{count} fichiers}}",
+  "setup.password.title": "Définissez votre mot de passe",
+  "setup.password.tagline": "Une personne, une clé.",
+  "setup.password.body": "Toute personne pouvant accéder à ce serveur peut ouvrir DownloadPulse ; un mot de passe est donc demandé avant que la configuration puisse se terminer. Vous vous connectez avec le mot de passe seul ; il n’y a pas de nom d’utilisateur.",
+  "setup.password.created": "Votre mot de passe est défini et la connexion par mot de passe est activée.",
+  "setup.password.open_later": "Pour utiliser DownloadPulse sans mot de passe sur un réseau de confiance, choisissez Effacer le mot de passe dans Mon compte une fois la configuration terminée.",
+  "setup.from_internet.title": "Terminez la configuration depuis votre propre réseau",
+  "setup.from_internet.body": "Ce DownloadPulse n’est pas encore configuré, et la configuration n’est pas disponible depuis Internet. Ouvrez-le depuis un appareil situé sur le même réseau que le serveur, ou via votre VPN, et terminez-y la configuration. Ensuite, c’est vous qui décidez comment il est possible d’y accéder.",
+  "error.setup.from_internet": "Terminez d’abord la configuration de DownloadPulse depuis votre propre réseau : la configuration n’est pas disponible depuis Internet.",
+  "error.setup.password_pending": "Définissez le mot de passe avant de continuer",
+  "error.setup.deployment_locked": "Le type de déploiement ne peut plus changer une fois que l’administrateur existe pendant la configuration ; terminez d’abord la configuration",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Assistant de configuration :</b> une nouvelle installation ouvre l’assistant de configuration, qui définit la langue et le Dossier de téléchargement, et demande le mot de passe avec lequel vous vous connecterez. <b>Terminer et ouvrir l’Aperçu</b> ouvre l’Aperçu. Pour utiliser DownloadPulse sans mot de passe sur un réseau de confiance, choisissez ensuite <b>Effacer le mot de passe</b> dans <b>Mon compte</b>. Relancez l’assistant de configuration depuis <b>Mon compte</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

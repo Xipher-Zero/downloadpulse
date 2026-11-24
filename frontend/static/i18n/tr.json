@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Yerleşik · oturum açma kapalıyken kullanılır",
   "error.browser.pairing.setup_incomplete": "Önce DownloadPulse kurulumunu tamamlayın, ardından yeniden bağlanın.",
   "transfer.name.more": "{name} + {count, plural, one {{count} tane daha} other {{count} tane daha}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} dosya} other {{count} dosya}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} dosya} other {{count} dosya}}",
+  "setup.password.title": "Parolanızı belirleyin",
+  "setup.password.tagline": "Bir kişi, bir anahtar.",
+  "setup.password.body": "Bu sunucuya erişebilen herkes DownloadPulse'u açabilir; bu nedenle kurulum tamamlanmadan önce bir parola istenir. Yalnızca parolayla oturum açarsınız; kullanıcı adı yoktur.",
+  "setup.password.created": "Parolanız belirlendi ve parolayla oturum açma açık.",
+  "setup.password.open_later": "DownloadPulse'u güvendiğiniz bir ağda parola olmadan kullanmak için kurulum tamamlandıktan sonra Hesabım'da “Parolayı temizle” seçeneğini seçin.",
+  "setup.from_internet.title": "Kurulumu kendi ağınızdan tamamlayın",
+  "setup.from_internet.body": "Bu DownloadPulse henüz kurulmadı ve kurulum internet üzerinden kullanılamaz. Onu sunucuyla aynı ağdaki bir cihazdan veya VPN'iniz üzerinden açın ve kurulumu orada tamamlayın. Bundan sonra ona nasıl erişilebileceğine siz karar verirsiniz.",
+  "error.setup.from_internet": "Önce DownloadPulse kurulumunu kendi ağınızdan tamamlayın: Kurulum internet üzerinden kullanılamaz.",
+  "error.setup.password_pending": "Devam etmeden önce parolayı belirleyin",
+  "error.setup.deployment_locked": "Kurulum sırasında Yönetici oluşturulduktan sonra dağıtım türü değiştirilemez; önce kurulumu tamamlayın",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Kurulum sihirbazı:</b> yeni bir kurulum Kurulum sihirbazını açar; sihirbaz dili ve İndirme klasörünü belirler ve oturum açarken kullanacağınız parolayı ister. <b>Bitir ve Panoyu aç</b> Panoyu açar. DownloadPulse'u güvendiğiniz bir ağda parola olmadan kullanmak için daha sonra <b>Parolayı temizle</b> seçeneğini <b>Hesabım</b> içinde seçin. Kurulum sihirbazını <b>Hesabım</b> içinden yeniden çalıştırabilirsiniz."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

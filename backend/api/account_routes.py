@@ -544,45 +544,15 @@ async def set_own_first_password(body: OwnFirstPassword, request: Request):
 
 
 async def _standalone_first_password(new_password: str, *, peer: str) -> None:
-    """The default Admin's first password on an open Standalone installation,
-    and Username & Password enabled with it: one change, the password and the
-    settings committed together (``accounts.commit_first_password``), or
-    neither. Argon2 runs first, outside any lock. Then, in the established
-    order -- the authentication configuration lock, then the configuration
-    write lock every scoped Settings writer holds -- the installation must
-    still be open Standalone, and the settings it writes are the ones current
-    under both, so no concurrent Settings write can be lost or undo this."""
-    from auth.transitions import authentication_configuration_lock
+    """The default Admin's first password on an open Standalone installation
+    (``auth.transitions.establish_default_admin_password``, its one owner)."""
+    from auth.transitions import DefaultAdminPasswordNotSaved, establish_default_admin_password
 
-    verifier = await accounts.first_password_verifier(accounts.DEFAULT_ADMIN_ID, new_password, peer=peer)
-    async with authentication_configuration_lock, config_write_lock():
-        current = get_settings()
-        if not standalone_open(current):
-            raise AccountRefused("Authentication changed meanwhile; nothing was changed", code="account.auth_changed")
-        enabled = current.model_copy(update={"auth_password_enabled": True}, deep=True)
-        attempted = []
-
-        def persist():
-            attempted.append(True)
-            save_settings(enabled)
-
-        try:
-            await accounts.commit_first_password(accounts.DEFAULT_ADMIN_ID, verifier, settings=enabled,
-                                                 persist=persist)
-        except AccountRefused:
-            raise
-        except Exception as exc:  # noqa: BLE001 - a persistence failure is reported, never half-applied
-            if attempted:
-                try:
-                    save_settings(current)
-                except Exception as restore_exc:  # noqa: BLE001
-                    logger.critical("Previous authentication settings could not be restored: %s",
-                                    type(restore_exc).__name__)
-            logger.error("The first password was not set: %s", type(exc).__name__)
-            raise DisplayError(500, "The password could not be saved; nothing was changed",
-                               code="account.password_not_saved") from None
-        apply_settings(enabled)
-    await journal_configuration_change(current, enabled)
+    try:
+        await establish_default_admin_password(new_password, peer=peer)
+    except DefaultAdminPasswordNotSaved:
+        raise DisplayError(500, "The password could not be saved; nothing was changed",
+                           code="account.password_not_saved") from None
 
 
 @router.post("/account/clear-password")

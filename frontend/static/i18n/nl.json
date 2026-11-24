@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Ingebouwd · gebruikt als aanmelden is uitgeschakeld",
   "error.browser.pairing.setup_incomplete": "Rond eerst het instellen van DownloadPulse af en maak daarna opnieuw verbinding.",
   "transfer.name.more": "{name} + {count, plural, one {nog {count}} other {nog {count}}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} bestand} other {{count} bestanden}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} bestand} other {{count} bestanden}}",
+  "setup.password.title": "Uw wachtwoord instellen",
+  "setup.password.tagline": "Eén persoon, één sleutel.",
+  "setup.password.body": "Iedereen die deze server kan bereiken, kan DownloadPulse openen, dus wordt er om een wachtwoord gevraagd voordat de installatie kan worden voltooid. U meldt zich alleen met het wachtwoord aan; er is geen gebruikersnaam.",
+  "setup.password.created": "Uw wachtwoord is ingesteld en aanmelden met een wachtwoord staat aan.",
+  "setup.password.open_later": "Als u DownloadPulse zonder wachtwoord wilt gebruiken op een netwerk dat u vertrouwt, kiest u Wachtwoord wissen in Mijn account zodra de installatie is voltooid.",
+  "setup.from_internet.title": "Voltooi de installatie vanaf uw eigen netwerk",
+  "setup.from_internet.body": "Deze DownloadPulse is nog niet ingesteld en de installatie is niet beschikbaar vanaf het internet. Open DownloadPulse vanaf een apparaat in hetzelfde netwerk als de server, of via uw VPN, en voltooi daar de installatie. Daarna bepaalt u zelf hoe DownloadPulse bereikbaar is.",
+  "error.setup.from_internet": "Voltooi eerst de installatie van DownloadPulse vanaf uw eigen netwerk: de installatie is niet beschikbaar vanaf het internet.",
+  "error.setup.password_pending": "Stel eerst het wachtwoord in voordat u verdergaat",
+  "error.setup.deployment_locked": "Het implementatietype kan niet meer worden gewijzigd zodra de beheerder tijdens de installatie bestaat; voltooi eerst de installatie",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Installatiewizard:</b> Een nieuwe installatie opent de installatiewizard, die de taal en de Downloadmap instelt en vraagt om het wachtwoord waarmee u zich aanmeldt. <b>Voltooien en Dashboard openen</b> opent het Dashboard. Als u DownloadPulse zonder wachtwoord wilt gebruiken op een netwerk dat u vertrouwt, kiest u daarna <b>Wachtwoord wissen</b> in <b>Mijn account</b>. Voer de installatiewizard opnieuw uit vanuit <b>Mijn account</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

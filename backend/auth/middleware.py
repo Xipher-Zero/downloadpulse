@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 from collections.abc import Awaitable, Callable, Iterable
 from urllib.parse import quote
 
@@ -23,6 +24,7 @@ from auth.policy import (
     normalized_origin,
     public_base_url_bootstrap_origin,
     oidc_auth_enabled,
+    request_reaches_from_internet,
     password_auth_enabled,
     safe_return_path,
     standalone_deployment,
@@ -176,6 +178,40 @@ async def _admit_authenticated(
     return await call_next(request)
 
 
+async def _initial_setup_complete() -> bool:
+    from services.setup_lifecycle import initial_setup
+
+    return (await initial_setup()).complete
+
+
+_SETUP_FROM_INTERNET = "setup.from_internet"
+
+
+def _setup_from_internet_refused(request: Request) -> Response:
+    """The refusal of an unfinished setup reached from the internet: the
+    API's ``{detail, code, params}``, or for a browser page a self-contained
+    page (every asset is behind this same gate) in the pre-sign-in language."""
+    from core.localization import message, pre_sign_in_locale
+
+    path = str(request.url.path or "")
+    if path.startswith("/api/"):
+        return JSONResponse(
+            {"detail": "Finish setting up DownloadPulse from your own network first: setup is not available "
+                       "from the internet.", "code": _SETUP_FROM_INTERNET, "params": {}},
+            status_code=403, headers={"Cache-Control": "no-store"})
+    locale = pre_sign_in_locale()
+    title = html.escape(message(f"{_SETUP_FROM_INTERNET}.title", locale))
+    body = html.escape(message(f"{_SETUP_FROM_INTERNET}.body", locale))
+    page = (f'<!doctype html><html lang="{html.escape(locale, quote=True)}"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>'
+            '<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#050814;'
+            'color:#e8ebf5;font:16px/1.5 system-ui,sans-serif}main{max-width:34rem;padding:24px}'
+            'h1{font-size:1.4rem;margin:0 0 .6rem}p{margin:0;color:#b8bfd6}</style></head>'
+            f'<body><main><h1>{title}</h1><p>{body}</p></main></body></html>')
+    return Response(content=page, status_code=403, media_type="text/html",
+                    headers={"Cache-Control": "no-store"})
+
+
 async def _admit_standalone(request: Request, call_next: CallNext, cfg) -> Response:
     """No interactive authentication: the request acts as the standalone
     installation's one Admin-equivalent principal, never as an anonymous
@@ -185,7 +221,16 @@ async def _admit_standalone(request: Request, call_next: CallNext, cfg) -> Respo
     browser page rebound to a foreign name carries no credential, so without
     this check it would read everything the Admin can, Origin or not. The
     authority is the one the mutation boundary already decides, including its
-    single reverse-proxy bootstrap allowance."""
+    single reverse-proxy bootstrap allowance.
+
+    Until the installation's first-run setup is finished, a request that may
+    come from the internet (``request_reaches_from_internet``) is refused here,
+    before that allowance: anyone could otherwise finish setting up a server
+    whose port reached the internet before its owner did. The home network, a
+    VPN and this computer are unaffected, and once setup is finished an
+    installation its owner chose to leave open is open to whoever reaches it."""
+    if request_reaches_from_internet(request) and not await _initial_setup_complete():
+        return _setup_from_internet_refused(request)
     if (trusted_request_origin(request, settings=cfg) is None
             and public_base_url_bootstrap_origin(request, cfg) is None):
         return Response(content="Forbidden authority", status_code=403)

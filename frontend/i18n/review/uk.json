@@ -34542,6 +34542,100 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "setup.password.title": {
+   "source": "988df8501689b7d4",
+   "translation": "fd9f50e33bd97ef4",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "setup.password.tagline": {
+   "source": "ce530966d0d57e8d",
+   "translation": "fe6b790dc7352b1d",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "setup.password.body": {
+   "source": "1d634fa462daba40",
+   "translation": "7c36ed6789ae222d",
+   "provenance": [
+    "ai-generated",
+    "ai-review",
+    "ai-back-translation"
+   ],
+   "backTranslation": "Anyone who can connect to this server can open DownloadPulse, so a password must be set before setup finishes. Sign-in is by password only; there is no username."
+  },
+  "setup.password.created": {
+   "source": "440c9f539fdbd34f",
+   "translation": "98eb4194ecf9af3b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "setup.password.open_later": {
+   "source": "9c075ea4d25095fb",
+   "translation": "029921f438f5829d",
+   "provenance": [
+    "ai-generated",
+    "ai-review",
+    "ai-back-translation"
+   ],
+   "backTranslation": "To use DownloadPulse without a password on a network you trust, after setup is finished choose 'Clear Password' in the 'My Account' window."
+  },
+  "setup.from_internet.title": {
+   "source": "697faa14f9bf94d9",
+   "translation": "f907d34ef0c15583",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "setup.from_internet.body": {
+   "source": "29b5c84ef6323758",
+   "translation": "30f95cab5846f883",
+   "provenance": [
+    "ai-generated",
+    "ai-review",
+    "ai-back-translation"
+   ],
+   "backTranslation": "This DownloadPulse is not set up yet, and setup from the internet is unavailable. Open it from a device on the same network as the server, or through your VPN, and finish setup there. After that you yourself will decide how it can be reached."
+  },
+  "error.setup.from_internet": {
+   "source": "c1efb9522cbb138c",
+   "translation": "c55a1f303ec0ee9e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.setup.password_pending": {
+   "source": "6209ce853ab00d6f",
+   "translation": "36d5491a4f7bd9d8",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.setup.deployment_locked": {
+   "source": "1f71b35286c304a5",
+   "translation": "4f6f3aef13d3c315",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.quickstart.before_begin.setup_wizard.standalone_server": {
+   "source": "b315456dcb51f813",
+   "translation": "ba2a96f83db13be7",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

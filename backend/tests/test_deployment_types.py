@@ -567,8 +567,6 @@ async def test_m11_a_failed_transition_keeps_type_credentials_and_sessions(insta
 
 
 async def test_m11_a_failed_enrollment_leaves_standalone_open_and_can_be_retried(install, monkeypatch):
-    import api.account_routes as account_routes
-
     live = install
     assert (await _switch(live, "standalone", headers=live.headers(live.session("admin")))).status_code == 200
     before_file = _file()
@@ -577,7 +575,8 @@ async def test_m11_a_failed_enrollment_leaves_standalone_open_and_can_be_retried
         raise OSError("synthetic disk full")
 
     with monkeypatch.context() as patch:
-        patch.setattr(account_routes, "save_settings", refuse)
+        # The transition's one owner (auth.transitions) writes through core.config.
+        patch.setattr(config, "save_settings", refuse)
         failed = await live.client.post("/api/account/first-password", json={"new_password": NEW_PW})
     assert failed.status_code == 500 and "nothing was changed" in failed.json()["detail"]
     assert _file() == before_file and await _hash(DEFAULT_ADMIN_ID) is None

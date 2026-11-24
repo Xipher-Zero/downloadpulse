@@ -114,11 +114,14 @@ async function end(page) {
 
 /* A new installation (emulated): the setup record and the deployment type
  * this browser is shown, for a page only a new installation reaches. */
-async function newInstallation(page, {deployment, phase, administrator = 'none'}) {
+// A Standalone server's record past its password page is a browser signed in with it (1.0.4).
+async function newInstallation(page, {deployment, phase, administrator = 'none',
+  signedIn = deployment === 'standalone' && ['premium_services', 'getting_started'].includes(phase)}) {
   const state = {initial: {complete: false, phase, administrator}, rerun: null};
   await page.route(url => url.pathname === '/app.js', async route => {
     const body = (await (await route.fetch()).text()).replace(/^window\.downloadPulseAuthority=Object\.freeze\((.*)\);$/m,
-      (_, json) => `window.downloadPulseAuthority=Object.freeze(${JSON.stringify({...JSON.parse(json), deployment_type: deployment})});`);
+      (_, json) => `window.downloadPulseAuthority=Object.freeze(${JSON.stringify({...JSON.parse(json), deployment_type: deployment,
+        ...(signedIn ? {authenticated: true} : {})})});`);
     await route.fulfill({status: 200, contentType: 'application/javascript', body});
   });
   await page.route(url => url.pathname === '/api/setup/state', route => route.fulfill({status: 200,
@@ -940,7 +943,7 @@ const footer = page => wizard(page).evaluate(node => {
 
 for (const deployment of ['standalone', 'server']) {
   test(`R20: the initial ${deployment} setup is mandatory: Welcome has only Next, later pages Back and Next, the last Back and Finish -- never Close (emulated record)`, async ({page}) => {
-    const total = deployment === 'server' ? 6 : 5;
+    const total = 6;   // both rosters: a Standalone server sets its password (1.0.4)
     for (const [phase, back, label] of [['welcome', false, 'setup.action.next'], ['download_directory', true, 'setup.action.next'],
       ['getting_started', true, 'setup.action.finish']]) {
       await page.unrouteAll({behavior: 'ignoreErrors'});

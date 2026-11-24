@@ -3598,6 +3598,7 @@
   "help.my_account.setup_wizard.close": "Close ends the rerun at any step; what was already saved stays saved.",
   "help.quickstart.before_begin.setup_wizard.server": "<b>Setup Wizard:</b> a new installation opens the Setup Wizard, which sets the language and the Download Folder, creates your own Administrator account and turns on <b>Username & Password</b>. After <b>Finish & Open Dashboard</b>, sign in with that account. An Admin can run it again from <b>My Account</b>.",
   "help.quickstart.before_begin.setup_wizard.standalone": "<b>Setup Wizard:</b> a new installation opens the Setup Wizard, which sets the language and the Download Folder and asks for no password. <b>Finish & Open Dashboard</b> opens the Dashboard. Run it again from <b>My Account</b>.",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Setup Wizard:</b> a new installation opens the Setup Wizard, which sets the language and the Download Folder and asks for the password you will sign in with. <b>Finish & Open Dashboard</b> opens the Dashboard. To use DownloadPulse without a password on a network you trust, choose <b>Clear Password</b> in <b>My Account</b> afterwards. Run the Setup Wizard again from <b>My Account</b>.",
   "account.leave.title": "Leave My Account?",
   "account.leave.message": "Your unsaved changes in My Account will not be saved.",
   "account.leave.discard": "Discard Changes",
@@ -3710,6 +3711,16 @@
   "settings.account.browsers": "Connected browsers",
   "settings.account.browsers_none": "No browsers are connected.",
   "settings.account.browsers_unreadable": "Connected browsers couldn't be read.",
-  "details.requested_by.browser": "browser “{token}”"
+  "details.requested_by.browser": "browser “{token}”",
+  "setup.password.title": "Set Your Password",
+  "setup.password.tagline": "One person, one key.",
+  "setup.password.body": "Anyone who can reach this server can open DownloadPulse, so it asks for a password before setup can finish. You sign in with the password alone; there is no username.",
+  "setup.password.created": "Your password is set, and sign-in with a password is on.",
+  "setup.password.open_later": "To use DownloadPulse without a password on a network you trust, choose Clear Password in My Account once setup is finished.",
+  "setup.from_internet.title": "Finish setting up from your own network",
+  "setup.from_internet.body": "This DownloadPulse has not been set up yet, and setup is not available from the internet. Open it from a device on the same network as the server, or over your VPN, and finish setup there. After that, you decide how it can be reached.",
+  "error.setup.from_internet": "Finish setting up DownloadPulse from your own network first: setup is not available from the internet.",
+  "error.setup.password_pending": "Set the password before continuing",
+  "error.setup.deployment_locked": "The deployment type cannot change once the Administrator exists during setup; finish setting up first"
  }
 }

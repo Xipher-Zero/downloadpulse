@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Bawaan · dipakai saat fitur masuk dinonaktifkan",
   "error.browser.pairing.setup_incomplete": "Selesaikan penyiapan DownloadPulse terlebih dahulu, lalu hubungkan lagi.",
   "transfer.name.more": "{name} + {count, plural, other {{count} lainnya}}",
-  "transfer.name.files": "{name} + {count, plural, other {{count} file}}"
+  "transfer.name.files": "{name} + {count, plural, other {{count} file}}",
+  "setup.password.title": "Tetapkan kata sandi Anda",
+  "setup.password.tagline": "Satu orang, satu kunci.",
+  "setup.password.body": "Siapa pun yang dapat menjangkau server ini dapat membuka DownloadPulse, sehingga kata sandi diminta sebelum penyiapan dapat diselesaikan. Anda masuk hanya dengan kata sandi; tidak ada nama pengguna.",
+  "setup.password.created": "Kata sandi Anda telah ditetapkan, dan masuk dengan kata sandi kini aktif.",
+  "setup.password.open_later": "Untuk menggunakan DownloadPulse tanpa kata sandi di jaringan yang Anda percayai, pilih Kosongkan kata sandi di Akun saya setelah penyiapan selesai.",
+  "setup.from_internet.title": "Selesaikan penyiapan dari jaringan Anda sendiri",
+  "setup.from_internet.body": "DownloadPulse ini belum disiapkan, dan penyiapan tidak tersedia dari internet. Buka DownloadPulse dari perangkat di jaringan yang sama dengan server, atau melalui VPN Anda, lalu selesaikan penyiapan di sana. Setelah itu, Anda yang menentukan cara DownloadPulse dapat dijangkau.",
+  "error.setup.from_internet": "Selesaikan penyiapan DownloadPulse dari jaringan Anda sendiri terlebih dahulu: penyiapan tidak tersedia dari internet.",
+  "error.setup.password_pending": "Tetapkan kata sandi sebelum melanjutkan",
+  "error.setup.deployment_locked": "Jenis penerapan tidak dapat diubah setelah Administrator ada selama penyiapan; selesaikan penyiapan terlebih dahulu",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Wizard penyiapan:</b> instalasi baru membuka Wizard penyiapan, yang menetapkan bahasa dan Folder unduhan serta meminta kata sandi yang akan Anda gunakan untuk masuk. <b>Selesai & buka Dasbor</b> membuka Dasbor. Untuk menggunakan DownloadPulse tanpa kata sandi di jaringan yang Anda percayai, pilih <b>Kosongkan kata sandi</b> di <b>Akun saya</b> setelahnya. Jalankan lagi Wizard penyiapan dari <b>Akun saya</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

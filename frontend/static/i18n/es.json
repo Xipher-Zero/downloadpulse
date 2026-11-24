@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Integrada · se usa con el inicio de sesión desactivado",
   "error.browser.pairing.setup_incomplete": "Primero termine de configurar DownloadPulse y luego vuelva a conectarse.",
   "transfer.name.more": "{name} + {count, plural, one {{count} más} many {{count} más} other {{count} más}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} archivo} many {{count} archivos} other {{count} archivos}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} archivo} many {{count} archivos} other {{count} archivos}}",
+  "setup.password.title": "Establezca su contraseña",
+  "setup.password.tagline": "Una persona, una llave.",
+  "setup.password.body": "Cualquiera que pueda acceder a este servidor puede abrir DownloadPulse, por lo que se solicita una contraseña antes de que pueda finalizar la configuración. Se inicia sesión solo con la contraseña; no hay nombre de usuario.",
+  "setup.password.created": "Su contraseña está establecida y el inicio de sesión con contraseña está activado.",
+  "setup.password.open_later": "Para usar DownloadPulse sin contraseña en una red de su confianza, elija Borrar contraseña en Mi cuenta una vez finalizada la configuración.",
+  "setup.from_internet.title": "Finalice la configuración desde su propia red",
+  "setup.from_internet.body": "Este DownloadPulse aún no se ha configurado y la configuración no está disponible desde internet. Ábralo desde un dispositivo de la misma red que el servidor, o a través de su VPN, y finalice allí la configuración. Después, usted decide cómo se puede acceder a él.",
+  "error.setup.from_internet": "Primero finalice la configuración de DownloadPulse desde su propia red: la configuración no está disponible desde internet.",
+  "error.setup.password_pending": "Establezca la contraseña antes de continuar",
+  "error.setup.deployment_locked": "El tipo de implementación no puede cambiar una vez que el Administrador existe durante la configuración; finalice primero la configuración",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Asistente de configuración:</b> una instalación nueva abre el asistente de configuración, que establece el idioma y la Carpeta de descargas y pide la contraseña con la que usted iniciará sesión. <b>Finalizar y abrir el Panel</b> abre el Panel. Para usar DownloadPulse sin contraseña en una red de su confianza, elija después <b>Borrar contraseña</b> en <b>Mi cuenta</b>. Vuelva a ejecutar el asistente de configuración desde <b>Mi cuenta</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

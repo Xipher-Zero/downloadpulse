@@ -33,14 +33,17 @@
   const ROSTERS = Object.freeze({
     initial: Object.freeze({
       server: ['welcome', 'deployment', 'download_directory', 'administrator', 'premium_services', 'getting_started'],
-      standalone: ['welcome', 'deployment', 'download_directory', 'premium_services', 'getting_started'],
+      // A Standalone server installation sets its one password here (1.0.4);
+      // the desktop application leaves the page out (``pages`` below).
+      standalone: ['welcome', 'deployment', 'download_directory', 'administrator', 'premium_services', 'getting_started'],
     }),
     rerun: Object.freeze({
       server: ['welcome', 'download_directory', 'administrator', 'premium_services', 'getting_started'],
       standalone: ['welcome', 'download_directory', 'premium_services', 'getting_started'],
     }),
   });
-  // The pages after a Server installation's Administrator exists.
+  // The pages after a Server installation's Administrator exists, or a
+  // Standalone server installation's password is set.
   const AFTER_ADMINISTRATOR = new Set(['premium_services', 'getting_started']);
   // Each page's heading: its mark and the reading beneath its title (the
   // dialog owner's title icon and hint). Welcome's mark is DownloadPulse's own
@@ -149,6 +152,9 @@
 
   const deployment = {
     render(wizard) {
+      // Locked once a Server's Administrator exists (the change would leave its
+      // setup unable to finish: setup_lifecycle.deployment_change_admitted). A
+      // Standalone server's password does not lock it: the change removes it.
       const locked = wizard.state.initial.administrator !== 'none';
       wizard.data.deployment = wizard.data.deployment || deploymentType();
       const section = element(`
@@ -237,13 +243,20 @@
   };
 
   const administrator = {
+    // On a Standalone server installation this page sets its one person's
+    // password (POST /api/setup/initial/password): no username, no accounts.
+    password(wizard) {
+      return wizard.mode === 'initial' && wizard.deployment === 'standalone';
+    },
     title(wizard) {
+      if (this.password(wizard)) return 'setup.password.title';
       return wizard.mode === 'rerun' ? 'setup.administrator.guidance.title' : 'setup.administrator.title';
     },
     // The tagline only while an account is being created; otherwise what is
     // true now: guidance (a rerun), created, or an unfinished creation to
     // finish -- never a playful reading over a recovery.
     hint(wizard) {
+      if (this.password(wizard)) return this.creating(wizard) ? 'setup.password.tagline' : 'setup.password.created';
       if (wizard.mode === 'rerun') return 'setup.administrator.guidance.text';
       if (!this.creating(wizard)) return 'setup.administrator.created';
       return wizard.state.initial.administrator === 'pending' ? 'setup.administrator.resubmit' : 'setup.administrator.tagline';
@@ -252,9 +265,44 @@
     // and in every rerun -- this page only points to where accounts are kept.
     creating(wizard) {
       const created = wizard.state.initial.administrator;
+      // A Standalone browser signed in during the initial setup has its password
+      // set (the setup state reads no account: ``setup_lifecycle.state``).
+      if (this.password(wizard)) return !signedIn();
       return wizard.mode === 'initial' && (created === 'none' || (created === 'pending' && !signedIn()));
     },
+    renderPassword(wizard) {
+      if (!this.creating(wizard)) {
+        return element(`
+          <section class="dp-setup-page dp-setup-administrator">
+            <div class="dp-setup-notes">
+              <p class="dp-setup-hint" data-i18n="setup.password.open_later"></p>
+            </div>
+          </section>`);
+      }
+      const section = element(`
+        <section class="dp-setup-page dp-setup-administrator">
+          <div class="dp-setup-copy">
+            <p data-i18n="setup.password.body"></p>
+          </div>
+          <label class="dp-modal-field"><span class="form-label" data-i18n="settings.users.field.password"></span>
+            <input class="input" data-setup-field="password" type="password" maxlength="4096" autocomplete="new-password"></label>
+          <label class="dp-modal-field"><span class="form-label" data-i18n="setup.administrator.confirm"></span>
+            <input class="input" data-setup-field="confirm" type="password" maxlength="4096" autocomplete="new-password"></label>
+          <div class="dp-setup-notes">
+            <p class="dp-setup-hint" data-i18n="setup.password.open_later"></p>
+          </div>
+        </section>`);
+      section.querySelectorAll('[data-setup-field]').forEach(input => {
+        const name = input.dataset.setupField;
+        input.value = wizard.data.administrator?.[name] || '';
+        input.addEventListener('input', () => {
+          wizard.data.administrator = {...(wizard.data.administrator || {}), [name]: input.value};
+        });
+      });
+      return section;
+    },
     render(wizard) {
+      if (this.password(wizard)) return this.renderPassword(wizard);
       if (wizard.mode === 'rerun') {
         const section = element(`
           <section class="dp-setup-page dp-setup-administrator">
@@ -311,6 +359,24 @@
     async commit(wizard) {
       if (wizard.mode !== 'initial' || !this.creating(wizard)) return;
       const entered = wizard.data.administrator || {};
+      if (this.password(wizard)) {
+        if (!entered.password) throw new Error(t('setup.administrator.password_required'));
+        if (entered.password !== entered.confirm) throw new Error(t('setup.administrator.passwords_differ'));
+        try {
+          await request('POST', '/setup/initial/password', {password: entered.password}, 30000);
+        } catch (error) {
+          // Set meanwhile from another browser or Settings: the page is
+          // re-read from the server, never submitted twice.
+          if (['account.password_exists', 'account.auth_changed'].includes(error?.code)) wizard.reloadAfter = true;
+          throw error;
+        }
+        // Its own session now holds this browser (or, had none been issued,
+        // the sign-in page will): setup continues under it.
+        wizard.data.administrator = null;
+        wizard.reloadAfter = true;
+        wizard.phaseRecorded = true;
+        return;
+      }
       const username = String(entered.username || '').trim();
       if (!username) throw new Error(t('setup.administrator.username_required'));
       if (!entered.password) throw new Error(t('setup.administrator.password_required'));
@@ -727,7 +793,9 @@
     // chosen the field holds the folder the server suggests (the person's
     // Downloads, one the desktop's sandbox keeps; 1.0.3) -- never the container
     // default. It is only a draft: Next saves it, as a typed folder.
-    let pages = state.desktop ? ROSTERS[mode][deploymentNow].filter((page) => page !== 'deployment')
+    // The desktop application has no deployment type to choose and, always
+    // Standalone and on this computer only, no password to set first.
+    let pages = state.desktop ? ROSTERS[mode][deploymentNow].filter((page) => page !== 'deployment' && page !== 'administrator')
       : ROSTERS[mode][deploymentNow];
     if (state.desktop && !state.download_folder_chosen) {
       data = {...data, folder: '', folderDraft: String(state.suggested_download_folder ?? '')};
@@ -739,8 +807,11 @@
     // Administrator Setup, which the lifecycle never admits there. The new
     // roster resumes where every deployment change does, at Download
     // Directory, and the record is brought there through the one phase write.
+    // Likewise a Standalone server installation without its password (one
+    // that started setup before 1.0.4 asked for it) never resumes past it.
     const reconcile = mode === 'initial' && !preview && (!pages.includes(recorded)
-      || (deploymentNow === 'server' && state.initial.administrator === 'none' && AFTER_ADMINISTRATOR.has(recorded)));
+      || (pages.includes('administrator') && AFTER_ADMINISTRATOR.has(recorded)
+        && (deploymentNow === 'standalone' ? !signedIn() : state.initial.administrator === 'none')));
     if (reconcile) recorded = 'download_directory';
     let index = Math.max(0, pages.indexOf(recorded));
     // A recovered Administrator (its record unconfirmed, its own session

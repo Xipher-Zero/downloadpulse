@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Integrato · usato con l’accesso disattivato",
   "error.browser.pairing.setup_incomplete": "Completare prima la configurazione di DownloadPulse, poi connettersi di nuovo.",
   "transfer.name.more": "{name} + {count, plural, one {{count} altro} many {{count} altri} other {{count} altri}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} file} many {{count} file} other {{count} file}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} file} many {{count} file} other {{count} file}}",
+  "setup.password.title": "Imposta la password",
+  "setup.password.tagline": "Una persona, una chiave.",
+  "setup.password.body": "Chiunque possa raggiungere questo server può aprire DownloadPulse, quindi viene richiesta una password prima che la configurazione possa essere completata. Si accede solo con la password; non esiste un nome utente.",
+  "setup.password.created": "La password è impostata e l’accesso con password è attivo.",
+  "setup.password.open_later": "Per usare DownloadPulse senza password su una rete attendibile, scegliere Cancella password in «Il mio account» al termine della configurazione.",
+  "setup.from_internet.title": "Completa la configurazione dalla propria rete",
+  "setup.from_internet.body": "Questo DownloadPulse non è ancora configurato e la configurazione non è disponibile da Internet. Aprirlo da un dispositivo sulla stessa rete del server, oppure tramite la propria VPN, e completare lì la configurazione. Dopodiché, sarà possibile decidere come renderlo raggiungibile.",
+  "error.setup.from_internet": "Completa prima la configurazione di DownloadPulse dalla propria rete: la configurazione non è disponibile da Internet.",
+  "error.setup.password_pending": "Imposta la password prima di continuare",
+  "error.setup.deployment_locked": "Il tipo di distribuzione non può cambiare dopo che l’amministratore è stato creato durante la configurazione; completa prima la configurazione",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Configurazione guidata:</b> una nuova installazione apre la configurazione guidata, che imposta la lingua e la Cartella di download e chiede la password con cui si accederà. <b>Termina e apri la Dashboard</b> apre la Dashboard. Per usare DownloadPulse senza password su una rete attendibile, scegliere poi <b>Cancella password</b> in <b>Il mio account</b>. È possibile eseguire di nuovo la configurazione guidata da <b>Il mio account</b>."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

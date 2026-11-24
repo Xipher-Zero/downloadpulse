@@ -222,29 +222,253 @@ async def test_no_sign_in_page_or_public_path_reads_the_setup_state_but_pairing_
 
 async def test_every_setup_route_is_an_admin_action():
     names = [name for name in ACTIONS if name.startswith("api.setup_routes.")]
-    assert len(names) == 6 and all(ACTIONS[name] is Capability.ADMINISTER for name in names)
+    assert len(names) == 7 and all(ACTIONS[name] is Capability.ADMINISTER for name in names)
 
 
 # ── Standalone ──────────────────────────────────────────────────────────────
 
-async def test_a_standalone_setup_resumes_where_it_stopped_and_finishes_without_an_administrator(live):
+STANDALONE_PASSWORD = "synthetic-standalone-4"
+
+
+async def _set_password(live, password=STANDALONE_PASSWORD, **kwargs):
+    return await live.client.post("/api/setup/initial/password", json={"password": password}, **kwargs)
+
+
+async def _finished_standalone(live) -> dict:
+    """A Standalone installation's setup, finished with its password set: the
+    headers of the default Admin's session it leaves signed in."""
     config._settings = config.AppSettings(deployment_type="standalone")
-    for phase in ("deployment", "download_directory", "premium_services", "getting_started"):
+    token = _cookie(await _set_password(live))
+    finished = await live.client.post("/api/setup/initial/finish", headers=live.headers(token))
+    assert finished.status_code == 200, finished.text
+    return live.headers(token)
+
+
+async def test_a_standalone_server_sets_its_password_before_it_can_finish_and_continues_signed_in(live):
+    """1.0.4 (operator, 2026-11-24): a Standalone installation that is not the
+    desktop application sets its one person's password in setup; without it,
+    neither the pages after it nor Finish are admitted."""
+    config._settings = config.AppSettings(deployment_type="standalone")
+    for phase in ("deployment", "download_directory", "administrator"):
         moved = await live.client.put("/api/setup/initial/phase", json={"phase": phase})
         assert moved.status_code == 200 and moved.json()["initial"]["phase"] == phase
+    state = (await live.client.get("/api/setup/state")).json()["initial"]
+    assert state["administrator"] == "none"
+    pending = await live.client.put("/api/setup/initial/phase", json={"phase": "premium_services"})
+    assert pending.status_code == 409 and pending.json()["code"] == "setup.password_pending"
+    assert (await live.client.post("/api/setup/initial/finish")).json()["code"] == "setup.password_pending"
+    # The Server's Administrator is not this installation's.
+    assert (await _bootstrap(live)).json()["code"] == "setup.bootstrap_unavailable"
+
+    created = await _set_password(live)
+    assert created.status_code == 200, created.text
+    # Setup resumes after this page; the setup state reads no account, so the
+    # wizard knows the password from its own new session.
+    assert created.json()["initial"] == {"complete": False, "phase": "premium_services", "administrator": "none"}
+    assert STANDALONE_PASSWORD not in created.text
+    assert config.get_settings().auth_password_enabled is True and _saved()["auth_password_enabled"] is True
+    assert (await accounts.get_account(accounts.DEFAULT_ADMIN_ID)).has_password
+    # No Server record is written for it: the fact is the password itself.
+    assert _row() == [(0, "premium_services", None, 0)] and _named_admins() == []
+    token = _cookie(created)
+    record = session_store.resolve(token)
+    assert record is not None and record.principal.account_id == accounts.DEFAULT_ADMIN_ID
+    assert record.principal.authenticated
+    # Signed in: the open principal is gone (a browser without the session is
+    # asked to sign in), and the session continues setup.
+    live.client.cookies.clear()
+    assert (await live.client.get("/api/setup/state")).status_code == 401
+    assert (await live.client.put("/api/setup/initial/phase", json={"phase": "getting_started"},
+                                  headers=live.headers(token))).status_code == 200
+    # The page that set it is not set twice.
+    again = await _set_password(live, headers=live.headers(token))
+    assert again.status_code == 403
+    finished = await live.client.post("/api/setup/initial/finish", headers=live.headers(token))
+    assert finished.status_code == 200 and finished.json() == {"complete": True, "sign_in_required": False}
+    assert _row()[0][0] == 1
+
+    # Afterwards the owner may leave it open on a network they trust: Clear
+    # Password turns sign-in off, and nothing in setup prevents that.
+    cleared = await live.client.post("/api/account/clear-password", json={"current_password": STANDALONE_PASSWORD},
+                                     headers=live.headers(token))
+    assert cleared.status_code == 200, cleared.text
+    assert config.get_settings().auth_password_enabled is False
+    assert (await live.client.get("/api/setup/state")).status_code == 200
+
+
+async def test_the_desktop_application_finishes_without_a_password(live, monkeypatch, tmp_path):
+    monkeypatch.setenv("DOWNLOADPULSE_DESKTOP", "1")
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    config._settings = config.AppSettings(deployment_type="standalone", download_folder=str(folder))
+    for phase in ("download_directory", "premium_services", "getting_started"):
+        moved = await live.client.put("/api/setup/initial/phase", json={"phase": phase})
+        assert moved.status_code == 200, moved.text
     refused = await live.client.put("/api/setup/initial/phase", json={"phase": "administrator"})
     assert refused.status_code == 409 and refused.json()["code"] == "setup.phase_unavailable"
-    assert (await live.client.get("/api/setup/state")).json()["initial"]["phase"] == "getting_started"
-    refused_admin = await _bootstrap(live)
-    assert refused_admin.status_code == 409 and refused_admin.json()["code"] == "setup.bootstrap_unavailable"
-
+    assert (await _set_password(live)).json()["code"] == "setup.phase_unavailable"
     finished = await live.client.post("/api/setup/initial/finish")
     assert finished.status_code == 200 and finished.json() == {"complete": True, "sign_in_required": False}
-    assert _row() == [(1, None, None, 0)] and _named_admins() == []
     assert config.get_settings().auth_password_enabled is False
-    again = await live.client.post("/api/setup/initial/finish")
-    assert again.status_code == 409 and again.json()["code"] == "setup.initial_complete"
-    assert (await live.client.put("/api/setup/initial/phase", json={"phase": "welcome"})).status_code == 409
+
+
+async def test_the_setup_password_is_refused_to_a_server_and_after_setup(live):
+    assert (await _set_password(live)).json()["code"] == "setup.phase_unavailable"
+    assert config.get_settings().auth_password_enabled is False
+    config._settings = config.AppSettings(deployment_type="standalone")
+    async with database.get_db() as db:
+        await db.execute("UPDATE installation_setup SET initial_setup_complete=1 WHERE id=1")
+        await db.commit()
+    done = await _set_password(live)
+    assert done.status_code == 409 and done.json()["code"] == "setup.initial_complete"
+    assert config.get_settings().auth_password_enabled is False
+
+
+async def test_a_password_set_in_settings_counts_and_one_cleared_mid_setup_is_asked_for_again(live):
+    config._settings = config.AppSettings(deployment_type="standalone")
+    first = await live.client.post("/api/account/first-password", json={"new_password": STANDALONE_PASSWORD})
+    assert first.status_code == 200, first.text
+    login = await live.client.get("/login")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', login.text).group(1)
+    signed = await live.client.post("/login", data={"password": STANDALONE_PASSWORD, "csrf_token": csrf})
+    token = _cookie(signed)
+    assert token, signed.text
+    assert (await live.client.put("/api/setup/initial/phase", json={"phase": "premium_services"},
+                                  headers=live.headers(token))).status_code == 200
+    cleared = await live.client.post("/api/account/clear-password", json={"current_password": STANDALONE_PASSWORD},
+                                     headers=live.headers(token))
+    assert cleared.status_code == 200, cleared.text
+    # Open again, with no password: Finish asks for one once more.
+    refused = await live.client.post("/api/setup/initial/finish")
+    assert refused.status_code == 409 and refused.json()["code"] == "setup.password_pending"
+
+
+async def test_two_concurrent_passwords_set_one(live):
+    config._settings = config.AppSettings(deployment_type="standalone")
+    answers = await asyncio.gather(_set_password(live), _set_password(live, password=OTHER_PASSWORD))
+    codes = sorted(answer.status_code for answer in answers)
+    assert codes[0] == 200 and codes[1] in {403, 409}, [answer.text for answer in answers]
+    loser = next(answer for answer in answers if answer.status_code != 200)
+    assert loser.status_code == 403 or loser.json()["code"] in {"account.password_exists", "account.auth_changed"}
+    assert (await accounts.get_account(accounts.DEFAULT_ADMIN_ID)).has_password
+    assert config.get_settings().auth_password_enabled is True
+
+
+async def test_an_interrupted_standalone_password_is_undone_at_the_next_start(installation):
+    """Username & Password written to the file, the password's transaction never
+    committed: at start it is turned off again, so the page is offered again."""
+    config._settings = config.AppSettings(deployment_type="standalone", auth_password_enabled=True)
+    config.save_settings(config._settings)
+    await setup_lifecycle.settle_interrupted_bootstrap()
+    assert config.get_settings().auth_password_enabled is False and _saved()["auth_password_enabled"] is False
+    # A finished installation, or one whose password exists, is left as it is.
+    config._settings = config.AppSettings(deployment_type="standalone", auth_password_enabled=True)
+    async with database.get_db() as db:
+        await db.execute("UPDATE installation_setup SET initial_setup_complete=1 WHERE id=1")
+        await db.commit()
+    await setup_lifecycle.settle_interrupted_bootstrap()
+    assert config.get_settings().auth_password_enabled is True
+
+
+async def test_the_deployment_type_cannot_strand_an_unfinished_setup(live):
+    # A Server whose Administrator exists: the change would leave neither its page
+    # nor Finish passable, so it is refused until setup is finished.
+    assert (await live.client.put("/api/setup/initial/phase", json={"phase": "administrator"})).status_code == 200
+    token = _cookie(await _bootstrap(live))
+    refused = await live.client.put("/api/auth/deployment-type", json={"deployment_type": "standalone", "confirm": True},
+                                    headers=live.headers(token))
+    assert refused.status_code == 409 and refused.json()["code"] == "setup.deployment_locked"
+    assert config.get_settings().deployment_type == "server"
+
+
+async def test_a_standalone_with_its_password_may_still_become_a_server_during_setup(live):
+    config._settings = config.AppSettings(deployment_type="standalone")
+    token = _cookie(await _set_password(live))
+    changed = await live.client.put("/api/auth/deployment-type", json={"deployment_type": "server", "confirm": True},
+                                    headers=live.headers(token))
+    assert changed.status_code == 200, changed.text
+    # The change removed the password and turned sign-in off: the Server's own
+    # Administrator page is open, so setup can still finish.
+    assert config.get_settings().auth_password_enabled is False
+    assert not (await accounts.get_account(accounts.DEFAULT_ADMIN_ID)).has_password
+    assert (await live.client.put("/api/setup/initial/phase", json={"phase": "administrator"})).status_code == 200
+    assert (await _bootstrap(live)).status_code == 200
+
+
+# ── setup is not offered to the internet ───────────────────────────────────
+
+INTERNET_V4, INTERNET_V6 = "8.8.8.8", "2606:4700:4700::1111"
+
+
+@asynccontextmanager
+async def _from(address: str):
+    import main
+
+    transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False, client=(address, 4711))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        yield client
+
+
+@pytest.mark.parametrize("address", [INTERNET_V4, INTERNET_V6, f"::ffff:{INTERNET_V4}"])
+async def test_an_unfinished_setup_is_refused_to_the_internet(live, address):
+    async with _from(address) as client:
+        api = await client.get("/api/setup/state")
+        assert api.status_code == 403 and api.json() == {
+            "detail": "Finish setting up DownloadPulse from your own network first: setup is not available "
+                      "from the internet.", "code": "setup.from_internet", "params": {}}
+        page = await client.get("/")
+        assert page.status_code == 403 and page.headers["content-type"].startswith("text/html")
+        assert "Finish setting up from your own network" in page.text and "<script" not in page.text
+        # Neither the reverse-proxy bootstrap nor a Basic header in open mode is a way round it.
+        bootstrap = await client.put("/api/auth/config", json={"public_base_url": "https://dl.example.com"},
+                                     headers={"Origin": "https://dl.example.com", "Host": "dl.example.com"})
+        assert bootstrap.status_code == 403 and bootstrap.json()["code"] == "setup.from_internet"
+        basic = await client.get("/api/setup/state", headers={"Authorization": "Basic YTpi"})
+        assert basic.status_code == 403 and basic.json()["code"] == "setup.from_internet"
+        # A public path is still a public path.
+        assert (await client.get("/api/health")).status_code == 200
+    assert config.get_settings().public_base_url == ""
+
+
+@pytest.mark.parametrize("address", ["127.0.0.1", "192.168.1.20", "10.0.0.7", "172.20.0.3", "100.101.102.103",
+                                     "fd12:3456::1", "fe80::1", "::1"])
+async def test_the_home_network_a_vpn_and_this_computer_set_up_as_before(live, address):
+    async with _from(address) as client:
+        assert (await client.get("/api/setup/state")).status_code == 200
+
+
+@pytest.mark.parametrize("headers", [
+    {"X-Forwarded-For": INTERNET_V4}, {"X-Forwarded-For": f"192.168.1.5, {INTERNET_V4}"},
+    {"Forwarded": f'for="[{INTERNET_V6}]:4711";proto=https'}, {"X-Real-IP": INTERNET_V4},
+    {"CF-Connecting-IP": INTERNET_V4}, {"X-Forwarded-For": "unknown"}, {"Forwarded": "for=_hidden"},
+])
+async def test_a_reverse_proxy_on_the_private_network_passes_on_where_the_request_began(live, headers):
+    async with _from("172.20.0.5") as client:
+        refused = await client.get("/api/setup/state", headers=headers)
+        assert refused.status_code == 403 and refused.json()["code"] == "setup.from_internet"
+        # A forwarded private address is still the home network.
+        assert (await client.get("/api/setup/state", headers={"X-Forwarded-For": "192.168.1.5"})).status_code == 200
+
+
+@pytest.mark.parametrize("name, forged, real", [
+    ("X-Forwarded-For", "10.0.0.1", INTERNET_V4), ("Forwarded", "for=10.0.0.1", f"for={INTERNET_V4}")])
+async def test_every_line_of_a_forwarding_header_is_read(live, name, forged, real):
+    # A proxy that adds its own line after the client's (HAProxy): the client's forged
+    # private line comes first, the proxy's line naming the real address second.
+    async with _from("172.20.0.5") as client:
+        refused = await client.get("/api/setup/state", headers=[(name, forged), (name, real)])
+        assert refused.status_code == 403 and refused.json()["code"] == "setup.from_internet"
+
+
+async def test_once_setup_is_finished_an_open_installation_is_open_to_whoever_reaches_it(live):
+    config._settings = config.AppSettings(deployment_type="standalone")
+    token = _cookie(await _set_password(live))
+    assert (await live.client.post("/api/setup/initial/finish", headers=live.headers(token))).status_code == 200
+    await live.client.post("/api/account/clear-password", json={"current_password": STANDALONE_PASSWORD},
+                           headers=live.headers(token))
+    assert config.get_settings().auth_password_enabled is False
+    async with _from(INTERNET_V4) as client:
+        assert (await client.get("/api/setup/state")).status_code == 200
 
 
 # ── Server: the named Administrator ─────────────────────────────────────────
@@ -473,8 +697,7 @@ async def test_a_server_finish_is_refused_to_a_caller_without_a_browser_session(
 
 
 async def test_a_finished_installation_never_reopens_the_administrator(live):
-    config._settings = config.AppSettings(deployment_type="standalone")
-    await live.client.post("/api/setup/initial/finish")
+    await _finished_standalone(live)
     config._settings = config.AppSettings()
     refused = await _bootstrap(live)
     assert refused.status_code == 409 and refused.json()["code"] == "setup.initial_complete"
@@ -518,11 +741,10 @@ async def test_a_rerun_is_its_own_admins_and_never_reopens_the_initial_setup(liv
 
 
 async def test_a_standalone_rerun_has_no_administrator_page(live):
-    config._settings = config.AppSettings(deployment_type="standalone")
-    await live.client.post("/api/setup/initial/finish")
-    refused = await live.client.put("/api/setup/rerun", json={"phase": "administrator"})
+    signed_in = await _finished_standalone(live)
+    refused = await live.client.put("/api/setup/rerun", json={"phase": "administrator"}, headers=signed_in)
     assert refused.status_code == 409 and refused.json()["code"] == "setup.phase_unavailable"
-    kept = await live.client.put("/api/setup/rerun", json={"phase": "premium_services"})
+    kept = await live.client.put("/api/setup/rerun", json={"phase": "premium_services"}, headers=signed_in)
     assert kept.status_code == 200 and kept.json()["rerun"] == {"phase": "premium_services"}
 
 
@@ -614,3 +836,14 @@ async def test_the_preview_is_offered_only_to_a_development_build_that_opts_in(l
         state = (await live.client.get("/api/setup/state")).json()
         assert state["setup_preview"] is offered, (development, env)
         assert state["development_build"] is development
+
+
+@pytest.mark.parametrize(("value", "internet"), [
+    ("8.8.8.8", True), ("8.8.8.8:443", True), ("[2606:4700:4700::1111]:4711", True), ('"[2606:4700::1111]"', True),
+    ("::ffff:8.8.8.8", True), ("192.168.1.5", False), ("::ffff:192.168.1.5", False), ("fe80::1%eth0", False),
+    ("100.64.0.1", False), ("127.0.0.1", False), ("203.0.113.9", False), ("unknown", None), ("_hidden", None),
+])
+async def test_an_address_is_the_internet_only_when_globally_routable(value, internet):
+    from auth.policy import _internet_address
+
+    assert _internet_address(value) is internet

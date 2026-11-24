@@ -241,6 +241,81 @@ def trusted_request_origin(request, settings=None) -> tuple[str, str, int] | Non
     return None
 
 
+# The forwarding headers a reverse proxy may name the original client in. Read
+# ONLY to refuse (``request_reaches_from_internet``), never to admit: a client
+# that forges one can only refuse itself.
+_FORWARDING_HEADERS = ("x-forwarded-for", "x-real-ip", "cf-connecting-ip", "true-client-ip")
+
+
+def _internet_address(value: str) -> bool | None:
+    """Whether ``value`` is an internet (globally routable) address: True,
+    False, or None when it is not an IP address at all. An IPv4-mapped IPv6
+    address is judged as its IPv4 address (Python 3.12's ``is_global`` does
+    not unwrap it); a zone or brackets are removed first."""
+    text = str(value or "").strip().strip('"').strip()
+    if text.startswith("["):
+        text = text[1:].split("]", 1)[0]
+    elif text.count(":") == 1:
+        text = text.split(":", 1)[0]          # IPv4 with a port
+    text = text.split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return bool(address.is_global)
+
+
+def _forwarded_for(header: str) -> list[str]:
+    """Every ``for=`` value of an RFC 7239 ``Forwarded`` header."""
+    values = []
+    for element in str(header or "").split(","):
+        for pair in element.split(";"):
+            name, _, value = pair.strip().partition("=")
+            if name.strip().casefold() == "for":
+                values.append(value.strip())
+    return values
+
+
+def request_reaches_from_internet(request) -> bool:
+    """Whether this request may come from the internet, for the one decision
+    that needs it: an unfinished first-run setup is refused from there
+    (``auth.middleware._admit_standalone``).
+
+    True when the transport peer (``request.client``, which uvicorn rewrites
+    from X-Forwarded-For only for ``FORWARDED_ALLOW_IPS``) is a globally
+    routable address, or when any forwarding header -- ``Forwarded``'s ``for=``,
+    X-Forwarded-For, X-Real-IP, CF-Connecting-IP, True-Client-IP -- names one,
+    or names something that is not an address (``unknown``, an obfuscated
+    identifier): a reverse proxy in another container reaches DownloadPulse
+    from a private address, and only its header says where the request began.
+    Loopback, private (RFC 1918, ULA), link-local and shared (100.64.0.0/10,
+    as Tailscale uses) addresses are not the internet.
+
+    Not a network peer at all (no client, or one that is not an IP address: a
+    Unix socket, an in-process test client), with no forwarding header: False.
+    A proxy that adds no forwarding header, or ``FORWARDED_ALLOW_IPS=*`` with
+    a client-forged private X-Forwarded-For, is not seen (docs/authentication.md)."""
+    client = getattr(request, "client", None)
+    if client is not None and _internet_address(str(client.host or "")):
+        return True
+    headers = getattr(request, "headers", None) or {}
+
+    def lines(name: str) -> list[str]:
+        # EVERY line of the header: a proxy may add its own line after the
+        # client's (HAProxy's ``option forwardfor``; RFC 7239 allows it), and
+        # reading only the first would let a client's forged one stand alone.
+        getlist = getattr(headers, "getlist", None)
+        values = getlist(name) if getlist is not None else [headers.get(name)]
+        return [str(value) for value in values if value]
+
+    named = [value for line in lines("forwarded") for value in _forwarded_for(line)]
+    for header in _FORWARDING_HEADERS:
+        named += [part for line in lines(header) for part in line.split(",")]
+    return any(_internet_address(value) is not False for value in named if value.strip())
+
+
 AUTH_CONFIG_PATH = "/api/auth/config"
 
 

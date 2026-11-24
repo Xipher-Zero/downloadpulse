@@ -44,6 +44,11 @@ class InitialAdministrator(BaseModel):
     password: str = Field(max_length=4096)
 
 
+class InitialPassword(BaseModel):
+    model_config = ConfigDict(strict=True)
+    password: str = Field(max_length=4096)
+
+
 def _refused(exc: Exception) -> DisplayError:
     status = exc.status if isinstance(exc, SetupRefused) else 409
     return refusal(status, str(exc), exc)
@@ -131,6 +136,58 @@ async def establish_setup_administrator(body: InitialAdministrator, request: Req
     token, _record = session_store.create(signed_in, lifetime_seconds=lifetime,
                                           credential_version=signed_in.credential_version)
     response = _no_store(await setup_lifecycle.state(administrator.id))
+    set_session_cookie(response, request, token, max_age=lifetime)
+    return response
+
+
+@router.post("/setup/initial/password")
+async def establish_setup_password(body: InitialPassword, request: Request):
+    """A Standalone server installation's password: the default Admin's first
+    password, with Username & Password enabled by it
+    (``auth.transitions.establish_default_admin_password``, admitted by
+    ``setup_lifecycle.admit_standalone_password``). Only the open principal may
+    ask; the response signs the browser in as the default Admin with an
+    ordinary password session, so setup continues. Should no session be issued,
+    the password is still set and the person signs in at /login."""
+    principal = request.state.principal
+    from auth.accounts import DEFAULT_ADMIN_ID, get_account
+
+    if principal.authenticated or principal.mechanism is not None or principal.account_id != DEFAULT_ADMIN_ID:
+        raise DisplayError(403, "Forbidden", code="auth.forbidden")
+    from auth.manager import PasswordAuthenticationBusy, peer_key
+    from auth.sessions import session_cookie_token, session_store, set_session_cookie
+    from auth.transitions import DefaultAdminPasswordNotSaved, establish_default_admin_password
+    from api.auth_routes import _session_lifetime_seconds
+
+    try:
+        await establish_default_admin_password(body.password, peer=peer_key(request),
+                                               admit=setup_lifecycle.admit_standalone_password)
+    except PasswordAuthenticationBusy:
+        raise DisplayError(429, "Too many password checks are already being processed. Try again shortly.",
+                           code="account.password_checks_busy", headers={"Retry-After": "2"}) from None
+    except DefaultAdminPasswordNotSaved:
+        raise DisplayError(500, "The password could not be saved; nothing was changed",
+                           code="account.password_not_saved") from None
+    except (SetupRefused, AccountRefused) as exc:
+        raise _refused(exc) from None
+
+    # Setup resumes after this page, as it does once a Server's Administrator
+    # exists: the resume record, through its owner (the password now admits it).
+    try:
+        await setup_lifecycle.advance_initial("premium_services")
+    except Exception:  # noqa: BLE001 - the password is set; the resume record is Next's to retry
+        pass           # as for any other page, so the session below is still issued
+    administrator = await get_account(DEFAULT_ADMIN_ID)
+    response = _no_store(await setup_lifecycle.state(DEFAULT_ADMIN_ID))
+    if administrator is None:
+        return response
+    old_token = session_cookie_token(request)
+    if old_token:
+        session_store.revoke(old_token)
+    lifetime = _session_lifetime_seconds(get_settings())
+    signed_in = Principal.password_session(administrator)
+    token, _record = session_store.create(signed_in, lifetime_seconds=lifetime,
+                                          credential_version=signed_in.credential_version)
     set_session_cookie(response, request, token, max_age=lifetime)
     return response
 

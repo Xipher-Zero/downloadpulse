@@ -235,5 +235,5 @@ def test_terminology_and_scope_stay_current():
     # the Setup Wizard, which Quick Start describes by deployment type.
     for future in ("browser plugin", "browser extension", "easy mode", "advanced mode"):
         assert future not in lowered, future
-    assert HELP.count("a new installation opens the Setup Wizard") == 2   # Server and Standalone
+    assert HELP.count("a new installation opens the Setup Wizard") == 3   # Server, Standalone server (1.0.4), desktop
     assert "window.downloadPulseAuth?.presentation?.context?.()" in HELP

@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "組み込み · サインインがオフのときに使用",
   "error.browser.pairing.setup_incomplete": "先に DownloadPulse のセットアップを完了してから、もう一度接続してください。",
   "transfer.name.more": "{name} + {count, plural, other {他 {count} 件}}",
-  "transfer.name.files": "{name} + {count, plural, other {{count} 個のファイル}}"
+  "transfer.name.files": "{name} + {count, plural, other {{count} 個のファイル}}",
+  "setup.password.title": "パスワードの設定",
+  "setup.password.tagline": "ひとりに、鍵はひとつ。",
+  "setup.password.body": "このサーバーにアクセスできる人は誰でも DownloadPulse を開けるため、セットアップを完了する前にパスワードを求めています。サインインはパスワードだけで行います。ユーザー名はありません。",
+  "setup.password.created": "パスワードが設定され、パスワードによるサインインが有効になりました。",
+  "setup.password.open_later": "信頼できるネットワークで DownloadPulse をパスワードなしで使用するには、セットアップの完了後に「マイアカウント」で「パスワードのクリア」を選択してください。",
+  "setup.from_internet.title": "セットアップはご自身のネットワークから完了してください",
+  "setup.from_internet.body": "この DownloadPulse はまだセットアップされておらず、インターネットからはセットアップできません。サーバーと同じネットワーク上のデバイスから、または VPN 経由で開き、そこでセットアップを完了してください。その後、どのようにアクセスできるようにするかはご自身で決められます。",
+  "error.setup.from_internet": "先にご自身のネットワークから DownloadPulse のセットアップを完了してください。インターネットからはセットアップできません。",
+  "error.setup.password_pending": "続行する前にパスワードを設定してください",
+  "error.setup.deployment_locked": "セットアップ中に管理者が作成された後は、デプロイの種類を変更できません。先にセットアップを完了してください",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>セットアップウィザード：</b>新しいインストールではセットアップウィザードが開き、言語とダウンロードフォルダーを設定し、サインインに使用するパスワードを求めます。<b>完了してダッシュボードを開く</b>でダッシュボードが開きます。信頼できるネットワークで DownloadPulse をパスワードなしで使用するには、その後<b>パスワードのクリア</b>を<b>マイアカウント</b>で選択してください。セットアップウィザードは<b>マイアカウント</b>から再実行できます。"
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

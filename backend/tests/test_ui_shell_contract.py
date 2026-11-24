@@ -34,8 +34,8 @@ def test_v11_cascade_uses_deliberate_final_ownership_order() -> None:
     assert not (STATIC / "style-legacy.css").exists()
     assert not (STATIC / "style-v11.css").exists()
     index = read(INDEX)
-    assert "/style.css?v=51" in index
-    assert index.count('<link rel="stylesheet" href="/style.css?v=51">') == 1
+    assert "/style.css?v=52" in index
+    assert index.count('<link rel="stylesheet" href="/style.css?v=52">') == 1
     assert "style-v11.css" not in index
 
     overlay = read(V11_STYLE)
@@ -58,7 +58,7 @@ def test_v11_cascade_uses_deliberate_final_ownership_order() -> None:
         "/ui-settings-page.css?v=5",
         "/ui-help-page.css?v=23",
         "/ui-panel-surface-treatment.css?v=24",
-        "/ui-transfer-contract.css?v=34",
+        "/ui-transfer-contract.css?v=35",
         "/ui-visual-accents.css?v=22",
         "/ui-shell-signal-field.css?v=21",
     )
@@ -110,7 +110,7 @@ def test_v11_cache_generations_remain_targeted() -> None:
         "/ui-help-page.css": "23",
         "/ui-feature-icon-contract.css": "5",
         "/ui-panel-surface-treatment.css": "24",
-        "/ui-transfer-contract.css": "34",
+        "/ui-transfer-contract.css": "35",
         "/ui-detail-candidates.css": "4",
         "/ui-visual-accents.css": "22",
     }

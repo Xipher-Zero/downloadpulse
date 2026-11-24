@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "內建 · 登入功能關閉時使用",
   "error.browser.pairing.setup_incomplete": "請先完成DownloadPulse的設定，然後重新連線。",
   "transfer.name.more": "{name} + {count, plural, other {另外 {count} 個}}",
-  "transfer.name.files": "{name} + {count, plural, other {{count} 個檔案}}"
+  "transfer.name.files": "{name} + {count, plural, other {{count} 個檔案}}",
+  "setup.password.title": "設定您的密碼",
+  "setup.password.tagline": "一人，一把鑰匙。",
+  "setup.password.body": "任何能連線到此伺服器的人都能開啟DownloadPulse，因此在設定完成前需要設定密碼。您只需使用密碼登入；沒有使用者名稱。",
+  "setup.password.created": "您的密碼已設定，密碼登入已開啟。",
+  "setup.password.open_later": "若要在您信任的網路中不使用密碼使用DownloadPulse，請在設定完成後於「我的帳戶」中選擇「清除密碼」。",
+  "setup.from_internet.title": "請從您自己的網路完成設定",
+  "setup.from_internet.body": "此DownloadPulse尚未設定，且無法從網際網路進行設定。請從與伺服器位於同一網路的裝置，或透過您的VPN開啟它，並在那裡完成設定。之後，由您決定如何存取它。",
+  "error.setup.from_internet": "請先從您自己的網路完成DownloadPulse的設定：無法從網際網路進行設定。",
+  "error.setup.password_pending": "請先設定密碼，再繼續",
+  "error.setup.deployment_locked": "設定期間管理員一旦存在，部署類型便無法變更；請先完成設定",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>設定精靈：</b>新安裝會開啟設定精靈，用來設定語言與下載資料夾，並要求設定您登入時使用的密碼。<b>完成並開啟儀表板</b>會開啟儀表板。若要在您信任的網路中不使用密碼使用DownloadPulse，請於之後選擇<b>清除密碼</b>（位於<b>我的帳戶</b>中）。可從<b>我的帳戶</b>再次執行設定精靈。"
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

@@ -3710,7 +3710,18 @@
   "settings.users.signin.builtin": "Integriert · bei ausgeschalteter Anmeldung verwendet",
   "error.browser.pairing.setup_incomplete": "Schließen Sie zuerst die Einrichtung von DownloadPulse ab und verbinden Sie sich dann erneut.",
   "transfer.name.more": "{name} + {count, plural, one {{count} weitere} other {{count} weitere}}",
-  "transfer.name.files": "{name} + {count, plural, one {{count} Datei} other {{count} Dateien}}"
+  "transfer.name.files": "{name} + {count, plural, one {{count} Datei} other {{count} Dateien}}",
+  "setup.password.title": "Passwort festlegen",
+  "setup.password.tagline": "Eine Person, ein Schlüssel.",
+  "setup.password.body": "Jeder, der diesen Server erreichen kann, kann DownloadPulse öffnen. Daher wird ein Passwort verlangt, bevor die Einrichtung abgeschlossen werden kann. Sie melden sich nur mit dem Passwort an; es gibt keinen Benutzernamen.",
+  "setup.password.created": "Ihr Passwort ist festgelegt, und die Anmeldung mit Passwort ist eingeschaltet.",
+  "setup.password.open_later": "Um DownloadPulse in einem Netzwerk, dem Sie vertrauen, ohne Passwort zu verwenden, wählen Sie nach Abschluss der Einrichtung in „Mein Konto“ die Option „Passwort entfernen“.",
+  "setup.from_internet.title": "Einrichtung im eigenen Netzwerk abschließen",
+  "setup.from_internet.body": "Dieses DownloadPulse ist noch nicht eingerichtet, und die Einrichtung ist aus dem Internet nicht verfügbar. Öffnen Sie es von einem Gerät im selben Netzwerk wie der Server oder über Ihr VPN, und schließen Sie die Einrichtung dort ab. Danach entscheiden Sie, wie es erreichbar ist.",
+  "error.setup.from_internet": "Schließen Sie die Einrichtung von DownloadPulse zuerst in Ihrem eigenen Netzwerk ab: Die Einrichtung ist aus dem Internet nicht verfügbar.",
+  "error.setup.password_pending": "Legen Sie das Passwort fest, bevor Sie fortfahren",
+  "error.setup.deployment_locked": "Der Bereitstellungstyp kann nicht mehr geändert werden, sobald der Administrator während der Einrichtung existiert; schließen Sie zuerst die Einrichtung ab",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Einrichtungsassistent:</b> Eine neue Installation öffnet den Einrichtungsassistenten, der die Sprache und den Download-Ordner festlegt und nach dem Passwort fragt, mit dem Sie sich anmelden werden. <b>Abschließen & Dashboard öffnen</b> öffnet das Dashboard. Um DownloadPulse in einem Netzwerk, dem Sie vertrauen, ohne Passwort zu verwenden, wählen Sie anschließend <b>Passwort entfernen</b> in <b>Mein Konto</b>. Führen Sie den Einrichtungsassistenten über <b>Mein Konto</b> erneut aus."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7421,6 +7432,17 @@
   "error.desktop.update_window_only": "626c6d3d40f5a1fd",
   "error.desktop.update_unavailable": "3e6e910d94f399e1",
   "error.transfer.location_not_completed": "862822ee0425f200",
-  "error.transfer.location_missing": "53f6f481984d1cd6"
+  "error.transfer.location_missing": "53f6f481984d1cd6",
+  "setup.password.title": "988df8501689b7d4",
+  "setup.password.tagline": "ce530966d0d57e8d",
+  "setup.password.body": "1d634fa462daba40",
+  "setup.password.created": "440c9f539fdbd34f",
+  "setup.password.open_later": "9c075ea4d25095fb",
+  "setup.from_internet.title": "697faa14f9bf94d9",
+  "setup.from_internet.body": "29b5c84ef6323758",
+  "error.setup.from_internet": "c1efb9522cbb138c",
+  "error.setup.password_pending": "6209ce853ab00d6f",
+  "error.setup.deployment_locked": "1f71b35286c304a5",
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
  }
 }

@@ -24182,6 +24182,72 @@
    "context": "A request for where a completed download's files are on disk, refused because they are no longer where DownloadPulse put them inside the download folder (moved, renamed or deleted since). Shown as an error message; API clients receive the English `detail`.",
    "owner": "backend/application/service.py",
    "criticality": "normal"
+  },
+  "setup.password.title": {
+   "category": "page-title",
+   "context": "The setup wizard's page title on a Standalone server installation: its one person sets the password they will sign in with.",
+   "owner": "frontend/static/ui-setup-wizard.js",
+   "criticality": "normal"
+  },
+  "setup.password.tagline": {
+   "category": "hint",
+   "context": "The short playful reading beneath the page title while the password is not yet set. Personality, never instruction.",
+   "owner": "frontend/static/ui-setup-wizard.js",
+   "criticality": "normal"
+  },
+  "setup.password.body": {
+   "category": "hint",
+   "context": "The Standalone password page's explanation: why a password is needed now, and that sign-in asks for the password only.",
+   "owner": "frontend/static/ui-setup-wizard.js",
+   "criticality": "critical-warning"
+  },
+  "setup.password.created": {
+   "category": "hint",
+   "context": "Beneath the page title once the password is set (shown again if the page is revisited).",
+   "owner": "frontend/static/ui-setup-wizard.js",
+   "criticality": "normal"
+  },
+  "setup.password.open_later": {
+   "category": "critical-warning",
+   "context": "A note on the Standalone password page: the person can turn the password off later, by their own choice. 'Clear Password' and 'My Account' name the existing control and page.",
+   "owner": "frontend/static/ui-setup-wizard.js",
+   "criticality": "critical-warning"
+  },
+  "setup.from_internet.title": {
+   "category": "page-title",
+   "context": "Title of the page a not-yet-set-up DownloadPulse shows to a visitor from the internet, instead of the setup wizard.",
+   "owner": "backend/auth/middleware.py",
+   "criticality": "normal"
+  },
+  "setup.from_internet.body": {
+   "category": "critical-warning",
+   "context": "Body of that page: what to do instead. Server-rendered before sign-in.",
+   "owner": "backend/auth/middleware.py",
+   "criticality": "critical-warning"
+  },
+  "error.setup.from_internet": {
+   "category": "error",
+   "context": "An API refusal while first-run setup is unfinished and the request came from the internet.",
+   "owner": "backend/auth/middleware.py",
+   "criticality": "normal"
+  },
+  "error.setup.password_pending": {
+   "category": "error",
+   "context": "A setup step refused on a Standalone server installation because its password is not set yet.",
+   "owner": "backend/services/setup_lifecycle.py",
+   "criticality": "normal"
+  },
+  "error.setup.deployment_locked": {
+   "category": "error",
+   "context": "Refusal of a deployment-type change during first-run setup after the Server's Administrator was created.",
+   "owner": "backend/services/setup_lifecycle.py",
+   "criticality": "normal"
+  },
+  "help.quickstart.before_begin.setup_wizard.standalone_server": {
+   "category": "long-form-help",
+   "context": "Help → Quick Start → Before you begin, on a Standalone installation that is not the desktop application (1.0.4): the Setup Wizard asks for the password the person signs in with; afterwards they may clear it to use DownloadPulse open on a trusted network. Bold spans name the wizard, its last button, the My Account control and page.",
+   "owner": "frontend/static/ui-help-page.js",
+   "criticality": "normal"
   }
  }
 }
