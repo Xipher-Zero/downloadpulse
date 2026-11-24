@@ -245,7 +245,8 @@ ACTIONS: dict[str, Capability] = {
     "api.routes.health_check": _P,
     "api.routes.get_version_ep": _P,
     "api.routes.serve_avatar": _P,
-    "api.routes.version_check": _I,
+    # The latest release: only an Admin can act on an update (WS27).
+    "api.routes.version_check": _A,
     "api.routes.get_changelog": _I,
     "api.settings_validation_routes.get_bundled_legal_document": _I,
     # Transfers: read.
@@ -290,6 +291,7 @@ ACTIONS: dict[str, Capability] = {
     "api.file_selection_routes.dismiss_file_selection": _OP,
     # Show in folder, in the desktop window (always Standalone: its one person).
     "api.routes.desktop_reveal": _OP,
+    "api.routes.desktop_update_download": _A,
     # Transfers: destructive (ownership of every affected demand required).
     "api.routes.delete_torrent": _DES,
     "api.routes.cancel_torrent": _DES,

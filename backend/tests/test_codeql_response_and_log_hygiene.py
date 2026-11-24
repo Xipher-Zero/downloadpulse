@@ -1,5 +1,5 @@
 """An exception's text stays in the server log, never in an API response
-(``/api/version/check``, ``/api/aria2/runtime``); a notification failure's
+(the update check behind ``/api/version/check``, ``/api/aria2/runtime``); a notification failure's
 reason is one log line however many lines the remote endpoint answered."""
 from __future__ import annotations
 
@@ -20,15 +20,21 @@ class _Failing:
         raise RuntimeError(SECRET)
 
 
-def test_version_check_failure_names_no_exception_text(monkeypatch, caplog):
-    routes._update_check_cache.clear()
+def test_a_failed_update_check_is_logged_and_never_kept_or_served(monkeypatch, caplog):
+    """The update check's one fetcher (``application.updates.refresh``): its
+    failure reason is logged server-side; the record holds no exception text,
+    and ``/api/version/check`` only reads that record -- no network I/O."""
+    from application import updates
+
+    monkeypatch.setattr(updates, "_record", None)
     monkeypatch.setattr(aiohttp, "ClientSession", _Failing)
-    with caplog.at_level(logging.WARNING, logger="downloadpulse.routes"):
-        result = asyncio.run(routes.version_check())
-    routes._update_check_cache.clear()
-    assert result["update_available"] is False and result["latest"] is None
-    assert result["error"] == "The latest release could not be checked"
+    with caplog.at_level(logging.WARNING, logger="downloadpulse.updates"):
+        assert asyncio.run(updates.refresh()) is None
     assert "secret.db" in caplog.text  # the reason is logged server-side
+    assert updates.record() is None    # and kept nowhere else
+    result = asyncio.run(routes.version_check(SimpleNamespace(state=SimpleNamespace(principal=None))))
+    assert result == {"checked": False}
+    assert "secret.db" not in repr(result)
 
 
 def test_runtime_diagnostics_failure_names_no_exception_text(monkeypatch, caplog):

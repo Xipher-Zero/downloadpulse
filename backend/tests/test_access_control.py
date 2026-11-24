@@ -418,6 +418,40 @@ async def test_the_journal_signal_reaches_only_a_role_that_reads_the_activity_lo
             if any(frame.startswith("event: torrent_updated") for frame in frames)} == set(subscribers)
 
 
+async def test_the_update_signal_reaches_only_an_admin_and_carries_nothing(monkeypatch):
+    """WS27: ``update_status`` says the latest release's record changed; it is
+    gated by the record's own read (``version_check``, Admin), so a User, a
+    ReadOnly User or an Integration is never told."""
+    from api import routes
+
+    monkeypatch.setattr(config, "_settings", config.AppSettings(auth_password_enabled=True))
+    session_store.clear()
+    subscribers = {"standalone": routes._SseSubscriber(Principal.standalone())}
+    for role in (Role.ADMIN, Role.USER, Role.READONLY):
+        principal = Principal.password_session(account(role.value, account_id=f"{role.value}-id", role=role))
+        token, _ = session_store.create(principal, lifetime_seconds=3600)
+        subscribers[role.value] = routes._SseSubscriber(principal, token, session_store.fingerprint(token))
+    subscribers["integration"] = routes._SseSubscriber(Principal.integration_token(
+        account("automation", account_id="integration-id", role=Role.INTEGRATION), "token-id"))
+    queues = {name: asyncio.Queue() for name in subscribers}
+    for name, subscriber in subscribers.items():
+        routes._sse_subscribers[queues[name]] = subscriber
+    try:
+        for queue in queues.values():
+            _drain(queue)
+        await routes._sse_broadcast("update_status", {})
+        received = {name: _drain(queue) for name, queue in queues.items()}
+    finally:
+        for queue in queues.values():
+            routes._sse_subscribers.pop(queue, None)
+
+    got = {name for name, frames in received.items() if any(f.startswith("event: update_status\n") for f in frames)}
+    assert routes._SSE_GATED["update_status"] is ACTIONS["api.routes.version_check"] is Capability.ADMINISTER
+    assert got == {"standalone", "admin"}                  # User, ReadOnly and Integration: nothing
+    assert next(f for f in received["admin"] if f.startswith("event: update_status\n")) == \
+        "event: update_status\ndata: {}\n\n"
+
+
 async def test_the_statistics_signal_reaches_every_statistics_reader_and_carries_nothing(monkeypatch):
     from api import routes
 

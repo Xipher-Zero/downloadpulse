@@ -2,11 +2,9 @@ import asyncio
 import random
 import time
 import logging
-from core.branding import REPOSITORY_API_URL
 from core.config import get_settings
 from core.logging_utils import sanitize_exception
 from core.performance import async_timer
-from core.version import is_version_newer, normalize_version_tag
 from services.notification_service import NotificationService, reporting_participates
 from transfers.runtime_telemetry import THROUGHPUT_SAMPLE_SECONDS
 from services.maintenance_gate import ApplicationMaintenanceActive
@@ -241,12 +239,19 @@ async def external_maintenance_loop():
 
 
 async def update_check_loop() -> None:
-    """Check GitHub for new releases every N hours and send a Discord webhook if enabled."""
-    await asyncio.sleep(300)  # 5 min initial delay
+    """The one update loop: about a minute after start, then every
+    ``update_check_interval_hours`` (0 = off), ask the one release owner
+    (``application.updates.refresh``) and, once per new version, send the
+    update notification. A failed check is tried again in an hour."""
+    from application import updates
+
+    await asyncio.sleep(updates.FIRST_CHECK_SECONDS)
+    # In memory: a restart may send the same version's notification once more.
     _last_notified: str = ""
     while True:
         # Keep a valid backoff even if settings retrieval itself fails.
         interval_h = 12
+        checked = False
         try:
             cfg = get_settings()
             interval_h = max(0, _coerce_int_setting(
@@ -256,38 +261,28 @@ async def update_check_loop() -> None:
                 await asyncio.sleep(3600)
                 continue
 
-            from core.version import read_version
-            import aiohttp as _aiohttp
-
-            current = read_version()
-            timeout = _aiohttp.ClientTimeout(total=10)
-            async with _aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(
-                    f"{REPOSITORY_API_URL}/releases/latest",
-                    headers={"Accept": "application/vnd.github.v3+json"},
-                ) as resp:
-                    if resp.status != 200:
-                        raise RuntimeError(f"GitHub API returned {resp.status}")
-                    rel = await resp.json()
-
-            latest = normalize_version_tag(rel.get("tag_name") or "")
-
-            if latest and is_version_newer(latest, current) and latest != _last_notified:
-                logger.info("Update available: %s → %s", current, latest)
-                await NotificationService().client().send_update(
-                    current_version=current,
-                    latest_version=latest,
-                    release_url=rel.get("html_url", ""),
-                    release_notes=(rel.get("body") or "").strip(),
-                )
-                _last_notified = latest
+            result = await updates.refresh()
+            checked = result is not None
+            if result is not None:
+                record, notes = result
+                latest = record["latest"]
+                if record["update_available"] and latest != _last_notified:
+                    logger.info("Update available: %s → %s", record["current"], latest)
+                    await NotificationService().client().send_update(
+                        current_version=record["current"],
+                        latest_version=latest,
+                        release_url=record["release_url"] or "",
+                        release_notes=notes,
+                    )
+                    _last_notified = latest
 
         except asyncio.CancelledError:
             return
         except Exception as exc:
             logger.warning("update_check_loop error: %s", sanitize_exception(exc))
 
-        await asyncio.sleep(max(3600, interval_h * 3600))
+        # After a good check, the interval; after a failed one, the hour floor.
+        await asyncio.sleep(max(3600, interval_h * 3600) if checked else 3600)
 
 
 async def event_index_loop() -> None:

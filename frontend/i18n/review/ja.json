@@ -16720,8 +16720,8 @@
    ]
   },
   "settings.notifications.update_interval_hint": {
-   "source": "aa3cd405f6b18f0f",
-   "translation": "0638071a19eba4d3",
+   "source": "ccb29aaadfd671f6",
+   "translation": "785a7609dd9bc484",
    "provenance": [
     "ai-generated",
     "ai-review"
@@ -32841,6 +32841,94 @@
    ],
    "backTranslation": "Downloads in progress will stop."
   },
+  "update.title": {
+   "source": "896e9455476ecd50",
+   "translation": "564ad2f5172866f1",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.body": {
+   "source": "a5962baa86257035",
+   "translation": "09749cc750082e63",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.release_notes": {
+   "source": "1254829bd9996472",
+   "translation": "8d8b3ff1d311463a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.download": {
+   "source": "48f7e53b2a3e6907",
+   "translation": "6b52feb30a21e1f6",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.not_now": {
+   "source": "a0e63d7c7125d29a",
+   "translation": "184c1a3ae90a8bf6",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.starting": {
+   "source": "a3013ccd2d91b48d",
+   "translation": "b5e7be34a7b8ec96",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.downloading": {
+   "source": "589db838d16c639a",
+   "translation": "3e2e329c2629858b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.downloaded": {
+   "source": "684f356918771718",
+   "translation": "ab7ba93ab067dbdc",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.download_failed": {
+   "source": "a7ceafaa827e3baf",
+   "translation": "c2c0db21c47752df",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.badge.label": {
+   "source": "473babdfa5ce7f3a",
+   "translation": "ad25a6a444e567cd",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "update.badge.aria": {
+   "source": "78903c8a048593a2",
+   "translation": "c8d5961f82f83d3e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.error.start_failed_title": {
    "source": "3c18e0c8b75d0e05",
    "translation": "99d00cc50ecb24db",
@@ -33005,6 +33093,30 @@
   "error.desktop.quit_window_only": {
    "source": "67a2c97d52006ab1",
    "translation": "ff180cc0a46ff776",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.update_only": {
+   "source": "df9dd0cfc5dd3765",
+   "translation": "7f42027fdf858107",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.update_window_only": {
+   "source": "626c6d3d40f5a1fd",
+   "translation": "dffc589d6527c76d",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.update_unavailable": {
+   "source": "3e6e910d94f399e1",
+   "translation": "7428879ed1de02f6",
    "provenance": [
     "ai-generated",
     "ai-review"

@@ -51,7 +51,7 @@ from transfers.manual_route_switch import root_switches
 from transfers.settings import TransferSettings
 from core.logging_utils import sanitize_exception, sanitize_log_value
 from core.presentation_safety import safe_original_http_resource, safe_original_remote_file_resource, safe_public_host
-from core.version import is_version_newer, normalize_version_tag, read_version
+from core.version import read_version
 from auth import accounts
 from auth.middleware import session_record_valid
 from auth.models import AuthMechanism, Principal
@@ -531,45 +531,15 @@ async def get_version_ep():
     return {"version": read_version()}
 
 
-_update_check_cache: dict = {}
-
-
-def _version_gt(a: str, b: str) -> bool:
-    """True when candidate release ``a`` is newer than running release ``b``."""
-    return is_version_newer(a, b)
-
-
 @router.get("/version/check")
-async def version_check():
-    """Compare running version with latest GitHub release. Cached 30 min."""
-    import time, aiohttp as _aiohttp
-    cache, now, current = _update_check_cache, time.time(), read_version()
-    if cache.get("ts", 0) + 1800 > now:
-        return cache.get("result", {"current": current, "latest": None, "update_available": False})
-    try:
-        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get(
-                f"{REPOSITORY_API_URL}/releases/latest",
-                headers={"Accept": "application/vnd.github.v3+json"},
-            ) as r:
-                if r.status != 200: raise RuntimeError("GitHub API " + str(r.status))
-                rel = await r.json()
-        latest = normalize_version_tag(rel.get("tag_name") or "")
-        result = {
-            "current": current, "latest": latest,
-            "update_available": _version_gt(latest, current),
-            "release_url":   rel.get("html_url", ""),
-            "release_notes": (rel.get("body") or "").strip(),
-            "published_at":  (rel.get("published_at") or "")[:10],
-        }
-        cache["result"] = result
-        cache["ts"] = now
-        return result
-    except Exception as exc:
-        logger.warning("Version check failed: %s", sanitize_exception(exc))
-        # The reason stays in the server log; the response names the failure only.
-        return {"current": current, "latest": None, "update_available": False,
-                "error": "The latest release could not be checked"}
+async def version_check(request: Request):
+    """The latest release, as the one release owner last checked it
+    (``application.updates``; the scheduler's update loop is its only fetcher).
+    Classified ``administer``: an ordinary user cannot act on an update. Never
+    contacts GitHub; before the first check (or with checks off) it is
+    ``{"checked": false}``."""
+    from application import updates
+    return updates.projection(download_offered=_update_download_offered(request))
 
 
 class SettingsUpdate(AppSettings):
@@ -1576,6 +1546,80 @@ def _reveal_offered(request) -> bool:
     principal = getattr(getattr(request, "state", None), "principal", None)
     return bool(desktop_installation() and request is not None and window_request(request)
                 and principal is not None and permits(principal, Capability.TRANSFERS_OPERATE))
+
+
+# ── Update download (the desktop application only) ─────────────────────────
+# Classified ``administer``. The installer of the update the release owner's
+# record names (``application.updates``) is downloaded as an ordinary transfer:
+# a one-file Metalink4 carrying the release's SHA-256, through the canonical
+# submission seam, so core verifies it at completion and a mismatch is never
+# handed over. The page names no address or hash: the request has no body.
+# After it completes, the existing Show in folder (``/desktop/reveal``) shows it;
+# DownloadPulse never starts it.
+
+def _update_download_offered(request) -> bool:
+    """Whether this request may be offered the update download: the desktop
+    application's own window asked (``desktop_listener.window_request``), by an
+    Admin -- the checks ``desktop_update_download`` makes."""
+    from application.desktop_listener import window_request
+    from core.config import desktop_installation
+    principal = getattr(getattr(request, "state", None), "principal", None)
+    return bool(desktop_installation() and request is not None and window_request(request)
+                and principal is not None and permits(principal, Capability.ADMINISTER))
+
+
+@router.post("/desktop/update/download")
+async def desktop_update_download(request: Request, application: ApplicationService = Depends(get_application)):
+    _require_desktop("Updates are downloaded only in the desktop application.", "desktop.update_only")
+    from application import updates
+    from application.desktop_listener import window_request
+    if not window_request(request):
+        raise DisplayError(403, "Updates are downloaded only in the DownloadPulse window.",
+                           code="desktop.update_window_only")
+    installer = updates.installer()
+    record = updates.record()
+    if installer is None or record is None:
+        raise DisplayError(409, "No update is available to download.", code="desktop.update_unavailable")
+    version = record["latest"]
+    earlier = updates.remembered_download(version)
+    if earlier is not None and await _update_download_serves(application, earlier):
+        # A second click while the first download still serves: that transfer.
+        item = await application.repository.presentation(earlier)
+        if item is not None:
+            return _submitted(request, item, [])
+
+    async def document():
+        yield updates.metalink(installer)
+
+    try:
+        demand = _demand(request)
+        result = await application.submit_meta4(document(), f"{installer['name']}.meta4", source="manual",
+                                                demand=demand)
+    except ValueError as exc:
+        raise refusal(400, _sanitize_error(exc), exc) from None
+    except Exception as exc:
+        logger.exception("desktop_update_download failed: %s", _sanitize_error(exc))
+        raise refusal(502, _sanitize_error(exc), exc)
+    updates.remember_download(version, int(result["id"]))
+    return _submitted(request, result, [demand])
+
+
+async def _update_download_serves(application, transfer_id: int) -> bool:
+    """Whether an earlier update download still answers a click: live work, or
+    completed with its file still in the download folder. A failed, cancelled
+    or removed one does not: the click starts a new download."""
+    from transfers.models import TransferState
+    transfer = await application.repository.get(transfer_id)
+    if transfer is None or transfer.state in {TransferState.FAILED, TransferState.CANCELLED,
+                                              TransferState.DELETED, TransferState.CONSOLIDATED}:
+        return False
+    if transfer.state != TransferState.COMPLETED:
+        return True
+    try:
+        await application.completed_location(transfer_id)
+    except (KeyError, ValueError):
+        return False
+    return True
 
 
 # ── Local Port (the desktop application's external address) ────────────────
@@ -2792,6 +2836,9 @@ async def trigger_deep_sync( application: ApplicationService = Depends(get_appli
 #                   Delivered only to a connection whose CURRENT principal may
 #                   read the Activity Log (``_SSE_GATED``): that activity
 #                   occurred is itself information other roles are not given.
+#   update_status — {}; the latest release's record changed
+#                   (``application.updates.refresh``): the page reads
+#                   ``/version/check`` again. Gated like that read (Admin).
 #   desktop_quit_prompt — {nonce}; the desktop window was closed with no tray
 #                   to open it again: its page asks whether to quit. Sent only
 #                   to the window's own page (``_sse_prompt_window``), never
@@ -2829,6 +2876,8 @@ class _SseSubscriber:
 _SSE_GATED: dict[str, Capability] = {
     "activity_journal_changed": ACTIONS["api.operational_downloads.list_activity_events"],
     "statistics_changed": ACTIONS["api.routes.get_stats_detail"],
+    # The latest release's record changed: said only to those who may read it.
+    "update_status": ACTIONS["api.routes.version_check"],
 }
 
 

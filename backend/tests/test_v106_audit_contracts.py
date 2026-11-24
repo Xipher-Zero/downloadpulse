@@ -123,8 +123,9 @@ def test_rar_extraction_fails_closed_without_preflight_capable_7z():
 def test_update_check_loop_has_failure_safe_backoff():
     source = (Path(__file__).resolve().parents[1] / "core" / "scheduler.py").read_text()
     loop = source.split("async def update_check_loop", 1)[1].split("async def event_index_loop", 1)[0]
-    assert "while True:\n        # Keep a valid backoff even if settings retrieval itself fails.\n        interval_h = 12\n        try:" in loop
-    assert "await asyncio.sleep(max(3600, interval_h * 3600))" in loop
+    assert "while True:\n        # Keep a valid backoff even if settings retrieval itself fails.\n        interval_h = 12\n        checked = False\n        try:" in loop
+    # After a good check, the interval; after a failed one, the hour floor (WS27).
+    assert "await asyncio.sleep(max(3600, interval_h * 3600) if checked else 3600)" in loop
 
 def test_v106_transitional_and_mediainfo_residue_removed():
     root = Path(__file__).resolve().parents[1]

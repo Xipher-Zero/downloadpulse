@@ -318,7 +318,9 @@ def test_update_check_interval_moved_and_states_its_unit_inside_the_field():
     assert labelled(cells, "input('update_check_interval_hours', ", "Update Check Interval")
     assert "Update Check Interval (Hours Between Checks)" not in source(RUNTIME)
     assert "type: 'number', min: 0, max: 168, step: 1," in cells
-    assert says(cells, "Set how often DownloadPulse checks for a newer release. Enter 0 to disable update checks.")
+    # The interval drives the in-app update notice too (WS27), and 0 turns both off.
+    assert says(cells, "Set how often DownloadPulse checks for a newer release and shows the update notice. "
+                       "Enter 0 to turn off both the checks and the notice.")
     assert "embedAction: fieldUnit(say('settings.unit.hours'))" in cells
     # The delivery row no longer holds it.
     delivery = block(card, "dp-settings-notifications-delivery-row", "disclosureSection(")
