@@ -66,7 +66,7 @@ from urllib.parse import urlsplit
 
 from services.network_safety import PUBLIC_DESTINATION_SCHEMES, default_destination_port
 from services.network_safety import validate_provider_download_url
-from services.network_safety import private_lan_address, reject_non_public_resolution
+from services.network_safety import private_lan_address, public_address, reject_non_public_resolution
 
 logger = logging.getLogger("downloadpulse.downloader_egress_guard")
 
@@ -109,11 +109,8 @@ PublicCheck = Callable[[str], bool]
 
 
 def _is_public(address: str) -> bool:
-    normalized = str(address or "").split("%", 1)[0].strip()
-    try:
-        return bool(normalized) and ipaddress.ip_address(normalized).is_global
-    except ValueError:
-        return False
+    """The one judgement of a public destination (``network_safety.public_address``)."""
+    return public_address(address)
 
 
 def _target(uri: str, private_lan: bool = False) -> tuple[str, int]:

@@ -146,12 +146,38 @@ def validate_provider_download_url(
     return raw
 
 
-def _public_ip(address: str) -> bool:
+# IPv6 forms that carry an IPv4 address in their last 32 bits, and reach it:
+# IPv4-compatible (deprecated, ::/96) and the NAT64 well-known prefix
+# (64:ff9b::/96, RFC 6052). Python's ``is_global`` calls both global whatever
+# IPv4 address they carry, so on an IPv6-only network with NAT64 a hostile
+# DNS answer of 64:ff9b::c0a8:101 would reach 192.168.1.1. IPv4-mapped
+# (::ffff:0:0/96) is unwrapped through ``ipv4_mapped``. 6to4 and Teredo, which
+# also embed an IPv4 address, are already not global to Python.
+_EMBEDDING_IPV4 = (ipaddress.ip_network("::/96"), ipaddress.ip_network("64:ff9b::/96"))
+
+
+def public_address(address) -> bool:
+    """Whether ``address`` (an IP literal, a zone allowed) is a public internet
+    destination: the ONE owner of that judgement (the provider-URL checks
+    here and the downloader egress guard's admission). An IPv6 address that
+    carries an IPv4 address -- mapped, IPv4-compatible or NAT64 -- is judged by
+    the IPv4 address it reaches; anything unparsable is not public."""
     normalized = str(address or "").split("%", 1)[0].strip()
     try:
-        return bool(normalized) and ipaddress.ip_address(normalized).is_global
+        literal = ipaddress.ip_address(normalized)
     except ValueError:
         return False
+    if isinstance(literal, ipaddress.IPv6Address):
+        if literal.ipv4_mapped is not None:
+            literal = literal.ipv4_mapped
+        elif any(literal in network for network in _EMBEDDING_IPV4):
+            # The IPv4 address it reaches (:: and ::1 carry 0.0.0.0/8: never public).
+            literal = ipaddress.IPv4Address(int(literal) & 0xFFFFFFFF)
+    return bool(literal.is_global)
+
+
+def _public_ip(address: str) -> bool:
+    return public_address(address)
 
 
 def reject_non_public_resolution(addresses: Iterable[str], *, host: str, private_lan: bool = False) -> None:
