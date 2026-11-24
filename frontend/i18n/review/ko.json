@@ -32738,6 +32738,14 @@
     "ai-review"
    ]
   },
+  "update.paused": {
+   "source": "7395aa943c897988",
+   "translation": "f74fda29893fb1d5",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "update.downloaded": {
    "source": "684f356918771718",
    "translation": "a7bda3e2150601c5",

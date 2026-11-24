@@ -32532,6 +32532,14 @@
     "ai-review"
    ]
   },
+  "update.paused": {
+   "source": "7395aa943c897988",
+   "translation": "3bb299b57442dec7",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "update.downloaded": {
    "source": "684f356918771718",
    "translation": "c649a807518fce9a",

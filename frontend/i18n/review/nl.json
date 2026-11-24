@@ -33068,6 +33068,14 @@
     "ai-review"
    ]
   },
+  "update.paused": {
+   "source": "7395aa943c897988",
+   "translation": "7e3cb7db6308f3bb",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "update.downloaded": {
    "source": "684f356918771718",
    "translation": "9d49a7ebbbd584c9",

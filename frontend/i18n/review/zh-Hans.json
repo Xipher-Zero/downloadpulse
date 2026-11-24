@@ -32513,6 +32513,14 @@
     "ai-review"
    ]
   },
+  "update.paused": {
+   "source": "7395aa943c897988",
+   "translation": "1406a049eff1d292",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "update.downloaded": {
    "source": "684f356918771718",
    "translation": "1a8ca094c235061e",

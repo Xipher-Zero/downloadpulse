@@ -815,17 +815,21 @@ function askDesktopQuit(nonce) {
  * the installer through DownloadPulse -- an ordinary transfer core verifies
  * against that hash -- shows its progress from the transfer's own row
  * (GET /torrents/{id}) and, once completed, Show in folder; the person runs the
- * installer. A refusal or a failed download is said, with the release notes
- * as the way to get it instead. It never opens over another dialog (the setup
- * wizard, browser pairing, the desktop Quit prompt): it waits until the dialog
- * owner says its last dialog closed (downloadpulse:dialogs-closed), and a
- * dialog opened later stacks above it. After it is dismissed the topbar's
+ * installer. A refusal or a failed download (or one waiting on the person:
+ * Requires attention, input required) is said, with the release notes as the
+ * way to get it instead; a paused one is said as paused. It never opens over
+ * another dialog (the setup wizard, browser pairing, the desktop Quit prompt,
+ * the #modal shell's Details): it waits until the dialog owner says its last
+ * dialog closed (downloadpulse:dialogs-closed) or DPModal says it closed
+ * (downloadpulse:modal-closed), and a dialog opened later stacks above it. A
+ * newer release that arrives while the notice is open is shown once it closes. After it is dismissed the topbar's
  * #update-badge keeps the update in view and opens it again. */
 const UPDATE_SHOWN_KEY = 'dp.update.shown';
 const UPDATE_POLL_MS = 2000;
 const DPUpdateNotice = (() => {
   let record = null;
   let dialog = null;
+  let shownVersion = '';   // the version the open notice says
   let waiting = false;
   const shown = () => { try { return sessionStorage.getItem(UPDATE_SHOWN_KEY) || ''; } catch (_) { return ''; } };
   const markShown = version => { try { sessionStorage.setItem(UPDATE_SHOWN_KEY, version); } catch (_) {} };
@@ -865,12 +869,22 @@ const DPUpdateNotice = (() => {
     return line;
   }
 
+  // Whether another dialog holds the page: one of the dialog owner's, or the
+  // shared #modal shell (Details, file selection: DPModal.mode is its open state).
+  const occupied = () => !window.DPSettingsModal || window.DPSettingsModal.showing() || Boolean(window.DPModal?.mode);
+
   function open() {
-    if (!record || !record.update_available || (dialog && dialog.isOpen)) return;
-    if (!window.DPSettingsModal || window.DPSettingsModal.showing()) { waiting = true; return; }
+    if (!record || !record.update_available) return;
+    if (dialog && dialog.isOpen) {
+      // A newer release arrived while an older one's notice is open: say it once that one closes.
+      if (record.latest !== shownVersion) waiting = true;
+      return;
+    }
+    if (occupied()) { waiting = true; return; }
     waiting = false;
     markShown(record.latest);
     const shownRecord = record;
+    shownVersion = shownRecord.latest;
     const offered = shownRecord.download_offered === true && Boolean(shownRecord.installer);
     let status = null;
     let fallback = null;
@@ -918,7 +932,15 @@ const DPUpdateNotice = (() => {
         handle.setAcceptEnabled(true);
         return;
       }
-      if (['failed', 'error', 'cancelled', 'deleted'].includes(state)) {
+      if (state === 'paused') {
+        // Paused (here or in Downloads): said as such; it is followed until it moves again.
+        showStatus('update.paused');
+        timer = setTimeout(() => follow(handle), UPDATE_POLL_MS * 2);
+        return;
+      }
+      // Ended, or waiting on the person: the reason, and the release notes instead.
+      if (['failed', 'error', 'cancelled', 'deleted', 'requires_attention', 'input_required',
+           'consolidated'].includes(state)) {
         const category = row.presentation_error_category || row.error_category;
         failed(handle, category && DPI18n.has(`error_category.${category}`)
           ? {key: `error_category.${category}`} : String(row.presentation_label || ''));
@@ -973,7 +995,12 @@ const DPUpdateNotice = (() => {
       },
     });
     dialog = handle;
-    handle.closed.then(() => { stop(); if (dialog === handle) dialog = null; });
+    handle.closed.then(() => {
+      stop();
+      if (dialog === handle) dialog = null;
+      // A newer record that arrived meanwhile opens once the dialog owner says this one has gone.
+      if (record && record.update_available && shown() !== record.latest) waiting = true;
+    });
   }
 
   async function read({reopen = false} = {}) {
@@ -995,6 +1022,8 @@ const DPUpdateNotice = (() => {
   document.addEventListener('downloadpulse:interface-ready', () => { read(); }, {once: true});
   // The trigger for a deferred notice: the dialog owner's last dialog closed.
   document.addEventListener('downloadpulse:dialogs-closed', () => { if (waiting) open(); });
+  // ... and when the shared #modal shell (DPModal) closes.
+  document.addEventListener('downloadpulse:modal-closed', () => { if (waiting) open(); });
   return Object.freeze({
     read,
     // The topbar badge: the same dialog again, from the record this page holds.
@@ -3490,6 +3519,9 @@ const DPModal = (function () {
       document.dispatchEvent(new CustomEvent('downloadpulse:detail-closed',
         {detail: {reason: reason || null}}));
     }
+    // Any opening of this shell has closed: a surface that waits for it (the
+    // update notice) may open now.
+    document.dispatchEvent(new CustomEvent('downloadpulse:modal-closed', {detail: {mode: closedMode}}));
   }
 
   // The pending shell's content has arrived (or is slow): it fades in now.

@@ -95,20 +95,28 @@ test('U04: no notice and no badge when nothing newer exists or nothing was check
   await expect(badge(page)).toBeHidden();
 });
 
-test('U05: never over the setup wizard (mocked unfinished setup)', async ({page}) => {
+test('U05: never over the setup wizard (mocked unfinished setup); it opens once setup finishes', async ({page}) => {
+  // The setup resumes at its last page (a labelled mock of the server's record), whose Finish is mocked too.
   await page.route(url => url.pathname === '/api/setup/state', route => route.fulfill({status: 200, contentType: 'application/json',
-    body: JSON.stringify({initial: {complete: false, phase: 'welcome', administrator: 'none'}, rerun: null})}));
+    body: JSON.stringify({initial: {complete: false, phase: 'getting_started', administrator: 'created'}, rerun: null})}));
+  await page.route(url => url.pathname === '/api/setup/initial/finish', route => route.fulfill({status: 200,
+    contentType: 'application/json', body: JSON.stringify({initial: {complete: true}})}));
   let read = 0;
   await page.route(url => url.pathname === '/api/version/check', route => {
     read += 1;
     return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(record())});
   });
   await load(page);
-  await expect(page.locator('.dp-modal-dialog.dp-setup-dialog')).toBeVisible();
+  const wizard = page.locator('.dp-modal-dialog.dp-setup-dialog');
+  await expect(wizard).toBeVisible();
   await expect.poll(() => read).toBeGreaterThan(0);
   await page.waitForTimeout(500);
   await expect(notice(page)).toHaveCount(0);
   expect(await page.locator('.dp-modal-dialog').count()).toBe(1);
+  // Setup finishes: the wizard closes, and the notice opens after it.
+  await wizard.getByRole('button', {name: await t(page, 'setup.action.finish')}).click();
+  await expect(wizard).toHaveCount(0);
+  await expect(notice(page)).toBeVisible();
 });
 
 test('U06: never over browser pairing; it opens once that dialog closes', async ({page}) => {
@@ -192,4 +200,78 @@ test('U09: the badge fits at a phone\'s width and in en-XA', async ({page}) => {
       expect(fit.overflow).toBeLessThanOrEqual(0);
     }
   }
+});
+
+test('U10: the desktop Quit prompt opens above an open notice', async ({page}) => {
+  await answer(page, record());
+  await load(page);
+  await expect(notice(page)).toBeVisible();
+  // The window was closed where no tray can open it again (the backend's desktop_quit_prompt).
+  await page.evaluate(() => { window.downloadPulseDesktop = true; askDesktopQuit('nonce-1'); });
+  const quit = page.locator('.dp-modal-dialog[role="alertdialog"]').filter({hasText: await t(page, 'desktop.quit.title')});
+  await expect(quit).toBeVisible();
+  const order = await page.evaluate(() => [...document.querySelectorAll('.dp-modal-overlay')]
+    .map(overlay => overlay.querySelector('.dp-update-dialog') ? 'update' : 'other'));
+  expect(order).toEqual(['update', 'other']);              // the prompt is the later, upper dialog
+  await quit.locator('[data-modal-cancel]').click();
+  await expect(quit).toHaveCount(0);
+  await expect(notice(page)).toBeVisible();
+});
+
+test('U11: never over the page\'s own #modal shell (Details); it opens once that closes', async ({page}) => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route(url => url.pathname === '/api/version/check', async route => {
+    await held;
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(record())});
+  });
+  await page.route(url => url.pathname === '/api/torrents/424242', route => route.fulfill({status: 404,
+    contentType: 'application/json', body: JSON.stringify({detail: 'Transfer not found', code: 'transfer.not_found'})}));
+  await load(page);
+  await page.evaluate(() => { window.showDetail(424242); });
+  await expect.poll(() => page.evaluate(() => window.DPModal.mode)).toBe('details');
+  release();
+  await page.waitForTimeout(500);
+  await expect(notice(page)).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => page.evaluate(() => window.DPModal.mode)).toBe(null);
+  await expect(notice(page)).toBeVisible();
+});
+
+test('U12: a download that waits on the person ends the follow; a paused one says paused', async ({page}) => {
+  await answer(page, record(DESKTOP));
+  const rows = [{status: 'paused', presentation_status: 'paused', progress: 10},
+                {status: 'requires_attention', presentation_status: 'requires_attention', progress: 10,
+                 presentation_error_category: 'source_not_found'}];
+  let reads = 0;
+  await page.route(url => url.pathname === '/api/desktop/update/download', route => route.fulfill({status: 200,
+    contentType: 'application/json', body: JSON.stringify({id: 78, status: 'pending'})}));
+  await page.route(url => url.pathname === '/api/torrents/78', route => {
+    reads += 1;
+    return route.fulfill({status: 200, contentType: 'application/json',
+      body: JSON.stringify({id: 78, ...(rows.length > 1 ? rows.shift() : rows[0])})});
+  });
+  await load(page);
+  await notice(page).getByRole('button', {name: await t(page, 'update.download')}).click();
+  await expect(notice(page).locator('.dp-update-status')).toHaveText(await t(page, 'update.paused'));
+  const reason = await page.evaluate(() => DPI18n.has('error_category.source_not_found')
+    ? DPI18n.t('error_category.source_not_found') : '');
+  await expect(notice(page)).toContainText(await t(page, 'update.download_failed'), {timeout: 10000});
+  if (reason) await expect(notice(page).locator('.dp-update-status')).toHaveText(reason);
+  await expect(notice(page).getByRole('button', {name: await t(page, 'update.download')})).toBeHidden();
+  const settled = reads;
+  await page.waitForTimeout(5000);
+  expect(reads).toBe(settled);                            // nothing more is polled
+});
+
+test('U13: a newer release that arrives while the notice is open is shown once it closes', async ({page}) => {
+  let latest = '9.9.9';
+  await page.route(url => url.pathname === '/api/version/check', route => route.fulfill({status: 200,
+    contentType: 'application/json', body: JSON.stringify(record({latest}))}));
+  await load(page);
+  await expect(notice(page).locator('.dp-modal-title')).toHaveText(await t(page, 'update.title', {version: '9.9.9'}));
+  latest = '9.9.10';
+  await page.evaluate(() => window.DPUpdateNotice.read());   // what an update_status signal does
+  await notice(page).locator('[data-modal-cancel]').click();
+  await expect(notice(page).locator('.dp-modal-title')).toHaveText(await t(page, 'update.title', {version: '9.9.10'}));
 });

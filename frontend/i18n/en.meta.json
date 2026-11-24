@@ -23985,6 +23985,12 @@
     "percent": "number: whole percent downloaded, 0-100"
    }
   },
+  "update.paused": {
+   "category": "status-chip",
+   "context": "The update notice (a dialog an Admin sees when a newer DownloadPulse release exists; desktop application): status line while the installer's download is paused, here or from the Downloads page. 'Downloads' is the page that lists downloads.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal"
+  },
   "update.downloaded": {
    "category": "hint",
    "context": "The update notice: a dialog an Admin sees when a newer DownloadPulse release exists, once per browser session (on the desktop application: once per launch). Status line once the installer has downloaded and its SHA-256 checksum matched the release's. The button then reads 'Show in folder'; the person starts the installer themselves (DownloadPulse never runs it).",
