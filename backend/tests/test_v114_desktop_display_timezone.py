@@ -34,7 +34,7 @@ def _zone(tz: str | None, desktop: bool) -> str:
 
 @pytest.mark.parametrize(("tz", "desktop", "expected"), [
     (None, False, "UTC"),                          # a server with no TZ: UTC, as before
-    ("America/Phoenix", False, "America/Phoenix"),  # a server: the compose file's TZ
+    ("America/Phoenix", False, "America/Phoenix"),  # a server: the TZ its operator set
     (None, True, ""),                              # a desktop application: the computer's own (named by the page)
     ("Europe/Berlin", True, "Europe/Berlin"),      # a desktop application whose person set TZ
     ("  ", True, ""),

@@ -62,7 +62,7 @@ stay operator actions.
 | `index.html` (repo root) | **Standalone marketing/landing page. NOT the app.** Not copied into the image. The real shell is `frontend/static/index.html`. |
 | `docs/` | Architecture (`docs/architecture/*.md`, e.g. `UNIVERSAL_TRANSFER_CORE.md`, `PROVIDER_APPLICABILITY.md`) and UI docs (`docs/UI_FRONTEND_ARCHITECTURE.md`, `UI_DESIGN_TOKENS.md`, `UI_ICON_SYSTEM.md`). |
 | `Dockerfile`, `entrypoint.sh`, `docker-compose.yml` | Packaging (see §5). |
-| `release.py`, `CHANGELOG.md` (~257 KB), `licenses/` + `LICENSES/` + `NOTICE` | Release + dependency-license bookkeeping (enforced in CI). |
+| `release.py`, `CHANGELOG.md` (~257 KB), `licenses/` + `NOTICE` | Release + dependency-license bookkeeping (enforced in CI). |
 | `.github/workflows/` | 10 workflows (see §7). |
 | `.github/qualification/` | The one failure classifier (`failure_classifier.py`) and the one known-flake registry (`known_flakes.json`). Policy: `docs/QUALIFICATION_DETERMINISM.md` (see §6a). |
 
@@ -235,7 +235,7 @@ compiled out; built by `aria2-package.yml`) and `ghcr.io/xipher-zero/downloadpul
    expected file-name set, extracts to `frontend/static/icons/hosts/`; the parts dir is
    deleted.
 4. **License/metadata files** — `CHANGELOG.md`, `VERSION`, `LICENSE`, `NOTICE`,
-   `SOURCE_OFFER.md`, `LICENSES/`, `licenses/`, `docs/DEPENDENCY_LICENSES.md`.
+   `SOURCE_OFFER.md`, `licenses/`, `docs/DEPENDENCY_LICENSES.md`.
 5. **Entrypoint** — `COPY entrypoint.sh /entrypoint.sh` + `chmod +x`.
 6. **Runtime dirs** — `mkdir -p /app/data /app/data/usenet /app/config /download` +
    `chown -R 99:100` on those only: the application, frontend, Usenet service and license

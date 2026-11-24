@@ -161,11 +161,12 @@ git clone https://github.com/Xipher-Zero/downloadpulse.git
 cd downloadpulse
 ```
 
-Review `docker-compose.yml` before starting it. Adapt host paths, UID/GID, timezone, networking, and persistent storage to your environment. The generic example uses bridge networking and an explicit `8095:8095` port mapping; use host networking only when your platform specifically requires it.
+Review `docker-compose.yml` before starting it. It keeps DownloadPulse's files and your downloads in folders beside it (`./downloadpulse/` and `./downloads/`); change those paths to put them elsewhere. Your timezone, user and group (`PUID`/`PGID`, default 1000:1000) and public address go in `.env`, copied from `.env.example`; without one, the defaults apply. The generic example uses bridge networking and an explicit `8095:8095` port mapping; use host networking only when your platform specifically requires it.
 
 Then start DownloadPulse:
 
 ```bash
+cp .env.example .env   # optional: then edit it
 docker compose up -d
 ```
 
@@ -198,7 +199,7 @@ docker run -d \
   -p 8095:8095 \
   -e PUID=1000 \
   -e PGID=1000 \
-  -e TZ=America/Phoenix \
+  -e TZ=Etc/UTC \
   -e CONFIG_PATH=/app/config/config.json \
   -e DB_PATH=/app/data/downloadpulse.db \
   -v /path/to/downloadpulse/config:/app/config \
@@ -422,7 +423,7 @@ Recreating an entire media-management or indexer ecosystem inside the download c
 
 DownloadPulse is copyright © 2026 Chris Moore and is distributed under
 [`GPL-2.0-or-later`](LICENSE). Third-party copyright and permission
-notices are preserved in [`NOTICE`](NOTICE) and [`LICENSES/`](LICENSES).
+notices are preserved in [`NOTICE`](NOTICE) and [`licenses/`](licenses).
 Runtime dependency licensing is inventoried in
 [`docs/DEPENDENCY_LICENSES.md`](docs/DEPENDENCY_LICENSES.md). The container source
 offer is documented in [`SOURCE_OFFER.md`](SOURCE_OFFER.md).

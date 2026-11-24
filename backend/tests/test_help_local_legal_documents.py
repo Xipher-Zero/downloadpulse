@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
     (
         ("gpl", Path("LICENSE")),
         ("notice", Path("NOTICE")),
-        ("upstream-mit", Path("LICENSES/MIT.txt")),
+        ("upstream-mit", Path("licenses/alldebrid-client-MIT.txt")),
         ("source-offer", Path("SOURCE_OFFER.md")),
         ("third-party", Path("docs/DEPENDENCY_LICENSES.md")),
     ),

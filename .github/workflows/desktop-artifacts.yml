@@ -95,7 +95,6 @@ on:
       - 'SOURCE_OFFER.md'
       - 'docs/DEPENDENCY_LICENSES.md'
       - 'licenses/**'
-      - 'LICENSES/**'
       - '.github/workflows/desktop-artifacts.yml'
   # A dispatch may build one platform alone (macOS arm64's hosted runners have
   # been held for capacity): it is published on its own as every platform is.

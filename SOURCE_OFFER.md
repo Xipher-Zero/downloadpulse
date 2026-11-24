@@ -120,7 +120,7 @@ bootstrapper and the Visual C++ x64 Redistributable installer -- are not open
 source, are carried unmodified under Microsoft's own terms (not DownloadPulse's
 GPL), and have no corresponding source to offer. The notices of everything an
 installed application carries are inside it: `LICENSE`, `NOTICE`, this file,
-`docs/DEPENDENCY_LICENSES.md` (shown in Help), `LICENSES/`, `licenses/`,
+`docs/DEPENDENCY_LICENSES.md` (shown in Help), `licenses/`,
 `licenses/desktop/` (the Python runtime's and the native shell's components),
 `tools/copyright/` (each native helper and what is built into it),
 `tools/rsync/licenses/` on Windows (rsync and each MSYS2 runtime package), and

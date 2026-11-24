@@ -101,7 +101,7 @@ def test_runtime_inventory_has_no_unknown_or_unreviewed_copyleft_license():
 def test_v1_license_and_upstream_notice_are_present():
     license_text = (REPO_ROOT / "LICENSE").read_text()
     notice = (REPO_ROOT / "NOTICE").read_text()
-    upstream_mit = (REPO_ROOT / "LICENSES/MIT.txt").read_text()
+    upstream_mit = (REPO_ROOT / "licenses/alldebrid-client-MIT.txt").read_text()
 
     assert "GNU GENERAL PUBLIC LICENSE" in license_text
     assert "Version 2, June 1991" in license_text

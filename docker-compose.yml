@@ -1,5 +1,9 @@
 # DownloadPulse: self-hosted transfer manager
-# Generic bridge-network example. Adapt host paths, UID/GID and timezone.
+# Generic bridge-network example, the same as the README's docker run:
+#   1. cp .env.example .env    (optional: timezone, user and group, public address)
+#   2. docker compose up -d
+# The folders below are created beside this file; point them anywhere you like.
+# On Unraid: /mnt/user/appdata/downloadpulse/... and PUID=99, PGID=100.
 
 services:
   downloadpulse:
@@ -10,15 +14,18 @@ services:
     ports:
       - "8095:8095"
     volumes:
-      - /mnt/user/appdata/downloadpulse/data:/app/data
-      - /mnt/user/appdata/downloadpulse/config:/app/config
-      - /mnt/user/downloads:/download
+      - ./downloadpulse/config:/app/config
+      - ./downloadpulse/data:/app/data
+      - ./downloads:/download
+    # Each ${NAME:-default} comes from .env beside this file (made from
+    # .env.example) when it sets NAME; otherwise the default applies.
     environment:
-      - PUID=99
-      - PGID=100
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Etc/UTC}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       - CONFIG_PATH=/app/config/config.json
       - DB_PATH=/app/data/downloadpulse.db
-      - TZ=Europe/Berlin
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8095/api/health"]
       interval: 30s

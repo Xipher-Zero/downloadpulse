@@ -66,7 +66,7 @@ def test_public_project_surfaces_do_not_advertise_upstream_fork_origin():
     notice = _text("NOTICE")
     assert "kroeberd/alldebrid-client release" in notice
     assert "GNU General Public License" in notice
-    assert "MIT" in _text("LICENSES/MIT.txt")
+    assert "MIT" in _text("licenses/alldebrid-client-MIT.txt")
 
 
 def test_runtime_state_and_input_required_docs_name_current_consumers_truthfully():

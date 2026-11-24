@@ -169,7 +169,6 @@ RUN python /tmp/host_icons.py /app/frontend/host-icons.parts /app/frontend/stati
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY VERSION /app/VERSION
 COPY LICENSE NOTICE SOURCE_OFFER.md /app/
-COPY LICENSES/ /app/LICENSES/
 COPY licenses/ /app/licenses/
 COPY docs/DEPENDENCY_LICENSES.md /app/docs/DEPENDENCY_LICENSES.md
 

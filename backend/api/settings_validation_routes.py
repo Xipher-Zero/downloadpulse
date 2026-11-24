@@ -71,8 +71,8 @@ _LEGAL_DOCUMENTS = {
     },
     "upstream-mit": {
         "title": "Upstream MIT License",
-        "path": ("LICENSES", "MIT.txt"),
-        "latest_url": "https://github.com/Xipher-Zero/downloadpulse/blob/main/LICENSES/MIT.txt",
+        "path": ("licenses", "alldebrid-client-MIT.txt"),
+        "latest_url": "https://github.com/Xipher-Zero/downloadpulse/blob/main/licenses/alldebrid-client-MIT.txt",
     },
     "source-offer": {
         "title": "Corresponding Source Offer",

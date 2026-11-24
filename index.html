@@ -295,12 +295,14 @@ footer{padding:48px 5vw;border-top:1px solid var(--brd);display:flex;align-items
     <span class="cm">restart</span>: <span class="str">unless-stopped</span>
     <span class="cm">ports</span>: <span class="str">["8095:8095"]</span>
     <span class="cm">environment</span>:
-      - <span class="str">TZ=Europe/Berlin</span>
+      - <span class="str">PUID=1000</span>
+      - <span class="str">PGID=1000</span>
+      - <span class="str">TZ=Etc/UTC</span>
       - <span class="str">LOG_LEVEL=INFO</span>
     <span class="cm">volumes</span>:
-      - <span class="str">/mnt/appdata/downloadpulse/config:/app/config</span>
-      - <span class="str">/mnt/appdata/downloadpulse/data:/app/data</span>
-      - <span class="str">/mnt/downloads/downloadpulse:/download</span></pre>
+      - <span class="str">/path/to/downloadpulse/config:/app/config</span>
+      - <span class="str">/path/to/downloadpulse/data:/app/data</span>
+      - <span class="str">/path/to/downloads:/download</span></pre>
       </div>
       <div class="code-block reveal">
         <div class="code-header">
@@ -311,12 +313,14 @@ footer{padding:48px 5vw;border-top:1px solid var(--brd);display:flex;align-items
   --name downloadpulse \
   --restart unless-stopped \
   -p 8095:8095 \
-  -e TZ=Europe/Berlin \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=Etc/UTC \
   -e CONFIG_PATH=/app/config/config.json \
   -e DB_PATH=/app/data/downloadpulse.db \
-  -v /mnt/appdata/downloadpulse/config:/app/config \
-  -v /mnt/appdata/downloadpulse/data:/app/data \
-  -v /mnt/downloads/downloadpulse:/download \
+  -v /path/to/downloadpulse/config:/app/config \
+  -v /path/to/downloadpulse/data:/app/data \
+  -v /path/to/downloads:/download \
   ghcr.io/xipher-zero/downloadpulse:v1.0.3</span></pre>
       </div>
     </div>

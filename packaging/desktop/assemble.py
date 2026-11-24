@@ -17,9 +17,8 @@ any Python 3.12; it builds the one layout every desktop package carries:
                             executors.sabnzbd.runtime resolves it; on macOS with
                             DownloadPulse's one recorded headless patch applied; on
                             Windows with its helpers (from --tools) where it runs them
-    <out>/LICENSE, NOTICE, SOURCE_OFFER.md, docs/DEPENDENCY_LICENSES.md, LICENSES/,
-                            licenses/ (+ licenses/desktop/ from packaging/desktop/notices) (both licence
-                            trees kept, whatever the file system's case rules)
+    <out>/LICENSE, NOTICE, SOURCE_OFFER.md, docs/DEPENDENCY_LICENSES.md,
+                            licenses/ (+ licenses/desktop/ from packaging/desktop/notices)
 
 ``--wheels`` names a directory of locally built wheels (for example Windows'
 sabctools from packaging/sabctools) that stand in for the lock's sdists;
@@ -412,12 +411,12 @@ def main() -> int:
         if (ROOT / item).exists():
             (out / item).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / item, out / item)
-    # Both licence trees, merged only where the file system folds case; no file
-    # may be lost to that merge. The desktop's own notices (the bundled runtime's
+    # The licence texts, every one kept: no file may be lost to a file system
+    # that folds case. The desktop's own notices (the bundled runtime's
     # and the native shell's components: packaging/desktop/notices/README.md)
     # go to licenses/desktop/.
     files = []
-    for tree, target in (("LICENSES", "LICENSES"), ("licenses", "licenses"),
+    for tree, target in (("licenses", "licenses"),
                          ("packaging/desktop/notices", "licenses/desktop")):
         if (ROOT / tree).is_dir():
             for path in sorted((ROOT / tree).rglob("*")):

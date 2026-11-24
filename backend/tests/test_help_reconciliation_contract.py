@@ -9,6 +9,7 @@ consequential claims.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -54,8 +55,12 @@ def test_the_removed_documents_still_ship_and_are_still_served():
         assert (ROOT.joinpath(*meta["path"])).is_file(), meta["path"]
     dockerfile = _source("Dockerfile")
     assert "COPY LICENSE NOTICE SOURCE_OFFER.md /app/" in dockerfile
-    assert "COPY LICENSES/ /app/LICENSES/" in dockerfile
-    assert (ROOT / "LICENSES" / "MIT.txt").is_file() and (ROOT / "NOTICE").is_file()
+    assert "COPY licenses/ /app/licenses/" in dockerfile and "LICENSES" not in dockerfile.replace("DEPENDENCY_LICENSES", "")
+    assert (ROOT / "licenses" / "alldebrid-client-MIT.txt").is_file()
+    # One licence folder: an upper-case LICENSES/ beside licenses/ collides on a
+    # case-insensitive file system (macOS, Windows).
+    assert [path for path in os.listdir(ROOT) if path.casefold() == "licenses"] == ["licenses"]
+    assert (ROOT / "NOTICE").is_file()
 
 
 def test_every_surviving_help_document_maps_to_a_bundled_file():

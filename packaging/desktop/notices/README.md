@@ -1,7 +1,7 @@
 # Desktop notices
 
 The licence and notice texts of components every DownloadPulse desktop
-application carries, beyond those in `licenses/`, `LICENSES/` and each bundled
+application carries, beyond those in `licenses/` and each bundled
 tool's own `tools/copyright/`. `packaging/desktop/assemble.py` installs this
 directory as `licenses/desktop/` in every desktop layout. Each file below is
 byte-for-byte what its source states, fetched from the pinned origin shown.
