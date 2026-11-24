@@ -324,8 +324,9 @@ async def deployment_change_admitted() -> None:
     that live fact. A finished installation changes freely."""
     initial = await initial_setup()
     if not initial.complete and initial.administrator_id:
-        raise SetupRefused("The deployment type cannot change once the Administrator exists during setup; "
-                           "finish setting up first", code="setup.deployment_locked")
+        raise SetupRefused(
+            "The deployment type cannot change once the Administrator exists during setup; finish setting up first",
+            code="setup.deployment_locked")
 
 
 # ── the named Administrator ─────────────────────────────────────────────────

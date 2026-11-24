@@ -8,7 +8,7 @@
 
 services:
   downloadpulse:
-    image: ghcr.io/xipher-zero/downloadpulse:v1.0.3
+    image: ghcr.io/xipher-zero/downloadpulse:v1.0.4
     container_name: downloadpulse
     restart: unless-stopped
     ports:

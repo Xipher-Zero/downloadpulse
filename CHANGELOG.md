@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.0.4] — A server secured from its first run, and signed-in YouTube downloads again
+
+### Security
+
+- **A new server is secured before it is set up.** Until its Setup Wizard finished, a new
+  installation had no sign-in, and a Standalone server finished without a password and stayed
+  open. Now a Standalone server sets the password you sign in with during setup, and setup is
+  refused to anyone reaching DownloadPulse from the internet until it is finished; your home
+  network, a VPN and the server itself set up as before. The desktop application is unchanged.
+  Afterwards you can still run DownloadPulse without a password on a network you trust: Clear
+  Password in My Account.
+- **A Content-Security-Policy on the whole application.** Scripts run only from DownloadPulse
+  itself, so a hostile file or download name cannot run as script in your browser.
+- **IPv6 addresses that carry an IPv4 address are judged by it.** On an IPv6-only network with
+  NAT64, a download link could be pointed at a device on your home network; such addresses are
+  now refused like the home-network address they reach.
+
+### Fixed
+
+- **Signed-in YouTube downloads get their formats again.** With a browser's YouTube sign-in,
+  downloads failed with "Requested format is not available"; yt-dlp 2026.11.23 asks YouTube in
+  the order it now answers.
+- **A row's reason stays on one line.** The reason under a download's status no longer adds a
+  line to its row; one that does not fit ends in an ellipsis and shows whole on hover.
+- **The Linux desktop shows its screenshots in software centres.** The Flatpak is built only
+  when its store screenshots are served and in its catalog, so this release's has them.
+
+### Changed
+
+- **The example `docker-compose.yml` is generic.** It keeps DownloadPulse's files and your
+  downloads in folders beside it (`./downloadpulse/`, `./downloads/`), runs as 1000:1000 and
+  takes your timezone, user, group and public address from `.env` (copy `.env.example`). It has
+  no `build:` and no healthcheck of its own: the image's applies.
+- **The README is in plain words** and introduces the desktop application; internal design notes moved to
+  `docs/internal/`; the upstream MIT notice is now `licenses/alldebrid-client-MIT.txt`.
+
+### Upgrading
+
+- **Compose from a clone: its folders have moved.** Point its `volumes:` at your existing
+  folders, and set `PUID`/`PGID` (and `TZ`, now `Etc/UTC` by default) in `.env` if they are not
+  1000:1000 (Unraid: 99:100), before
+  `docker compose up -d`.
+- **An installation already set up stays as it is.** With or without a password, nothing about
+  its sign-in changes.
+
 ## [1.0.3] — Update notices, faster recovery, and a desktop that keeps your files
 
 ### Fixed

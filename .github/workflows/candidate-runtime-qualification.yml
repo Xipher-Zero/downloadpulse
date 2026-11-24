@@ -7,7 +7,7 @@ on:
   push:
     branches:
       - main
-      - '1.0.3'
+      - '1.0.4'
       - 'staging/**'
     tags:
       - 'v*'

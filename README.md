@@ -33,7 +33,7 @@ Optional, when you want them (each is off until you turn it on, and none is requ
 - Sonarr and Radarr, which can use DownloadPulse as their download client;
 - Discord notifications and Prometheus metrics.
 
-This README describes `v1.0.3`. Check [GHCR](https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse) for the published image tags, and [`CHANGELOG.md`](CHANGELOG.md) for what is included and the **known limitations** of each release. The website, with guides for the desktop app, the server and the browser extension, is [downloadpulse.net](https://downloadpulse.net).
+This README describes `v1.0.4`. Check [GHCR](https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse) for the published image tags, and [`CHANGELOG.md`](CHANGELOG.md) for what is included and the **known limitations** of each release. The website, with guides for the desktop app, the server and the browser extension, is [downloadpulse.net](https://downloadpulse.net).
 
 ---
 
@@ -124,9 +124,9 @@ DownloadPulse's aria2 is built without BitTorrent and never joins a swarm. The p
 
 ---
 
-## v1.0.3 provider and executor support matrix
+## v1.0.4 provider and executor support matrix
 
-This matrix is the **implemented and qualified v1.0.3 provider/executor set**. Anything not listed here is not supported.
+This matrix is the **implemented and qualified v1.0.4 provider/executor set**. Anything not listed here is not supported.
 
 | Integration | Kind | Enabled on a new installation |
 |---|---|---|
@@ -205,7 +205,7 @@ DownloadPulse runs as a server application with a browser interface; images are 
 Versioned images use the release tag:
 
 ```text
-ghcr.io/xipher-zero/downloadpulse:v1.0.3
+ghcr.io/xipher-zero/downloadpulse:v1.0.4
 ```
 
 Example:
@@ -223,7 +223,7 @@ docker run -d \
   -v /path/to/downloadpulse/config:/app/config \
   -v /path/to/downloadpulse/data:/app/data \
   -v /path/to/downloads:/download \
-  ghcr.io/xipher-zero/downloadpulse:v1.0.3
+  ghcr.io/xipher-zero/downloadpulse:v1.0.4
 ```
 
 Adjust the paths and UID/GID for your system. `CORS_ORIGINS=*` prevents startup: list explicit origins, or leave it unset.
@@ -431,7 +431,7 @@ DownloadPulse favors a focused responsibility:
 
 > **Resolve sources, transfer files reliably, and make delivery observable and recoverable.**
 
-Features that improve that workflow belong naturally in DownloadPulse. Providers and download engines are independent implementations of canonical contracts; the ones included in 1.0.3 are listed in the support matrix above.
+Features that improve that workflow belong naturally in DownloadPulse. Providers and download engines are independent implementations of canonical contracts; the ones included in 1.0.4 are listed in the support matrix above.
 
 Recreating an entire media-management or indexer ecosystem inside the download client does not.
 
