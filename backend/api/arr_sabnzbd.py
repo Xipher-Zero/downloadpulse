@@ -32,6 +32,7 @@ from application.service import ApplicationService
 from core.config import get_settings
 from core.version import read_version
 from external import arr
+from core.units import format_bytes
 from external.intake import MAX_NZB_BYTES
 from external.service import ExternalClients, ExternalRefused, client_of
 from services.maintenance_gate import ApplicationMaintenanceActive
@@ -160,7 +161,7 @@ async def _addfile(request: Request, external: ExternalClients, principal):
     finally:
         await form.close()
     if len(data) > MAX_NZB_BYTES:
-        return _error(f"The NZB exceeds the {MAX_NZB_BYTES // (1024 * 1024)} MB limit (source_too_large)")
+        return _error(f"The NZB exceeds the {format_bytes(MAX_NZB_BYTES)} limit (source_too_large)")
     display_name = filename[:-4] if filename.lower().endswith(".nzb") else filename
     job, _created = await external.submit_live(principal, {
         "category": category, "display_name": display_name[:256],

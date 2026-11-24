@@ -54,9 +54,6 @@
   let menuVisible = false;
   let menuGroup = null;
   let menuSession = 0;            // bumped on every close/loss; invalidates stale async tails
-  let detailTransferId = null;
-  // The open Details mount's newest re-read: an older answer never repaints it.
-  let mountGeneration = 0;
 
   function esc(value) {
     if (typeof window.esc === 'function') return window.esc(value);
@@ -409,32 +406,17 @@
   }
 
   function onDetailRendered(event) {
-    const transferId = Number(event && event.detail && event.detail.transferId);
-    detailTransferId = Number.isFinite(transferId) ? transferId : null;
     if (!(event && event.detail && event.detail.relabel)) closeMenu();
     renderMount(event && event.detail && event.detail.transfer);
   }
 
   function onDetailClosed() {
-    detailTransferId = null;
-    mountGeneration += 1;
     closeMenu();
   }
 
-  async function refreshDetailMount() {
-    if (detailTransferId == null || typeof window.api !== 'function') return;
-    const transferId = detailTransferId;
-    const generation = ++mountGeneration;
-    try {
-      const transfer = await window.api('GET', '/torrents/' + transferId);
-      if (generation !== mountGeneration || detailTransferId !== transferId) return;
-      renderMount(transfer);
-    } catch (_) { /* the modal owns its own error surface */ }
-  }
-
-  // A semantic change of the open transfer is Details' own live refresh
-  // (app.js): its drawing (detail-rendered, relabel) re-renders this mount
-  // from that payload. Only a finished switch re-reads the mount here.
+  // A semantic change of the open transfer, and a finished switch, are
+  // Details' own live refresh (app.js, dpRefreshDetail): its drawing
+  // (detail-rendered, relabel) re-renders this mount from that payload.
 
   // ── Popover ─────────────────────────────────────────────────────────────
 
@@ -1130,7 +1112,7 @@
     if (typeof window.loadTorrents === 'function') jobs.push(Promise.resolve(window.loadTorrents()));
     if (typeof window.loadRecent === 'function') jobs.push(Promise.resolve(window.loadRecent()));
     await Promise.allSettled(jobs);
-    await refreshDetailMount();
+    await window.dpRefreshDetail();
   }
 
   async function chooseHost(host) {

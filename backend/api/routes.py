@@ -39,7 +39,7 @@ from api.legacy_settings_view import legacy_settings_projection
 from providers.alldebrid.definition import canonical_options as alldebrid_canonical_options
 from providers.multimeta.metalink import MAX_DESCRIPTOR_BYTES
 from transfers.requests import (
-    ALTERNATIVE_SOURCE_DELIMITER, MAX_LINK_FILE_BYTES, direct_link_rows, link_file_entries, normalize_direct_links,
+    ALTERNATIVE_SOURCE_DELIMITER, MAX_LINK_FILE_BYTES, MAX_TORRENT_BYTES, direct_link_rows, link_file_entries, normalize_direct_links,
 )
 from core.config_validator import validate_and_sanitise
 from integrations.definition import IntegrationSettings
@@ -1005,7 +1005,7 @@ async def add_torrent_file(
     built-in browser sends ``interactive``; a historical multipart upload with
     only ``file=<torrent>`` keeps the ALL default (correction section 6).
     """
-    max_bytes = 16 * 1024 * 1024
+    max_bytes = MAX_TORRENT_BYTES
     filename = Path(file.filename or "upload.torrent").name
 
     if not filename.lower().endswith(".torrent"):

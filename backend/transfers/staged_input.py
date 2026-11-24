@@ -48,7 +48,7 @@ from core.localization import Coded, fact
 # effectively constant in input size, so the ceiling exists only to keep a
 # pathological or runaway upload finite. It bounds the SUBMITTED MANIFEST, and
 # has nothing to do with the size of the payload that manifest describes.
-MAX_STAGED_INPUT_BYTES = 1024 * 1024 * 1024
+MAX_STAGED_INPUT_BYTES = 1_000_000_000         # 1 GB, decimal as every size is shown
 
 # How long a staged input that no durable request references is kept before the
 # sweep may reclaim it. It covers the window between staging an upload and the

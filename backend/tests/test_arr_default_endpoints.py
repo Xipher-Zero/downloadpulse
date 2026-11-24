@@ -275,7 +275,7 @@ async def test_the_torrent_upload_ceiling_is_the_same_at_the_default_base(qb):
         response = await qb_request(qb, base, "POST", "torrents/add", data={"category": "tv"},
                                     files={"torrents": ("x.torrent", beyond, "application/x-bittorrent")})
         assert (response.status_code, response.text) == (413, "Request body too large"), base
-    within = large_torrent(int(15.5 * 1024 * 1024))
+    within = large_torrent(15_500_000)
     assert MAX_TORRENT_BYTES - 1024 * 1024 < len(within) <= MAX_TORRENT_BYTES
     accepted = await qb_request(qb, "/api/v2", "POST", "torrents/add", data={"category": "tv"},
                                 files={"torrents": ("Pack.torrent", within, "application/x-bittorrent")})

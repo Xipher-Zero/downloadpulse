@@ -222,8 +222,8 @@ class RequestBodyLimitMiddleware:
             # arrives -- so the general ceiling, which exists to bound parsed
             # request bodies, would only forbid legitimate large input. The
             # real ceiling belongs to the staged-input owner and is enforced
-            # while writing.
-            limit = MAX_STAGED_INPUT_BYTES
+            # while writing; the body may hold that much plus its framing.
+            limit = MAX_STAGED_INPUT_BYTES + 64 * 1024
         elif path == BACKUP_PACKAGE_PATH:
             await self.app(scope, receive, send)
             return

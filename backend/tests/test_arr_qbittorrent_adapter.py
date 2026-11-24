@@ -526,7 +526,7 @@ async def test_calls_dp_does_not_honor_are_declined_and_change_nothing(qb, world
     assert [row["withdrawn_at"] for row in await demands()] == [None]
 
 
-# ── 7. the torrent upload ceiling is DownloadPulse's own (16 MiB) ─────────────
+# ── 7. the torrent upload ceiling is DownloadPulse's own (16 MB) ──────────────
 
 def large_torrent(size: int) -> bytes:
     """A valid v1 single-file .torrent of about ``size`` bytes: its piece
@@ -537,9 +537,9 @@ def large_torrent(size: int) -> bytes:
         b"pieces": b"\x01" * (20 * pieces)}})
 
 
-async def test_a_torrent_beyond_8_mib_and_up_to_dp_s_own_16_mib_ceiling_is_accepted(qb):
-    assert MAX_TORRENT_BYTES == 16 * 1024 * 1024
-    data = large_torrent(int(15.5 * 1024 * 1024))
+async def test_a_torrent_beyond_8_mib_and_up_to_dp_s_own_16_mb_ceiling_is_accepted(qb):
+    assert MAX_TORRENT_BYTES == 16_000_000
+    data = large_torrent(15_900_000)
     assert 8 * 1024 * 1024 < len(data) <= MAX_TORRENT_BYTES
     assert await added(await add_file(qb, data, filename="Complete.Series.Pack.torrent")) == info_hash(data)
     # The native submission carries it base64-encoded: beyond the general
@@ -555,7 +555,29 @@ async def test_a_torrent_beyond_8_mib_and_up_to_dp_s_own_16_mib_ceiling_is_accep
     assert capabilities["limits"]["torrent_bytes"] == MAX_TORRENT_BYTES
 
 
-async def test_a_torrent_beyond_16_mib_is_refused_on_both_routes(qb):
+def torrent_of_exactly(size: int) -> bytes:
+    """A valid .torrent of exactly ``size`` bytes, padded by its comment."""
+    base = large_torrent(size - 4096)
+    decoded = bencode2.bdecode(base)
+    pad = size - len(base) - len(b"7:comment") - len(f"{size}:")
+    while True:
+        decoded[b"comment"] = b"x" * pad
+        data = bencode2.bencode(decoded)
+        if len(data) == size:
+            return data
+        pad += size - len(data)
+
+
+async def test_a_torrent_of_exactly_16_mb_is_accepted_and_one_byte_more_is_refused(qb):
+    exact = torrent_of_exactly(MAX_TORRENT_BYTES)
+    assert await added(await add_file(qb, exact, filename="Exact.torrent")) == info_hash(exact)
+    beyond = torrent_of_exactly(MAX_TORRENT_BYTES + 1)
+    response = await add_file(qb, beyond, filename="Beyond.torrent")
+    assert response.status_code == 413 and "16 MB limit" in response.text
+    assert len(await jobs()) == 1
+
+
+async def test_a_torrent_beyond_16_mb_is_refused_on_both_routes(qb):
     data = large_torrent(MAX_TORRENT_BYTES + 4096)
     assert (await add_file(qb, data)).status_code == 413
     refused = await qb.client.post("/api/external/v1/jobs", headers=qb.headers, json={

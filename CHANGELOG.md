@@ -33,7 +33,7 @@
   their status (and when the next attempt is), the same reason Details gives.
 - **File sizes in the units they are labelled in.** File and download sizes were counted in
   1024s but labelled MB; they are now decimal (140,064,536 bytes is 140.1 MB). Speeds and speed
-  caps are unchanged. A multi-file download has one name ("+ N
+  caps are unchanged. Upload limits are now exact decimal sizes (1 GB, 16 MB, 1 MB). A multi-file download has one name ("+ N
   more") everywhere, and a route whose download then failed shows as failed in Route History.
 - **First run.** Users & Access names the built-in Administrator for what it is ("Built-in ·
   used when sign-in is off") instead of an account with no sign-in method. A browser that tries

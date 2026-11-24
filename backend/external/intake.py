@@ -8,6 +8,7 @@ consent, acquisition scope, interactive file selection): one that needs such
 an answer is refused, typed, with nothing admitted.
 """
 from __future__ import annotations
+from core.units import format_bytes
 
 import base64
 import binascii
@@ -16,21 +17,21 @@ import json
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from transfers.requests import normalize_direct_links, torrent_identity
+from providers.multimeta.metalink import MAX_DESCRIPTOR_BYTES as MAX_METALINK_BYTES
+from transfers.requests import MAX_TORRENT_BYTES, normalize_direct_links, torrent_identity
 
 MAX_LINKS = 100
 MAX_LINK_LENGTH = 8192
-# Decoded bytes of an inline .torrent: the ceiling DownloadPulse's own torrent
-# upload holds a metainfo file to (``api.routes.add_torrent_file``). Its
-# base64 form has a request body ceiling of its own (``external.arr``).
-MAX_TORRENT_BYTES = 16 * 1024 * 1024
-# Decoded bytes of an uploaded NZB: the same native upload ceiling. The staged
-# NZB owner's own ceiling is larger and still applies to what it writes.
+# Decoded bytes of an inline .torrent and an inline Metalink4 descriptor are
+# held to DownloadPulse's own ceilings for them (MAX_TORRENT_BYTES,
+# transfers.requests; MAX_METALINK_BYTES, the Multimeta reader's), imported
+# above. A torrent's base64 form has a request body ceiling of its own
+# (``external.arr``).
+# Decoded bytes of an NZB uploaded by an external client: this surface's own
+# bound. The staged NZB owner's ceiling is larger and still applies to what it
+# writes.
 MAX_NZB_BYTES = 8 * 1024 * 1024
 MAX_FILENAME = 255
-# Decoded bytes of an inline Metalink4 descriptor: the bound DownloadPulse's own
-# upload holds one to.
-MAX_METALINK_BYTES = 16 * 1024 * 1024
 
 
 class IntakeRefused(Exception):
@@ -155,7 +156,7 @@ def _uploaded(encoded, filename, *, field: str, suffix: str, limit: int, what: s
     if not filename.lower().endswith(suffix):
         raise IntakeRefused("invalid_source", f"filename must end in {suffix}")
     if len(encoded) > (limit * 4) // 3 + 4:
-        raise IntakeRefused("source_too_large", f"the {what} exceeds the {limit // (1024 * 1024)} MB external limit",
+        raise IntakeRefused("source_too_large", f"the {what} exceeds the {format_bytes(limit)} external limit",
                             status=413)
     try:
         data = base64.b64decode(encoded, validate=True)

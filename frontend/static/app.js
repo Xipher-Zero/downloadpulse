@@ -2680,14 +2680,14 @@ const TRANSFER_UPLOADS = Object.freeze({
                // megabytes and is streamed straight to durable storage, so it
                // is not judged by a metafile's ceiling. This mirrors the one
                // server-side ceiling (transfers/staged_input.py).
-               maxBytes: 1024 * 1024 * 1024, maxLimit: ['1', 'gb']},
+               maxBytes: 1_000_000_000},
   // A Metalink file describes files and their sources: one that describes
   // several offers the file selector like any other collection.
   '.meta4':   {endpoint: '/multimeta/add-file', kind: 'metalink', interactive: true},
 });
 // Mirrors the server's link file ceiling (transfers/requests.py).
 const LINK_FILE_UPLOAD = Object.freeze(
-  {endpoint: '/links/add-file', kind: 'link_file', interactive: true, maxBytes: 1024 * 1024, maxLimit: ['1', 'mb']});
+  {endpoint: '/links/add-file', kind: 'link_file', interactive: true, maxBytes: 1_000_000});
 
 function uploadKindFor(name) {
   const lower = String(name || '').toLowerCase();
@@ -2700,10 +2700,12 @@ async function uploadTransferFile(input) {
   if (!file) return;
 
   const kind = uploadKindFor(file.name) || LINK_FILE_UPLOAD;
-  const maxBytes = kind.maxBytes || 16 * 1024 * 1024;
+  // A metafile's ceiling mirrors the server's (api/routes.py, the Metalink
+  // descriptor's in providers/multimeta/metalink.py), decimal as every size
+  // is, and is said by the one size formatter.
+  const maxBytes = kind.maxBytes || 16_000_000;
   if (file.size > maxBytes) {
-    const [value, unit] = kind.maxLimit || ['16', 'mb'];
-    toast(DPI18n.t('upload.too_large', {kind: kind.kind, limit: DPI18n.t(`format.size.${unit}`, {value})}), 'error');
+    toast(DPI18n.t('upload.too_large', {kind: kind.kind, limit: fmtSize(maxBytes)}), 'error');
     input.value = '';
     return;
   }
@@ -3200,8 +3202,7 @@ const DPModal = (function () {
     const reopened = activeMode !== null && focusOrigin;
     activeMode = opts.mode || 'details';
     onCloseCallback = typeof opts.onClose === 'function' ? opts.onClose : null;
-    focusOrigin = (opts.focusReturn && window.DPSettingsModal.focusOrigin(opts.focusReturn)) || reopened
-      || window.DPSettingsModal.focusOrigin();
+    focusOrigin = reopened || window.DPSettingsModal.focusOrigin();
     exits += 1;                     // a closing shell reopened: it fades back from where it is
     if (overlay) overlay.classList.remove('is-closing');
     if (modal) {
@@ -3655,11 +3656,16 @@ function dpDrawHeldDetail() {
 document.addEventListener('pointerdown', event => {
   if (event.target instanceof Element && event.target.closest('#modal-body')) dpDetailPointerDown = true;
 }, true);
-['pointerup', 'pointercancel'].forEach(type => document.addEventListener(type, () => {
+/* The press ends where it is let go, or where it is lost: a release outside the
+ * window that reaches neither pointerup nor pointercancel still blurs it, so a
+ * held answer is always drawn. */
+const dpDetailPointerReleased = () => {
   if (!dpDetailPointerDown) return;
   dpDetailPointerDown = false;
   requestAnimationFrame(dpDrawHeldDetail);           // after the click the press makes
-}, true));
+};
+['pointerup', 'pointercancel'].forEach(type => window.addEventListener(type, dpDetailPointerReleased, true));
+window.addEventListener('blur', dpDetailPointerReleased);   // the window's own blur: an element's does not bubble
 
 /* Details opens its backdrop at once and its shell with its content: the
  * shell stays unseen until the transfer is rendered into it, so it never

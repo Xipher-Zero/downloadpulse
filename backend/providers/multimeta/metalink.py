@@ -29,7 +29,7 @@ LEGACY_NAMESPACE = "http://www.metalinker.org/"
 # Hard safety bounds of one descriptor -- internal, never operator tuning. The
 # document bound is the ceiling DP already applies to an uploaded torrent
 # metafile, the other descriptor format it accepts.
-MAX_DESCRIPTOR_BYTES = 16 * 1024 * 1024
+MAX_DESCRIPTOR_BYTES = 16_000_000             # 16 MB, decimal as every size is shown
 MAX_FILES = 10_000
 MAX_SOURCES_PER_FILE = 256
 # Every source becomes one ordinary request: the fan-out is bounded too.

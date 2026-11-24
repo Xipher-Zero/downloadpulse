@@ -508,7 +508,9 @@ def direct_link_collection_name(
 
 # Internal safety bounds, never operator tuning. A link list is small: a
 # submission admits at most MAX_DIRECT_LINKS_PER_BATCH links.
-MAX_LINK_FILE_BYTES = 1024 * 1024
+MAX_LINK_FILE_BYTES = 1_000_000                # 1 MB, decimal as every size is shown
+# The one ceiling of a .torrent metainfo file, however it is submitted.
+MAX_TORRENT_BYTES = 16_000_000                 # 16 MB, decimal as every size is shown
 _MAX_LINK_FILE_VALUE = 64 * 1024
 
 

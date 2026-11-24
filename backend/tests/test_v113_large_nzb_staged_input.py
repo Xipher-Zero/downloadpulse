@@ -92,7 +92,7 @@ def test_c3_the_streamed_upload_path_is_not_bound_by_the_general_body_ceiling():
     import main
     assert main.STAGED_UPLOAD_PATH == "/api/usenet/add-file"
     source = open(main.__file__).read()
-    assert "limit = MAX_STAGED_INPUT_BYTES" in source
+    assert "limit = MAX_STAGED_INPUT_BYTES + 64 * 1024" in source
     assert main._MAX_REQUEST_BODY_BYTES < MAX_STAGED_INPUT_BYTES, \
         "the staged upload must be governed by its own owner's ceiling"
 

@@ -1300,7 +1300,7 @@ async function confirmRestart(transfers) {
         entry.className = 'dp-queue-restart-item';
         const name = document.createElement('strong');
         name.className = 'dp-queue-restart-name';
-        name.textContent = name.dataset.tooltip = String(item?.display_name || item?.name || window.DPI18n.t('downloads.transfer_fallback'));
+        name.textContent = name.dataset.tooltip = transferTitle(item) || window.DPI18n.t('downloads.transfer_fallback');
         entry.appendChild(name);
         const progress = restartProgress(item);
         if (progress) {

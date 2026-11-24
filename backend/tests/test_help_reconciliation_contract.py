@@ -112,8 +112,8 @@ def test_quick_add_limits_match_the_submission_owner():
 
     everyday = _panel("usingPanel")
     assert MAX_DIRECT_LINKS_PER_BATCH == 100 and "<b>100 different links</b> at once (magnets are not counted)" in everyday
-    assert MAX_LINK_FILE_BYTES == 1024 * 1024 and "up to 1 MB" in everyday
-    assert MAX_STAGED_INPUT_BYTES == 1024 ** 3 and "a Usenet download, up to 1 GB" in everyday
+    assert MAX_LINK_FILE_BYTES == 1_000_000 and "up to 1 MB" in everyday
+    assert MAX_STAGED_INPUT_BYTES == 1_000_000_000 and "a Usenet download, up to 1 GB" in everyday
 
 
 def test_routing_describes_the_single_link_fallback_and_the_collection_rule():

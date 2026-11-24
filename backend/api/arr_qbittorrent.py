@@ -32,6 +32,7 @@ from application.dependencies import get_application
 from application.service import ApplicationService
 from core.config import get_settings
 from external import arr
+from core.units import format_bytes
 from external.intake import MAX_TORRENT_BYTES
 from external.service import ExternalClients, ExternalRefused, client_of
 from services.maintenance_gate import ApplicationMaintenanceActive
@@ -282,7 +283,7 @@ async def _add(request: Request, external: ExternalClients, principal):
         else:
             data = await uploads[0].read(MAX_TORRENT_BYTES + 1)
             if len(data) > MAX_TORRENT_BYTES:
-                return _text(f"The torrent exceeds the {MAX_TORRENT_BYTES // (1024 * 1024)} MB limit "
+                return _text(f"The torrent exceeds the {format_bytes(MAX_TORRENT_BYTES)} limit "
                              f"(source_too_large)", 413)
             filename = PurePosixPath(str(uploads[0].filename or "").replace("\\", "/")).name or "upload.torrent"
             source = {"kind": "torrent", "torrent_base64": base64.b64encode(data).decode("ascii"),

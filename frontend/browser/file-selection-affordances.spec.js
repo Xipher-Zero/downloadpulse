@@ -414,6 +414,29 @@ test('Case J: a semantic torrent_updated clears stale Choose File on list/card a
   await expect(page.locator('.toast')).toHaveCount(0);             // no stale-click toast fired -- nobody clicked
 });
 
+test('Case J (view only): the transfer reads the same, only its file selection changed -- open Details still clears Choose Files without a click', async ({page}) => {
+  const state = {row: baseRow({file_selection_affordance: 'choose'})};
+  const selection = {view: chooseView()};
+  await isolateExternalFonts(page);
+  await installEventSourceFixture(page);
+  await installMutableListFixture(page, state);
+  await installSelectionFixture(page, 501, selection);
+  await installMutableDetailFixture(page, 501, state);
+  await boot(page);
+
+  await page.evaluate(() => showDetail(501));
+  const detailEntry = page.locator('[data-dp-file-selection-mount][data-dp-transfer-id="501"] .dp-file-selection-entry');
+  await expect(detailEntry).toHaveCount(1);
+
+  // Only the file-selection resource changes: Details' own read answers the
+  // same transfer and draws nothing.
+  selection.view = lockedView();
+  await page.evaluate(() => window.__dpFakeEventSource.emit('torrent_updated', {id: 501, status: 'downloading'}));
+
+  await expect(detailEntry).toHaveCount(0);
+  await expect(page.locator('.toast')).toHaveCount(0);
+});
+
 test('Case J (progress-only): a progress-only torrent_updated never forces an open-Details file-selection re-read', async ({page}) => {
   const state = {row: baseRow({file_selection_affordance: 'choose'})};
   const selection = {view: chooseView()};

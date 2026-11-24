@@ -253,6 +253,25 @@ test('an answer arriving while a pointer is pressed in Details, or its menu is o
   await expect(page.locator('#overlay')).toHaveClass(/\bopen\b/);
 });
 
+test('a press whose release is lost (the window blurs, no pointerup) does not stall the refresh', async ({page}) => {
+  const state = await boot(page);
+  await open(page);
+  const title = page.locator('#modal-title');
+  const box = await page.locator('#modal-body .detail-grid').boundingBox();
+  await page.mouse.move(box.x + 8, box.y + 8);
+  await page.mouse.down();
+  state.rows.set(10, detail(10, {name: 'Pressed release'}));
+  await emit(page, {id: 10, status: 'downloading'});
+  await expect.poll(() => held(page)).toBe('Pressed release');
+  await expect(title).toHaveText('Release 10');
+  // Let go outside the window: no pointerup or pointercancel reaches the page, only its blur.
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await expect(title).toHaveText('Pressed release');
+  // And the next change is drawn at once, with no release.
+  await probe(page, state, 'After blur release');
+  await page.mouse.up();
+});
+
 test('an answer held for an earlier opening is never drawn over a reopening', async ({page}) => {
   const state = await boot(page);
   await open(page);

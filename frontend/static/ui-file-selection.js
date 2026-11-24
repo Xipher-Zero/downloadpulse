@@ -53,6 +53,7 @@
   let countdownDeadlineMs = null;         // wall-clock ms when the hold expires
   let confirmInFlight = false;
   let detailTransferId = null;            // transfer currently shown in Details
+  let detailTransfer = null;              // Details' payload for it, as its latest drawing carried it
   let detailEntryShown = null;            // {transferId, view}: the Details entry's last answer, said again on relabel
   let detailEntryRead = 0;                // the newest Details entry read; an older answer is never shown
 
@@ -414,7 +415,7 @@
 
     if (!selectorTransferName) {
       api('GET', '/torrents/' + transferId).then(function (transfer) {
-        selectorTransferName = String(transfer && transfer.name || '');
+        selectorTransferName = transferTitle(transfer);
         const node = document.querySelector('[data-dp-fs-subtitle]');
         if (node && selectorTransferId === transferId) node.textContent = selectorTransferName;
       }).catch(function () {});
@@ -545,11 +546,13 @@
   // Choosing files is offered only to a caller who may destroy the transfer's
   // work: closing the selector cancels the whole transfer. An Admin may; a
   // User only where the server's ``access.destroy`` says no one else needs it.
-  function mayChoose(transferId) {
+  // ``transfer``: the payload Details drew, which carries it; an offer with no
+  // Details open reads it.
+  function mayChoose(transferId, transfer) {
     const auth = window.downloadPulseAuth;
     if (!auth || !auth.can('transfers.operate')) return Promise.resolve(false);
     if (auth.can('administer')) return Promise.resolve(true);
-    return api('GET', '/torrents/' + Number(transferId))
+    return (transfer ? Promise.resolve(transfer) : api('GET', '/torrents/' + Number(transferId)))
       .then(function (detail) { return Boolean(detail && auth.mayDestroy(detail)); })
       .catch(function () { return false; });
   }
@@ -648,9 +651,9 @@
   // ── Details manual entry point (Files-section header, right side) ───────
   // ``relabel``: Details drew the same transfer again in place (another
   // language, or its live refresh); the entry is drawn again from its last
-  // answer, without asking again. A read still out when Details redraws its
-  // mount answers into the mount drawn now: Details' live refresh and this
-  // owner's own read of a semantic change arrive in either order.
+  // answer, without asking again. Who may choose comes from the payload
+  // Details drew, never a second read of the transfer. A read still out when
+  // Details redraws its mount answers into the mount drawn now.
   function renderDetailEntry(transferId, relabel) {
     const host = document.querySelector(
       '[data-dp-file-selection-mount][data-dp-transfer-id="' + transferId + '"]');
@@ -664,7 +667,7 @@
       return read === detailEntryRead && detailTransferId === transferId ? document.querySelector(
         '[data-dp-file-selection-mount][data-dp-transfer-id="' + transferId + '"]') : null;
     };
-    mayChoose(transferId).then(function (allowed) {
+    mayChoose(transferId, detailTransfer).then(function (allowed) {
       return allowed ? fetchSelection(transferId) : null;
     }).then(function (view) {
       const currentHost = current();
@@ -732,25 +735,26 @@
     document.addEventListener('downloadpulse:detail-rendered', function (event) {
       const payload = event && event.detail || {};
       const transferId = Number(payload.transferId);
-      if (!Number.isFinite(transferId)) { detailTransferId = null; return; }
+      if (!Number.isFinite(transferId)) { detailTransferId = null; detailTransfer = null; return; }
       detailTransferId = transferId;
+      detailTransfer = payload.transfer || null;
       renderDetailEntry(transferId, Boolean(payload.relabel));
     });
     document.addEventListener('downloadpulse:detail-closed', function () {
       detailTransferId = null;
+      detailTransfer = null;
       detailEntryShown = null;
     });
     // Semantic invalidation (§7/§12 -- stale Choose File must clear itself):
     // the backend crossed the durable manifest-commit boundary and the
-    // existing torrent_updated semantic transport delivered it. Re-read
-    // authoritative state for the open Details entry -- never synthesize
-    // mutability client-side, never just remove the DOM node.
+    // existing torrent_updated semantic transport delivered it. Re-read the
+    // entry's own resource (/file-selection) for the open Details -- who may
+    // choose stays the payload Details drew; never synthesize mutability
+    // client-side, never just remove the DOM node.
     document.addEventListener('downloadpulse:transfer-updated', function (event) {
       const payload = event && event.detail || {};
       const transferId = Number(payload.transferId);
-      if (Number.isFinite(transferId) && detailTransferId === transferId) {
-        renderDetailEntry(transferId);
-      }
+      if (Number.isFinite(transferId) && detailTransferId === transferId) renderDetailEntry(transferId);
     });
     // Dashboard Recent / Downloads glyph-only chip (§6.3, §6.7-6.8): one
     // delegated listener, no per-row rebinding on every render pass. The
