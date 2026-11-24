@@ -147,21 +147,25 @@ def validate_provider_download_url(
 
 
 # IPv6 forms that carry an IPv4 address in their last 32 bits, and reach it:
-# IPv4-compatible (deprecated, ::/96) and the NAT64 well-known prefix
-# (64:ff9b::/96, RFC 6052). Python's ``is_global`` calls both global whatever
-# IPv4 address they carry, so on an IPv6-only network with NAT64 a hostile
-# DNS answer of 64:ff9b::c0a8:101 would reach 192.168.1.1. IPv4-mapped
-# (::ffff:0:0/96) is unwrapped through ``ipv4_mapped``. 6to4 and Teredo, which
-# also embed an IPv4 address, are already not global to Python.
-_EMBEDDING_IPV4 = (ipaddress.ip_network("::/96"), ipaddress.ip_network("64:ff9b::/96"))
+# IPv4-compatible (deprecated, ::/96), SIIT's IPv4-translated (::ffff:0:0:0/96,
+# RFC 2765) and the NAT64 well-known prefix (64:ff9b::/96, RFC 6052). Python's
+# ``is_global`` calls each of them global whatever IPv4 address it carries, so
+# on an IPv6-only network with NAT64 a hostile DNS answer of 64:ff9b::c0a8:101
+# would reach 192.168.1.1. IPv4-mapped (::ffff:0:0/96) is unwrapped through
+# ``ipv4_mapped``. 6to4 and Teredo, which also embed an IPv4 address, are
+# already not global to Python.
+_EMBEDDING_IPV4 = (ipaddress.ip_network("::/96"), ipaddress.ip_network("::ffff:0:0:0/96"),
+                   ipaddress.ip_network("64:ff9b::/96"))
 
 
 def public_address(address) -> bool:
     """Whether ``address`` (an IP literal, a zone allowed) is a public internet
     destination: the ONE owner of that judgement (the provider-URL checks
     here and the downloader egress guard's admission). An IPv6 address that
-    carries an IPv4 address -- mapped, IPv4-compatible or NAT64 -- is judged by
-    the IPv4 address it reaches; anything unparsable is not public."""
+    carries an IPv4 address -- mapped, IPv4-compatible, SIIT or well-known
+    NAT64 -- is judged by the IPv4 address it reaches; anything unparsable is
+    not public. A NAT64 network-specific prefix (an operator's own /96) cannot
+    be recognised without discovering it (RFC 7050) and is judged as plain IPv6."""
     normalized = str(address or "").split("%", 1)[0].strip()
     try:
         literal = ipaddress.ip_address(normalized)

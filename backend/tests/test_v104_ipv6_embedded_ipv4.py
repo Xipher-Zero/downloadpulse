@@ -18,6 +18,7 @@ from services.network_safety import UnsafeDestinationError, public_address
     ("64:ff9b::192.168.1.1", False), ("64:ff9b::c0a8:101", False), ("64:ff9b::7f00:1", False),
     ("64:ff9b::a9fe:a9fe", False),                       # 169.254.169.254, the cloud metadata address
     ("::192.168.1.1", False), ("::c0a8:101", False), ("::ffff:192.168.1.1", False),
+    ("::ffff:0:c0a8:101", False), ("::ffff:0:808:808", True),
     ("::1", False), ("::", False), ("64:ff9b:1::c0a8:101", False),
     ("2002:c0a8:101::1", False), ("fe80::1%eth0", False), ("192.168.1.1", False),
     ("", False), ("not-an-address", False),
@@ -39,3 +40,10 @@ def test_a_resolution_to_a_nat64_wrapped_home_address_is_refused_whole():
 def test_a_provider_link_naming_one_is_refused(url):
     with pytest.raises(UnsafeDestinationError, match="non-public"):
         network_safety.validate_provider_download_url(url, context="download link")
+
+
+def test_the_private_lan_grant_admits_plain_rfc1918_only_never_a_wrapped_form():
+    assert network_safety.destination_admitted("192.168.1.1", private_lan=True) is True
+    assert network_safety.destination_admitted("::ffff:192.168.1.1", private_lan=True) is True
+    for wrapped in ("64:ff9b::c0a8:101", "::c0a8:101", "::ffff:0:c0a8:101"):
+        assert network_safety.destination_admitted(wrapped, private_lan=True) is False, wrapped
