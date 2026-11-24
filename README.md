@@ -21,7 +21,7 @@ It is provider-neutral. Ordinary network sources (HTTP(S), FTP/SFTP, SCP, rsync,
 
 Around that core, DownloadPulse provides operator-controlled switching of a transfer's service or source, automatic retry and failover, file selection, Sonarr/Radarr download-client compatibility, user accounts and roles, and in-application backup and restore.
 
-This README describes `v1.0.2`. Check [GHCR](https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse) for the published image tags, and [`CHANGELOG.md`](CHANGELOG.md) for what is included and the **known limitations** of this release.
+This README describes `v1.0.3`. Check [GHCR](https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse) for the published image tags, and [`CHANGELOG.md`](CHANGELOG.md) for what is included and the **known limitations** of this release.
 
 The workflow is deterministic:
 
@@ -108,9 +108,9 @@ DownloadPulse's aria2 is built without BitTorrent and never joins a swarm. The p
 
 ---
 
-## v1.0.2 provider and executor support matrix
+## v1.0.3 provider and executor support matrix
 
-This matrix is the **implemented and qualified v1.0.2 provider/executor set**. Anything not listed here is not supported.
+This matrix is the **implemented and qualified v1.0.3 provider/executor set**. Anything not listed here is not supported.
 
 | Integration | Kind | Enabled on a new installation |
 |---|---|---|
@@ -186,7 +186,7 @@ DownloadPulse runs as a server application with a browser interface; images are 
 Versioned images use the release tag:
 
 ```text
-ghcr.io/xipher-zero/downloadpulse:v1.0.2
+ghcr.io/xipher-zero/downloadpulse:v1.0.3
 ```
 
 Example:
@@ -204,7 +204,7 @@ docker run -d \
   -v /path/to/downloadpulse/config:/app/config \
   -v /path/to/downloadpulse/data:/app/data \
   -v /path/to/downloads:/download \
-  ghcr.io/xipher-zero/downloadpulse:v1.0.2
+  ghcr.io/xipher-zero/downloadpulse:v1.0.3
 ```
 
 Adjust the paths and UID/GID for your system. `CORS_ORIGINS=*` prevents startup: list explicit origins, or leave it unset.
@@ -412,7 +412,7 @@ DownloadPulse favors a focused responsibility:
 
 > **Resolve sources, transfer files reliably, and make delivery observable and recoverable.**
 
-Features that improve that workflow belong naturally in DownloadPulse. Providers and download engines are independent implementations of canonical contracts; the ones included in 1.0.2 are listed in the support matrix above.
+Features that improve that workflow belong naturally in DownloadPulse. Providers and download engines are independent implementations of canonical contracts; the ones included in 1.0.3 are listed in the support matrix above.
 
 Recreating an entire media-management or indexer ecosystem inside the download client does not.
 

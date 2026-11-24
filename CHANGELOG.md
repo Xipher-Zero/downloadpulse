@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.3] — Development
+## [1.0.3] — Update notices, faster recovery, and a desktop that keeps your files
 
 ### Fixed
 
