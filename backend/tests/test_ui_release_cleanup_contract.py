@@ -15,7 +15,7 @@ def test_retired_duplicate_legacy_stylesheet_is_absent() -> None:
 
 
 def test_release_docs_record_permanent_browser_validation_without_legacy_live_layers() -> None:
-    architecture = (DOCS / "UI_FRONTEND_ARCHITECTURE.md").read_text(encoding="utf-8").lower()
+    architecture = (DOCS / "internal" / "UI_FRONTEND_ARCHITECTURE.md").read_text(encoding="utf-8").lower()
     assert "permanent ci" in architecture
     assert "browser runtime" in architecture
     assert "real-browser smoke contract" in architecture

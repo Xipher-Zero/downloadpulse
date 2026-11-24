@@ -23,17 +23,21 @@ def test_install_surfaces_preserve_published_image_and_public_health_endpoint():
     expected_image = f"ghcr.io/xipher-zero/downloadpulse:v{released}"
     compose = (root / "docker-compose.yml").read_text()
     readme = (root / "README.md").read_text()
-    project_page = (root / "index.html").read_text()
     assert expected_image in compose
     assert readme.count(expected_image) >= 2
-    assert expected_image in project_page
     development = (root / "VERSION").read_text().strip()
     if development != released:
         unreleased = f"ghcr.io/xipher-zero/downloadpulse:v{development}"
-        for surface in (compose, readme, project_page):
+        for surface in (compose, readme):
             assert unreleased not in surface
-    assert "http://localhost:8095/api/health" in compose
-    assert "http://localhost:8095/api/stats" not in compose
+    # The image's own HEALTHCHECK is the one health check, on the public health
+    # endpoint; the compose example declares none that could diverge from it.
+    dockerfile = (root / "Dockerfile").read_text()
+    healthcheck = dockerfile[dockerfile.index("HEALTHCHECK"):].split("\n\n", 1)[0]
+    assert "http://localhost:8095/api/health" in healthcheck
+    assert "http://localhost:8095/api/stats" not in dockerfile
+    assert "healthcheck:" not in compose
+    assert "/api/stats" not in compose
 
 
 @pytest.mark.asyncio

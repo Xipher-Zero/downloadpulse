@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   # One job definition, one full-suite invocation, one layer shard per matrix
-  # entry (docs/QUALIFICATION_DETERMINISM.md section 11). The contract layer is
+  # entry (docs/internal/QUALIFICATION_DETERMINISM.md section 11). The contract layer is
   # every deterministic test; the runtime layer is every test that drives a real
   # executable, against the product's supported runtime. Each layer is
   # partitioned by test node id across independent runners, so each collected

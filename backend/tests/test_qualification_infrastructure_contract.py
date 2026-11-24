@@ -1,6 +1,6 @@
 """Qualification infrastructure contract and classifier self-tests.
 
-Enforces docs/QUALIFICATION_DETERMINISM.md mechanically: exactly one classifier and one
+Enforces docs/internal/QUALIFICATION_DETERMINISM.md mechanically: exactly one classifier and one
 registry, both workflows delegate to the classifier, no retry-until-green anywhere, a bounded
 diagnostic budget, an explicit fail-closed anchor, an exact classification set, and the full
 classification behavior matrix.
@@ -29,7 +29,7 @@ REGISTRY_PATH = QUALIFICATION / "known_flakes.json"
 WORKFLOWS = ROOT / ".github" / "workflows"
 TESTS_WORKFLOW = WORKFLOWS / "tests.yml"
 BROWSER_WORKFLOW = WORKFLOWS / "browser-runtime.yml"
-DOC = ROOT / "docs" / "QUALIFICATION_DETERMINISM.md"
+DOC = ROOT / "docs" / "internal" / "QUALIFICATION_DETERMINISM.md"
 
 spec = importlib.util.spec_from_file_location("failure_classifier", CLASSIFIER_PATH)
 fc = importlib.util.module_from_spec(spec)
@@ -124,7 +124,7 @@ def entry(**overrides) -> dict:
     base = {
         "id": "example-flake", "domain": "browser", "case": f"a.spec.js{SEP}focus survives",
         "failure_signature": "placeholder", "first_confirmed_sha": "b" * 40,
-        "tracking_reference": "docs/QUALIFICATION_DETERMINISM.md#5", "expires": "2026-11-01",
+        "tracking_reference": "docs/internal/QUALIFICATION_DETERMINISM.md#5", "expires": "2026-11-01",
         "classifier_runs": 8,
     }
     base.update(overrides)
@@ -279,7 +279,7 @@ def test_no_automatic_full_suite_rerun_loops() -> None:
 
 
 def test_the_suite_runs_once_as_two_layers_and_milestone_manifests_are_never_executed() -> None:
-    """docs/QUALIFICATION_DETERMINISM.md section 11: one job definition, one full-suite
+    """docs/internal/QUALIFICATION_DETERMINISM.md section 11: one job definition, one full-suite
     invocation selecting one layer per matrix entry, each test in exactly one entry."""
     raw = TESTS_WORKFLOW.read_text(encoding="utf-8")
     assert "qualification.txt" not in raw and '"${cases[@]}"' not in raw and "mapfile" not in raw
@@ -661,7 +661,7 @@ QUALIFICATION_OWNED = (
     ".github/qualification/failure_classifier.py", ".github/qualification/known_flakes.json",
     ".github/qualification/shard_inventory.py", ".github/qualification/pytest_seconds.json",
     ".github/qualification/browser_spec_seconds.json",
-    "docs/QUALIFICATION_DETERMINISM.md", "backend/tests/test_qualification_infrastructure_contract.py",
+    "docs/internal/QUALIFICATION_DETERMINISM.md", "backend/tests/test_qualification_infrastructure_contract.py",
     "backend/tests/test_universal_lifecycle.py",
     "frontend/browser/ui-regression-restoration.spec.js", "frontend/browser/ui-fix-ws1-p2.spec.js",
     "frontend/browser/ui-fix-ws2-p1.spec.js", "frontend/browser/settings-directory-browser.spec.js",
@@ -688,7 +688,7 @@ def test_documentation_and_claude_md_point_to_the_policy() -> None:
         assert heading.lower() in doc.lower()
     assert "Do not repeatedly rerun full qualification to chase green." in doc
     claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "docs/QUALIFICATION_DETERMINISM.md" in claude
+    assert "docs/internal/QUALIFICATION_DETERMINISM.md" in claude
     assert "Do not repeatedly rerun full qualification to chase green." in claude
     assert "Use candidate-vs-anchor classification." in claude
     # The product defect behind the WS2-P1 focus test was carried, deliberately unfixed, until the canonical

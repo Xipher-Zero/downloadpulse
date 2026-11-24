@@ -147,14 +147,12 @@ def test_installed_runtime_packages_retain_license_or_notice_files():
 
 def test_current_project_surfaces_state_the_downloadpulse_gpl_identity():
     readme = (REPO_ROOT / "README.md").read_text()
-    landing_page = (REPO_ROOT / "index.html").read_text()
     notice = (REPO_ROOT / "NOTICE").read_text()
     source_offer = (REPO_ROOT / "SOURCE_OFFER.md").read_text()
 
     assert "DownloadPulse" in readme
     assert "GPL-2.0-or-later" in readme
-    assert "DownloadPulse · GPL-2.0-or-later" in landing_page
-    assert "MIT License" not in landing_page
+    assert "MIT License" not in readme
     assert notice.startswith("DownloadPulse — Universal Transfer Manager")
     assert "GNU General Public License" in notice
     assert "issues/new?template=source_request.yml" in source_offer

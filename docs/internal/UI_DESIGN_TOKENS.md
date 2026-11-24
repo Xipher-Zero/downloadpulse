@@ -129,7 +129,7 @@ For maintenance:
 
 `frontend/static/icon-system.css` derives semantic frames from these token colors. Custom SVG artwork can contain its approved internal gradients, but UI-created frames, borders, glows, and Lucide colors use the shared token language.
 
-See `docs/UI_ICON_SYSTEM.md` for the custom-vs-Lucide boundary and true-vector SVG requirements.
+See `docs/internal/UI_ICON_SYSTEM.md` for the custom-vs-Lucide boundary and true-vector SVG requirements.
 
 ## Visual acceptance
 

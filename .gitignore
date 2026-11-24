@@ -50,3 +50,6 @@ frontend/browser/playwright-report/
 # The example docker-compose.yml's folders, when it is run from this checkout.
 /downloadpulse/
 /downloads/
+# The local Docker run in CONTRIBUTING.md.
+/dev-config/
+/dev-data/

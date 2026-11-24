@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/logo.svg" width="96" alt="DownloadPulse Logo"/>
   <h1>DownloadPulse</h1>
-  <p><strong>Self-hosted transfer orchestration for direct links, magnets, torrents, NZBs and media pages.</strong><br/>Universal lifecycle · debrid, Usenet and network-source providers · aria2, rsync, SABnzbd and yt-dlp execution · recovery · observability</p>
+  <p><strong>All your downloads. One queue.</strong><br/>A free, open-source download manager for your desktop or server.</p>
   <p><a href="https://downloadpulse.net"><strong>downloadpulse.net</strong></a></p>
 
   [![License](https://img.shields.io/github/license/Xipher-Zero/downloadpulse?style=flat-square)](LICENSE)
@@ -13,27 +13,43 @@
 
 ## What is DownloadPulse?
 
-**DownloadPulse** is a self-hosted download manager for a server or NAS, used from your browser. You give it a link, a magnet, a `.torrent`, an NZB, a Metalink file or a list of links; it records one durable **transfer**, works out which of your enabled services can obtain it, downloads the files with the right download engine, and keeps that transfer -- and its history -- whole even when its service, source or engine changes along the way.
+**DownloadPulse** is a free, open-source download manager for your desktop or server. Links, files and videos from your browser, your scripts and your other apps go into one queue that recovers from failures by itself.
 
-That transfer, not any one service, is what DownloadPulse manages. The service obtaining it, the sources and hosts its files come from (only ones confirmed to hold the same file), and each download-engine attempt are replaceable parts of it: they can be retried, recovered or switched while the transfer keeps its identity, its progress record and its route history.
+Downloads come from everywhere: a link in your browser, a file on another server, a video page, a job from a script. DownloadPulse turns each one into a single download that keeps its place and its history until it is done, whatever it takes to finish it. Run it on the computer you use every day with the [desktop app](#desktop-app), or keep your queue on your own server or NAS and manage it from any of your devices.
 
-It is provider-neutral. Ordinary network sources (HTTP(S), FTP/SFTP, SCP, rsync, WebDAV, Metalink and supported media pages) work out of the box with no premium-service account. Premium debrid services (AllDebrid, Debrid-Link, Premiumize, Real-Debrid, TorBox) and Usenet are optional: each is switched off in a new installation and takes part only once you turn it on and connect your own account (Real-Debrid and TorBox switch on when a new connection is proven), and none is required.
+What you get:
 
-Around that core, DownloadPulse provides operator-controlled switching of a transfer's service or source, automatic retry and failover, file selection, Sonarr/Radarr download-client compatibility, user accounts and roles, and in-application backup and restore.
+- **One queue for every way in.** Paste links into Quick Add, send them from your browser with the [browser extension](https://downloadpulse.net/extension), or submit them from your own scripts and apps through the [REST API](#rest-api). Every download lands in the same queue, with its progress and history in one place.
+- **Direct links, files and videos, straight away.** Web links (HTTP and HTTPS), FTP and SFTP, SCP, rsync, WebDAV, Metalink files and supported video pages work without any account or extra software to install.
+- **Faster direct downloads.** DownloadPulse can fetch different parts of a file in parallel when the host supports it.
+- **Recovery without babysitting.** Temporary failures are retried. When another source or service can deliver the same file, DownloadPulse can switch to it, and it stays the same download, with its history intact. Its details show what was done along the way.
+- **Your files, your choice.** Pick where finished downloads go; archives can be extracted for you.
+- **For one person or many.** The desktop app is yours alone. A server gives each person their own sign-in and role, with a password or through your own OpenID Connect provider.
 
-This README describes `v1.0.3`. Check [GHCR](https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse) for the published image tags, and [`CHANGELOG.md`](CHANGELOG.md) for what is included and the **known limitations** of this release.
+Optional, when you want them (each is off until you turn it on, and none is required):
 
-The workflow is deterministic:
+- premium debrid services (AllDebrid, Debrid-Link, Premiumize, Real-Debrid, TorBox) for file-hoster links, magnets and `.torrent` files;
+- Usenet with your own news servers, for NZBs;
+- Sonarr and Radarr, which can use DownloadPulse as their download client;
+- Discord notifications and Prometheus metrics.
 
-1. Submit a link, magnet, `.torrent` file, NZB (file or link), Metalink description or a file of links.
-2. DownloadPulse creates one durable logical transfer before any provider or download-engine work.
-3. Enabled provider applicability is classified neutrally: a matching `SPECIALIZED` claim (a debrid service's supported host, or a media page an installed yt-dlp extractor recognizes) takes precedence over `GENERIC` handlers such as **HTTP & HTTPS**; magnets, torrents and NZBs go to the providers that accept them.
-4. The selected provider resolves the source into canonical candidates (for example unlocked links, a validated direct resource, or a Usenet job).
-5. DownloadPulse selects a download engine through the executor boundary -- aria2, rsync, the bundled SABnzbd for Usenet, or yt-dlp for Media Downloads -- and performs the physical transfer.
-6. Provider route, candidate, engine and final-delivery provenance remain durable, so the interface reports what actually happened without inferring it from a URL.
-7. Failed or expired work is retried, recovered or moved to another provider according to universal policy, without rebuilding the logical download manually.
+This README describes `v1.0.3`. Check [GHCR](https://github.com/Xipher-Zero/downloadpulse/pkgs/container/downloadpulse) for the published image tags, and [`CHANGELOG.md`](CHANGELOG.md) for what is included and the **known limitations** of each release. The website, with guides for the desktop app, the server and the browser extension, is [downloadpulse.net](https://downloadpulse.net).
 
-DownloadPulse runs and manages its own download engines (aria2, rsync, the bundled SABnzbd and yt-dlp); there is no separate download engine to install or connect.
+---
+
+## Desktop app
+
+DownloadPulse Desktop is one person's DownloadPulse on their own computer: no server needed. It has the same queue as the server, and the browser extension finds it on the same computer by itself. Close the window and your downloads keep going from the tray.
+
+| System | Download |
+|---|---|
+| **Windows** 10 and 11, 64-bit | An installer that installs for you alone, without administrator rights |
+| **macOS** 13 or later, on Apple silicon | A disk image: open it and drag DownloadPulse to Applications |
+| **Linux**, 64-bit | A Flatpak bundle, installed for your user alone |
+
+Download the current release from [downloadpulse.net/desktop](https://downloadpulse.net/desktop) or from the [GitHub Releases page](https://github.com/Xipher-Zero/downloadpulse/releases). The installers are not signed yet: the desktop page explains what to do when Windows or macOS warns you.
+
+The desktop app is built for one person. For a household or a team, run the [server](#installation): everyone gets their own sign-in.
 
 ---
 
@@ -121,7 +137,7 @@ This matrix is the **implemented and qualified v1.0.3 provider/executor set**. A
 | Media Downloads (yt-dlp) | Provider with its own download engine | Yes |
 | aria2, rsync | Download engines | Yes |
 
-The [`CHANGELOG.md`](CHANGELOG.md) `[1.0.0]` entry lists the **known limitations** of this release (what cannot be switched, when a backup is promoted automatically, how a question waiting for input holds up the rest of a download, what cancelling one volume of a split archive does to extraction, what Sonarr and Radarr see, and how large sources are bounded). `STAGED-MATERIALIZATION-001` (staged, engine-owned downloading with atomic promotion) is not implemented; it is recorded there as a known limitation.
+[`CHANGELOG.md`](CHANGELOG.md) lists the **known limitations** of each release under that release's entry (for example what cannot be switched, when a backup is promoted automatically, how a question waiting for input holds up the rest of a download, what cancelling one volume of a split archive does to extraction, what Sonarr and Radarr see, and how large sources are bounded).
 
 ---
 
@@ -403,7 +419,7 @@ The primary implementation areas are:
 
 Runtime dependencies are exactly pinned through `backend/requirements.in` → `backend/requirements.txt`. Python runtime license metadata is checked against `licenses/python-runtime.json`; published images also carry BuildKit provenance and SBOM attestations. See [`docs/DEPENDENCY_LICENSES.md`](docs/DEPENDENCY_LICENSES.md).
 
-The [architecture guide](docs/architecture/UNIVERSAL_TRANSFER_CORE.md) explains the contracts, normalized failures, persistence, routing, and extension boundaries.
+The [architecture guide](docs/internal/architecture/UNIVERSAL_TRANSFER_CORE.md) explains the contracts, normalized failures, persistence, routing, and extension boundaries.
 
 Release notes for every version are in [`CHANGELOG.md`](CHANGELOG.md); the release operations runbook is [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md).
 

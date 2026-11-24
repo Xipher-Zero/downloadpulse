@@ -2,7 +2,7 @@
 
 Canonical human policy for how DownloadPulse qualification classifies failures. The
 machine owner of every rule below is
-[`.github/qualification/failure_classifier.py`](../.github/qualification/failure_classifier.py);
+[`.github/qualification/failure_classifier.py`](../../.github/qualification/failure_classifier.py);
 workflows own execution only. This document, the classifier, the registry and
 `backend/tests/test_qualification_infrastructure_contract.py` must agree, and the
 contract test enforces that they do.

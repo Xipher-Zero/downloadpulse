@@ -16,7 +16,7 @@ answered; the calls they make that DownloadPulse does not honor are declined
 with qBittorrent's own ``409``; anything else is ``404``. The item a client
 sees is the native job, keyed on the wire by the torrent's v1 info-hash that
 the intake owner computed. The full mapping is
-``docs/architecture/ARR_QBITTORRENT_COMPATIBILITY.md``.
+``docs/internal/architecture/ARR_QBITTORRENT_COMPATIBILITY.md``.
 """
 from __future__ import annotations
 

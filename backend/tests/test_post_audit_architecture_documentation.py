@@ -9,7 +9,7 @@ def read(path: str) -> str:
 
 
 def test_retry_and_provenance_docs_preserve_post_audit_contract() -> None:
-    doc = read("docs/ROUTE_PROVIDER_PROVENANCE.md")
+    doc = read("docs/internal/ROUTE_PROVIDER_PROVENANCE.md")
     assert "ordinary resolution retry and re-resolution remain bound to that selected provider" in doc
     assert "Ordinary retry is not cross-provider failover" in doc
     assert "Provider failover after exhaustion" in doc
@@ -17,14 +17,14 @@ def test_retry_and_provenance_docs_preserve_post_audit_contract() -> None:
 
 
 def test_applicability_docs_require_explicit_provider_contract() -> None:
-    doc = read("docs/architecture/PROVIDER_APPLICABILITY.md")
+    doc = read("docs/internal/architecture/PROVIDER_APPLICABILITY.md")
     assert "Missing applicability is not a compatibility signal" in doc
     assert "explicit `ProviderApplicability()`" in doc
     assert "ordinary retry remains bound to that provider" in doc
 
 
 def test_core_docs_record_cancellation_and_migration_ownership() -> None:
-    doc = read("docs/architecture/UNIVERSAL_TRANSFER_CORE.md")
+    doc = read("docs/internal/architecture/UNIVERSAL_TRANSFER_CORE.md")
     assert "Logical cancellation authority is committed on the parent transfer before remote executor cancellation" in doc
     assert "cannot revive it" in doc
     assert "Normal repository initialization" in doc
@@ -32,7 +32,7 @@ def test_core_docs_record_cancellation_and_migration_ownership() -> None:
 
 
 def test_frontend_docs_describe_live_bounded_owners() -> None:
-    doc = read("docs/UI_FRONTEND_ARCHITECTURE.md")
+    doc = read("docs/internal/UI_FRONTEND_ARCHITECTURE.md")
     assert doc.startswith("# DownloadPulse Frontend Architecture")
     assert "six reachable navigation surfaces" in doc
     assert "`ui-presentation-loader.js` is physically absent" in doc
@@ -92,7 +92,7 @@ def test_container_default_identity_contract_is_99_100() -> None:
 
 
 def test_frontend_docs_state_the_single_owner_invariants_with_no_recorded_deviations() -> None:
-    doc = read("docs/UI_FRONTEND_ARCHITECTURE.md")
+    doc = read("docs/internal/UI_FRONTEND_ARCHITECTURE.md")
     for statement in (
         "`app.js` is the one Server-Sent Events connection owner",
         "`operator-title.js` owns toast/icon presentation and the consolidation toast copy only",

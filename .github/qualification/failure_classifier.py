@@ -13,7 +13,7 @@ Workflows own *execution* (they run tests and write result files); this module
 only reads local files and local git objects. It never calls a network API and
 never runs a test.
 
-Subcommands (see docs/QUALIFICATION_DETERMINISM.md for the full policy)::
+Subcommands (see docs/internal/QUALIFICATION_DETERMINISM.md for the full policy)::
 
     budget            print the bounded diagnostic budget as KEY=VALUE lines
     resolve-anchor    derive QUALIFICATION_ANCHOR_SHA from the event (git only)

@@ -24,7 +24,7 @@ the tree, the tag and the published image all name the same artifact.
 5. Let the required hosted workflows qualify **that exact SHA**: Tests, Browser Runtime,
    CodeQL, Image, Container Security, Candidate Runtime Qualification (and
    WS3 Adversarial on branches that run it). Do not rerun until green; classify a failure
-   with the candidate-vs-anchor policy in `docs/QUALIFICATION_DETERMINISM.md`.
+   with the candidate-vs-anchor policy in `docs/internal/QUALIFICATION_DETERMINISM.md`.
 6. Prefer the immutable candidate image (`sha-<full-git-sha>`) for local runtime validation,
    and verify the OCI label `org.opencontainers.image.revision` exactly equals the expected
    full candidate SHA before replacing a deployed image.
@@ -68,7 +68,6 @@ Before publication, verify all release surfaces agree:
 - top `CHANGELOG.md` entry
 - README/install examples
 - Compose example image tag
-- project landing page, if present
 - PR title/body and release notes
 - OCI image `version` and `revision` labels
 
@@ -77,7 +76,7 @@ examples must keep naming the newest *released* entry's image (for example `v1.0
 `[1.0.1] — Development` is open); the documentation contract tests refuse an image reference to
 the development `VERSION` in the README or Compose example. Releasing therefore changes these
 surfaces together in one release-identity commit: the top entry's title no longer says
-`Development` (it takes the release's title), and the README, Compose and landing-page image
+`Development` (it takes the release's title), and the README and Compose image
 references move to the new version. That commit is the release candidate, and it is the one whose
 exact SHA must pass every required workflow.
 

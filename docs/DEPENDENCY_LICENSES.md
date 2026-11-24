@@ -533,5 +533,3 @@ copied into the repository or container image:
 |---|---|---|
 | Outfit | Google Fonts | OFL-1.1 |
 | JetBrains Mono | Google Fonts | OFL-1.1 |
-| Bricolage Grotesque | Google Fonts (project landing page) | OFL-1.1 |
-| DM Mono | Google Fonts (project landing page) | OFL-1.1 |

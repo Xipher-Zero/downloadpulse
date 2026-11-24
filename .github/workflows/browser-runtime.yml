@@ -31,7 +31,7 @@ jobs:
   # browser-plan; fullyParallel is off, so a file never splits). Each
   # shard serves its own candidate containers, so no two shards share a backend,
   # and within a shard the files share one exactly as before
-  # (docs/QUALIFICATION_DETERMINISM.md section 11).
+  # (docs/internal/QUALIFICATION_DETERMINISM.md section 11).
   browser-runtime:
     name: browser-runtime ${{ matrix.shard }}
     runs-on: ubuntu-latest

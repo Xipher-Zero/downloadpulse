@@ -23,9 +23,10 @@ Thank you for considering contributing! Here's how to get involved.
    uvicorn main:app --reload --host 0.0.0.0 --port 8095
    ```
 
-4. **Or with Docker:**
+4. **Or with Docker,** built from your checkout (the example `docker-compose.yml` runs the released image, not your code):
    ```bash
-   docker compose up --build
+   docker build -t downloadpulse:dev .
+   docker run --rm -p 8095:8095 -v "$PWD/dev-config:/app/config" -v "$PWD/dev-data:/app/data" downloadpulse:dev
    ```
 
 ---

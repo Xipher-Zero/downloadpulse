@@ -107,7 +107,7 @@ Disabling a provider removes it from eligibility without deleting its retained p
 
 Magnet/torrent capabilities remain static request-type declarations and do not acquire HTTP(S) specialized/generic precedence.
 
-Torrent cache presence is not applicability. The provider-neutral `CachePresence` fact (`HIT`/`MISS`/`UNKNOWN`) is a durable historical observation recorded with the resolution result and presented by Route History; it does not enter classification or provider selection, and static magnet/torrent capability routing is not repurposed into cache policy. A future availability/preflight policy would consume the same neutral fact through one core owner (see `docs/ROUTE_PROVIDER_PROVENANCE.md`).
+Torrent cache presence is not applicability. The provider-neutral `CachePresence` fact (`HIT`/`MISS`/`UNKNOWN`) is a durable historical observation recorded with the resolution result and presented by Route History; it does not enter classification or provider selection, and static magnet/torrent capability routing is not repurposed into cache policy. A future availability/preflight policy would consume the same neutral fact through one core owner (see `docs/internal/ROUTE_PROVIDER_PROVENANCE.md`).
 
 ## Provenance and presentation
 

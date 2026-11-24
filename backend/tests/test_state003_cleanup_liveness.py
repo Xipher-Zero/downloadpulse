@@ -292,7 +292,7 @@ async def test_state003_legacy_blocked_obligation_is_reclaimed_and_can_converge(
 
 def test_state003_architecture_document_records_liveness_contract():
     root = Path(__file__).resolve().parents[2]
-    doc = (root / "docs/architecture/EXECUTION_CLEANUP_LIFECYCLE.md").read_text(encoding="utf-8")
+    doc = (root / "docs/internal/architecture/EXECUTION_CLEANUP_LIFECYCLE.md").read_text(encoding="utf-8")
     assert "Exhausting destructive retry pressure does **not** end reconciliation ownership" in doc
     assert "legacy `blocked` cleanup row is a degraded unresolved obligation, not completion" in doc
     assert "later executor observations cannot revive the logical transfer" in doc

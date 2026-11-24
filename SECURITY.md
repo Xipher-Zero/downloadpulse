@@ -23,11 +23,11 @@ Report security issues through a private GitHub Security Advisory (preferred), o
 
 ### Secrets and configuration
 
-The AllDebrid API key, local authentication password verifier, OIDC client secret, Discord webhook URLs, aria2 credentials, and extraction passwords are sensitive configuration. The main persistent settings live in `config/config.json`; the API bearer-token verifier is stored separately as `config/api-token.json`.
+Service API keys, tokens and passwords are sensitive configuration: premium debrid service keys and sign-ins, Usenet news-server credentials, credentials for network sources, the OIDC client secret, integration tokens, and notification webhook URLs (a Discord webhook URL is itself a secret). So are the local authentication password verifiers, aria2 credentials and extraction passwords. The main persistent settings live in `config/config.json`; accounts, with their password verifiers and Integration token verifiers, are kept in the database (`DB_PATH`) and therefore in its backups.
 
 Keep the configuration directory private. DownloadPulse attempts to enforce owner-only permissions (`0700` directory / `0600` credential files) where the host filesystem supports them.
 
-Do not publish the config volume or commit it to version control. API responses intentionally redact configured secret values and capability-bearing provider/download URLs. The plaintext local password, raw API bearer token, OIDC authorization code/tokens, PKCE verifier, session identifier, and CSRF token must not be logged.
+Do not publish the config or data volume, or commit either to version control. API responses intentionally redact configured secret values and capability-bearing provider/download URLs. The plaintext local password, raw API bearer token, OIDC authorization code/tokens, PKCE verifier, session identifier, and CSRF token must not be logged.
 
 ### Native web UI and API authentication
 

@@ -110,7 +110,6 @@ def test_release_surfaces_do_not_advertise_removed_watch_folder_workflow():
         (REPO_ROOT / path).read_text().casefold()
         for path in (
             "README.md",
-            "index.html",
             "Dockerfile",
             "docker-compose.yml",
             "entrypoint.sh",
@@ -128,7 +127,7 @@ HISTORICAL_RECORDS: set[str] = set()
 
 def test_current_documentation_and_configuration_describe_one_managed_aria2():
     surfaces = [
-        "README.md", "SECURITY.md", "CONTRIBUTING.md", "index.html", "Dockerfile", "docker-compose.yml",
+        "README.md", "SECURITY.md", "CONTRIBUTING.md", "Dockerfile", "docker-compose.yml",
         "entrypoint.sh", ".github/ISSUE_TEMPLATE/bug_report.yml",
         "frontend/static/index.html", "frontend/static/ui-help-page.js",
     ] + [

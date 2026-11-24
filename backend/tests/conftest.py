@@ -5,7 +5,7 @@ stubs during module import. Import the real SQLite driver first so those legacy
 guards cannot replace the process-wide ``aiosqlite`` module and leak a fake
 ``connect`` implementation into later persistence tests.
 
-It also owns the suite's two layers (docs/QUALIFICATION_DETERMINISM.md):
+It also owns the suite's two layers (docs/internal/QUALIFICATION_DETERMINISM.md):
 ``real_runtime`` marks a test that drives a real external executable -- rsync
 (>= 3.4.0, the product minimum), aria2c, the openssl CLI or ffmpeg/ffprobe --
 and runs in the runtime layer, ``-m real_runtime``; everything

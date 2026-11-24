@@ -5,5 +5,5 @@ tokens with a client binding (``auth.accounts`` ``account_tokens.client_id``).
 They own their logical requests (``external_jobs``) and their interest in a
 delivery (``external_deliveries``); DownloadPulse alone owns the canonical
 transfer, its execution and its artifacts. See
-``docs/architecture/EXTERNAL_CLIENT_PROTOCOL.md``.
+``docs/internal/architecture/EXTERNAL_CLIENT_PROTOCOL.md``.
 """

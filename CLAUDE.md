@@ -43,8 +43,9 @@ fixed native queue width). Materialization verify/cleanup: `transfers/filesystem
 application via `integrations/definition.py` `ManagedIntegration`/`AdministeredIntegration`
 — `application/composition.py` names no executor. Non-aria2 proofs: `tests/executor_fakes.py`.
 
-`VERSION` = `1.0.0`; `CHANGELOG.md` starts at `[1.0.0] — First public release`. README,
-`docker-compose.yml` and `index.html` name `v1.0.0`. While a top entry is titled `Development`, those
+The application version is the `VERSION` file (read it there; `core/version.py`
+`read_version()` is its one runtime reader), and the top `CHANGELOG.md` entry is that version's notes.
+README and `docker-compose.yml` name the newest released image. While a top entry is titled `Development`, those
 install references must keep naming the newest released image (pinned by the documentation contract
 tests; see `docs/RELEASE_PROCESS.md` → Release identity). Tagging, GitHub Release, `latest` and `main`
 stay operator actions.
@@ -59,12 +60,11 @@ stay operator actions.
 | `frontend/static/` | The served app: `index.html` shell + `app.js` (~3.6k LOC) + ~30 `*.js` + ~52 `*.css`. **No bundler, no `npm install` for the app itself.** |
 | `frontend/browser/` | Separate Playwright contract-test suite (`*.spec.js`), own `package.json` (`@playwright/test` only). |
 | `frontend/host-icons.parts/` | 44 base64 chunks of a zipped host-logo archive, reassembled + SHA-256-verified at image build time. |
-| `index.html` (repo root) | **Standalone marketing/landing page. NOT the app.** Not copied into the image. The real shell is `frontend/static/index.html`. |
-| `docs/` | Architecture (`docs/architecture/*.md`, e.g. `UNIVERSAL_TRANSFER_CORE.md`, `PROVIDER_APPLICABILITY.md`) and UI docs (`docs/UI_FRONTEND_ARCHITECTURE.md`, `UI_DESIGN_TOKENS.md`, `UI_ICON_SYSTEM.md`). |
+| `docs/` | User and operator docs (`authentication.md`, `discord-webhooks.md`, `RELEASE_PROCESS.md`, `SUPPLY_CHAIN_POLICY.md`, `DEPENDENCY_LICENSES.md`, `LOCALIZATION.md`, …). Internal design specs live in `docs/internal/`: architecture (`docs/internal/architecture/*.md`, e.g. `UNIVERSAL_TRANSFER_CORE.md`, `PROVIDER_APPLICABILITY.md`), UI docs (`docs/internal/UI_FRONTEND_ARCHITECTURE.md`, `UI_DESIGN_TOKENS.md`, `UI_ICON_SYSTEM.md`), `ROUTE_PROVIDER_PROVENANCE.md` and `QUALIFICATION_DETERMINISM.md`. The product's website (downloadpulse.net) lives in its own repository, not here. |
 | `Dockerfile`, `entrypoint.sh`, `docker-compose.yml` | Packaging (see §5). |
 | `release.py`, `CHANGELOG.md` (~257 KB), `licenses/` + `NOTICE` | Release + dependency-license bookkeeping (enforced in CI). |
 | `.github/workflows/` | 10 workflows (see §7). |
-| `.github/qualification/` | The one failure classifier (`failure_classifier.py`) and the one known-flake registry (`known_flakes.json`). Policy: `docs/QUALIFICATION_DETERMINISM.md` (see §6a). |
+| `.github/qualification/` | The one failure classifier (`failure_classifier.py`) and the one known-flake registry (`known_flakes.json`). Policy: `docs/internal/QUALIFICATION_DETERMINISM.md` (see §6a). |
 
 ### Backend packages (`backend/`)
 
@@ -132,7 +132,7 @@ surgery (ARCH-001, 2026-09-09). Include order is not load-bearing. Regression co
 same-path dual registration is `GET /auth/oidc/callback` (pending-aware callback tried
 before the session-issuing one) — ordered registration, not route-list surgery.
 
-### Frontend architecture rules (`docs/UI_FRONTEND_ARCHITECTURE.md`)
+### Frontend architecture rules (`docs/internal/UI_FRONTEND_ARCHITECTURE.md`)
 
 - **One bounded structural/render owner per visible behavior. No broad post-render
   correction runtimes, correction-named stylesheets, or compatibility globals that
@@ -148,7 +148,7 @@ before the session-issuing one) — ordered registration, not route-list surgery
 - **`index.html` parser-loads the application and every bounded presentation owner as
   direct `<script defer>` tags**, in dependency order; nothing is lazy-injected, and
   `ui-provider-status.js` owns Provider Status only. The current owner map is in
-  `docs/UI_FRONTEND_ARCHITECTURE.md` ("Boot graph", "Runtime ownership map") — read it
+  `docs/internal/UI_FRONTEND_ARCHITECTURE.md` ("Boot graph", "Runtime ownership map") — read it
   rather than a list here.
 - `ui-settings-page.js` is the **sole** Settings markup owner (every tab/panel/card/icon/ARIA
   attribute, rendered once; also persistence). No satellite script may rewrite it after render
@@ -180,7 +180,7 @@ before the session-issuing one) — ordered registration, not route-list surgery
 ## 4. Host-icon mapping (single source of truth)
 
 `frontend/static/ui-transfer-source-presentation.js` (`window.DPTransferSourcePresentation`;
-named in `docs/UI_FRONTEND_ARCHITECTURE.md` as the one mapping owner):
+named in `docs/internal/UI_FRONTEND_ARCHITECTURE.md` as the one mapping owner):
 
 - `HOST_ASSETS` — frozen array of `['<registrable-domain>', '<asset-file>']` pairs.
 - `hostAsset(host)` → `/icons/hosts/<file>` or `''`. Match is **exact registrable
@@ -254,7 +254,8 @@ storage-health checks can diagnose bad mounts — chmods `700` config/data, `600
 
 `.dockerignore` excludes `.git`, caches, venvs, `data/`, `config/`, `docs/LOGO.md`.
 `docker-compose.yml` is an Unraid-style example naming the current release image
-(`ghcr.io/xipher-zero/downloadpulse:v1.0.0`); it moves only in a release-identity commit.
+(`ghcr.io/xipher-zero/downloadpulse:v<newest released version>`); it moves only in a release-identity commit.
+It has no `build:` and no `healthcheck:` of its own: the image's `HEALTHCHECK` applies.
 
 ### Local image testing
 
@@ -286,7 +287,7 @@ that exact digest.
   wheel for the interpreter.
 - `frontend/browser/node_modules/`, `test-results/`, `playwright-report/` are git-ignored.
 
-### Test layers and the milestone manifests (`docs/QUALIFICATION_DETERMINISM.md` §11)
+### Test layers and the milestone manifests (`docs/internal/QUALIFICATION_DETERMINISM.md` §11)
 
 `tests.yml` runs the backend suite once, as two layers of one matrix job: the **contract
 layer** (`-m "not real_runtime"`, deterministic, no executables) and the **runtime layer**
@@ -306,7 +307,7 @@ New regressions go into the canonical invariant owner, never into a new list.
 Contract tests that read source files as strings (`test_settings_*`, `test_ui_*`) break on
 refactors and must be updated in the same change.
 
-### 6a. Qualification determinism (read `docs/QUALIFICATION_DETERMINISM.md`)
+### 6a. Qualification determinism (read `docs/internal/QUALIFICATION_DETERMINISM.md`)
 
 `Tests` and `Browser Runtime` run their full suite **once**; a failure is classified
 candidate-vs-anchor by the single classifier, `.github/qualification/failure_classifier.py`

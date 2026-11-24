@@ -49,18 +49,14 @@ def test_readme_describes_current_state_and_current_release_examples():
 def test_public_project_surfaces_do_not_advertise_upstream_fork_origin():
     """The public surfaces describe DownloadPulse; provenance lives in legal files."""
     readme = _text("README.md")
-    landing_page = _text("index.html")
 
-    for surface_name, surface in (("README.md", readme), ("index.html", landing_page)):
-        for marker in ("kroeberd", "alldebrid-client", "v1.9.9", "Derived from"):
-            assert marker not in surface, (
-                f"{surface_name} still advertises the upstream project: {marker}"
-            )
+    for marker in ("kroeberd", "alldebrid-client", "v1.9.9", "Derived from"):
+        assert marker not in readme, f"README.md still advertises the upstream project: {marker}"
     assert "Upstream provenance" not in readme
 
-    # Both public surfaces still state DownloadPulse's own license identity.
+    # The public surface still states DownloadPulse's own license identity.
+    # (The project page is the website, downloadpulse.net, in its own repository.)
     assert "GPL-2.0-or-later" in readme
-    assert "DownloadPulse · GPL-2.0-or-later" in landing_page
 
     # Legal provenance remains preserved in its canonical legal surfaces.
     notice = _text("NOTICE")
@@ -70,8 +66,8 @@ def test_public_project_surfaces_do_not_advertise_upstream_fork_origin():
 
 
 def test_runtime_state_and_input_required_docs_name_current_consumers_truthfully():
-    runtime_state = _text("docs/architecture/PROVIDER_RUNTIME_STATE.md")
-    input_required = _text("docs/architecture/INPUT_REQUIRED_LIFECYCLE.md")
+    runtime_state = _text("docs/internal/architecture/PROVIDER_RUNTIME_STATE.md")
+    input_required = _text("docs/internal/architecture/INPUT_REQUIRED_LIFECYCLE.md")
     assert "## Current production consumer" in runtime_state
     assert "AllDebrid's dynamic supported-host state" in runtime_state
     assert "planned first production consumer" not in runtime_state
@@ -89,7 +85,7 @@ def test_authoritative_development_version_surfaces_agree_with_the_version_file(
     lock = json.loads(_text("frontend/browser/package-lock.json"))
     assert lock["version"] == version
     assert lock["packages"][""]["version"] == version
-    ui_arch = _text("docs/UI_FRONTEND_ARCHITECTURE.md")
+    ui_arch = _text("docs/internal/UI_FRONTEND_ARCHITECTURE.md")
     released = _released_version()
     if version == released:
         assert f"reports `{version}` for the current release" in ui_arch

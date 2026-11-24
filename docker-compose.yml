@@ -1,14 +1,14 @@
-# DownloadPulse: self-hosted transfer manager
+# DownloadPulse: all your downloads, one queue.
 # Generic bridge-network example, the same as the README's docker run:
 #   1. cp .env.example .env    (optional: timezone, user and group, public address)
 #   2. docker compose up -d
 # The folders below are created beside this file; point them anywhere you like.
 # On Unraid: /mnt/user/appdata/downloadpulse/... and PUID=99, PGID=100.
+# The image's own health check (GET /api/health) applies; none is needed here.
 
 services:
   downloadpulse:
     image: ghcr.io/xipher-zero/downloadpulse:v1.0.3
-    build: .
     container_name: downloadpulse
     restart: unless-stopped
     ports:
@@ -26,9 +26,3 @@ services:
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
       - CONFIG_PATH=/app/config/config.json
       - DB_PATH=/app/data/downloadpulse.db
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8095/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s

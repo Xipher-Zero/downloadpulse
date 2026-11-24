@@ -14,7 +14,7 @@ Only what Sonarr and Radarr call is answered: ``version``, ``get_config``,
 is declined explicitly. Refusals are SABnzbd's ``{"status": false, "error"}``
 with HTTP 200, the form *arr reports. A ``nzo_id`` is the native job ID: stable
 from queue to history, across restarts and across whatever transfer serves it.
-The full protocol mapping is ``docs/architecture/ARR_SABNZBD_COMPATIBILITY.md``.
+The full protocol mapping is ``docs/internal/architecture/ARR_SABNZBD_COMPATIBILITY.md``.
 """
 from __future__ import annotations
 
