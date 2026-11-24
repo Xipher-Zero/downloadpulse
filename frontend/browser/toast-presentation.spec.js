@@ -152,7 +152,17 @@ test('canonical toast has no dismiss control and independent lifetimes include f
 
 test('desktop structured toast stays in the topbar and resize recomputes a short toast without occupant overlap', async ({ page }) => {
   await page.setViewportSize({width: 1440, height: 900});
+  // The update badge is a topbar occupant too (WS27): shown, from a mocked release record.
+  await page.route(url => url.pathname === '/api/version/check', route => route.fulfill({status: 200,
+    contentType: 'application/json', body: JSON.stringify({checked: true, checked_at: 1, current: '1.0.3',
+      latest: '9.9.9', update_available: true, release_url: null, published_at: null, installer: null,
+      download_offered: false})}));
   await ready(page);
+  const updateNotice = page.locator('.dp-modal-dialog.dp-update-dialog');
+  await expect(updateNotice).toBeVisible();
+  await updateNotice.locator('[data-modal-cancel]').click();
+  await expect(updateNotice).toHaveCount(0);
+  await expect(page.locator('#update-badge')).toBeVisible();
   let node = await create(page, {
     title:'Transfer route updated',
     body:'The selected provider changed while the original source and acquisition history remain available in Details.',
@@ -207,6 +217,18 @@ test('desktop structured toast stays in the topbar and resize recomputes a short
   expect(geometry.rect.right).toBeLessThanOrEqual(geometry.lane.right + 1);
   expect(geometry.rect.top).toBeGreaterThanOrEqual(geometry.lane.top - 1);
   expect(geometry.rect.bottom).toBeLessThanOrEqual(geometry.lane.bottom + 1);
+  expect(geometry.overlaps).toBe(false);
+
+  // The longer en-XA badge at the narrow desktop width: still shown, still no overlap.
+  await clearToasts(page);
+  expect(await page.evaluate(() => window.DPI18n.setLocale('en-XA'))).toBe('en-XA');
+  await expect(page.locator('#update-badge')).toContainText('⟦');
+  await expect(page.locator('#update-badge')).toBeVisible();
+  await settle(page);
+  node = await create(page, 'aria2 queue resumed', 'info');
+  geometry = await inspect();
+  expect(geometry.rect.left).toBeGreaterThanOrEqual(geometry.lane.left - 1);
+  expect(geometry.rect.right).toBeLessThanOrEqual(geometry.lane.right + 1);
   expect(geometry.overlaps).toBe(false);
 });
 

@@ -405,7 +405,12 @@
         if (window.DPMotion) window.DPMotion.restore(overlay, target);
         else { overlay.remove(); if (target) target.focus(); }
         if (!document.querySelector(OVERLAY_SELECTOR)) document.body.classList.remove(BODY_OPEN_CLASS);
-        if (!mounted.length) document.removeEventListener('keydown', onKeydown);
+        if (!mounted.length) {
+          document.removeEventListener('keydown', onKeydown);
+          // The last of these dialogs has gone: a surface that waits for none to
+          // show (the update notice, app.js) may open now.
+          document.dispatchEvent(new CustomEvent('downloadpulse:dialogs-closed'));
+        }
         return document.activeElement;
       });
       resolveClosed(Object.freeze({accepted: accepted === true, gone}));

@@ -153,7 +153,10 @@ jobs:
             # (services.setup_lifecycle) and every spec meets the application
             # as an operator's running installation.
             mkdir -p "${auth_dir}-open"
-            echo '{}' > "${auth_dir}-open/config.json"
+            # Update checks off (WS27): a release newer than the image would open
+            # the update notice over every spec; update-notice.spec.js answers the
+            # record itself.
+            echo '{"update_check_interval_hours": 0}' > "${auth_dir}-open/config.json"
             docker run -d --name "$open_name" -p "127.0.0.1:${open_port}:8095" -v "${auth_dir}-open:/app/config" "$image" || return 1
 
             mkdir -p "$auth_dir"
@@ -165,6 +168,7 @@ jobs:
               "auth_username": "browser",
               "auth_password_hash": hash_password("browser-secret"),
               "auth_oidc_enabled": False,
+              "update_check_interval_hours": 0,
           }))
           ' > "$auth_dir/config.json" || return 1
 

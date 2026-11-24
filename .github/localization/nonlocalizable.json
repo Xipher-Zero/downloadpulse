@@ -18,16 +18,6 @@
    "reason": "Product name (the browser tab title while idle)."
   },
   {
-   "owner": "frontend/static/index.html",
-   "english": "Open the DownloadPulse changelog",
-   "reason": "#update-badge is never shown (a holdover; it carries no update information). Not removed here: unrelated to localization."
-  },
-  {
-   "owner": "frontend/static/index.html",
-   "english": "<a href=\"https://github.com/Xipher-Zero/downloadpulse/blob/main/CHANGELOG.md\" target=\"_blank\" rel=\"noopener\">📦 <span></span> available</a>",
-   "reason": "#update-badge is never shown (see above)."
-  },
-  {
    "owner": "frontend/static/app.js",
    "english": "DownloadPulse icon runtime is unavailable",
    "reason": "Developer invariant: thrown only when operator-title.js failed to load; never shown."
@@ -1883,11 +1873,6 @@
    "reason": "Internal contract guard: an argument or state only DownloadPulse's own code produces, not an operator-facing refusal. Where a response boundary ever forwards it, the response is marked `unclassified` (the explicit fallback) and the interface shows this English detail."
   },
   {
-   "owner": "backend/core/scheduler.py",
-   "english": "GitHub API returned {0}",
-   "reason": "Update-check diagnostic, logged by the scheduler; no interface shows it. Programmatic API contract (no first-party interface reads it): English for API clients, kept apart from interface text."
-  },
-  {
    "owner": "backend/main.py",
    "english": "CORS_ORIGINS=* is refused: DownloadPulse's CORS allows credentials, so a wildcard would let ",
    "reason": "Startup, migration or storage-integrity failure raised outside a request (logged; the process stops or retries). Never a response detail; operator-facing only in the server log, which stays English."
@@ -1906,11 +1891,6 @@
    "owner": "backend/executors/aria2/definition.py",
    "english": "aria2 log and session files are normalized absolute paths",
    "reason": "Internal contract guard: an argument or state only DownloadPulse's own code produces, not an operator-facing refusal. Where a response boundary ever forwards it, the response is marked `unclassified` (the explicit fallback) and the interface shows this English detail."
-  },
-  {
-   "owner": "backend/api/routes.py",
-   "english": "GitHub API ",
-   "reason": "Update-check diagnostic: it ends in the update check's `error` field, which no first-party interface shows (the update badge is retired). Programmatic API contract (no first-party interface reads it): English for API clients, kept apart from interface text."
   },
   {
    "owner": "backend/api/routes.py",

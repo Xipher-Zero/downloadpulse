@@ -317,6 +317,16 @@ body.light :is(.dot.check, .dot.warn) { color: var(--yellow); }
 #topbar-actions .btn svg { width: 15px; height: 15px; }
 
 #update-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid;
+  font-family: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
   min-height: 30px;
   padding: 0 10px !important;
   border-radius: var(--dp-radius-pill) !important;
@@ -325,6 +335,8 @@ body.light :is(.dot.check, .dot.warn) { color: var(--yellow); }
   color: var(--dp-accent-purple-bright) !important;
   font-size: 10px !important;
 }
+#update-badge > span { overflow: hidden; text-overflow: ellipsis; }
+#update-badge[hidden] { display: none; }
 
 #runtime-speed-badge {
   box-sizing: border-box;

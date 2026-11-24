@@ -802,6 +802,207 @@ function askDesktopQuit(nonce) {
   });
 }
 
+/* Update notice (WS27). The backend's one release owner (application.updates)
+ * keeps the latest check's record; an Admin's page reads it (GET
+ * /version/check) once the interface is ready and again on each
+ * update_status signal (a check that changed the record). When a newer release
+ * exists and this browser session (sessionStorage: a tab session; on the
+ * desktop, a launch) has not been shown that version, it opens one dialog of
+ * the dialog owner: "DownloadPulse {latest} is available", what is installed
+ * and the release notes. A server only says so (Close). The desktop
+ * application, where the backend offers it (download_offered: its own window,
+ * an Admin, an installer whose SHA-256 the release states), offers to download
+ * the installer through DownloadPulse -- an ordinary transfer core verifies
+ * against that hash -- shows its progress from the transfer's own row
+ * (GET /torrents/{id}) and, once completed, Show in folder; the person runs the
+ * installer. A refusal or a failed download is said, with the release notes
+ * as the way to get it instead. It never opens over another dialog (the setup
+ * wizard, browser pairing, the desktop Quit prompt): it waits until the dialog
+ * owner says its last dialog closed (downloadpulse:dialogs-closed), and a
+ * dialog opened later stacks above it. After it is dismissed the topbar's
+ * #update-badge keeps the update in view and opens it again. */
+const UPDATE_SHOWN_KEY = 'dp.update.shown';
+const UPDATE_POLL_MS = 2000;
+const DPUpdateNotice = (() => {
+  let record = null;
+  let dialog = null;
+  let waiting = false;
+  const shown = () => { try { return sessionStorage.getItem(UPDATE_SHOWN_KEY) || ''; } catch (_) { return ''; } };
+  const markShown = version => { try { sessionStorage.setItem(UPDATE_SHOWN_KEY, version); } catch (_) {} };
+  const admin = () => Boolean(window.downloadPulseAuth?.can?.('administer'));
+
+  function said(element, key, values) {
+    element.dataset.i18n = key;
+    if (values) element.dataset.i18nValues = JSON.stringify(values);
+    else delete element.dataset.i18nValues;
+    element.textContent = DPI18n.t(key, values || undefined);
+    return element;
+  }
+
+  function paintBadge() {
+    const badge = document.getElementById('update-badge');
+    if (!badge) return;
+    const available = Boolean(record && record.update_available);
+    badge.hidden = !available;
+    if (!available) return;
+    const values = JSON.stringify({version: record.latest});
+    badge.dataset.i18nValues = values;
+    const label = badge.querySelector('[data-update-badge-label]');
+    if (label) label.dataset.i18nValues = values;
+    DPI18n.render(badge);
+  }
+
+  function notesLink(address) {
+    const link = said(document.createElement('a'), 'update.release_notes');
+    link.className = 'dp-update-notes';
+    link.href = address;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.addEventListener('click', event => { event.preventDefault(); openExternalUrl(address); });
+    const line = document.createElement('p');
+    line.className = 'dp-modal-message';
+    line.appendChild(link);
+    return line;
+  }
+
+  function open() {
+    if (!record || !record.update_available || (dialog && dialog.isOpen)) return;
+    if (!window.DPSettingsModal || window.DPSettingsModal.showing()) { waiting = true; return; }
+    waiting = false;
+    markShown(record.latest);
+    const shownRecord = record;
+    const offered = shownRecord.download_offered === true && Boolean(shownRecord.installer);
+    let status = null;
+    let fallback = null;
+    let transferId = null;
+    let completed = false;
+    let timer = null;
+    const stop = () => { if (timer) clearTimeout(timer); timer = null; };
+    const showStatus = (key, values) => {
+      said(status, key, values);
+      status.hidden = false;
+    };
+    // Why it did not download -- a catalog key (the transfer's failure
+    // category) or a refusal's words already said in the reader's language --
+    // and that the release notes are the way to get it instead.
+    const failed = (handle, reason) => {
+      stop();
+      if (reason && typeof reason === 'object') showStatus(reason.key);
+      else {
+        delete status.dataset.i18n;
+        delete status.dataset.i18nValues;
+        status.textContent = String(reason || '');
+        status.hidden = !reason;
+      }
+      fallback.hidden = false;
+      handle.setAcceptHidden(true);
+    };
+    async function follow(handle) {
+      timer = null;
+      if (!handle.isOpen || transferId === null) return;
+      let row;
+      try {
+        row = await api('GET', `/torrents/${transferId}`);
+      } catch (_) {
+        timer = setTimeout(() => follow(handle), UPDATE_POLL_MS * 2);
+        return;
+      }
+      if (!handle.isOpen) return;
+      const state = String(row.presentation_status || row.status || '');
+      if (state === 'completed') {
+        stop();
+        completed = true;
+        showStatus('update.downloaded');
+        const key = 'transfer.action.show_in_folder';
+        handle.setAcceptLabel({key, values: null, toString: () => DPI18n.t(key)});
+        handle.setAcceptEnabled(true);
+        return;
+      }
+      if (['failed', 'error', 'cancelled', 'deleted'].includes(state)) {
+        const category = row.presentation_error_category || row.error_category;
+        failed(handle, category && DPI18n.has(`error_category.${category}`)
+          ? {key: `error_category.${category}`} : String(row.presentation_label || ''));
+        return;
+      }
+      showStatus('update.downloading', {percent: Math.floor(Number(row.progress) || 0)});
+      timer = setTimeout(() => follow(handle), UPDATE_POLL_MS);
+    }
+    const handle = window.DPSettingsModal.open({
+      role: 'dialog',
+      className: 'dp-update-dialog',
+      title: DPI18n.t('update.title', {version: shownRecord.latest}),
+      dismiss: !offered,
+      acceptLabel: offered ? DPI18n.t('update.download') : '',
+      cancelLabel: DPI18n.t(offered ? 'update.not_now' : 'dialog.close'),
+      keys: {title: 'update.title', titleValues: {version: shownRecord.latest},
+        cancel: offered ? 'update.not_now' : 'dialog.close', ...(offered ? {accept: 'update.download'} : {})},
+      mount(body) {
+        const message = said(document.createElement('p'), 'update.body', {current: shownRecord.current});
+        message.className = 'dp-modal-message';
+        body.appendChild(message);
+        const notes = shownRecord.release_url ? notesLink(shownRecord.release_url) : null;
+        if (notes) body.appendChild(notes);
+        status = document.createElement('p');
+        status.className = 'dp-modal-message dp-update-status';
+        status.setAttribute('role', 'status');
+        status.hidden = true;
+        body.appendChild(status);
+        // A refused or failed download: the release notes are the way to get it instead.
+        fallback = said(document.createElement('p'), 'update.download_failed');
+        fallback.className = 'dp-modal-message';
+        fallback.hidden = true;
+        body.appendChild(fallback);
+        return null;
+      },
+      async onAccept(dialogHandle) {
+        if (completed) {
+          await DPDesktopReveal.show(transferId, null);
+          return true;
+        }
+        dialogHandle.setAcceptEnabled(false);
+        showStatus('update.starting');
+        try {
+          const started = await api('POST', '/desktop/update/download', null, 30000);
+          transferId = Number(started.id ?? started.transfer_id);
+        } catch (error) {
+          failed(dialogHandle, sanitizeErrorMsg(error.message));
+          return false;
+        }
+        follow(dialogHandle);
+        return false;   // the dialog stays open with the download's progress
+      },
+    });
+    dialog = handle;
+    handle.closed.then(() => { stop(); if (dialog === handle) dialog = null; });
+  }
+
+  async function read({reopen = false} = {}) {
+    if (!admin()) return;
+    let answer;
+    try {
+      answer = await api('GET', '/version/check');
+    } catch (_) {
+      return;   // the badge and the dialog keep what they last showed
+    }
+    record = answer && answer.checked ? answer : null;
+    paintBadge();
+    if (record && record.update_available && (reopen || shown() !== record.latest)) open();
+  }
+
+  // The setup wizard opens at boot (DPSetupWizard.started) and the interface's
+  // readiness waits for it, so the first read never races an unfinished setup;
+  // while the wizard (or any dialog) shows, the notice waits.
+  document.addEventListener('downloadpulse:interface-ready', () => { read(); }, {once: true});
+  // The trigger for a deferred notice: the dialog owner's last dialog closed.
+  document.addEventListener('downloadpulse:dialogs-closed', () => { if (waiting) open(); });
+  return Object.freeze({
+    read,
+    // The topbar badge: the same dialog again, from the record this page holds.
+    open: () => { if (record) open(); else read({reopen: true}); },
+  });
+})();
+window.DPUpdateNotice = DPUpdateNotice;
+
 async function api(method, path, body, timeoutMs, options) {
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
   // A file sent as itself: the raw body, typed by the file.
@@ -4580,6 +4781,12 @@ document.addEventListener('DOMContentLoaded', () => {
             document.dispatchEvent(new CustomEvent('downloadpulse:pulse-heartbeat'));
           }
         );
+
+        // The latest release's record changed (a check completed after this
+        // page loaded): the update notice reads it again. Sent to Admins only.
+        es.addEventListener('update_status', function() {
+          DPUpdateNotice.read();
+        });
 
         // The desktop window was closed where no tray can open it again: its
         // own page (the server sends no other) asks whether to quit, with the
