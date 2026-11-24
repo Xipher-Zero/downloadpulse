@@ -238,8 +238,21 @@ jobs:
       # Any CPython 3.12 runs assemble.py; the application's own runtime is the
       # pinned python-build-standalone 3.12.14 it fetches.
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: runner.os != 'macOS'
         with:
           python-version: "3.12"
+      # The self-hosted Mac has no administrator rights for setup-python's
+      # installer (it writes under the hosted image's /Users/runner): uv, on the
+      # runner's PATH, provides CPython 3.12 in the runner's own home instead.
+      - name: CPython 3.12 (self-hosted Mac, through uv)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          uv python install 3.12
+          py="$(uv python find 3.12)"
+          bin="$RUNNER_TEMP/python-bin"; mkdir -p "$bin"
+          ln -sf "$py" "$bin/python"; ln -sf "$py" "$bin/python3"
+          echo "$bin" >> "$GITHUB_PATH"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
