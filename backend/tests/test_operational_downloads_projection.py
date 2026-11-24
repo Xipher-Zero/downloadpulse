@@ -227,9 +227,12 @@ def test_download_detail_explicitly_requests_comprehensive_presentation():
     # the execution-admission owner's own positive record
     # (transfers.convergence_engine.TransferEngine.capacity_only_blocked_ids);
     # with no engine attached here it degrades to the conservative empty set.
+    # It alone asks for the presented error's identity, for Details' Reason
+    # (1.0.3): no other presentation reads it.
     assert repository.calls == [(42, {
         "details": True,
         "capacity_only_blocked_ids": frozenset(),
+        "error_identity": True,
     })]
     assert result["id"] == 42
 

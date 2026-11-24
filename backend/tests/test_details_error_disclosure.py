@@ -215,8 +215,24 @@ async def test_details_reason_is_cores_selection_and_a_changed_failure_names_not
     closed, never to another failure's words."""
     error = _challenge()
     _store(721, error)
-    presented = await repository.presentation(721, details=True)
+    presented = await repository.presentation(721, details=True, error_identity=True)
     assert await repository.failure_reason(721, presented) == (error, None)
+    # Only the Details route asks for it: any other Details presentation (the
+    # event stream's, ``application.observability``) never selects the failure
+    # again, and names nothing for a Reason.
+    selections = []
+    selected_failure = repository._selected_failure
+
+    async def counted(*args):
+        selections.append(args)
+        return await selected_failure(*args)
+
+    repository._selected_failure = counted
+    plain = await repository.presentation(721, details=True)
+    assert selections == [] and "presentation_error_identity" not in plain
+    assert plain["presentation_error_category"] == presented["presentation_error_category"]
+    assert await repository.failure_reason(721, plain) is None
+    del repository._selected_failure
     # That identity is core's alone: neither the Details payload nor the event
     # stream's projection (``public_payload``) carries it.
     from api.serializers import public_payload
@@ -239,7 +255,8 @@ async def test_details_reason_is_cores_selection_and_a_changed_failure_names_not
         conn.commit()
         conn.close()
         assert await repository.failure_reason(721, presented) is None
-        assert await repository.failure_reason(721, await repository.presentation(721, details=True)) == (other, None)
+        assert await repository.failure_reason(
+            721, await repository.presentation(721, details=True, error_identity=True)) == (other, None)
 
 
 @pytest.mark.asyncio

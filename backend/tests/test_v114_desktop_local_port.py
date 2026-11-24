@@ -286,7 +286,8 @@ async def test_a_relayed_connection_reads_as_local_port_until_after_the_backend_
 @pytest.mark.asyncio
 async def test_stop_cancels_every_pending_forget():
     """A relayed address still to be forgotten is a timer the listener owns:
-    ``stop`` cancels each one and leaves none pending."""
+    ``stop`` cancels each one, leaves none pending and forgets the address
+    with it."""
     from application import desktop_listener
 
     relay = desktop_listener.LocalListener()
@@ -306,7 +307,9 @@ async def test_stop_cancels_every_pending_forget():
         while not relay._forgetting:                # the relay has closed its side and scheduled the forget
             await asyncio.sleep(0.01)
         pending = list(relay._forgetting)
+        assert relay._relayed
         await relay.stop()
         assert not relay._forgetting and all(handle.cancelled() for handle in pending)
+        assert not relay._relayed
     finally:
         server.close()

@@ -75,6 +75,8 @@ NATIVE_METHODS = ("os.setTray", "os.showNotification", "window.show", "window.hi
                   "window.setFrameTheme")
 # How long a Save dialog may stay open: the person's own time.
 DIALOG_SECONDS = 600
+# How long Quit waits for the loop's background work once it is cancelled.
+BACKGROUND_END_SECONDS = 2
 # Each log file's bound, and how many earlier files are kept beside it.
 LOG_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
@@ -1317,7 +1319,7 @@ def open_methods(*, hidden: bool, minimized: bool) -> tuple[str, ...]:
 
 def backend_argv(paths: dict[str, Path], port: int) -> list[str]:
     return [sys.executable, "-I", "-m", "uvicorn", "main:app", "--app-dir", str(paths["backend"]),
-            "--host", "127.0.0.1", "--port", str(port), "--workers", "1", "--no-access-log",
+            "--host", "127.0.0.1", "--port", str(port), "--workers", "1", "--no-access-log", "--no-proxy-headers",
             "--timeout-graceful-shutdown", str(GRACEFUL_SECONDS)]
 
 
@@ -1368,11 +1370,15 @@ class ChildLog:
         self._file.close()
 
 
-def diagnostics_handler(root: Path) -> logging.Handler:
+def diagnostics_handler(root: Path, *, rotating: bool = True) -> logging.Handler:
     """The supervisor's own log, ``logs/desktop.log``: size-rotated like the
-    children's (LOG_BYTES, LOG_BACKUPS)."""
+    children's (LOG_BYTES, LOG_BACKUPS) by the instance that holds the
+    single-instance lock. Another (``rotating=False``) only appends to it --
+    a ``maxBytes`` of 0 never rolls over -- so it never moves the running
+    instance's log aside."""
     (root / "logs").mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(root / "logs" / "desktop.log", maxBytes=LOG_BYTES,
+    handler = logging.handlers.RotatingFileHandler(root / "logs" / "desktop.log",
+                                                   maxBytes=LOG_BYTES if rotating else 0,
                                                    backupCount=LOG_BACKUPS, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     return handler
@@ -1448,10 +1454,11 @@ async def start_failure_notice(words: "Words | None", platform: str = sys.platfo
 async def run() -> int:
     paths = layout()
     root = data_root()
-    # The log first: whatever happens from here on -- another instance
-    # running, a start that fails -- is in it.
-    logger.addHandler(diagnostics_handler(root))
     lock = single_instance(root)
+    # The log, before anything else is said: whatever happens from here on --
+    # another instance running, a start that fails -- is in it. Only the
+    # instance holding the lock rotates it; another appends its line alone.
+    logger.addHandler(diagnostics_handler(root, rotating=lock is not None))
     if lock is None:
         if sys.platform.startswith("linux") and await SessionBus.activate_running():
             return 0      # the running instance opens its window
@@ -1590,7 +1597,8 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
     next_show = time.monotonic() + SHOW_POLL_SECONDS
     # Work this loop starts and does not wait for (a Show in folder, a save's
     # dialog): each task is held here until it ends, so it cannot be collected
-    # while it runs, and a failure is logged, never left unretrieved.
+    # while it runs, and a failure is logged, never left unretrieved; Quit
+    # cancels and awaits what is still running (``_end_background``).
     running: set[asyncio.Task] = set()
 
     def in_background(work, what: str) -> None:
@@ -1616,98 +1624,119 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
         for method in methods:
             await _window(shell, method)
 
-    while backend.process.returncode is None:
-        try:
-            event, data = await asyncio.wait_for(shell.events.get(),
-                                                 max(0.1, min(next_poll, next_show) - time.monotonic()))
-        except TimeoutError:
-            event, data = None, None
-        if event in {"windowMinimize", "windowRestore"}:
-            minimized = event == "windowMinimize"
-        elif event == "windowClose":
-            if native.tray_shown:
-                # Hidden where the tray can open it again.
-                hidden = True
-                await _window(shell, "window.hide")
-            elif sys.platform.startswith("linux") and (await channel.ask("quit_prompt")).get("prompted"):
-                # No tray to open it again (a desktop without one: stock
-                # GNOME): closing is Quit, once the person confirms it in the
-                # window's own page, which stays up to ask (the answer comes
-                # with ``show``: ``quit``).
-                logger.info("the window was closed with no tray: its page asks whether to quit")
-            else:
-                # No page can ask (none loaded, signed out), or Windows and
-                # macOS: the window stays one click away, minimized, and
-                # DownloadPulse keeps running.
-                await _window(shell, "window.minimize")
-                minimized = True
-        elif event == "trayAvailability" and not (data or {}).get("shown") and hidden:
-            # The tray went away while it was the only way back: the window
-            # returns, minimized, where the desktop can still open it.
-            logger.warning("the tray went away while the window was hidden; showing it minimized")
-            hidden, minimized = False, True
-            for method in ("window.show", "window.minimize"):
-                await _window(shell, method)
-        elif event == "mainMenuItemClicked" and (data or {}).get("id") == "quit":
-            logger.info("Quit (the application menu, Cmd+Q)")
-            return 0
-        elif event == "trayMenuItemClicked":
-            chosen = (data or {}).get("id")
-            if chosen == "open":
-                await bring_forward("Open")
-            elif chosen in {"pause", "resume"}:
-                await channel.ask(chosen)
-                next_poll = 0
-            elif chosen == "quit":
-                logger.info("Quit (the tray)")
+    try:
+        while backend.process.returncode is None:
+            try:
+                event, data = await asyncio.wait_for(shell.events.get(),
+                                                     max(0.1, min(next_poll, next_show) - time.monotonic()))
+            except TimeoutError:
+                event, data = None, None
+            if event in {"windowMinimize", "windowRestore"}:
+                minimized = event == "windowMinimize"
+            elif event == "windowClose":
+                if native.tray_shown:
+                    # Hidden where the tray can open it again.
+                    hidden = True
+                    await _window(shell, "window.hide")
+                elif sys.platform.startswith("linux") and (await channel.ask("quit_prompt")).get("prompted"):
+                    # No tray to open it again (a desktop without one: stock
+                    # GNOME): closing is Quit, once the person confirms it in the
+                    # window's own page, which stays up to ask (the answer comes
+                    # with ``show``: ``quit``).
+                    logger.info("the window was closed with no tray: its page asks whether to quit")
+                else:
+                    # No page can ask (none loaded, signed out), or Windows and
+                    # macOS: the window stays one click away, minimized, and
+                    # DownloadPulse keeps running.
+                    await _window(shell, "window.minimize")
+                    minimized = True
+            elif event == "trayAvailability" and not (data or {}).get("shown") and hidden:
+                # The tray went away while it was the only way back: the window
+                # returns, minimized, where the desktop can still open it.
+                logger.warning("the tray went away while the window was hidden; showing it minimized")
+                hidden, minimized = False, True
+                for method in ("window.show", "window.minimize"):
+                    await _window(shell, method)
+            elif event == "mainMenuItemClicked" and (data or {}).get("id") == "quit":
+                logger.info("Quit (the application menu, Cmd+Q)")
                 return 0
-        elif event == "quitRequested":
-            logger.info("Quit (%s)", (data or {}).get("signal"))
-            return 0
-        elif event == "shellClosed":
-            # The shell ended by itself (macOS: its own termination, the Dock's
-            # Quit); its exit status is recorded where it ends (_end_shell).
-            logger.info("the native shell ended by itself")
-            return 0
-        if time.monotonic() >= next_show:
-            asked = await channel.ask("show")
-            if asked.get("quit"):
-                # The window's own page confirmed Quit (a close with no tray).
-                logger.info("Quit (confirmed in the window)")
+            elif event == "trayMenuItemClicked":
+                chosen = (data or {}).get("id")
+                if chosen == "open":
+                    await bring_forward("Open")
+                elif chosen in {"pause", "resume"}:
+                    await channel.ask(chosen)
+                    next_poll = 0
+                elif chosen == "quit":
+                    logger.info("Quit (the tray)")
+                    return 0
+            elif event == "quitRequested":
+                logger.info("Quit (%s)", (data or {}).get("signal"))
                 return 0
-            # A connected browser's Open DownloadPulse: the tray's Open.
-            if asked.get("show"):
-                await bring_forward("Open (a connected browser)")
-            # Show in folder, asked in the window: the file manager, on its own.
-            if asked.get("reveal"):
-                in_background(show_in_folder(asked["reveal"]), "Show in folder")
-            next_show = time.monotonic() + SHOW_POLL_SECONDS
-        if time.monotonic() >= next_poll:
-            batch = await channel.ask("events", after=cursor)
-            cursor = batch.get("cursor", cursor)
-            for title, body in notices(batch.get("events") or [], words):
-                await native.notice(title, body)
-            current = (await channel.ask("status")).get("status")
-            # The tray in the language the interface is shown in: a change there is redrawn now.
-            relabel = words.choose((await channel.ask("locale")).get("locale"))
-            if current != status or relabel or not native.tray_shown:
-                status = current
-                await native.tray(tray_menu(status, words))
-            if relabel and sys.platform == "darwin":
-                # macOS: the application menu (its Quit) speaks the new language too.
-                await _window(shell, "window.setMainMenu", main_menu(words))
-            # The window frame in the page's theme, whenever the page says a new one.
-            frame = (await channel.ask("frame")).get("frame")
-            if frame and frame != applied_frame:
-                applied_frame = frame
-                await apply_frame(shell, frame)
-            # Desktop saves waiting for a destination: each in its own task, so
-            # the window and tray stay live while its dialog is open.
-            for waiting in (await channel.ask("saves")).get("saves") or []:
-                in_background(_save(channel, native, words, waiting), "A desktop save")
-            next_poll = time.monotonic() + POLL_SECONDS
-    logger.error("the DownloadPulse backend ended on its own (%s)", backend.process.returncode)
-    return 1
+            elif event == "shellClosed":
+                # The shell ended by itself (macOS: its own termination, the Dock's
+                # Quit); its exit status is recorded where it ends (_end_shell).
+                logger.info("the native shell ended by itself")
+                return 0
+            if time.monotonic() >= next_show:
+                asked = await channel.ask("show")
+                if asked.get("quit"):
+                    # The window's own page confirmed Quit (a close with no tray).
+                    logger.info("Quit (confirmed in the window)")
+                    return 0
+                # A connected browser's Open DownloadPulse: the tray's Open.
+                if asked.get("show"):
+                    await bring_forward("Open (a connected browser)")
+                # Show in folder, asked in the window: the file manager, on its own.
+                if asked.get("reveal"):
+                    in_background(show_in_folder(asked["reveal"]), "Show in folder")
+                next_show = time.monotonic() + SHOW_POLL_SECONDS
+            if time.monotonic() >= next_poll:
+                batch = await channel.ask("events", after=cursor)
+                cursor = batch.get("cursor", cursor)
+                for title, body in notices(batch.get("events") or [], words):
+                    await native.notice(title, body)
+                current = (await channel.ask("status")).get("status")
+                # The tray in the language the interface is shown in: a change there is redrawn now.
+                relabel = words.choose((await channel.ask("locale")).get("locale"))
+                if current != status or relabel or not native.tray_shown:
+                    status = current
+                    await native.tray(tray_menu(status, words))
+                if relabel and sys.platform == "darwin":
+                    # macOS: the application menu (its Quit) speaks the new language too.
+                    await _window(shell, "window.setMainMenu", main_menu(words))
+                # The window frame in the page's theme, whenever the page says a new one.
+                frame = (await channel.ask("frame")).get("frame")
+                if frame and frame != applied_frame:
+                    applied_frame = frame
+                    await apply_frame(shell, frame)
+                # Desktop saves waiting for a destination: each in its own task, so
+                # the window and tray stay live while its dialog is open.
+                for waiting in (await channel.ask("saves")).get("saves") or []:
+                    in_background(_save(channel, native, words, waiting), "A desktop save")
+                next_poll = time.monotonic() + POLL_SECONDS
+        logger.error("the DownloadPulse backend ended on its own (%s)", backend.process.returncode)
+        return 1
+    finally:
+        # Quit, first of all: the work this loop started ends with it, while
+        # the channel and the shell it may still use are up.
+        await _end_background(running)
+
+
+async def _end_background(tasks: set[asyncio.Task]) -> None:
+    """At Quit, the loop's own background work (a Show in folder, a save's
+    dialog) is cancelled and awaited, at most BACKGROUND_END_SECONDS: a save
+    still in its dialog answers the backend that it was cancelled, a file
+    manager already started is left to itself. Nothing is killed; work that
+    does not end in time is said in the log and left to the run's end."""
+    pending = [task for task in tasks if not task.done()]
+    for task in pending:
+        task.cancel()
+    if not pending:
+        return
+    _done, unfinished = await asyncio.wait(pending, timeout=BACKGROUND_END_SECONDS)
+    if unfinished:
+        logger.warning("%s background task(s) did not end in %ss at Quit", len(unfinished), BACKGROUND_END_SECONDS)
 
 
 async def apply_frame(shell: "Shell", frame: dict) -> None:

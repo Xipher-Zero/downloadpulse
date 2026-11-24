@@ -31,8 +31,6 @@ from transfers.errors import (
     TransferError,
 )
 
-from core.desktop_storage import persists
-
 logger = logging.getLogger("downloadpulse.storage")
 _GIB = 1024 ** 3
 _PROBE_PAYLOAD = b"downloadpulse-storage-probe\n"
@@ -229,6 +227,17 @@ def classify_sqlite_storage_fault(exc: BaseException) -> FaultClassification | N
         if "unable to open database file" in message:
             return FaultClassification(StorageState.UNAVAILABLE, StorageReason.SQLITE_OPEN_FAILED)
     return None
+
+
+def persists(path, roots: tuple[Path, ...] | None) -> bool:
+    """Whether files kept at ``path`` (already resolved) outlive the application:
+    always when ``roots`` is ``None`` (nothing is restricted), else inside one
+    of the folders that keep them, by whole path components (never a string
+    prefix). Which folders those are is the composition's to say."""
+    if roots is None:
+        return True
+    candidate = Path(path)
+    return any(candidate == root or candidate.is_relative_to(root) for root in roots)
 
 
 class DiskCapacity:

@@ -8,9 +8,10 @@ is the sandbox's own and gone when the application exits (1.0.3, review
 sandbox's permissions persist; ``/.flatpak-info`` states them, overrides
 included. Anywhere else nothing is restricted.
 
-The one owner of these facts: the Download Storage validator
-(``transfers.storage``) refuses a folder outside them, and the directory
-browser and the setup wizard start from ``desktop_start_directory``.
+The one owner of these facts: the composition hands them to the Download
+Storage validator (``transfers.storage``, which owns whether a folder
+``persists`` among given roots) and it refuses a folder outside them; the
+directory browser and the setup wizard start from ``desktop_start_directory``.
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ import functools
 import os
 import sys
 from pathlib import Path
+
+from transfers.storage import persists
 
 FLATPAK_INFO = Path("/.flatpak-info")
 
@@ -145,16 +148,6 @@ def sandbox_persistent_roots() -> tuple[Path, ...] | None:
     except OSError:
         return None
     return parse_flatpak_filesystems(text)
-
-
-def persists(path, roots: tuple[Path, ...] | None) -> bool:
-    """Whether files kept at ``path`` (already resolved) outlive the application:
-    always when ``roots`` is ``None``, else inside one of them, by whole path
-    components (never a string prefix)."""
-    if roots is None:
-        return True
-    candidate = Path(path)
-    return any(candidate == root or candidate.is_relative_to(root) for root in roots)
 
 
 def desktop_start_directory(roots: tuple[Path, ...] | None = None) -> Path | None:

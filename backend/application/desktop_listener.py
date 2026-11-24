@@ -200,6 +200,7 @@ class LocalListener:
             for pending in self._forgetting:
                 pending.cancel()
             self._forgetting.clear()
+            self._relayed.clear()            # no address it carried reads as relayed once it has stopped
             if server is None:
                 return
             server.close()
@@ -231,14 +232,19 @@ def internal_port() -> int | None:
         return None
 
 
-def window_request(client) -> bool:
+def window_request(request) -> bool:
     """Whether a request came to the window's own address -- the private port
     the supervisor loads the window from (``http://127.0.0.1:<port>/``) -- and
     not through Local Port. Decided by the connection it arrived on, never by
     anything its client sent (a ``Host`` header is the client's to write):
-    ``client`` is the request's peer address (ASGI ``scope["client"]``), and
-    a request Local Port carried arrives from one of the relay's own
-    connections (``LocalListener.relays``). (A browser pointed at the private
+    ``request.client`` is the request's peer address (ASGI ``scope["client"]``,
+    which the supervisor's uvicorn never rewrites from a forwarding header:
+    ``--no-proxy-headers``), and a request Local Port carried arrives from one
+    of the relay's own connections (``LocalListener.relays``). The window
+    sends no forwarding header, so a request carrying one (``X-Forwarded-For``,
+    ``Forwarded``) is never the window's. (A browser pointed at the private
     port by hand would come to it directly too; that port is picked afresh
     each run and published nowhere but the window's own address.)"""
-    return internal_port() is not None and client is not None and not listener.relays(client)
+    client = request.client
+    return (internal_port() is not None and client is not None and not listener.relays(client)
+            and "x-forwarded-for" not in request.headers and "forwarded" not in request.headers)

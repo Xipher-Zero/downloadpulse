@@ -3265,21 +3265,24 @@ class TransferEngine:
 
     async def _retire_lost_writer(self, artifact: Artifact, observed: ExecutionObservation,
                                   *, prior_states: frozenset) -> bool:
-        """A writer whose native job is found gone where that is expected, not
-        a failure of the transfer, so it is not handed to recovery as an
-        orphan (no failure counted, no backoff). Two cases, by the durable
-        state the writer last had (``prior_states``, read before this
-        observation is recorded):
+        """A writer whose native job is found gone where that is expected, so
+        it is not handed to recovery as an orphan (no backoff). Two cases, by
+        the durable state the writer last had (``prior_states``, read before
+        this observation is recorded):
 
         * PAUSED -- a writer Pause parked, of an executor that keeps no paused
           job across its own restart: its material was checkpointed when it
-          parked, so it lost nothing DownloadPulse owns;
+          parked, so it lost nothing DownloadPulse owns, and no failure is
+          counted;
         * any nonterminal state, at startup reconciliation -- the writer of
           the previous process, whose executor no longer holds the job. It is
           rebuilt from the material startup reconciliation just established,
           as the post-backoff orphan path would rebuild it, minus the backoff
-          wait and the counted failure (so a crash loop around one writer is
-          no longer bounded by the orphan budget). An executor whose first
+          wait. The rebuild still counts one failure against the source's
+          no-progress budget (``TransferEngine._plan_after_reconcile``), so a
+          normal restart resumes at once while a crash loop around one writer
+          that never progresses ends, once that budget is spent, where any
+          spent budget ends (Requires attention). An executor whose first
           answer after its restart is UNKNOWN never reaches here.
 
         The absence is recorded and the writer detached exactly as Pause

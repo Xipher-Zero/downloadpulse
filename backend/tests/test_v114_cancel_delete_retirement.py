@@ -127,3 +127,45 @@ def test_a_retained_obligation_is_resolved_from_durable_state_after_a_restart(tm
     after = world("restart-after", tmp_path)["after restart"]
     assert not after["material"] and after["cleanup"]["cleanup_state"] == "complete"
     assert after["unrelated"] and after["files"] == ["unrelated.bin"]
+
+
+def test_retry_refuses_a_cancelled_transfer_by_name_even_while_it_awaits_an_input_and_a_resource():
+    """Cancelled is decided first: a cancelled transfer that still holds an
+    input question and a provider resource awaiting cleanup is refused as
+    ``transfer.retry_cancelled``, never answered with a silent no-op. The
+    engine's own ``retry`` runs against a repository and challenge store that
+    report exactly that, and nothing past the refusal is consulted."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from core.localization import code_of
+    from transfers.convergence_engine import TransferEngine
+    from transfers.models import TransferState
+
+    consulted = []
+
+    class Repository:
+        async def get(self, transfer_id):
+            return SimpleNamespace(id=transfer_id, state=TransferState.CANCELLED, epoch=1)
+
+        async def resources(self, transfer_id):
+            consulted.append("resources")
+            return ((object(), None, "provider_cleanup"),)
+
+        async def artifacts(self, transfer_id):
+            consulted.append("artifacts")
+            return ()
+
+    class Challenges:
+        async def current(self, transfer_id):
+            consulted.append("challenge")
+            return object()
+
+    engine = SimpleNamespace(_transfer_locks={}, repository=Repository(), challenges=Challenges())
+    try:
+        asyncio.run(TransferEngine.retry(engine, 7))
+    except ValueError as exc:
+        refused = code_of(exc)[0]
+    else:
+        refused = None
+    assert refused == "transfer.retry_cancelled" and consulted == []

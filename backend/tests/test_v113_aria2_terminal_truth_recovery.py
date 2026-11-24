@@ -14,8 +14,10 @@ terminal record exists".
 A current-generation attempt this engine admitted that then disappears with no
 progress is a failure of the selected execution path: it consumes the ordinary
 bounded no-progress budget, so repeated disappearance reaches the verified
-alternate. A historical handle found missing by startup reconciliation stays
-infrastructure reconciliation and consumes nothing.
+alternate. A historical handle found missing by startup reconciliation is
+rebuilt at once; since 1.0.3 WS24 (operator, 2026-11-23) that rebuild counts
+one failure against the same budget, so a crash loop is bounded, but it is
+never delayed. One whose executor first answers UNKNOWN consumes nothing.
 """
 from __future__ import annotations
 
@@ -121,15 +123,17 @@ async def _restarted(ctx, tmp_path):
     return repository, engine, spools
 
 
-async def test_c4_a_historical_handle_missing_at_startup_consumes_no_source_budget(tmp_path, monkeypatch):
+async def test_c4_a_historical_handle_missing_at_startup_counts_once_and_is_rebuilt_at_once(tmp_path, monkeypatch):
     ctx = await build(tmp_path, monkeypatch)
     _transfer, artifact = await admit(ctx)
     repository, engine, _spools = await _restarted(ctx, tmp_path)  # the daemon's jobs did not survive
     ctx.clock[0] += 6
     await engine.reconcile_executions()
     context = await repository.recovery_context(artifact.id)
-    assert int(context.get("consecutive_no_progress_failures") or 0) == 0
-    assert int(context.get("same_signature_failures") or 0) == 0
+    assert int(context.get("consecutive_no_progress_failures") or 0) == 1
+    assert int(context.get("same_signature_failures") or 0) == 1
+    assert context.get("quiescence_reason") is None
+    assert context["last_execution_retirement_reason"] == "startup_writer_lost"
 
 
 async def test_c4_a_historical_handle_first_unknown_then_missing_consumes_no_source_budget(tmp_path, monkeypatch):

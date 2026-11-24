@@ -59,8 +59,9 @@ _TRANSIENT_HANDOFF_REFUSALS = frozenset({
 # The triggers at which a writer found ABSENT is detached and rebuilt from DP
 # material instead of handed to recovery as an orphan, by the durable state it
 # last had (``_retire_lost_writer``): Resume, of a writer Pause parked; startup
-# reconciliation, of any nonterminal writer of the previous process. Any other
-# ABSENT is an orphan.
+# reconciliation, of any nonterminal writer of the previous process -- whose
+# rebuild counts against the no-progress budget but is never delayed
+# (``_plan_after_reconcile``). Any other ABSENT is an orphan.
 _LOST_WRITER_PRIOR_STATES = {
     RecoveryTrigger.RESUME: frozenset({ExecutionState.PAUSED}),
     RecoveryTrigger.STARTUP_RECONCILE: frozenset({
@@ -334,6 +335,7 @@ class TransferEngine(_QualifiedTransferEngine):
         outcome: str = "decision_applied",
         retirement_reason: str | None = None,
         refused_candidate: str | None = None,
+        undelayed: bool = False,
     ) -> _Step:
         applied, action, reason, candidate_changed = await self._decide_and_apply(
             claim,
@@ -345,6 +347,7 @@ class TransferEngine(_QualifiedTransferEngine):
             force_executor_not_ready=force_executor_not_ready,
             force_storage_not_ready=force_storage_not_ready,
             refused_candidate=refused_candidate,
+            undelayed=undelayed,
         )
         return _Step(
             True,
@@ -368,6 +371,7 @@ class TransferEngine(_QualifiedTransferEngine):
         force_executor_not_ready: bool = False,
         force_storage_not_ready: bool = False,
         refused_candidate: str | None = None,
+        undelayed: bool = False,
     ) -> tuple[bool, str, str, bool]:
         """Use canonical policy; this method owns application context, not policy.
 
@@ -375,7 +379,12 @@ class TransferEngine(_QualifiedTransferEngine):
         fresh execution material for that candidate, asked for by a dispatch
         under ``claim`` (``ProviderIssuanceRefusal``) -- one new failure
         occurrence, however often this claim reports it, and attributed to the
-        candidate refused even when a decision has since selected another."""
+        candidate refused even when a decision has since selected another.
+
+        ``undelayed``: the failure counts and the policy decides as for any
+        other, but a retry it would only delay (its ``retry_backoff``) is made
+        now -- startup's rebuild of a lost writer (``_plan_after_reconcile``).
+        A spent budget still decides what it always does."""
         error = self.policy.compatibility(error)
         occurrence = f"{claim.generation}/{refused_candidate}" if refused_candidate is not None else None
         failure_identity = self._failure_identity(artifact, error, observed, occurrence=occurrence)
@@ -423,6 +432,8 @@ class TransferEngine(_QualifiedTransferEngine):
             ),
         )
         decision = self.policy.recover(error, context, self.clock())
+        if undelayed and decision.quiescence_reason == "retry_backoff":
+            decision = replace(decision, retry_at=self.clock(), quiescence_reason=None, wake_condition=None)
         decision_id = f"{current.id}:{context.recovery_epoch}:{failure_identity}:{decision.action.value}"
         if not await self.repository.record_phase3_decision(
             claim,
@@ -954,6 +965,25 @@ class TransferEngine(_QualifiedTransferEngine):
                          refresh_reason, refresh_reason,
                          retirement_reason=retirement_reason)
 
+        if (error is None and retirement_reason == "startup_writer_lost" and observed is not None
+                and current.state != "paused"):
+            # Startup found the previous process's writer gone and detached it
+            # (``_retire_lost_writer``): its rebuild counts against the
+            # source's no-progress budget as that attempt's orphaning, but is
+            # never delayed. A normal restart resumes at once; a crash loop
+            # around one writer that never progresses spends the budget and
+            # ends where the policy ends any spent budget (Requires attention).
+            lost = self._orphaned_error(observed.handle.executor_id)
+            return await self._decision_step(
+                claim,
+                replace(current, execution=observed.handle),     # the failure is that attempt's
+                lost,
+                observed=observed,
+                count_failure=True,
+                retirement_reason=retirement_reason,
+                undelayed=True,
+            )
+
         if error is not None:
             return await self._decision_step(
                 claim,
@@ -1305,8 +1335,9 @@ class TransferEngine(_QualifiedTransferEngine):
                       and await self._retire_lost_writer(
                           current, observed, prior_states=_LOST_WRITER_PRIOR_STATES[trigger])):
                     # Resume found the job Pause parked gone, or startup found
-                    # the previous process's writer gone: no orphan, no
-                    # backoff -- a fresh writer continues from DP material.
+                    # the previous process's writer gone: no orphan backoff --
+                    # a fresh writer continues from DP material (startup's
+                    # rebuild is counted, ``_plan_after_reconcile``).
                     current = await self._current_artifact(current.transfer_id, current.id)
                     if current is None:
                         return None, error, observed, _Step(
@@ -1663,6 +1694,14 @@ class TransferEngine(_QualifiedTransferEngine):
                 return await self._reconsider_unverified_associations(transfer)
             if transfer.state == TransferState.DELETED:
                 return False
+            # A cancelled transfer is final (1.0.3): its stopped execution's
+            # partial material is reclaimed (``_retire_stopped_execution_material``),
+            # so nothing may reopen it -- not even a recovery reason it held before
+            # the cancel, nor an input or a resource it still awaits -- and Retry
+            # refuses by name rather than report a success that changed nothing.
+            if transfer.state == TransferState.CANCELLED:
+                raise CodedValueError("A cancelled download cannot be retried. Add it again to download it.",
+                                      code="transfer.retry_cancelled")
             if await self.challenges.current(transfer_id):
                 return False
             if any(
@@ -1670,14 +1709,6 @@ class TransferEngine(_QualifiedTransferEngine):
                 in await self.repository.resources(transfer_id)
             ):
                 return False
-            # A cancelled transfer is final (1.0.3): its stopped execution's
-            # partial material is reclaimed (``_retire_stopped_execution_material``),
-            # so nothing may reopen it -- not even a recovery reason it held before
-            # the cancel -- and Retry refuses by name rather than report a success
-            # that changed nothing.
-            if transfer.state == TransferState.CANCELLED:
-                raise CodedValueError("A cancelled download cannot be retried. Add it again to download it.",
-                                      code="transfer.retry_cancelled")
             artifacts = await self.repository.artifacts(transfer_id)
             if artifacts and not await self._retry_actionable(artifacts):
                 # Nothing to reacquire: Retry re-runs post-processing alone,

@@ -1328,6 +1328,7 @@ async def get_torrent(torrent_id: int, application: ApplicationService = Depends
     item = await application.repository.presentation(
         torrent_id, details=True,
         capacity_only_blocked_ids=dispatch_admission.capacity_only_blocked_ids(engine),
+        error_identity=True,         # for Details' Reason (``_error_reason``) alone
     )
     if item is None:
         raise DisplayError(404, "Transfer not found", code="transfer.not_found")
@@ -1515,7 +1516,7 @@ async def desktop_quit(body: DesktopQuit, request: Request):
     _require_desktop("Only the desktop application has a window to quit.", "desktop.quit_only")
     from application.desktop_control import request_quit
     from application.desktop_listener import window_request
-    if not window_request(request.client):
+    if not window_request(request):
         raise DisplayError(403, "Only the DownloadPulse window can quit it.", code="desktop.quit_window_only")
     if not request_quit(body.nonce):
         raise DisplayError(409, "This request to quit has expired. Close the window again to quit.",
@@ -1544,7 +1545,7 @@ async def desktop_reveal(body: DesktopReveal, request: Request,
     _require_desktop("Show in folder is only available in the desktop application.", "desktop.reveal_only")
     from application.desktop_control import request_reveal
     from application.desktop_listener import window_request
-    if not window_request(request.client):
+    if not window_request(request):
         raise DisplayError(403, "Show in folder works only in the DownloadPulse window.",
                            code="desktop.reveal_window_only")
     try:
@@ -1573,7 +1574,7 @@ def _reveal_offered(request) -> bool:
     from application.desktop_listener import window_request
     from core.config import desktop_installation
     principal = getattr(getattr(request, "state", None), "principal", None)
-    return bool(desktop_installation() and request is not None and window_request(request.client)
+    return bool(desktop_installation() and request is not None and window_request(request)
                 and principal is not None and permits(principal, Capability.TRANSFERS_OPERATE))
 
 
@@ -2967,7 +2968,7 @@ async def _sse_generator(request: Request) -> AsyncGenerator[str, None]:
     from core.config import desktop_installation
     subscriber = _SseSubscriber(request.state.principal, token,
                                 session_store.fingerprint(token) if token else b"",
-                                desktop_installation() and window_request(request.client))
+                                desktop_installation() and window_request(request))
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     async with _sse_lock:
         _sse_subscribers[queue] = subscriber

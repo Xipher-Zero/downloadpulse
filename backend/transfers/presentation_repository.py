@@ -652,7 +652,8 @@ class TransferRepository(_CanonicalTransferRepository):
         with the whole ``NormalizedError``, or ``None``.
 
         It is the very failure ``presented`` -- this transfer's Details
-        presentation, as ``presentation(details=True)`` returned it -- selected:
+        presentation, as ``presentation(details=True, error_identity=True)``
+        returned it -- selected:
         the same ``failure_selection`` over the same candidates with the same
         wake, so none once the transfer is settled, exactly as the list and
         Details say. It must still be that same error -- its category, its
@@ -670,8 +671,13 @@ class TransferRepository(_CanonicalTransferRepository):
         return selected
 
     async def presentation(self, transfer_id: int, details: bool = False, *,
-                            capacity_only_blocked_ids=frozenset()):
-        """``capacity_only_blocked_ids`` (Section 9) is the live set from
+                            capacity_only_blocked_ids=frozenset(), error_identity: bool = False):
+        """``error_identity`` (with ``details``) adds which error the presented
+        failure is (``presentation_error_identity``), for Details' Reason
+        (``failure_reason``) alone: its selection is a read of its own, made
+        only when the Details route asks for it, never per event.
+
+        ``capacity_only_blocked_ids`` (Section 9) is the live set from
         ``transfers.convergence_engine.TransferEngine.capacity_only_blocked_ids``
         -- the REAL dispatch path's own positive record of which artifact ids
         it most recently confirmed are blocked only by execution capacity.
@@ -996,7 +1002,7 @@ class TransferRepository(_CanonicalTransferRepository):
                      [(row["state"], row["error_category"], row["retry_at"]) for row in failure_requests],
                      [(row["status"], row["error_category"]) for row in file_rows if is_canonical_artifact_row(row)]),
         ))
-        if details:
+        if details and error_identity:
             # Which error that is (``failure_identity``), for Details' Reason
             # (``failure_reason``): never more than an opaque identity.
             selected = (await self._selected_failure(transfer_id, result.get("wake_condition"))

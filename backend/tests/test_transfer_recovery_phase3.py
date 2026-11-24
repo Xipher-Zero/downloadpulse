@@ -361,7 +361,9 @@ async def test_startup_reconciliation_reuses_surviving_execution(runtime):
 @pytest.mark.asyncio
 async def test_startup_missing_gid_reconstructs_once_on_same_target_without_backoff(runtime):
     """1.0.3 WS7: the previous process's writer found ABSENT at startup is
-    rebuilt in the same cycle -- no orphan backoff, no counted failure."""
+    rebuilt in the same cycle -- no orphan backoff. 1.0.3 WS24 (operator,
+    2026-11-23): the rebuild counts one failure against the no-progress
+    budget, so a crash loop is bounded (below); it is still not delayed."""
     repository, registry, _provider, executor, engine, now = runtime
     transfer, artifact = await start_transfer(runtime)
     original = artifact.execution
@@ -386,7 +388,38 @@ async def test_startup_missing_gid_reconstructs_once_on_same_target_without_back
     assert original.attempt_id not in {item.handle.attempt_id for item in await repository.live_executions()}
     context = await repository.recovery_context(rebuilt.id)
     assert context["last_execution_retirement_reason"] == "startup_writer_lost"
-    assert await repository.recovery_budget(rebuilt.id) == budget
+    assert await repository.recovery_budget(rebuilt.id) == (budget[0] + 1, budget[1])
+    assert not rebuilt.retry_at or rebuilt.retry_at <= now[0]
+    assert context.get("quiescence_reason") is None
+
+
+@pytest.mark.asyncio
+async def test_a_crash_loop_around_one_startup_writer_ends_at_requires_attention(runtime):
+    """1.0.3 WS24 (operator, 2026-11-23): each startup that finds the same
+    never-progressing writer gone rebuilds it at once, and counts it: once the
+    no-progress budget is spent the transfer ends where any spent budget
+    ends -- waiting for the operator -- instead of rebuilding forever."""
+    repository, registry, _provider, executor, engine, now = runtime
+    transfer, artifact = await start_transfer(runtime)
+    restarts = 0
+    while restarts < 8:
+        current = (await repository.artifacts(transfer.id))[0]
+        context = await repository.recovery_context(current.id)
+        if context.get("quiescence_reason") == "recovery_exhausted":
+            break
+        if current.execution is not None:
+            executor.jobs.pop(current.execution.attempt_id, None)    # the process died with it
+        restarts += 1
+        restarted = TransferEngine(
+            TransferRepository(), registry, download_root=engine.root,
+            policy=engine.policy, clock=lambda: now[0],
+        )
+        await restarted.initialize()
+        await restarted.reconcile_executions()
+    assert context.get("quiescence_reason") == "recovery_exhausted", context
+    assert context.get("wake_condition") == "operator_retry"
+    assert restarts <= engine.policy.same_candidate_no_progress_limit + 2, restarts
+    assert current.execution is None and not current.retry_at
 
 
 @pytest.mark.asyncio

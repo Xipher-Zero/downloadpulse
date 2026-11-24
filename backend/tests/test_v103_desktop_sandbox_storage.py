@@ -13,8 +13,8 @@ import pytest
 
 import api.settings_validation_routes as directory_routes
 from core import desktop_storage
-from core.desktop_storage import desktop_start_directory, parse_flatpak_filesystems, persists
-from transfers.storage import DiskCapacity, StorageHealthError, StorageReason, StorageState
+from core.desktop_storage import desktop_start_directory, parse_flatpak_filesystems
+from transfers.storage import DiskCapacity, StorageHealthError, StorageReason, StorageState, persists
 
 # A real /.flatpak-info shape: the manifest's grants, the operator's overrides
 # (a removed grant, read-only and create modes), and grants that are no place

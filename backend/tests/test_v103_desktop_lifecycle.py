@@ -232,6 +232,48 @@ async def test_quit_requested_by_a_signal_ends_the_loop_with_zero():
     assert await asyncio.wait_for(task, 5) == 0
 
 
+@pytest.mark.asyncio
+async def test_quit_cancels_the_loops_background_work_and_waits_for_it_before_the_loop_ends():
+    """A save whose dialog is still open when Quit comes is cancelled and
+    awaited before the loop returns: it answers the backend that it was
+    cancelled (path None) while the channel is still up, and nothing of it
+    is left running."""
+    dialog_open, dialog_ended = asyncio.Event(), asyncio.Event()
+
+    class Saving(Channel):
+        def __init__(self):
+            super().__init__()
+            self.waiting, self.answers = [{"save": "s1", "name": "a.bin"}], []
+
+        async def ask(self, op, **fields):
+            if op == "saves":
+                self.asked.append(op)
+                waiting, self.waiting = self.waiting, []
+                return {"saves": waiting}
+            if op == "saved":
+                self.answers.append(fields)
+                return {}
+            return await super().ask(op, **fields)
+
+    class Dialog(Native):
+        async def save_destination(self, name, title):
+            dialog_open.set()
+            try:
+                await asyncio.Event().wait()            # the person never answers
+            finally:
+                dialog_ended.set()
+
+    shell, channel = Shell(), Saving()
+    task = _loop(shell, channel, Dialog(tray_shown=True))
+    try:
+        await asyncio.wait_for(dialog_open.wait(), supervisor.POLL_SECONDS * 3)
+        await shell.events.put(("quitRequested", {"signal": "SIGTERM"}))
+        assert await asyncio.wait_for(task, supervisor.BACKGROUND_END_SECONDS + 5) == 0
+        assert dialog_ended.is_set() and channel.answers == [{"save": "s1", "path": None}]
+    finally:
+        await _stop(task)
+
+
 # ── a shell that ends during start ─────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -465,6 +507,12 @@ async def test_quit_is_asked_of_the_windows_own_page_alone_and_needs_its_single_
         forged = {"Host": f"127.0.0.1:{desktop.port}"}
         posing = await _Stream().open(local, headers=forged)
         streams.append(posing)
+        # Nor is one that says it was forwarded from the window's address: this
+        # backend's uvicorn trusts forwarding headers from 127.0.0.1 (no
+        # ``--no-proxy-headers``), so only the check's own refusal stops it.
+        spoofed = {**forged, "X-Forwarded-For": "127.0.0.1"}
+        forwarded = await _Stream().open(local, headers=spoofed)
+        streams.append(forwarded)
         assert (await ask("quit_prompt"))["prompted"] is False             # a tab is never asked
         window = await _Stream().open(desktop.port)                          # the window's own page
         streams.append(window)
@@ -475,15 +523,18 @@ async def test_quit_is_asked_of_the_windows_own_page_alone_and_needs_its_single_
         name, second = await window.event(10)
         assert name == "desktop_quit_prompt" and second["nonce"] != first["nonce"]
         assert await tab.event(1) is None and await posing.event(1) is None  # the tabs heard neither
+        assert await forwarded.event(1) is None
         # Only the prompt pending is answered, once.
         assert (await quit_(first["nonce"]))[0] == 409
         assert (await ask("show"))["quit"] is False
-        # Through Local Port nothing quits or is shown, even with the pending nonce and the window's Host.
+        # Through Local Port nothing quits or is shown, even with the pending nonce, the window's Host
+        # and a forwarding header naming 127.0.0.1.
         async with aiohttp.ClientSession() as session:
             for path, body, code in (("/api/desktop/quit", {"nonce": second["nonce"]}, "desktop.quit_window_only"),
                                      ("/api/desktop/reveal", {"transfer_id": 1}, "desktop.reveal_window_only")):
-                async with session.post(f"http://127.0.0.1:{local}{path}", json=body, headers=forged) as reply:
-                    assert (reply.status, (await reply.json())["code"]) == (403, code), path
+                for headers in (forged, spoofed, {**forged, "Forwarded": "for=127.0.0.1"}):
+                    async with session.post(f"http://127.0.0.1:{local}{path}", json=body, headers=headers) as reply:
+                        assert (reply.status, (await reply.json())["code"]) == (403, code), (path, headers)
         assert (await ask("show"))["quit"] is False
         # The window's own address passes the check: refused only for what it names.
         status, body = await desktop.exchange("POST", "/api/desktop/reveal", json={"transfer_id": 1})
@@ -521,6 +572,13 @@ async def test_quit_is_an_admin_action_and_a_signed_out_window_is_not_asked(tmp_
         assert (await backend.channel.ask("show"))["quit"] is False
     finally:
         await backend.stop()
+
+
+def test_the_supervisors_backend_never_takes_a_clients_address_from_a_forwarding_header():
+    """Every Local Port connection comes from 127.0.0.1, the address uvicorn
+    trusts forwarding headers from by default: the supervisor's command line
+    turns that off, so a request's peer is always its connection's."""
+    assert "--no-proxy-headers" in supervisor.backend_argv({"backend": BACKEND}, free_port())
 
 
 # ── the real supervisor: SIGTERM, and a start that fails ────────────────────
@@ -684,3 +742,26 @@ async def test_a_shell_that_ends_during_start_fails_it_at_once_logged_and_notice
     assert "the notice was not shown (DownloadPulse could not start)" in log
     assert _ordered(log, "could not start", "the notice was not shown")
     assert time.monotonic() - run.started < supervisor.READY_SECONDS
+
+
+@LINUX_JEEPNEY
+@pytest.mark.asyncio
+async def test_a_second_instance_says_it_is_already_running_and_never_rotates_the_running_ones_log(tmp_path):
+    """The running instance holds the lock and its log is full: a second
+    instance appends its one line and exits, the running log unmoved."""
+    run = Supervisor(tmp_path)
+    held = supervisor.single_instance(run.root)
+    assert held is not None
+    try:
+        logs = run.root / "logs"
+        logs.mkdir(parents=True)
+        running = b"x" * supervisor.LOG_BYTES + b"\n"
+        (logs / "desktop.log").write_bytes(running)
+        await run.start()
+        assert await run.ended() == 3, run.log()
+        assert not (logs / "desktop.log.1").exists()
+        written = (logs / "desktop.log").read_bytes()
+        assert written.startswith(running) and b"DownloadPulse is already running for this account" in written
+        assert run.shell_pid() is None
+    finally:
+        held.close()
