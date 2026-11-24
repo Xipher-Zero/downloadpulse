@@ -152,6 +152,32 @@ The OCI revision is the authoritative check when moving a deployment from a cand
 
 The image also contains the backend test tree at `/app/tests`: the Dockerfile copies `backend/` whole, and `.dockerignore` does not exclude it. This is deliberate. The production application never imports it, and the container's default command (`uvicorn main:app`) does not use it. Its one runtime purpose is release qualification: the Browser Runtime workflow starts the exact candidate image in an additional container as `uvicorn browser_contract_app:app --app-dir /app/tests`. That test-only composition (`backend/tests/browser_contract_app.py`) serves the real application with an in-memory transport, so that browser checks can raise real `INPUT_REQUIRED` challenges and remote collections against the image that is being qualified rather than a rebuilt one.
 
+## Release assets (the update notice relies on them)
+
+DownloadPulse's update notice (`backend/application/updates.py`) reads the GitHub release that
+`releases/latest` names — never a draft or a pre-release — and, in the desktop applications,
+offers to download this computer's installer through DownloadPulse, verified against the SHA-256
+GitHub states for that asset. A release therefore carries, attached by the operator (a manual
+step: `release.py` publishes only the release body):
+
+| Asset | Platform |
+|---|---|
+| `DownloadPulse-X.Y.Z-windows-x64.exe` | Windows desktop |
+| `DownloadPulse-X.Y.Z-macos-arm64.dmg` | macOS desktop |
+| `DownloadPulse-X.Y.Z-linux-x86_64.flatpak` | Linux desktop (offered only inside the Flatpak) |
+| `SHA256SUMS` | the SHA-256 of each file above, for people who download by hand |
+
+- The names are exact: `X.Y.Z` is the tag without its `v`. A desktop finds its installer by that
+  name alone; any other name is not offered.
+- The hash the desktop verifies is the asset's own GitHub `digest` (`sha256:…`), which GitHub
+  computes on upload. An asset without one is not offered (the notice then only links the release);
+  `SHA256SUMS` is never read by the application.
+- The download address is the asset's `browser_download_url` on `github.com` under
+  `/Xipher-Zero/downloadpulse/releases/download/`; any other address is refused.
+- An installer is downloaded as an ordinary transfer and is never started by DownloadPulse: once
+  verified, the person opens it from Show in folder. A server installation never downloads
+  anything; it only says that a newer release exists.
+
 ## Local deployment / acceptance rule
 
 The deployment host is for **runtime testing**, not repository administration.

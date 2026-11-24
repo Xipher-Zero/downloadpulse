@@ -58,6 +58,12 @@
   opened from.
 - **Show in folder** (desktop application): a finished download's row and Details reveal its
   file in the system's file manager.
+- **Update notice.** When a newer release is out, Admins see it once per session: what is
+  installed, what is new and a link to the release notes, then a badge in the top bar until they
+  update. The desktop applications offer to download the installer through DownloadPulse,
+  checked against the release's SHA-256, and show it in its folder; you run it yourself. A server
+  only links the release. The first check runs about a minute after start (it was five), and
+  Update Check Interval 0 turns off the check and the notice.
 
 ### Changed
 

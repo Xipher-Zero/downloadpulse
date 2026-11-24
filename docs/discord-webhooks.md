@@ -37,7 +37,7 @@ DownloadPulse sends instance-wide alerts to webhooks configured by an Admin unde
 | `discord_username` | Display Name | Sender name of Discord messages. |
 | `discord_avatar_url` | Avatar URL / Upload | Discord fetches the image itself, so it must be reachable over HTTP(S) from the internet. Upload accepts PNG, JPG, GIF and WebP up to 4 MB and is served at `/api/avatar`; set `PUBLIC_BASE_URL` so that address is public. Private addresses (`192.168.x.x`, `localhost`, `.local`) usually don't work for Discord. |
 | `discord_notify_*` | Notification Events & Delivery Options | One switch per event group below. |
-| `update_check_interval_hours` | Update Check Interval | 0–168 hours, 12 by default; 0 turns the update check off. |
+| `update_check_interval_hours` | Update Check Interval | 0–168 hours, 12 by default. The first check runs about a minute after DownloadPulse starts, then every interval; a failed check is tried again an hour later. Each check asks `api.github.com` for the latest release. 0 turns the check off, and with it the Update Available alert and the in-app update notice. |
 
 ## Events
 
@@ -52,6 +52,8 @@ DownloadPulse sends instance-wide alerts to webhooks configured by an Admin unde
 | Update Available | `send_update()` | Blue | A newer release is detected | `discord_notify_update` |
 
 A User's personal webhook receives these events only for downloads that User asked for, with the User's own switches. Update Available is instance-wide and never sent to personal webhooks.
+
+Update Available is sent once per new release while DownloadPulse runs (a restart may send the same release once more). The same check drives the in-app update notice that Admins see; see `docs/RELEASE_PROCESS.md` → Release assets.
 
 ## Generic JSON payload
 
