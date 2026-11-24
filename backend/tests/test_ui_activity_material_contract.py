@@ -49,7 +49,7 @@ def test_activity_functional_controls_are_unchanged() -> None:
         'id="ev-filter"',
         'popovertarget="ev-filter-panel"',
         'id="ev-filter-panel"',
-        'onclick="DPActivityLog.load()"',
+        'data-dp-click="loadActivityLog"',
         'id="event-list"',
     ):
         assert fragment in html

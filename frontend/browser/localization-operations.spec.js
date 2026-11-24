@@ -111,7 +111,7 @@ test('L10-WS3b: in en-XA the Downloads page, its row and its provider picker are
   const launcher = page.locator('#view-torrents tr[data-torrent-id="30"] .dp-root-provider-launcher');
   await expect(launcher).toBeVisible();
   expect(await setLocale(page, 'en-XA')).toBe('en-XA');
-  await expect(page.locator('#view-torrents tr[data-torrent-id="30"] button[onclick*="pauseT(30"]')).toHaveAttribute('data-tooltip', /⟦/);
+  await expect(page.locator('#view-torrents tr[data-torrent-id="30"] button[data-dp-click="pauseT"]')).toHaveAttribute('data-tooltip', /⟦/);
   expect(await englishLeft(page, '#view-torrents')).toEqual([]);
   await expect(launcher).toHaveAttribute('aria-label', /⟦/);
 

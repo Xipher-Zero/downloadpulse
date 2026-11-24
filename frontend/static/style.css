@@ -8,7 +8,7 @@
  * @import list: @import must precede all other rules, so it carries no
  * literal rules of its own.
  */
-@import url('/design-tokens.css?v=21');
+@import url('/design-tokens.css?v=22');
 @import url('/ui-language-tokens.css?v=21');
 @import url('/ui-theme-palettes.css?v=1');
 @import url('/ui-logo.css?v=1');
@@ -25,7 +25,7 @@
 @import url('/ui-shell-structural.css?v=33');
 @import url('/ui-shell-provider-status.css?v=25');
 @import url('/ui-provider-state.css?v=5');
-@import url('/ui-dashboard.css?v=24');
+@import url('/ui-dashboard.css?v=25');
 @import url('/ui-dashboard-transfer-presentation.css?v=2');
 @import url('/ui-utility-controls.css?v=25');
 @import url('/ui-statistics-page.css?v=23');
@@ -39,7 +39,7 @@
 @import url('/ui-help-page.css?v=23');
 @import url('/ui-feature-icon-contract.css?v=5');
 @import url('/ui-panel-surface-treatment.css?v=24');
-@import url('/ui-transfer-contract.css?v=35');
+@import url('/ui-transfer-contract.css?v=36');
 @import url('/ui-detail-files.css?v=2');
 @import url('/ui-detail-candidates.css?v=4');
 @import url('/ui-group-candidates.css?v=1');

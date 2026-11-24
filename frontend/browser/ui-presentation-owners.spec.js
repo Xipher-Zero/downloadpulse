@@ -292,10 +292,12 @@ test('Activity Log has one owner: explicit API, no compatibility globals, contro
  const shape=await page.evaluate(()=>({
   loadEvents:typeof window.loadEvents,filterEvents:typeof window.filterEvents,
   api:Object.keys(window.DPActivityLog).sort(),frozen:Object.isFrozen(window.DPActivityLog),
-  inline:['#ev-search','#ev-filter','#ev-filter-panel input','#ev-filter-panel button'].map(selector=>[...document.querySelectorAll(selector)].filter(node=>['oninput','onchange','onclick'].some(name=>node.hasAttribute(name))).length),
+  // Bound by their owner alone: no handler attribute and no declared action (data-dp-click and its siblings).
+  inline:['#ev-search','#ev-filter','#ev-filter-panel input','#ev-filter-panel button'].map(selector=>[...document.querySelectorAll(selector)].filter(node=>node.getAttributeNames().some(name=>/^on/.test(name)||/^data-dp-(click|change|input|keydown)$/.test(name))).length),
+  controls:['#ev-search','#ev-filter','#ev-filter-panel input','#ev-filter-panel button'].map(selector=>document.querySelectorAll(selector).length>0),
   fields:[...document.querySelectorAll('#view-events .dp-activity-search-row > *')].filter(node=>!node.hidden).map(node=>node.id),
  }));
- expect(shape).toEqual({loadEvents:'undefined',filterEvents:'undefined',api:['formatTimestamp','load'],frozen:true,inline:[0,0,0,0],fields:['ev-search','ev-filter']});
+ expect(shape).toEqual({loadEvents:'undefined',filterEvents:'undefined',api:['formatTimestamp','load'],frozen:true,inline:[0,0,0,0],controls:[true,true,true,true],fields:['ev-search','ev-filter']});
 });
 
 test('Activity Log refresh, empty state and single render; Search alone is not a filter combination',async({page})=>{

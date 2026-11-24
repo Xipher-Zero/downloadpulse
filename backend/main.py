@@ -567,6 +567,26 @@ async def general_web_security_middleware(request: Request, call_next):
 # path falls back to the shell.
 SHELL_SURFACE_PATHS = tuple(path for path in PAGE_ADDRESSES.values() if path != "/")
 
+# The application's Content-Security-Policy: script runs only from this
+# origin's own files -- never an inline script or an inline event-handler
+# attribute (the interface wires its controls through ``ui-actions.js``) -- so
+# a name that escapes its markup cannot run script with the viewer's authority.
+# Style, image, font and connect sources are not restricted. Set with
+# ``setdefault``: a page that states its own policy keeps it (the sign-in
+# pages, the OIDC verification-complete page, the setup-from-internet refusal).
+APPLICATION_CONTENT_SECURITY_POLICY = "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+# FastAPI's interactive documentation pages (Swagger UI, its OAuth2 redirect,
+# ReDoc) load their scripts from cdn.jsdelivr.net and start with an inline
+# bootstrap built from this application's URLs; at exactly those paths that is
+# allowed (ReDoc's search runs in a blob worker).
+DOCUMENTATION_CONTENT_SECURITY_POLICY = (
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; worker-src 'self' blob:; "
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+)
+DOCUMENTATION_PAGE_PATHS = frozenset(
+    path for path in (app.docs_url, app.swagger_ui_oauth2_redirect_url, app.redoc_url) if path
+)
+
 
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
@@ -580,12 +600,17 @@ async def request_id_middleware(request: Request, call_next):
     # Origin on same-origin HTML form POSTs used by the password login flow.
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
+    path = request.url.path
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        DOCUMENTATION_CONTENT_SECURITY_POLICY if path in DOCUMENTATION_PAGE_PATHS
+        else APPLICATION_CONTENT_SECURITY_POLICY,
+    )
 
     # Frontend migration assets must never rely on manually bumped ?v= values as
     # their only coherence boundary. Keep normal conditional caching (ETag /
     # Last-Modified) but force browser revalidation of executable/presentation
     # resources so a new container cannot silently run an older JS/CSS/HTML mix.
-    path = request.url.path
     static_frontend = (
         request.method.upper() in {"GET", "HEAD"}
         and (path == "/" or path in SHELL_SURFACE_PATHS

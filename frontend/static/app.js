@@ -51,9 +51,9 @@ function renderTopbarActions() {
     const icon = (name) => window.DPIcons && typeof window.DPIcons.svg === 'function' ? window.DPIcons.svg(name) : '';
     const label = '[data-dp-icon-label]';
     el.innerHTML = `
-      <button id="btn-resume-all" class="btn btn-primary" data-tooltip-label="${label}" onclick="resumeProcessing()" style="display:none">${icon('play')}<span data-dp-icon-label="1"></span></button>
-      <button id="btn-resume-paused" class="btn btn-primary" data-tooltip-label="${label}" onclick="resumePausedDownloads()" style="display:none">${icon('play')}<span data-dp-icon-label="1"></span></button>
-      <button id="btn-pause-all" class="btn btn-ghost" data-tooltip-label="${label}" onclick="pauseProcessing()">${icon('pause')}<span data-dp-icon-label="1"></span></button>
+      <button id="btn-resume-all" class="btn btn-primary" data-tooltip-label="${label}" data-dp-click="resumeProcessing" style="display:none">${icon('play')}<span data-dp-icon-label="1"></span></button>
+      <button id="btn-resume-paused" class="btn btn-primary" data-tooltip-label="${label}" data-dp-click="resumePausedDownloads" style="display:none">${icon('play')}<span data-dp-icon-label="1"></span></button>
+      <button id="btn-pause-all" class="btn btn-ghost" data-tooltip-label="${label}" data-dp-click="pauseProcessing">${icon('pause')}<span data-dp-icon-label="1"></span></button>
     `;
     el.dataset.initialized = '1';
   }
@@ -1355,7 +1355,7 @@ function renderRouteHistory(t) {
     const retry = unverified && attempt.reconsider_available === true && Number.isInteger(contributor)
       && contributor > 0 && contributor !== Number(t?.id) && dpCan('transfers.operate');
     const outcomeCell = retry
-      ? `<span class="dp-detail-route-outcome-cell">${outcomeMarkup}<button type="button" class="btn btn-blue btn-sm dp-detail-route-retry" data-default-label="${esc(DPI18n.t('details.route.retry'))}" onclick="retryUnverifiedContribution(${contributor},${Number(t.id)},this)" data-tooltip="${esc(DPI18n.t('details.route.retry_tooltip'))}" aria-label="${esc(DPI18n.t('details.route.retry_label', {id: contributor}))}">${window.DPIcons.iconLabel('refresh', DPI18n.t('details.route.retry'))}</button></span>`
+      ? `<span class="dp-detail-route-outcome-cell">${outcomeMarkup}<button type="button" class="btn btn-blue btn-sm dp-detail-route-retry" data-default-label="${esc(DPI18n.t('details.route.retry'))}" data-dp-click="retryUnverifiedContribution" data-dp-contributor="${contributor}" data-dp-target="${Number(t.id)}" data-tooltip="${esc(DPI18n.t('details.route.retry_tooltip'))}" aria-label="${esc(DPI18n.t('details.route.retry_label', {id: contributor}))}">${window.DPIcons.iconLabel('refresh', DPI18n.t('details.route.retry'))}</button></span>`
       : outcomeMarkup;
     return `<div class="dp-detail-route-row" data-route-relation="${esc(relation.state)}">
       <span class="dp-detail-route-order">${esc(attempt.presentation_ordinal ?? attempt.ordinal ?? '')}</span>
@@ -4164,15 +4164,62 @@ async function downloadTransferTrace(button) {
 }
 window.downloadTransferTrace = downloadTransferTrace;
 
-// Thin global entry retained for the inline #overlay / close-button handlers.
-// The shared modal coordinator owns the actual close decision and lifecycle
-// events; this is not a wrapper layer.
+// The #overlay backdrop and close-button entry (the shell's closeDetails*
+// actions). The shared modal coordinator owns the actual close decision and
+// lifecycle events; this is not a wrapper layer.
 function closeModal(e) {
   if (e && e.target !== document.getElementById('overlay')) return;
   DPModal.requestModalClose(e ? 'backdrop' : 'button');
 }
 window.closeModal = closeModal;
 window.showDetail = showDetail;
+
+/* The shell's controls -- index.html's, the topbar's processing actions and
+ * Details' route Retry -- declare their actions (data-dp-click and its
+ * siblings), dispatched here from the page body (ui-actions.js: the element
+ * that declares it is the handler's `this`, the event is passed unchanged).
+ * Downloads' list and toolbar (ui-downloads.js) and Dashboard Recent's rows
+ * (ui-dashboard-transfer-presentation.js) dispatch their own. A later
+ * script's global is read when its action runs. */
+window.DPActions.delegate(document.body, 'click', {
+  nav: (el, event) => nav(el, event),
+  navDashboard: (el, event) => nav(document.querySelector('#sidebar .nav-item[data-view=dashboard]'), event),
+  navDownloads: () => nav(document.querySelector('[data-view=torrents]')),
+  showErrorDownloads: () => {
+    nav(document.querySelector('[data-view=torrents]'));
+    setTimeout(() => window.setFilter(document.querySelector('.ftab[data-dp-status="error"]'), 'error'), 100);
+  },
+  toggleSidebarOverlay: () => toggleSidebarOverlay(),
+  toggleTheme: () => toggleTheme(),
+  openUpdateNotice: () => DPUpdateNotice.open(),
+  toggleSpeedCapMenu: (el, event) => toggleSpeedCapMenu(event),
+  applyTopbarSpeedCap: el => applyTopbarSpeedCap(Number(el.dataset.capBps)),
+  applyTopbarCustomSpeedCap: () => applyTopbarCustomSpeedCap(),
+  resumeProcessing: () => resumeProcessing(),
+  resumePausedDownloads: () => resumePausedDownloads(),
+  pauseProcessing: () => pauseProcessing(),
+  recoverAll: el => recoverAll(el),
+  addDashboardEntries: () => addDashboardEntries(),
+  loadActivityLog: () => window.DPActivityLog.load(),
+  setStatsPeriod: el => window.setStatsPeriod(el),
+  closeDetailsFromBackdrop: (el, event) => closeModal(event),
+  closeDetails: () => closeModal(),
+  downloadTransferTrace: el => downloadTransferTrace(el),
+  retryUnverifiedContribution: el => retryUnverifiedContribution(Number(el.dataset.dpContributor),
+    Number(el.dataset.dpTarget), el),
+});
+window.DPActions.delegate(document.body, 'keydown', {
+  applyCustomSpeedCapOnEnter: (el, event) => { if (event.key === 'Enter') applyTopbarCustomSpeedCap(); },
+  addDashboardEntriesOnModEnter: (el, event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') addDashboardEntries();
+  },
+});
+window.DPActions.delegate(document.body, 'input', {
+  resizeDebridLinkInput: el => resizeDebridLinkInput(el),
+});
+window.DPActions.delegate(document.body, 'change', {
+  uploadTransferFile: el => uploadTransferFile(el),
+});
 
 // ── Theme toggle ─────────────────────────────────────────────────────────────
 /* The compact desktop sidebar rail and its temporary overlay: the one sidebar

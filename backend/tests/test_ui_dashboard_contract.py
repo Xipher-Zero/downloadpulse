@@ -16,7 +16,7 @@ STATISTICS_CSS = STATIC / "ui-statistics-page.css"
 
 def test_dashboard_stylesheet_is_active() -> None:
     entry = V11_STYLE.read_text(encoding="utf-8")
-    assert "/ui-dashboard.css?v=24" in entry
+    assert "/ui-dashboard.css?v=25" in entry
     assert "/ui-shell.css?v=24" in entry
     for retired in (
         "ui-dashboard-structural.css",

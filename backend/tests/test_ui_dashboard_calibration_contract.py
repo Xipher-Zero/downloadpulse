@@ -31,7 +31,7 @@ def dashboard_css() -> str:
 
 def test_dashboard_has_one_canonical_calibration_owner() -> None:
     overlay = read(STYLE)
-    assert "/ui-dashboard.css?v=24" in overlay
+    assert "/ui-dashboard.css?v=25" in overlay
     for retired in (
         "ui-dashboard-structural.css",
         "ui-dashboard-consistency.css",
@@ -102,10 +102,10 @@ def test_canonical_dashboard_keeps_action_color_grammar_and_primary_add_depth() 
         dashboard_css(),
         (
             "#btn-pause-all",
-            'button[onclick*="pauseT("]',
+            'button[data-dp-click="pauseT"]',
             "#btn-resume-all",
             "#btn-resume-paused",
-            'button[onclick*="resumeT("]',
+            'button[data-dp-click="resumeT"]',
             "#btn-recover-all",
             "#e3c5ff",
             "#btn-add-transfer",
@@ -243,7 +243,7 @@ def test_canonical_dashboard_keeps_original_progress_percentage_geometry() -> No
 
 def test_canonical_dashboard_hides_recent_activity_view_all() -> None:
     css = dashboard_css()
-    assert 'button[onclick*="data-view=torrents"]' in css
+    assert 'button[data-dp-click="navDownloads"]' in css
     assert "display: none !important" in css
 
 

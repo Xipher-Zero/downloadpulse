@@ -22,7 +22,7 @@ def test_downloads_desktop_filter_contract_and_details_are_directly_owned():
         assert fragment in index
     assert "function setFilter(" in downloads
     assert "dp-downloads-detail-row" in downloads
-    assert "showDetail(${t.id})" in downloads
+    assert "showDetail(rowTransferId(el));" in downloads
     assert 'draggable="true"' not in downloads
 
 def test_downloads_desktop_column_rebalance_preserves_provider_identity_and_progress():
@@ -72,7 +72,7 @@ def test_new_contract_layers_live_in_correct_cascade_sections():
     shell = style.index("ui-shell.css?v=24")
     provider = style.index("ui-shell-provider-status.css?v=25")
     downloads_base = style.index("ui-downloads-page.css?v=30")
-    transfer = style.index("ui-transfer-contract.css?v=35")
+    transfer = style.index("ui-transfer-contract.css?v=36")
     assert modal < shell < provider
     assert downloads_base < transfer
     assert "ui-downloads-desktop.css" not in style

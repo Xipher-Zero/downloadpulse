@@ -307,11 +307,12 @@ test('L12-WS3a: a focused Download Activity row action keeps focus across a lang
   await boot(page);
   await listed;
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const pause = page.locator('#dash-tbody tr[data-torrent-id="77"] button[onclick*="pauseT(77"]');
+  const pause = page.locator('#dash-tbody tr[data-torrent-id="77"] button[data-dp-click="pauseT"]');
   await pause.focus();
   await expect(pause).toBeFocused();
   expect(await page.evaluate(() => window.DPI18n.setLocale('en-XA'))).toBe('en-XA');
-  expect(await page.evaluate(() => document.activeElement.getAttribute('onclick'))).toContain('pauseT(77');
+  expect(await page.evaluate(() => [document.activeElement.getAttribute('data-dp-click'),
+    document.activeElement.closest('tr[data-torrent-id]')?.dataset.torrentId])).toEqual(['pauseT', '77']);
   await expect(pause).toBeFocused();
   await expect(pause).toHaveAttribute('data-tooltip', /⟦/);
   await page.keyboard.press('Tab');                                                   // still a keyboard-usable row

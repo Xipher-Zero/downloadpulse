@@ -95,8 +95,8 @@ def test_only_the_operators_own_navigation_moves_anything() -> None:
     app = read("app.js")
     index = read("index.html")
     # Every sidebar entry hands its event over; nav() slides only for a click.
-    assert index.count('onclick="nav(this, event)"') == index.count('class="nav-item')
-    assert "onclick=\"nav(this)\"" not in index
+    assert index.count('data-dp-click="nav"') == index.count('class="nav-item')
+    assert "nav: (el, event) => nav(el, event)," in app
     nav = app[app.index("function nav(el, event, {address = 'push'} = {}) {"):app.index("function navigateTo(el, {heading = true, address = 'push'} = {}) {")]
     assert "const chosen = event?.type === 'click' && from >= 0 && to >= 0 && !sameView;" in nav
     assert "direction: chosen ? Math.sign(to - from) : 0" in nav

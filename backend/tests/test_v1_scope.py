@@ -171,7 +171,8 @@ def test_unified_submission_input_expands_to_five_lines():
     assert 'id="q-transfer-input" rows="2"' in frontend
     assert 'id="q-debrid-links"' not in frontend
     assert 'id="q-magnet"' not in frontend
-    assert 'oninput="resizeDebridLinkInput(this)"' in frontend
+    assert 'data-dp-input="resizeDebridLinkInput"' in frontend
+    assert "resizeDebridLinkInput: el => resizeDebridLinkInput(el)," in scripts
     assert "function resizeDebridLinkInput(input)" in scripts
     assert "const minimum = Math.ceil((lineHeight * 2) + chrome);" in scripts
     assert "const maximum = Math.ceil((lineHeight * 5) + chrome);" in scripts
@@ -230,8 +231,10 @@ def test_dashboard_recent_activity_exposes_pause_resume_but_not_remove():
         "</table>", 1
     )[0]
 
-    assert "pauseT(${t.id},this)" in recent_renderer
-    assert "resumeT(${t.id},this)" in recent_renderer
+    assert 'data-dp-click="pauseT"' in recent_renderer
+    assert 'data-dp-click="resumeT"' in recent_renderer
+    assert "pauseT: (el, event) => { event.stopPropagation(); pauseT(rowTransferId(el), el); }," in recent_renderer
+    assert "resumeT: (el, event) => { event.stopPropagation(); resumeT(rowTransferId(el), el); }," in recent_renderer
     # (Their words are the catalog's, 1.0.14 localization: the same English.)
     from i18n_node import english
     assert "T('transfer.action.pause_tooltip')" in recent_renderer and english("transfer.action.pause_tooltip") == "Pause this download"
@@ -318,7 +321,8 @@ def test_topbar_uses_live_aria2_speed_with_human_download_units():
     assert 'id="runtime-cap-menu"' in index
     assert 'id="runtime-cap-custom-mbps"' in index
     assert "Custom cap (MB/s)" in index
-    assert "applyTopbarSpeedCap(104857600)" in index
+    assert 'data-cap-bps="104857600" data-dp-click="applyTopbarSpeedCap"' in index
+    assert "applyTopbarSpeedCap: el => applyTopbarSpeedCap(Number(el.dataset.capBps))," in frontend
     assert "Math.round(mbps * 1048576)" in frontend
     assert "updateRuntimeStatusBadge({limitBps: bps})" in frontend
     assert ".runtime-cap-menu" in styles

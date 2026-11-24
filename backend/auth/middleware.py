@@ -208,8 +208,11 @@ def _setup_from_internet_refused(request: Request) -> Response:
             'color:#e8ebf5;font:16px/1.5 system-ui,sans-serif}main{max-width:34rem;padding:24px}'
             'h1{font-size:1.4rem;margin:0 0 .6rem}p{margin:0;color:#b8bfd6}</style></head>'
             f'<body><main><h1>{title}</h1><p>{body}</p></main></body></html>')
+    # Its own policy, stricter than the application's: the page runs no script and loads nothing.
     return Response(content=page, status_code=403, media_type="text/html",
-                    headers={"Cache-Control": "no-store"})
+                    headers={"Cache-Control": "no-store",
+                             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                                        "base-uri 'none'; frame-ancestors 'none'"})
 
 
 async def _admit_standalone(request: Request, call_next: CallNext, cfg) -> Response:

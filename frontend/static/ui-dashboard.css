@@ -1051,7 +1051,7 @@ body.light :is(#t-tbody, .dp-downloads-styled-tbody) tr[data-status="downloading
 /* Operational control grammar: green means resume/go; amber means pause.
    Red remains reserved for failures and destructive actions. */
 #btn-pause-all,
-button[onclick*="pauseT("] {
+button[data-dp-click="pauseT"] {
   background: linear-gradient(135deg,
     rgba(125, 91, 30, .91) 0%,
     rgba(90, 69, 31, .94) 52%,
@@ -1061,7 +1061,7 @@ button[onclick*="pauseT("] {
   box-shadow: inset 0 1px rgba(255,255,255,.06), 0 5px 15px rgba(113, 79, 20, .15) !important;
 }
 body.light #btn-pause-all,
-body.light button[onclick*="pauseT("] {
+body.light button[data-dp-click="pauseT"] {
   background: linear-gradient(135deg, #fff3cf 0%, #f8dfa2 52%, #edca76 100%) !important;
   border-color: #d5a63e !important;
   color: #8b620b !important;
@@ -1069,7 +1069,7 @@ body.light button[onclick*="pauseT("] {
 }
 #btn-resume-all,
 #btn-resume-paused,
-button[onclick*="resumeT("] {
+button[data-dp-click="resumeT"] {
   background: linear-gradient(135deg,
     rgba(25, 117, 78, .84) 0%,
     rgba(20, 86, 66, .91) 50%,
@@ -1080,7 +1080,7 @@ button[onclick*="resumeT("] {
 }
 body.light #btn-resume-all,
 body.light #btn-resume-paused,
-body.light button[onclick*="resumeT("] {
+body.light button[data-dp-click="resumeT"] {
   background: linear-gradient(135deg, #e4faec 0%, #c9f2da 52%, #afe7c7 100%) !important;
   border-color: #83d3aa !important;
   color: #176d46 !important;
@@ -1578,7 +1578,7 @@ body.light :is(#t-tbody, .dp-downloads-styled-tbody) tr:has(.badge-partial) .pro
 /* Downloads already owns full-list navigation in the sidebar. Remove the
    redundant/vague View All shortcut and let the Activity header breathe. */
 #view-dashboard .dp-dashboard-activity .card-header
-  button[onclick*="data-view=torrents"] {
+  button[data-dp-click="navDownloads"] {
   display: none !important;
 }
 

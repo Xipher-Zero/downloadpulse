@@ -276,7 +276,7 @@ body.light :is(
   .dp-provider-chip,
   #provider-status-list .dot,
   #topbar-actions > .btn,
-  :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("], [onclick*="resumeT("], [onclick*="resumeTorrent("], [onclick*="retryT("], [onclick*="retryTorrent("]),
+  :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([data-dp-click="pauseT"], [data-dp-click="resumeT"], [data-dp-click="retryT"]),
   #view-torrents :is(.dp-downloads-bulk-action--pause, .dp-downloads-bulk-action--resume, .dp-downloads-bulk-action--reset)
 ) {
   --dp-state-success: #00E676;

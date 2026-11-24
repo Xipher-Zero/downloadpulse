@@ -84,7 +84,7 @@ def test_statistics_period_labels_use_canonical_downloadpulse_copy_without_chang
     keys = {'1h': 'hour', '24h': 'day', '7d': 'week', '30d': 'month', '1y': 'year', 'all': 'all'}
     positions = []
     for period, label in expected:
-        fragment = f'data-period="{period}" onclick="setStatsPeriod(this)" data-i18n="stats.period.{keys[period]}">{label}</div>'
+        fragment = f'data-period="{period}" data-dp-click="setStatsPeriod" data-i18n="stats.period.{keys[period]}">{label}</div>'
         assert fragment in view and english(f"stats.period.{keys[period]}") == label
         positions.append(view.index(fragment))
     assert positions == sorted(positions)

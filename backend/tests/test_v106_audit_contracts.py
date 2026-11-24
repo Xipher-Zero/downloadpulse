@@ -161,7 +161,7 @@ def test_dashboard_has_one_mixed_submission_control():
     assert 'placeholder="Paste a link, magnet, or other supported resource…&#10;Add multiple entries, one per line."' in html
     assert 'Submit links, files, or other supported resources for download.' in html
     assert 'when empty, choose a transfer file' in html
-    assert 'addDashboardEntries()' in html
+    assert 'data-dp-click="addDashboardEntries"' in html
     assert "function classifyDashboardEntries" in js
     assert "openTorrentFilePicker();" in js
     assert "'/links/add'" in js

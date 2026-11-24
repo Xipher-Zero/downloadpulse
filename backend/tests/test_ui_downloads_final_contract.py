@@ -29,8 +29,10 @@ def test_downloads_rows_use_row_level_details_and_retire_drag_semantics() -> Non
     downloads = read("ui-downloads.js")
     required = (
         "dp-downloads-detail-row", 'tabindex="0"',
-        "event.key==='Enter'", "showDetail(${t.id})",
-        'onclick="onDownloadRowClick(event,${t.id})"',
+        'data-dp-click="openRow" data-dp-keydown="openRowOnKey"',
+        "openRow: (el, event) => onDownloadRowClick(event, rowTransferId(el)),",
+        "if (event.target === el && (event.key === 'Enter' || event.key === ' ')) {",
+        "showDetail(rowTransferId(el));",
         "if (!dpIsInteractiveRowTarget(event.target)) showDetail(id);",
     )
     missing = [fragment for fragment in required if fragment not in downloads]
@@ -52,16 +54,19 @@ def test_downloads_rows_emit_final_status_and_action_language() -> None:
         assert f"data-default-label=\"${{T('transfer.action.{action}')}}\"" in downloads
         assert english(f"transfer.action.{action}") == word
     for fragment in (
-        "pauseT(${t.id},this)", "resumeT(${t.id},this)",
-        "deleteT(${t.id},event,this)", "retryT(${t.id},this)",
+        'data-dp-click="pauseT"', 'data-dp-click="resumeT"', 'data-dp-click="deleteT"', 'data-dp-click="retryT"',
+        "pauseT: (el, event) => { event.stopPropagation(); pauseT(rowTransferId(el), el); },",
+        "resumeT: (el, event) => { event.stopPropagation(); resumeT(rowTransferId(el), el); },",
+        "deleteT: (el, event) => { event.stopPropagation(); deleteT(rowTransferId(el), event, el); },",
+        "retryT: (el, event) => { event.stopPropagation(); retryT(rowTransferId(el), el); },",
     ):
         assert fragment in downloads
     for obsolete in ("⏸ Pause", "▶ Resume", "✕ Remove", "↻ Retry"):
         assert obsolete not in downloads
-    assert 'button[onclick*="retryT("]' not in desktop
+    assert 'button[data-dp-click="retryT"]' not in desktop
     assert "font-size: 0 !important" not in desktop
     assert "content: 'Retry'" not in desktop
-    assert '[onclick*="retryT("]' in transfer
+    assert 'button[data-dp-click="retryT"]' in transfer
     assert "background: var(--dp-op-surface, var(--dp-state-active-bg)) !important" in transfer
     assert "border-color: var(--dp-op-edge, color-mix(in srgb, var(--dp-state-active) 34%, transparent)) !important" in transfer
     assert "color: var(--dp-op-ink, var(--dp-state-active)) !important" in transfer

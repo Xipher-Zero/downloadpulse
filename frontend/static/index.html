@@ -6,7 +6,7 @@
 <title>DownloadPulse</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style.css?v=52">
+<link rel="stylesheet" href="/style.css?v=53">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=6">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=6">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -65,7 +65,7 @@
 
 <aside id="sidebar">
   <dp-signal-field class="dp-signal-field" aria-hidden="true"></dp-signal-field>
-  <div class="logo" onclick="nav(document.querySelector('#sidebar .nav-item[data-view=dashboard]'), event)">
+  <div class="logo" data-dp-click="navDashboard">
     <dp-logo class="logo-icon" role="img" aria-label="DownloadPulse logo" data-i18n-attr="aria-label:shell.logo_label"></dp-logo>
     <div class="logo-text">
       <div class="logo-name logo-name-full" data-tooltip="DownloadPulse">Download<span>Pulse</span></div>
@@ -73,38 +73,38 @@
   </div>
   <nav>
     <div class="nav-group" data-i18n="shell.nav.group.queue">Queue</div>
-    <div class="nav-item active" data-view="dashboard" data-dock="3" data-tooltip="Dashboard" data-i18n-attr="data-tooltip:shell.nav.dashboard" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item active" data-view="dashboard" data-dock="3" data-tooltip="Dashboard" data-i18n-attr="data-tooltip:shell.nav.dashboard" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="dashboard" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg></span><span class="nav-label" data-i18n="shell.nav.dashboard">Dashboard</span>
     </div>
-    <div class="nav-item" data-view="torrents" data-dock="1" data-tooltip="Downloads" data-i18n-attr="data-tooltip:shell.nav.downloads" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item" data-view="torrents" data-dock="1" data-tooltip="Downloads" data-i18n-attr="data-tooltip:shell.nav.downloads" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="download" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg></span><span class="nav-label" data-i18n="shell.nav.downloads">Downloads</span>
       <span class="nav-badge" id="nb-active" style="display:none">0</span>
     </div>
     <div class="nav-group" data-i18n="shell.nav.group.review">Review</div>
     <template data-requires="administer">
-    <div class="nav-item" data-view="events" data-dock="5" data-presentation="activity-log" data-short-label="Activity" data-tooltip="Activity Log" data-i18n-attr="data-tooltip:shell.nav.activity_log;data-short-label:shell.nav.activity_log.short" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item" data-view="events" data-dock="5" data-presentation="activity-log" data-short-label="Activity" data-tooltip="Activity Log" data-i18n-attr="data-tooltip:shell.nav.activity_log;data-short-label:shell.nav.activity_log.short" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="logs" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 5h1"/><path d="M3 12h1"/><path d="M3 19h1"/><path d="M8 5h1"/><path d="M8 12h1"/><path d="M8 19h1"/><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/></svg></span><span class="nav-label" data-i18n="shell.nav.activity_log">Activity Log</span>
     </div>
     </template>
-    <div class="nav-item" data-view="stats" data-dock="2" data-short-label="Stats" data-tooltip="Statistics" data-i18n-attr="data-tooltip:shell.nav.statistics;data-short-label:shell.nav.statistics.short" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item" data-view="stats" data-dock="2" data-short-label="Stats" data-tooltip="Statistics" data-i18n-attr="data-tooltip:shell.nav.statistics;data-short-label:shell.nav.statistics.short" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="statistics" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 21v-6"/><path d="M12 21V9"/><path d="M19 21V3"/></svg></span><span class="nav-label" data-i18n="shell.nav.statistics">Statistics</span>
     </div>
     <div class="nav-group" data-i18n="shell.nav.group.system">System</div>
     <template data-requires="administer">
-    <div class="nav-item" data-view="settings" data-dock="4" data-tooltip="Settings" data-i18n-attr="data-tooltip:shell.nav.settings" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item" data-view="settings" data-dock="4" data-tooltip="Settings" data-i18n-attr="data-tooltip:shell.nav.settings" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="settings" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg></span><span class="nav-label" data-i18n="shell.nav.settings">Settings</span>
     </div>
     </template>
     <template data-requires="notifications.self">
-    <div class="nav-item" data-view="settings" data-dock="4" data-short-label="Notifs" data-title="Notifications" data-subtitle="Configure notifications for your downloads." data-tooltip="Notifications" data-i18n-attr="data-tooltip:shell.nav.notifications;data-short-label:shell.nav.notifications.short;data-title:shell.nav.notifications;data-subtitle:shell.nav.notifications.subtitle" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item" data-view="settings" data-dock="4" data-short-label="Notifs" data-title="Notifications" data-subtitle="Configure notifications for your downloads." data-tooltip="Notifications" data-i18n-attr="data-tooltip:shell.nav.notifications;data-short-label:shell.nav.notifications.short;data-title:shell.nav.notifications;data-subtitle:shell.nav.notifications.subtitle" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="bell-ring" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M22 8c0-2.3-.8-4.3-2-6"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/><path d="M4 2C2.8 3.7 2 5.7 2 8"/></svg></span><span class="nav-label" data-i18n="shell.nav.notifications">Notifications</span>
     </div>
     </template>
-    <div class="nav-item" data-view="help" data-dock="6" data-short-label="Help" data-tooltip="Help &amp; License" data-i18n-attr="data-tooltip:shell.nav.help;data-short-label:shell.nav.help.short" data-tooltip-label=".nav-label" onclick="nav(this, event)">
+    <div class="nav-item" data-view="help" data-dock="6" data-short-label="Help" data-tooltip="Help &amp; License" data-i18n-attr="data-tooltip:shell.nav.help;data-short-label:shell.nav.help.short" data-tooltip-label=".nav-label" data-dp-click="nav">
       <span class="icon"><svg class="lucide dp-utility-icon" data-dp-lucide="help" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span><span class="nav-label" data-i18n="shell.nav.help">Help &amp; License</span>
     </div>
   </nav>
-  <button type="button" id="sidebar-handle" class="sidebar-handle" aria-controls="sidebar" aria-expanded="false" aria-label="Expand sidebar" data-tooltip="Expand sidebar" data-i18n-attr="aria-label:shell.sidebar.expand;data-tooltip:shell.sidebar.expand" onclick="toggleSidebarOverlay()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"/></svg></button>
+  <button type="button" id="sidebar-handle" class="sidebar-handle" aria-controls="sidebar" aria-expanded="false" aria-label="Expand sidebar" data-tooltip="Expand sidebar" data-i18n-attr="aria-label:shell.sidebar.expand;data-tooltip:shell.sidebar.expand" data-dp-click="toggleSidebarOverlay"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"/></svg></button>
   <div id="sidebar-bottom-stack" class="sidebar-bottom-stack">
     <template data-requires="administer">
     <div class="sidebar-footer">
@@ -138,34 +138,34 @@
       <h1 id="page-title" data-i18n="shell.page.dashboard.title">Dashboard</h1>
       <p id="page-subtitle" class="dp-page-subtitle" data-i18n="shell.page.dashboard.subtitle">Download activity and system status.</p>
     </div>
-    <template data-requires="administer"><button id="update-badge" class="dp-update-badge" type="button" hidden onclick="DPUpdateNotice.open()" data-i18n-attr="aria-label:update.badge.aria;data-tooltip:update.badge.aria" data-i18n-values='{"version":""}'><span data-update-badge-label data-i18n="update.badge.label" data-i18n-values='{"version":""}'></span></button></template>
+    <template data-requires="administer"><button id="update-badge" class="dp-update-badge" type="button" hidden data-dp-click="openUpdateNotice" data-i18n-attr="aria-label:update.badge.aria;data-tooltip:update.badge.aria" data-i18n-values='{"version":""}'><span data-update-badge-label data-i18n="update.badge.label" data-i18n-values='{"version":""}'></span></button></template>
     <template data-requires="administer"><div id="topbar-actions"></div></template>
     <div id="runtime-speed-badge" style="display:flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--text2);cursor:default" data-tooltip="Active / max — live speed — download speed cap" data-i18n-attr="data-tooltip:runtime_badge.tooltip_admin">
       <span style="color:var(--green)">&#9660;</span><template data-requires="administer"><span id="runtime-badge-active">0</span><span style="color:var(--text3)">/</span><span id="runtime-badge-max">0</span>
       <span style="color:var(--border);margin:0 2px">|</span></template><span id="runtime-badge-speed" style="color:var(--green)" data-i18n="format.rate.zero">0 KB/s</span>
       <template data-requires="administer"><span style="color:var(--border);margin:0 2px">|</span>
       <div class="runtime-cap-control">
-        <button id="runtime-cap-toggle" class="runtime-cap-toggle" type="button" aria-haspopup="menu" aria-expanded="false" onclick="toggleSpeedCapMenu(event)" data-tooltip="Set download speed cap" data-i18n-attr="data-tooltip:speed_cap.set_tooltip">
+        <button id="runtime-cap-toggle" class="runtime-cap-toggle" type="button" aria-haspopup="menu" aria-expanded="false" data-dp-click="toggleSpeedCapMenu" data-tooltip="Set download speed cap" data-i18n-attr="data-tooltip:speed_cap.set_tooltip">
           <span class="dp-speedcap-arrow" aria-hidden="true"><svg class="lucide dp-utility-icon" data-dp-lucide="chevronDown" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></span><span id="runtime-badge-limit" data-i18n="speed_cap.unlimited">Unlimited</span>
         </button>
         <div id="runtime-cap-menu" class="runtime-cap-menu" role="menu" hidden>
           <div class="runtime-cap-panel">
           <div class="runtime-cap-title" data-i18n="speed_cap.title">Download speed cap</div>
           <div class="runtime-cap-options">
-            <button type="button" data-cap-bps="0" onclick="applyTopbarSpeedCap(0)" data-i18n="speed_cap.unlimited">Unlimited</button>
-            <button type="button" data-cap-bps="1048576" onclick="applyTopbarSpeedCap(1048576)" data-i18n="speed_cap.preset_1">1 MB/s</button>
-            <button type="button" data-cap-bps="5242880" onclick="applyTopbarSpeedCap(5242880)" data-i18n="speed_cap.preset_5">5 MB/s</button>
-            <button type="button" data-cap-bps="10485760" onclick="applyTopbarSpeedCap(10485760)" data-i18n="speed_cap.preset_10">10 MB/s</button>
-            <button type="button" data-cap-bps="20971520" onclick="applyTopbarSpeedCap(20971520)" data-i18n="speed_cap.preset_20">20 MB/s</button>
-            <button type="button" data-cap-bps="31457280" onclick="applyTopbarSpeedCap(31457280)" data-i18n="speed_cap.preset_30">30 MB/s</button>
-            <button type="button" data-cap-bps="52428800" onclick="applyTopbarSpeedCap(52428800)" data-i18n="speed_cap.preset_50">50 MB/s</button>
-            <button type="button" data-cap-bps="104857600" onclick="applyTopbarSpeedCap(104857600)" data-i18n="speed_cap.preset_100">100 MB/s</button>
+            <button type="button" data-cap-bps="0" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.unlimited">Unlimited</button>
+            <button type="button" data-cap-bps="1048576" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_1">1 MB/s</button>
+            <button type="button" data-cap-bps="5242880" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_5">5 MB/s</button>
+            <button type="button" data-cap-bps="10485760" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_10">10 MB/s</button>
+            <button type="button" data-cap-bps="20971520" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_20">20 MB/s</button>
+            <button type="button" data-cap-bps="31457280" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_30">30 MB/s</button>
+            <button type="button" data-cap-bps="52428800" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_50">50 MB/s</button>
+            <button type="button" data-cap-bps="104857600" data-dp-click="applyTopbarSpeedCap" data-i18n="speed_cap.preset_100">100 MB/s</button>
           </div>
           <div class="runtime-cap-custom">
             <label for="runtime-cap-custom-mbps" data-i18n="speed_cap.custom_label">Custom cap (MB/s)</label>
             <div>
-              <input id="runtime-cap-custom-mbps" type="number" min="0" step="0.1" inputmode="decimal" placeholder="MB/s" data-i18n-attr="placeholder:speed_cap.custom_placeholder" onkeydown="if(event.key==='Enter')applyTopbarCustomSpeedCap()">
-              <button type="button" class="btn btn-primary btn-sm" onclick="applyTopbarCustomSpeedCap()" data-i18n="speed_cap.set_custom">Set Custom</button>
+              <input id="runtime-cap-custom-mbps" type="number" min="0" step="0.1" inputmode="decimal" placeholder="MB/s" data-i18n-attr="placeholder:speed_cap.custom_placeholder" data-dp-keydown="applyCustomSpeedCapOnEnter">
+              <button type="button" class="btn btn-primary btn-sm" data-dp-click="applyTopbarCustomSpeedCap" data-i18n="speed_cap.set_custom">Set Custom</button>
             </div>
           </div>
           </div>
@@ -173,7 +173,7 @@
       </div></template>
     </div>
     <div class="sidebar-theme-control topbar-theme-control">
-      <button type="button" class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" data-tooltip="Switch to light mode" aria-label="Switch to light mode" data-i18n-attr="data-tooltip:theme.switch_to_light;aria-label:theme.switch_to_light"><svg class="lucide dp-utility-icon" data-dp-lucide="sun" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg></button>
+      <button type="button" class="theme-toggle" id="theme-toggle" data-dp-click="toggleTheme" data-tooltip="Switch to light mode" aria-label="Switch to light mode" data-i18n-attr="data-tooltip:theme.switch_to_light;aria-label:theme.switch_to_light"><svg class="lucide dp-utility-icon" data-dp-lucide="sun" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg></button>
       <button type="button" class="dp-theme-picker-trigger" id="theme-picker-toggle" aria-haspopup="menu" aria-controls="theme-picker" aria-expanded="false" aria-label="Choose theme" data-tooltip="Choose theme" data-i18n-attr="aria-label:theme.choose;data-tooltip:theme.choose"><svg class="lucide dp-utility-icon" data-dp-lucide="chevronDown" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></button>
       <div id="theme-picker" class="dp-theme-picker" popover="manual" role="menu" aria-labelledby="theme-picker-title">
         <div class="dp-theme-picker-panel">
@@ -285,7 +285,7 @@
           <path class="dp-card-spark-line" fill="url(#dp-card-spark-signal-3)" d="M 0 15.38 H 100 V 16.62 H 0 Z"></path>
         </svg>
         </div>
-        <div class="dash-hero-stat" data-c="red" id="dash-error-card" onclick="nav(document.querySelector('[data-view=torrents]'));setTimeout(()=>setFilter(document.querySelector('.ftab[onclick*=error]'),'error'),100)" style="cursor:pointer" data-tooltip="Errors: transfers that stopped with an error." data-i18n-attr="data-tooltip:dashboard.kpi.errors.tooltip">
+        <div class="dash-hero-stat" data-c="red" id="dash-error-card" data-dp-click="showErrorDownloads" style="cursor:pointer" data-tooltip="Errors: transfers that stopped with an error." data-i18n-attr="data-tooltip:dashboard.kpi.errors.tooltip">
           <div class="dhs-label" data-i18n="dashboard.kpi.errors.label">Errors</div>
           <div class="dhs-icon"><img src="/icons/dp/card-error.svg" alt="" aria-hidden="true" class="dp-icon dp-icon--metric"></div>
           <div class="dhs-body">
@@ -344,13 +344,13 @@
           </div>
           <div class="dp-global-pause-center"><div class="dp-global-pause-title"><svg class="lucide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg><span data-i18n="processing.paused_banner.title">PROCESSING PAUSED</span></div><div class="dp-global-pause-copy" data-i18n="processing.paused_banner.copy">New downloads can still be added. They will remain queued until processing is resumed.</div></div>
           <div class="dp-card-header-actions">
-            <template data-requires="administer"><span class="dp-dashboard-action-track"><button class="btn btn-warn btn-sm" id="btn-recover-all" data-default-label="Recover All" onclick="recoverAll(this)" data-tooltip="Check transfers for recoverable work" data-i18n-attr="data-default-label:recovery.recover_all;data-tooltip:recovery.recover_all_tooltip"><svg class="lucide dp-utility-icon" data-dp-lucide="refresh" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-dp-icon-label="1" data-i18n="recovery.recover_all">Recover All</span></button></span></template>
+            <template data-requires="administer"><span class="dp-dashboard-action-track"><button class="btn btn-warn btn-sm" id="btn-recover-all" data-default-label="Recover All" data-dp-click="recoverAll" data-tooltip="Check transfers for recoverable work" data-i18n-attr="data-default-label:recovery.recover_all;data-tooltip:recovery.recover_all_tooltip"><svg class="lucide dp-utility-icon" data-dp-lucide="refresh" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-dp-icon-label="1" data-i18n="recovery.recover_all">Recover All</span></button></span></template>
           </div>
         </div>
         <div style="padding:12px 16px">
           <div class="direct-link-entry dp-action-field">
-            <textarea class="input direct-link-input" id="q-transfer-input" rows="2" placeholder="Paste a link, magnet, or other supported resource…&#10;Add multiple entries, one per line." data-placeholder-concise="Paste links or magnets…&#10;One per line." data-placeholder-minimum="Paste links…&#10;One per line." data-i18n-attr="placeholder:quick_add.placeholder;data-placeholder-concise:quick_add.placeholder_concise;data-placeholder-minimum:quick_add.placeholder_minimum;data-tooltip:quick_add.input_tooltip" data-tooltip="Paste alternate sources for one item separated by tabs; use new lines for separate items." oninput="resizeDebridLinkInput(this)" onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter')addDashboardEntries()"></textarea>
-            <button class="btn btn-primary" id="btn-add-transfer" onclick="addDashboardEntries()" style="padding:9px 20px" data-tooltip="Submit links and magnets for provider routing; when empty, choose a transfer file" data-default-label="Add" data-i18n="quick_add.add" data-i18n-attr="data-tooltip:quick_add.add_tooltip;data-default-label:quick_add.add">Add</button>
+            <textarea class="input direct-link-input" id="q-transfer-input" rows="2" placeholder="Paste a link, magnet, or other supported resource…&#10;Add multiple entries, one per line." data-placeholder-concise="Paste links or magnets…&#10;One per line." data-placeholder-minimum="Paste links…&#10;One per line." data-i18n-attr="placeholder:quick_add.placeholder;data-placeholder-concise:quick_add.placeholder_concise;data-placeholder-minimum:quick_add.placeholder_minimum;data-tooltip:quick_add.input_tooltip" data-tooltip="Paste alternate sources for one item separated by tabs; use new lines for separate items." data-dp-input="resizeDebridLinkInput" data-dp-keydown="addDashboardEntriesOnModEnter"></textarea>
+            <button class="btn btn-primary" id="btn-add-transfer" data-dp-click="addDashboardEntries" style="padding:9px 20px" data-tooltip="Submit links and magnets for provider routing; when empty, choose a transfer file" data-default-label="Add" data-i18n="quick_add.add" data-i18n-attr="data-tooltip:quick_add.add_tooltip;data-default-label:quick_add.add">Add</button>
           </div>
         </div>
       </div>
@@ -361,7 +361,7 @@
         <div class="card-header">
           <span class="card-title" data-dp-structural-title="1"><img src="/icons/dp/card-document-stack.svg" alt="" aria-hidden="true" class="dp-icon dp-icon--lg"><span class="dp-card-heading-copy"><span data-i18n="dashboard.activity.title">Download Activity</span><span id="dash-activity-count" style="font-size:11px;color:var(--text3)" data-i18n="dashboard.activity.loading">Loading downloads…</span></span></span>
           <div style="display:flex;align-items:center;gap:8px">
-            <button class="btn btn-ghost btn-sm" onclick="nav(document.querySelector('[data-view=torrents]'))"><span data-i18n="dashboard.activity.view_all">View All</span> <svg class="lucide dp-utility-icon" data-dp-lucide="arrowRight" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></button>
+            <button class="btn btn-ghost btn-sm" data-dp-click="navDownloads"><span data-i18n="dashboard.activity.view_all">View All</span> <svg class="lucide dp-utility-icon" data-dp-lucide="arrowRight" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></button>
           </div>
         </div>
         <div class="dash-activity-table-wrap">
@@ -389,13 +389,13 @@
         <div class="card-header">
           <span class="card-title dp-downloads-card-title" id="torrent-card-title" aria-label="On the Books. 0 downloads tracked. Most of them behaved." data-tooltip="On the Books. 0 downloads tracked. Most of them behaved." data-i18n-attr="aria-label:downloads.tracked.label_initial;data-tooltip:downloads.tracked.label_initial" data-tooltip-label=".dp-downloads-subtitle"><img class="dp-icon dp-icon--lg dp-downloads-title-icon" src="/icons/dp/card-download.svg?v=11" alt="" aria-hidden="true"><span class="dp-downloads-heading-copy"><span class="dp-downloads-heading" data-i18n="downloads.title">On the Books</span><span class="dp-downloads-subtitle" data-i18n="downloads.tracked.full" data-i18n-values='{"count":0}'>0 downloads tracked. Most of them behaved.</span><span class="dp-downloads-subtitle-short" data-dp-copy="tracked" aria-hidden="true" data-i18n="downloads.tracked.short" data-i18n-values='{"count":0}'>0 downloads tracked</span><span class="dp-downloads-subtitle-short" data-dp-copy="downloads" aria-hidden="true" data-i18n="downloads.tracked.shortest" data-i18n-values='{"count":0}'>0 downloads</span><span class="dp-downloads-count" aria-hidden="true">0</span></span></span>
           <div class="filter-tabs" data-dp-filter-contract="desktop-v24" role="tablist" aria-label="Download status filter" data-i18n-attr="aria-label:a11y.download_status_filter">
-            <div class="ftab active" data-dp-status="" role="tab" aria-selected="true" onclick="setFilter(this,'')" data-i18n="downloads.filter.all">All</div>
-            <div class="ftab" data-dp-status="downloading" role="tab" aria-selected="false" onclick="setFilter(this,'downloading')" data-i18n="downloads.filter.downloading">Downloading</div>
-            <div class="ftab" data-dp-status="paused" role="tab" aria-selected="false" onclick="setFilter(this,'paused')" data-i18n="downloads.filter.paused">Paused</div>
-            <div class="ftab" data-dp-status="processing" role="tab" aria-selected="false" onclick="setFilter(this,'processing')" data-i18n="downloads.filter.processing">Processing</div>
-            <div class="ftab" data-dp-status="ready" role="tab" aria-selected="false" onclick="setFilter(this,'ready')" data-i18n="downloads.filter.ready">Ready</div>
-            <div class="ftab" data-dp-status="completed" role="tab" aria-selected="false" onclick="setFilter(this,'completed')" data-i18n="downloads.filter.completed">Done</div>
-            <div class="ftab" data-dp-status="error" role="tab" aria-selected="false" onclick="setFilter(this,'error')" data-i18n="downloads.filter.error">Error</div>
+            <div class="ftab active" data-dp-status="" role="tab" aria-selected="true" data-dp-click="setFilter" data-i18n="downloads.filter.all">All</div>
+            <div class="ftab" data-dp-status="downloading" role="tab" aria-selected="false" data-dp-click="setFilter" data-i18n="downloads.filter.downloading">Downloading</div>
+            <div class="ftab" data-dp-status="paused" role="tab" aria-selected="false" data-dp-click="setFilter" data-i18n="downloads.filter.paused">Paused</div>
+            <div class="ftab" data-dp-status="processing" role="tab" aria-selected="false" data-dp-click="setFilter" data-i18n="downloads.filter.processing">Processing</div>
+            <div class="ftab" data-dp-status="ready" role="tab" aria-selected="false" data-dp-click="setFilter" data-i18n="downloads.filter.ready">Ready</div>
+            <div class="ftab" data-dp-status="completed" role="tab" aria-selected="false" data-dp-click="setFilter" data-i18n="downloads.filter.completed">Done</div>
+            <div class="ftab" data-dp-status="error" role="tab" aria-selected="false" data-dp-click="setFilter" data-i18n="downloads.filter.error">Error</div>
           </div>
           <button type="button" id="torrent-filter" class="btn btn-ghost dp-downloads-filter-trigger" data-state="filter" popovertarget="torrent-filter-menu" aria-haspopup="listbox" aria-expanded="false" aria-label="Status filter" data-i18n-attr="aria-label:downloads.filter.label"><svg class="lucide dp-utility-icon" data-dp-lucide="funnel" data-dp-filter-glyph="filter" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/></svg><svg class="lucide dp-utility-icon" data-dp-lucide="funnel-x" data-dp-filter-glyph="clear" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12.531 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14v6a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341l.427-.473"/><path d="m16.5 3.5 5 5"/><path d="m21.5 3.5-5 5"/></svg><span class="dp-downloads-filter-text" data-dp-filter-text="filter" data-i18n="downloads.filter.status">Status</span><span class="dp-downloads-filter-text" data-dp-filter-text="clear" data-i18n="downloads.filter.clear">Clear</span><span class="dp-dropdown__chevron" aria-hidden="true"></span></button>
           <div id="torrent-filter-menu" class="dp-dropdown-menu dp-downloads-filter-menu" popover="auto" role="listbox" aria-label="Download status filter" data-i18n-attr="aria-label:a11y.download_status_filter"></div>
@@ -404,7 +404,7 @@
         <div style="padding:10px 14px 0">
           <div class="ev-search-row">
             <input class="input" id="torrent-search" type="search" aria-label="Search downloads" placeholder="Search downloads…" data-i18n-attr="aria-label:downloads.search.label;placeholder:downloads.search.placeholder"/>
-            <select class="input dp-downloads-order" id="torrent-order" aria-label="Order downloads" data-i18n-attr="aria-label:downloads.order.label" onchange="onTorrentOrderChange(this.value)">
+            <select class="input dp-downloads-order" id="torrent-order" aria-label="Order downloads" data-i18n-attr="aria-label:downloads.order.label" data-dp-change="onTorrentOrderChange">
               <option value="queue" selected data-i18n="downloads.order.priority">Priority</option>
               <option value="newest" data-i18n="downloads.order.newest">Newest</option>
             </select>
@@ -416,23 +416,23 @@
         <div class="dp-card dp-downloads-bulk-card dp-downloads-bulk-integrated" id="bulk-bar">
           <div class="dp-card__header dp-downloads-bulk-toolbar">
             <div class="dp-downloads-bulk-actions">
-              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--pause" data-default-label="Pause" data-tooltip="Pause selected downloads" data-i18n-attr="data-default-label:downloads.bulk.pause;data-tooltip:downloads.bulk.pause_tooltip" data-tooltip-label="[data-dp-icon-label]" onclick="bulkAction('pause',this)"><svg class="lucide dp-utility-icon" data-dp-lucide="pause" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.pause">Pause</span></button>
-              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--resume" data-default-label="Resume" data-tooltip="Resume selected downloads" data-i18n-attr="data-default-label:downloads.bulk.resume;data-tooltip:downloads.bulk.resume_tooltip" data-tooltip-label="[data-dp-icon-label]" onclick="bulkAction('resume',this)"><svg class="lucide dp-utility-icon" data-dp-lucide="play" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.resume">Resume</span></button>
-              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--reset" data-default-label="Reset" data-tooltip="Reset selected downloads" data-i18n-attr="data-default-label:downloads.bulk.reset;data-tooltip:downloads.bulk.reset_tooltip" data-tooltip-label="[data-dp-icon-label]" onclick="bulkAction('reset',this)"><svg class="lucide dp-utility-icon" data-dp-lucide="refresh" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.reset">Reset</span></button>
-              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--top" data-default-label="Move to Top" data-tooltip="Move selected downloads to top" data-i18n-attr="data-default-label:downloads.bulk.top;data-tooltip:downloads.bulk.top_tooltip" data-tooltip-label="[data-dp-icon-label]" hidden onclick="moveSelectionToTop(this)"><svg class="lucide dp-utility-icon" data-dp-lucide="arrow-up-to-line" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 3h14"/><path d="m18 13-6-6-6 6"/><path d="M12 7v14"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.top">Move to Top</span></button>
+              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--pause" data-default-label="Pause" data-tooltip="Pause selected downloads" data-i18n-attr="data-default-label:downloads.bulk.pause;data-tooltip:downloads.bulk.pause_tooltip" data-tooltip-label="[data-dp-icon-label]" data-dp-click="bulkPause"><svg class="lucide dp-utility-icon" data-dp-lucide="pause" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.pause">Pause</span></button>
+              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--resume" data-default-label="Resume" data-tooltip="Resume selected downloads" data-i18n-attr="data-default-label:downloads.bulk.resume;data-tooltip:downloads.bulk.resume_tooltip" data-tooltip-label="[data-dp-icon-label]" data-dp-click="bulkResume"><svg class="lucide dp-utility-icon" data-dp-lucide="play" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.resume">Resume</span></button>
+              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--reset" data-default-label="Reset" data-tooltip="Reset selected downloads" data-i18n-attr="data-default-label:downloads.bulk.reset;data-tooltip:downloads.bulk.reset_tooltip" data-tooltip-label="[data-dp-icon-label]" data-dp-click="bulkReset"><svg class="lucide dp-utility-icon" data-dp-lucide="refresh" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.reset">Reset</span></button>
+              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--top" data-default-label="Move to Top" data-tooltip="Move selected downloads to top" data-i18n-attr="data-default-label:downloads.bulk.top;data-tooltip:downloads.bulk.top_tooltip" data-tooltip-label="[data-dp-icon-label]" hidden data-dp-click="moveSelectionToTop"><svg class="lucide dp-utility-icon" data-dp-lucide="arrow-up-to-line" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 3h14"/><path d="m18 13-6-6-6 6"/><path d="M12 7v14"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.top">Move to Top</span></button>
             </div>
             <template id="dp-bulk-delete-template"><span class="dp-downloads-bulk-separator" aria-hidden="true"></span>
-              <button class="btn btn-danger dp-downloads-bulk-action dp-downloads-bulk-action--delete" data-default-label="Delete" data-tooltip="Delete selected downloads" data-i18n-attr="data-default-label:downloads.bulk.delete;data-tooltip:downloads.bulk.delete_tooltip" data-tooltip-label="[data-dp-icon-label]" onclick="bulkAction('delete',this)"><svg class="lucide dp-utility-icon" data-dp-lucide="trash2" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.delete">Delete</span></button></template>
+              <button class="btn btn-danger dp-downloads-bulk-action dp-downloads-bulk-action--delete" data-default-label="Delete" data-tooltip="Delete selected downloads" data-i18n-attr="data-default-label:downloads.bulk.delete;data-tooltip:downloads.bulk.delete_tooltip" data-tooltip-label="[data-dp-icon-label]" data-dp-click="bulkDelete"><svg class="lucide dp-utility-icon" data-dp-lucide="trash2" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg><span data-dp-icon-label="1" data-i18n="downloads.bulk.delete">Delete</span></button></template>
             <div class="dp-downloads-bulk-status">
               <span id="bulk-count" class="dp-downloads-bulk-count"></span>
-              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--clear" data-default-label="Clear Selections" aria-label="Clear Selections" data-tooltip="Clear Selections" data-i18n-attr="data-default-label:downloads.bulk.clear;aria-label:downloads.bulk.clear;data-tooltip:downloads.bulk.clear" data-tooltip-label=".dp-downloads-bulk-clear-rest" onclick="clearSelection()"><svg class="lucide dp-utility-icon" data-dp-lucide="x" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span><span data-i18n="downloads.bulk.clear_short">Clear</span><span class="dp-downloads-bulk-clear-rest" data-i18n="downloads.bulk.clear_rest"> Selections</span></span></button>
+              <button class="btn dp-downloads-bulk-action dp-downloads-bulk-action--clear" data-default-label="Clear Selections" aria-label="Clear Selections" data-tooltip="Clear Selections" data-i18n-attr="data-default-label:downloads.bulk.clear;aria-label:downloads.bulk.clear;data-tooltip:downloads.bulk.clear" data-tooltip-label=".dp-downloads-bulk-clear-rest" data-dp-click="clearSelection"><svg class="lucide dp-utility-icon" data-dp-lucide="x" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg><span><span data-i18n="downloads.bulk.clear_short">Clear</span><span class="dp-downloads-bulk-clear-rest" data-i18n="downloads.bulk.clear_rest"> Selections</span></span></button>
             </div>
           </div>
         </div>
         </template>
         <div class="dp-downloads-table-wrap" style="overflow-x:auto;-webkit-overflow-scrolling:touch">
         <table class="t-table">
-          <thead><tr><th class="dp-downloads-name-cell" data-i18n="transfer.column.name">Name</th><th class="dp-downloads-status-cell" data-i18n="transfer.column.status">Status</th><th class="dp-downloads-progress-cell" data-i18n="transfer.column.progress">Progress</th><th class="sz dp-downloads-size-cell" data-i18n="transfer.column.size">Size</th><th class="sz dp-downloads-date-cell" data-i18n="downloads.column.date">Added</th><template data-requires="transfers.operate"><th class="dp-downloads-action-cell" data-i18n="downloads.column.actions">Actions</th><th class="dp-downloads-select-cell"><input type="checkbox" id="chk-all" aria-label="Select every download on this page" data-i18n-attr="aria-label:downloads.select_all" onchange="toggleAllCheckboxes(this)"/></th></template></tr></thead>
+          <thead><tr><th class="dp-downloads-name-cell" data-i18n="transfer.column.name">Name</th><th class="dp-downloads-status-cell" data-i18n="transfer.column.status">Status</th><th class="dp-downloads-progress-cell" data-i18n="transfer.column.progress">Progress</th><th class="sz dp-downloads-size-cell" data-i18n="transfer.column.size">Size</th><th class="sz dp-downloads-date-cell" data-i18n="downloads.column.date">Added</th><template data-requires="transfers.operate"><th class="dp-downloads-action-cell" data-i18n="downloads.column.actions">Actions</th><th class="dp-downloads-select-cell"><input type="checkbox" id="chk-all" aria-label="Select every download on this page" data-i18n-attr="aria-label:downloads.select_all" data-dp-change="toggleAllCheckboxes"/></th></template></tr></thead>
           <tbody id="t-tbody" class="dp-downloads-styled-tbody"><tr><td colspan="7" class="empty" data-i18n="common.loading">Loading…</td></tr></tbody>
         </table>
         </div>
@@ -455,7 +455,7 @@
               <span class="toggle"><input id="ev-live" type="checkbox" role="switch" aria-describedby="ev-live-status"><span class="ttrack" aria-hidden="true"></span></span>
               <span id="ev-live-status" hidden data-i18n="activity.live.off">Off</span>
             </label>
-            <button class="btn btn-ghost btn-sm dp-activity-refresh" data-default-label="Refresh" onclick="DPActivityLog.load()" aria-label="Refresh activity log" data-tooltip="Refresh activity log" data-i18n-attr="data-default-label:activity.refresh;aria-label:activity.refresh_label;data-tooltip:activity.refresh_label"><svg class="lucide dp-utility-icon" data-dp-lucide="refresh" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-i18n="activity.refresh">Refresh</span></button>
+            <button class="btn btn-ghost btn-sm dp-activity-refresh" data-default-label="Refresh" data-dp-click="loadActivityLog" aria-label="Refresh activity log" data-tooltip="Refresh activity log" data-i18n-attr="data-default-label:activity.refresh;aria-label:activity.refresh_label;data-tooltip:activity.refresh_label"><svg class="lucide dp-utility-icon" data-dp-lucide="refresh" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-i18n="activity.refresh">Refresh</span></button>
           </div>
         </div>
         <div class="dp-activity-search-band">
@@ -528,12 +528,12 @@
           </div>
         </div>
         <div class="filter-tabs" id="stats-period-tabs">
-          <div class="ftab" data-period="1h" onclick="setStatsPeriod(this)" data-i18n="stats.period.hour">1Hour</div>
-          <div class="ftab" data-period="24h" onclick="setStatsPeriod(this)" data-i18n="stats.period.day">1Day</div>
-          <div class="ftab active" data-period="7d" onclick="setStatsPeriod(this)" data-i18n="stats.period.week">7Days</div>
-          <div class="ftab" data-period="30d" onclick="setStatsPeriod(this)" data-i18n="stats.period.month">30Days</div>
-          <div class="ftab" data-period="1y" onclick="setStatsPeriod(this)" data-i18n="stats.period.year">1Year</div>
-          <div class="ftab" data-period="all" onclick="setStatsPeriod(this)" data-i18n="stats.period.all">All Time</div>
+          <div class="ftab" data-period="1h" data-dp-click="setStatsPeriod" data-i18n="stats.period.hour">1Hour</div>
+          <div class="ftab" data-period="24h" data-dp-click="setStatsPeriod" data-i18n="stats.period.day">1Day</div>
+          <div class="ftab active" data-period="7d" data-dp-click="setStatsPeriod" data-i18n="stats.period.week">7Days</div>
+          <div class="ftab" data-period="30d" data-dp-click="setStatsPeriod" data-i18n="stats.period.month">30Days</div>
+          <div class="ftab" data-period="1y" data-dp-click="setStatsPeriod" data-i18n="stats.period.year">1Year</div>
+          <div class="ftab" data-period="all" data-dp-click="setStatsPeriod" data-i18n="stats.period.all">All Time</div>
         </div>
         <button type="button" id="stats-period" class="btn btn-ghost dp-stats-period-trigger" popovertarget="stats-period-menu" aria-haspopup="listbox" aria-expanded="false" aria-label="Statistics period" data-i18n-attr="aria-label:stats.period.label"><svg class="lucide dp-utility-icon" data-dp-lucide="clock" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span class="dp-stats-period-labels" aria-hidden="true"></span><span class="dp-dropdown__chevron" aria-hidden="true"></span></button>
         <div id="stats-period-menu" class="dp-dropdown-menu dp-stats-period-menu" popover="auto" role="listbox" aria-label="Statistics period" data-i18n-attr="aria-label:stats.period.label"></div>
@@ -598,12 +598,12 @@
 </div>
 
 <!-- Modal -->
-<div id="overlay" onclick="closeModal(event)">
+<div id="overlay" data-dp-click="closeDetailsFromBackdrop">
   <div id="modal" class="dp-card dp-detail-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-hdr dp-card__header">
       <span class="modal-title dp-card__title" id="modal-title">Details</span>
-      <template data-requires="administer"><button type="button" class="btn btn-ghost btn-sm dp-detail-trace" onclick="downloadTransferTrace(this)" data-default-label="Transfer Trace Log" data-i18n="details.trace.button" data-i18n-attr="data-default-label:details.trace.button">Transfer Trace Log</button></template>
-      <button type="button" class="btn modal-close dp-detail-close" onclick="closeModal()" aria-label="Close details" data-tooltip="Close details" data-i18n-attr="aria-label:a11y.close_details;data-tooltip:a11y.close_details">
+      <template data-requires="administer"><button type="button" class="btn btn-ghost btn-sm dp-detail-trace" data-dp-click="downloadTransferTrace" data-default-label="Transfer Trace Log" data-i18n="details.trace.button" data-i18n-attr="data-default-label:details.trace.button">Transfer Trace Log</button></template>
+      <button type="button" class="btn modal-close dp-detail-close" data-dp-click="closeDetails" aria-label="Close details" data-tooltip="Close details" data-i18n-attr="aria-label:a11y.close_details;data-tooltip:a11y.close_details">
         <svg class="lucide dp-utility-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
       </button>
     </div>
@@ -614,7 +614,7 @@
 
 <div id="toasts"></div>
 
-<template data-requires="transfers.submit"><input id="torrent-file-input" type="file" hidden onchange="uploadTransferFile(this)"></template>
+<template data-requires="transfers.submit"><input id="torrent-file-input" type="file" hidden data-dp-change="uploadTransferFile"></template>
 
 <script src="/vendor/chart.umd.min.js?v=4.5.1"></script>
 <!-- Localization: the formatter (a module, in document order with the deferred scripts) and the
@@ -623,7 +623,9 @@
 <script src="/i18n/en.js?v=58e5cebba181d022" defer></script>
 <script src="/ui-error-semantics.js?v=3" defer></script>
 <script src="/operator-title.js?v=31" defer></script>
-<script src="/app.js?v=50" defer></script>
+<!-- The control wiring every renderer delegates through (DPActions): before them all. -->
+<script src="/ui-actions.js?v=1" defer></script>
+<script src="/app.js?v=51" defer></script>
 <!-- Canonical application-dialog owner: a direct dependency of Settings, the directory picker and Downloads. -->
 <script src="/ui-settings-modal.js?v=9" defer></script>
 <script src="/ui-language-picker.js?v=3" defer></script>
@@ -649,8 +651,8 @@
 <script src="/ui-pager.js?v=1" defer></script>
 <script src="/ui-section-nav.js?v=4" defer></script>
 <script src="/ui-search.js?v=1" defer></script>
-<script src="/ui-downloads.js?v=8" defer></script>
-<script src="/ui-dashboard-transfer-presentation.js?v=5" defer></script>
+<script src="/ui-downloads.js?v=9" defer></script>
+<script src="/ui-dashboard-transfer-presentation.js?v=6" defer></script>
 <script src="/ui-activity-log-runtime.js?v=6" defer></script>
 <script src="/ui-settings-archive-passwords.js?v=3" defer></script>
 <script id="dp-provider-status-script" src="/ui-provider-status.js?v=5" defer></script>

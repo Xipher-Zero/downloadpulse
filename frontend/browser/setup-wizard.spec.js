@@ -684,7 +684,7 @@ test('W13: the indicator is a reading: no completion at the start, the current p
   expect(now.map(item => item.label)).toEqual(await Promise.all(
     Array.from({length: total}, (_, index) => t(page, 'setup.step', {current: index + 1, total}))));
   await expect(progress(page)).toHaveAttribute('aria-label', await t(page, 'setup.progress.label'));
-  await expect(progress(page).locator('button, a, input, [tabindex], [onclick], [role="button"]')).toHaveCount(0);
+  await expect(progress(page).locator('button, a, input, [tabindex], [data-dp-click], [role="button"]')).toHaveCount(0);
   // Clicking a later bubble moves nothing.
   await progress(page).locator('.dp-setup-progress-bubble').nth(2).click({force: true});
   expect((await bubbles(page)).findIndex(item => item.current)).toBe(0);

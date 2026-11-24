@@ -14,10 +14,10 @@ DASHBOARD = STATIC / "ui-dashboard.css"
 
 def test_transfer_contract_is_final_shared_layer_after_page_geometry() -> None:
     overlay = STYLE.read_text(encoding="utf-8")
-    dashboard = "/ui-dashboard.css?v=24"
+    dashboard = "/ui-dashboard.css?v=25"
     downloads = "/ui-downloads-page.css?v=30"
     help_page = "/ui-help-page.css?v=23"
-    transfer = "/ui-transfer-contract.css?v=35"
+    transfer = "/ui-transfer-contract.css?v=36"
 
     for layer in (dashboard, downloads, help_page, transfer):
         assert layer in overlay
@@ -78,10 +78,9 @@ def test_transfer_actions_share_recent_activity_geometry() -> None:
         "padding: 0 8px !important",
         "border-radius: 8px !important",
         "font-size: 11.5px !important",
-        "[onclick*=\"pauseTorrent(\"]",
-        "[onclick*=\"resumeTorrent(\"]",
-        "[onclick*=\"retryT(\"]",
-        "[onclick*=\"retryTorrent(\"]",
+        "button[data-dp-click=\"pauseT\"]",
+        "button[data-dp-click=\"resumeT\"]",
+        "button[data-dp-click=\"retryT\"]",
         # Dark: the translucent active treatment; light: the material of its hue.
         "--dp-op-hue: var(--dp-state-active);",
         "background: var(--dp-op-surface, var(--dp-state-active-bg)) !important",

@@ -27,14 +27,16 @@ def test_bulk_toolbar_right_side_owns_count_and_clear_selection() -> None:
 
     assert "window.DPI18n.t('downloads.selection.count', {count: _selectedIds.size})" in downloads
     assert english("downloads.selection.count") == "{count} Selected"
-    assert view.index("bulkAction('pause',this)") < view.index("bulkAction('resume',this)")
-    assert view.index("bulkAction('resume',this)") < view.index("bulkAction('reset',this)")
-    assert view.index("bulkAction('reset',this)") < view.index("bulkAction('delete',this)")
+    assert view.index('data-dp-click="bulkPause"') < view.index('data-dp-click="bulkResume"')
+    assert view.index('data-dp-click="bulkResume"') < view.index('data-dp-click="bulkReset"')
+    assert view.index('data-dp-click="bulkReset"') < view.index('data-dp-click="bulkDelete"')
+    for action in ("pause", "resume", "reset", "delete"):
+        assert f"bulk{action.capitalize()}: el => bulkAction('{action}', el)," in downloads
     assert 'class="dp-downloads-bulk-status"' in view
     assert 'id="bulk-count" class="dp-downloads-bulk-count"' in view
     assert 'data-default-label="Clear Selections"' in view
     assert 'data-dp-lucide="x"' in view
-    assert 'onclick="clearSelection()"' in view
+    assert 'data-dp-click="clearSelection"' in view
     assert "gap: 10px;" in page
     assert not (STATIC / "ui-downloads-runtime.js").exists()
 

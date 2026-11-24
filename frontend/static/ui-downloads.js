@@ -767,7 +767,7 @@ function rowMarkup(t) {
   // Admission found this promoted transfer waiting only on restarts nobody
   // confirmed: the operator may reaffirm its place (reaffirmQueue).
   const consent = operable && t.queue_member === true && t.queue_restart_consent === true
-    ? `<button class="btn btn-warn btn-sm dp-queue-consent" data-default-label="${T('downloads.queue.start_now')}" data-tooltip="${T('downloads.queue.start_now_tooltip')}" onclick="event.stopPropagation();reaffirmQueue(${t.id},this)">${window.DPIcons.iconLabel('play', window.DPI18n.t('downloads.queue.start_now'))}</button>`
+    ? `<button class="btn btn-warn btn-sm dp-queue-consent" data-default-label="${T('downloads.queue.start_now')}" data-tooltip="${T('downloads.queue.start_now_tooltip')}" data-dp-click="reaffirmQueue">${window.DPIcons.iconLabel('play', window.DPI18n.t('downloads.queue.start_now'))}</button>`
     : '';
   // The name's secondary bar, as Download Activity draws it: verified
   // progress while the transfer is still on its way (app.js patches its fill
@@ -786,7 +786,7 @@ function rowMarkup(t) {
   // bar, then the source, the provider and the candidate controls (and a
   // label, when set) -- closed by the size, which shows there only where the
   // table moves Size out of its own column (ui-downloads-page.css).
-  return `<tr class="dp-downloads-detail-row" data-torrent-id="${t.id}" data-queue-member="${t.queue_member === true}" data-status="${esc(t.status)}" data-presentation-status="${esc(presentation)}" tabindex="0" onclick="onDownloadRowClick(event,${t.id})" onkeydown="if(event.target===this&&(event.key==='Enter'||event.key===' ')){event.preventDefault();showDetail(${t.id})}">
+  return `<tr class="dp-downloads-detail-row" data-torrent-id="${t.id}" data-queue-member="${t.queue_member === true}" data-status="${esc(t.status)}" data-presentation-status="${esc(presentation)}" tabindex="0" data-dp-click="openRow" data-dp-keydown="openRowOnKey">
     ${nameCell}
       <div class="dp-downloads-name-copy">
         ${summary.value}<div class="t-name" data-tooltip="${name}">${name}</div>
@@ -798,17 +798,17 @@ function rowMarkup(t) {
     <td class="dp-downloads-progress-cell" data-role="transfer-progress">${progress(t.progress, presentation, t.active_execution_progress, t.active_execution_basis, t.acquisition_eta ?? null)}</td>
     <td class="sz dp-downloads-size-cell">${fmtSize(t.size_bytes)}</td>
     <td class="sz dp-downloads-date-cell">${dateMarkup(t.created_at)}</td>
-    ${operable ? `<td class="dp-downloads-action-cell" onclick="event.stopPropagation()">
+    ${operable ? `<td class="dp-downloads-action-cell" data-dp-stop="click">
       <div class="actions">
         ${consent ? consent.replace('class="btn btn-warn btn-sm dp-queue-consent"', 'class="btn btn-warn btn-sm dp-queue-consent-action"') : ''}
-        ${PAUSEABLE_PRESENTATION.has(presentation) ? `<button class="btn btn-blue btn-sm" data-default-label="${T('transfer.action.pause')}" onclick="event.stopPropagation();pauseT(${t.id},this)" data-tooltip="${T('transfer.action.pause_tooltip')}">${window.DPIcons.iconLabel('pause', window.DPI18n.t('transfer.action.pause'))}</button>` : ''}
-        ${presentation === 'paused' ? `<button class="btn btn-blue btn-sm" data-default-label="${T('transfer.action.resume')}" onclick="event.stopPropagation();resumeT(${t.id},this)" data-tooltip="${T('transfer.action.resume_tooltip')}">${window.DPIcons.iconLabel('play', window.DPI18n.t('transfer.action.resume'))}</button>` : ''}
-        ${showRetry ? `<button class="btn btn-blue btn-sm" data-default-label="${T('transfer.action.retry')}" onclick="event.stopPropagation();retryT(${t.id},this)" data-tooltip="${T('transfer.action.retry_tooltip')}">${window.DPIcons.iconLabel('refresh', window.DPI18n.t('transfer.action.retry'))}</button>` : ''}
-        ${window.DPDesktopReveal?.offered(t) ? `<button class="btn btn-blue btn-sm dp-downloads-reveal" data-default-label="${T('transfer.action.show_in_folder')}" onclick="event.stopPropagation();DPDesktopReveal.show(${t.id},this)" data-tooltip="${T('transfer.action.show_in_folder_tooltip')}">${window.DPIcons.iconLabel('folder', window.DPI18n.t('transfer.action.show_in_folder'))}</button>` : ''}
-        ${destroyable ? `<button class="btn btn-danger btn-sm dp-downloads-remove" data-default-label="${T('transfer.action.remove')}" onclick="event.stopPropagation();deleteT(${t.id},event,this)" data-tooltip="${T('transfer.action.remove_tooltip')}">${window.DPIcons.iconLabel('trash2', window.DPI18n.t('transfer.action.remove'))}</button>` : ''}
+        ${PAUSEABLE_PRESENTATION.has(presentation) ? `<button class="btn btn-blue btn-sm" data-default-label="${T('transfer.action.pause')}" data-dp-click="pauseT" data-tooltip="${T('transfer.action.pause_tooltip')}">${window.DPIcons.iconLabel('pause', window.DPI18n.t('transfer.action.pause'))}</button>` : ''}
+        ${presentation === 'paused' ? `<button class="btn btn-blue btn-sm" data-default-label="${T('transfer.action.resume')}" data-dp-click="resumeT" data-tooltip="${T('transfer.action.resume_tooltip')}">${window.DPIcons.iconLabel('play', window.DPI18n.t('transfer.action.resume'))}</button>` : ''}
+        ${showRetry ? `<button class="btn btn-blue btn-sm" data-default-label="${T('transfer.action.retry')}" data-dp-click="retryT" data-tooltip="${T('transfer.action.retry_tooltip')}">${window.DPIcons.iconLabel('refresh', window.DPI18n.t('transfer.action.retry'))}</button>` : ''}
+        ${window.DPDesktopReveal?.offered(t) ? `<button class="btn btn-blue btn-sm dp-downloads-reveal" data-default-label="${T('transfer.action.show_in_folder')}" data-dp-click="showInFolder" data-tooltip="${T('transfer.action.show_in_folder_tooltip')}">${window.DPIcons.iconLabel('folder', window.DPI18n.t('transfer.action.show_in_folder'))}</button>` : ''}
+        ${destroyable ? `<button class="btn btn-danger btn-sm dp-downloads-remove" data-default-label="${T('transfer.action.remove')}" data-dp-click="deleteT" data-tooltip="${T('transfer.action.remove_tooltip')}">${window.DPIcons.iconLabel('trash2', window.DPI18n.t('transfer.action.remove'))}</button>` : ''}
       </div>
     </td>
-    <td class="dp-downloads-select-cell" onclick="event.stopPropagation()"><input type="checkbox" class="t-chk" data-id="${t.id}" aria-label="${T('downloads.select_row', {name: transferTitle(t) || window.DPI18n.t('transfer.unnamed')})}"${_selectedIds.has(stableDownloadId(t.id)) ? ' checked' : ''} onchange="onCheckboxChange(this)"/></td>` : ''}
+    <td class="dp-downloads-select-cell" data-dp-stop="click"><input type="checkbox" class="t-chk" data-id="${t.id}" aria-label="${T('downloads.select_row', {name: transferTitle(t) || window.DPI18n.t('transfer.unnamed')})}"${_selectedIds.has(stableDownloadId(t.id)) ? ' checked' : ''} data-dp-change="onCheckboxChange"/></td>` : ''}
   </tr>`;
 }
 
@@ -1565,23 +1565,66 @@ document.addEventListener('downloadpulse:locale-changed', () => {
   const row = inside ? active.closest('tr[data-torrent-id]') : null;
   const kind = !inside ? '' : active === row ? 'row' : active.classList.contains('t-chk') ? 'check'
     : active.matches('td[data-queue-drag]') ? 'name' : 'action';
-  const action = inside ? active.getAttribute('onclick') || '' : '';
+  const action = inside ? active.getAttribute('data-dp-click') || '' : '';
   lastTorrentPaint();
   if (!inside) return;
   const again = row ? body.querySelector(`tr[data-torrent-id="${CSS.escape(row.dataset.torrentId)}"]`) : null;
   const target = !again ? null : kind === 'row' ? again : kind === 'check' ? again.querySelector('.t-chk')
     : kind === 'name' ? again.querySelector('td[data-queue-drag]')
-      : Array.from(again.querySelectorAll('[onclick]')).find(node => node.getAttribute('onclick') === action);
+      : Array.from(again.querySelectorAll('[data-dp-click]')).find(node => node.getAttribute('data-dp-click') === action);
   (target || again || document.getElementById('torrent-search'))?.focus({preventScroll: true});
 });
 
 // ── Init/wiring ──────────────────────────────────────────────────────────
+/* Downloads' controls declare their actions (data-dp-click and its siblings);
+ * this owner dispatches them (ui-actions.js) from its list -- a row, its
+ * actions, its selection -- and from its toolbar, the rest of the page (the
+ * filters, the order, the bulk actions, select all). A row action stops its
+ * click at the button, as each did, so the row never also opens Details. */
+const rowTransferId = el => Number(el.closest('tr[data-torrent-id]').dataset.torrentId);
+function delegateActions(body) {
+  window.DPActions.delegate(body, 'click', {
+    openRow: (el, event) => onDownloadRowClick(event, rowTransferId(el)),
+    reaffirmQueue: (el, event) => { event.stopPropagation(); reaffirmQueue(rowTransferId(el), el); },
+    pauseT: (el, event) => { event.stopPropagation(); pauseT(rowTransferId(el), el); },
+    resumeT: (el, event) => { event.stopPropagation(); resumeT(rowTransferId(el), el); },
+    retryT: (el, event) => { event.stopPropagation(); retryT(rowTransferId(el), el); },
+    showInFolder: (el, event) => { event.stopPropagation(); window.DPDesktopReveal.show(rowTransferId(el), el); },
+    deleteT: (el, event) => { event.stopPropagation(); deleteT(rowTransferId(el), event, el); },
+  });
+  window.DPActions.delegate(body, 'keydown', {
+    openRowOnKey: (el, event) => {
+      if (event.target === el && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        showDetail(rowTransferId(el));
+      }
+    },
+  });
+  window.DPActions.delegate(body, 'change', {
+    onCheckboxChange: el => onCheckboxChange(el),
+  });
+  const view = document.getElementById('view-torrents');
+  window.DPActions.delegate(view, 'click', {
+    setFilter: el => setFilter(el, el.dataset.dpStatus),
+    bulkPause: el => bulkAction('pause', el),
+    bulkResume: el => bulkAction('resume', el),
+    bulkReset: el => bulkAction('reset', el),
+    bulkDelete: el => bulkAction('delete', el),
+    moveSelectionToTop: el => moveSelectionToTop(el),
+    clearSelection: () => clearSelection(),
+  });
+  window.DPActions.delegate(view, 'change', {
+    onTorrentOrderChange: el => onTorrentOrderChange(el.value),
+    toggleAllCheckboxes: el => toggleAllCheckboxes(el),
+  });
+}
 function init() {
   searchControl();
   ensureDateMenus();
   bindStatusFilterControl();
   observeResize();
   const body = document.getElementById('t-tbody');
+  delegateActions(body);
   body?.addEventListener('pointerdown', onNamePointerDown);
   body?.addEventListener('keydown', onNameKeyDown);
   window.addEventListener('resize', scheduleCapacityCheck, {passive: true});

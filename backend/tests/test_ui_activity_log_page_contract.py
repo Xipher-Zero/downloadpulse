@@ -207,12 +207,12 @@ def test_activity_log_layer_follows_canonical_shell_and_reference_stack() -> Non
     overlay = read("style.css")
 
     shell = overlay.index("/ui-shell-structural.css?v=33")
-    dashboard = overlay.index("/ui-dashboard.css?v=24")
+    dashboard = overlay.index("/ui-dashboard.css?v=25")
     controls = overlay.index("/ui-utility-controls.css?v=25")
     stats = overlay.index("/ui-statistics-page.css?v=23")
     activity = overlay.index("/ui-activity-log-page.css?v=33")
     downloads = overlay.index("/ui-downloads-page.css?v=30")
-    transfer = overlay.index("/ui-transfer-contract.css?v=35")
+    transfer = overlay.index("/ui-transfer-contract.css?v=36")
 
     assert shell < dashboard < controls < stats < activity < downloads < transfer
 

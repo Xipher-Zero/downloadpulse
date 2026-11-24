@@ -14,7 +14,7 @@ def test_panel_surface_treatment_loads_after_page_geometry() -> None:
     entry = read("style.css")
     downloads = entry.index("/ui-downloads-page.css?v=30")
     treatment = entry.index("/ui-panel-surface-treatment.css?v=24")
-    transfer = entry.index("/ui-transfer-contract.css?v=35")
+    transfer = entry.index("/ui-transfer-contract.css?v=36")
     assert downloads < treatment < transfer
 
 

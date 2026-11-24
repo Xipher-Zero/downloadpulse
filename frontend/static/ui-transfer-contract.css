@@ -196,7 +196,7 @@
 }
 
 /* Pause/Resume material is shared by both list implementations. */
-:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("]),
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button[data-dp-click="pauseT"],
 #view-torrents .dp-downloads-bulk-action--pause {
   background: linear-gradient(135deg,
     rgba(125, 91, 30, .91) 0%,
@@ -206,7 +206,7 @@
   color: #ffd35b !important;
   box-shadow: inset 0 1px rgba(255,255,255,.06), 0 5px 15px rgba(113, 79, 20, .15) !important;
 }
-body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("]),
+body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button[data-dp-click="pauseT"],
 body.light #view-torrents .dp-downloads-bulk-action--pause {
   --dp-op-hue: var(--dp-state-caution);
   background: var(--dp-op-surface) !important;
@@ -215,14 +215,14 @@ body.light #view-torrents .dp-downloads-bulk-action--pause {
   text-shadow: none !important;
   box-shadow: inset 0 1px rgba(255,255,255,.55), var(--dp-op-glow) !important;
 }
-body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="pauseT("], [onclick*="pauseTorrent("]):hover,
+body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button[data-dp-click="pauseT"]:hover,
 body.light #view-torrents .dp-downloads-bulk-action--pause:hover {
   background: var(--dp-op-surface-hover) !important;
   border-color: var(--dp-op-hue) !important;
   color: var(--dp-op-ink) !important;
   box-shadow: inset 0 1px rgba(255,255,255,.6), var(--dp-op-glow-hover) !important;
 }
-:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="resumeT("], [onclick*="resumeTorrent("]),
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button[data-dp-click="resumeT"],
 #view-torrents .dp-downloads-bulk-action--resume {
   background: linear-gradient(135deg,
     rgba(25, 117, 78, .84) 0%,
@@ -232,7 +232,7 @@ body.light #view-torrents .dp-downloads-bulk-action--pause:hover {
   color: #9af0bf !important;
   box-shadow: inset 0 1px rgba(255,255,255,.05), 0 6px 18px rgba(16, 78, 53, .16) !important;
 }
-body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="resumeT("], [onclick*="resumeTorrent("]),
+body.light :is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button[data-dp-click="resumeT"],
 body.light #view-torrents .dp-downloads-bulk-action--resume {
   --dp-op-hue: var(--dp-state-success);
   background: var(--dp-op-surface) !important;
@@ -245,7 +245,7 @@ body.light #view-torrents .dp-downloads-bulk-action--resume {
 /* Retry is an information/recovery action. Match the translucent semantic
    treatment used by the other secondary row actions instead of reading as a
    filled primary control. Theme-aware state tokens keep the blue family intact. */
-:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button:is([onclick*="retryT("], [onclick*="retryTorrent("]),
+:is(#dash-tbody, #t-tbody, .dp-downloads-styled-tbody) button[data-dp-click="retryT"],
 #view-torrents .dp-downloads-bulk-action--reset {
   --dp-op-hue: var(--dp-state-active);
   background: var(--dp-op-surface, var(--dp-state-active-bg)) !important;
