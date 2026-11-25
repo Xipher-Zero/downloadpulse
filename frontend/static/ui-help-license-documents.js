@@ -29,6 +29,8 @@
   }
 
   let activeBackdrop = null;
+  // An open document is nothing a released desktop window brings back (DPWindowState).
+  window.DPWindowState.register('license-document', {releasable: () => !activeBackdrop});
   let activeOpener = null;
   const helpRoot = () => document.getElementById('view-help');
 

@@ -20,6 +20,9 @@
 
   const nativeFetch = window.fetch.bind(window);   // native API, never reassigned
   const mutatingMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+  // Same-origin changes sent and not yet answered: what a reload would cut off
+  // (the desktop window is never released while any is in flight, DPWindowState).
+  let pendingMutations = 0;
   let csrfToken = '';
   let sessionState = null;
   let sessionRequest = null;
@@ -888,7 +891,17 @@
       options.credentials = options.credentials || 'same-origin';
     }
 
-    if (sameOrigin && mutatingMethods.has(method)) {
+    const mutating = sameOrigin && mutatingMethods.has(method);
+    if (mutating) pendingMutations += 1;
+    try {
+      return await sendRequest(input, options, method, sameOrigin, mutating);
+    } finally {
+      if (mutating) pendingMutations -= 1;
+    }
+  }
+
+  async function sendRequest(input, options, method, sameOrigin, mutating) {
+    if (mutating) {
       await refreshSession();
       if (csrfToken) {
         const inherited = input instanceof Request ? input.headers : undefined;
@@ -1105,6 +1118,7 @@
 
   window.downloadPulseAuth = Object.freeze({
     fetch: downloadPulseFetch,
+    pendingMutations: () => pendingMutations,
     refreshSession,
     session: () => sessionState,
     logout: logoutSession,

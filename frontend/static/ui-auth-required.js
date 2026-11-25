@@ -37,6 +37,9 @@
     scanScheduled: null,
     session: 0,
   };
+  // A credential dialog holds what the person types, which a released desktop
+  // window never brings back (DPWindowState): it is not released while one is open.
+  window.DPWindowState.register('auth-required', {releasable: () => !state.active});
 
   const text = value => String(value == null ? '' : value);
   const lower = value => text(value).trim().toLowerCase();

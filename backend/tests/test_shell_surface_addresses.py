@@ -80,7 +80,12 @@ async def test_server_and_navigation_owner_name_the_same_addresses(served):
     assert all(f'id="view-{view}"' in index for view in paths)
     # Back/Forward and reload read the address; navigation writes it through History.
     assert "window.addEventListener('popstate'" in app_js
-    assert "document.addEventListener('DOMContentLoaded', showAddressedPage)" in app_js
+    # 1.0.5 (WS8b1, changed assertion): start-up opens the addressed page from one
+    # DOMContentLoaded handler -- at once anywhere but the desktop window, and there
+    # once DPWindowState has said whether a released window comes back elsewhere.
+    start = app_js.split("document.addEventListener('DOMContentLoaded', () => {", 1)[1].split("\n});", 1)[0]
+    assert "if (!DPWindowState.active) { showAddressedPage(); resolve(); return; }" in start
+    assert start.count("showAddressedPage();") == 2
     assert "pushState" in app_js and "replaceState" in app_js
     assert "hashchange" not in app_js
 

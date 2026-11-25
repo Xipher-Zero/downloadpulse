@@ -195,8 +195,55 @@ function showAddressedPage() {
 }
 window.addEventListener('popstate', () => showAddressedPage());
 // A reload or a bookmark opens the page its address names, once every page's
-// owner has loaded.
-document.addEventListener('DOMContentLoaded', showAddressedPage);
+// owner has loaded. A desktop window released while hidden comes back on the
+// page it showed (DPWindowState), its outer scroll once that page has drawn.
+// The interface is not ready (downloadpulse:interface-ready) before this has run.
+const dpAddressedPageShown = new Promise(resolve => document.addEventListener('DOMContentLoaded', () => {
+  if (!DPWindowState.active) { showAddressedPage(); resolve(); return; }
+  DPWindowState.ready.then(() => {
+    const route = DPWindowState.route();
+    if (route && navEntryForPath(route) && route !== window.location.pathname) {
+      window.history.replaceState(null, '', route);
+    }
+    showAddressedPage();
+    const scroll = DPWindowState.take('navigation');
+    if (scroll && Number.isFinite(scroll.content) && scroll.content > 0) restoreContentScroll(scroll.content);
+  }).finally(resolve);
+}));
+/* The outer scroll a released window had: applied to the restored page as soon
+ * as it has drawn tall enough to hold it, within RESTORE_SCROLL_MS (then as far
+ * as it goes). Only to that page: a person scrolling, or going to any page,
+ * first keeps their own place. */
+const RESTORE_SCROLL_MS = 5000;
+function restoreContentScroll(target) {
+  const content = document.getElementById('content');
+  if (!content) return;
+  let done = false;
+  const stop = () => {
+    done = true;
+    observer.disconnect();
+    content.removeEventListener('wheel', stop);
+    content.removeEventListener('keydown', stop);
+    document.removeEventListener('downloadpulse:navigation', stop);
+    window.removeEventListener('popstate', stop);
+  };
+  const apply = final => {
+    if (done) return;
+    const room = content.scrollHeight - content.clientHeight;
+    if (room >= target || final) { content.scrollTop = Math.min(target, Math.max(0, room)); stop(); }
+  };
+  const observer = new ResizeObserver(() => apply(false));
+  [...content.children].forEach(child => observer.observe(child));
+  content.addEventListener('wheel', stop, {passive: true});
+  content.addEventListener('keydown', stop);
+  document.addEventListener('downloadpulse:navigation', stop);
+  window.addEventListener('popstate', stop);
+  requestAnimationFrame(() => apply(false));
+  setTimeout(() => apply(true), RESTORE_SCROLL_MS);
+}
+DPWindowState.register('navigation', {
+  capture: () => ({content: document.getElementById('content')?.scrollTop || 0}),
+});
 
 /* The page header's title and subtitle for a sidebar entry, in the page's
  * language (ui-i18n.js). A sidebar entry may name the page it opens (a
@@ -1148,6 +1195,8 @@ document.addEventListener('contextmenu', event => {
 // navigation and closing Details close it; Escape, Tab and a chosen item
 // return focus through ``restore``.
 let dpContextMenu = null;
+// An open context menu is nothing a released window brings back.
+DPWindowState.register('context-menu', {releasable: () => !dpContextMenu});
 function dpCloseContextMenu(restoreFocus) {
   if (!dpContextMenu) return;
   const {node, abort, restore} = dpContextMenu;
@@ -4638,7 +4687,7 @@ document.addEventListener('DOMContentLoaded', () => {
     : Promise.resolve();
   parsed
     .then(() => Promise.allSettled([recentLoaded, connectionsChecked, document.fonts?.ready,
-                                    window.DPSetupWizard?.started]))
+                                    window.DPSetupWizard?.started, dpAddressedPageShown]))
     .then(() => document.dispatchEvent(new CustomEvent('downloadpulse:interface-ready')));
 
   // Generic statistics availability says nothing about provider health.
@@ -4890,6 +4939,15 @@ document.addEventListener('DOMContentLoaded', () => {
           let payload = {};
           try { payload = JSON.parse(e.data || '{}'); } catch (_) {}
           askDesktopQuit(payload.nonce);
+        });
+
+        // The desktop window, hidden in the tray, may be released: its own page
+        // (the server sends no other) says whether nothing would be lost, and
+        // the state it would come back to (DPWindowState).
+        es.addEventListener('desktop_release_prompt', function(e) {
+          let payload = {};
+          try { payload = JSON.parse(e.data || '{}'); } catch (_) {}
+          DPWindowState.answer(payload.nonce);
         });
 
         // The account's role changed: its session continues under the new
