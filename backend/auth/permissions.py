@@ -28,7 +28,7 @@ from fastapi import HTTPException, Request
 
 from auth.accounts import Role
 from auth.models import Principal
-from core.localization import DisplayError
+from core.display_errors import DisplayError
 
 
 class Capability(StrEnum):

@@ -202,7 +202,7 @@ class AccountRefused(Exception):
     """A requested account change would break an account invariant.
 
     ``code`` and ``params``, where given, name the refusal the interface shows
-    (``core.localization.DisplayError``; the catalog key ``error.<code>``);
+    (``core.display_errors.DisplayError``; the catalog key ``error.<code>``);
     the English message stays the refusal's text for every API client."""
 
     def __init__(self, message: str = "", *, code: str | None = None, params: dict | None = None):

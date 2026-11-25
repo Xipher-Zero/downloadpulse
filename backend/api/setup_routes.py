@@ -20,7 +20,7 @@ from auth.accounts import USERNAME_LIMIT, AccountRefused
 from auth.models import Principal
 from auth.policy import standalone_deployment
 from core.config import get_settings
-from core.localization import DisplayError, refusal
+from core.display_errors import DisplayError, refusal
 from core.version import is_development_build
 from services import setup_lifecycle
 from services.setup_lifecycle import SetupRefused

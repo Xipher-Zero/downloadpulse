@@ -32,7 +32,7 @@ from auth.throttle import DualWindowRateLimiter
 from application.dependencies import get_application
 from application.service import ApplicationService
 from api.external_routes import _call
-from core.localization import DisplayError, refusal
+from core.display_errors import DisplayError, refusal
 from external.service import BROWSER_SOURCE_KINDS, ExternalClients
 from services import setup_lifecycle
 

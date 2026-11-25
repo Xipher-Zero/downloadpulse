@@ -50,7 +50,8 @@ from services.notifications import NotificationService
 from application.dependencies import get_application
 from application.service import ApplicationService
 from transfers.storage import StorageReason, StorageState
-from core.localization import CodedRuntimeError, DisplayError, refusal
+from core.display_errors import DisplayError, refusal
+from core.localization import CodedRuntimeError
 
 
 router = APIRouter()

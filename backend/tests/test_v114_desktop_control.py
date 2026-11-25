@@ -489,7 +489,7 @@ def test_saving_where_chosen_is_the_desktop_applications_alone_and_holds_no_main
     Save dialog); and like the downloads they mirror they are no application
     operation -- exactly these two paths, nothing beside them."""
     from api.routes import _require_desktop
-    from core.localization import DisplayError
+    from core.display_errors import DisplayError
     assert os.environ.get("DOWNLOADPULSE_DESKTOP") != "1"
     with pytest.raises(DisplayError) as refused:
         _require_desktop()

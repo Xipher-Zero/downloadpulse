@@ -642,7 +642,7 @@ async def change_deployment_type(request: Request, change: DeploymentTypeChange)
     try:
         await setup_lifecycle.deployment_change_admitted()
     except setup_lifecycle.SetupRefused as exc:
-        from core.localization import refusal
+        from core.display_errors import refusal
 
         raise refusal(exc.status, str(exc), exc) from None
     async with config_write_lock():

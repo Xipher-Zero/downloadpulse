@@ -55,7 +55,8 @@ from transfers.presentation_repository import (
     recovery_presentation,
 )
 from auth.permissions import require_destruction, transfer_access
-from core.localization import DisplayError, UNCLASSIFIED, code_of, disclosed
+from core.display_errors import DisplayError
+from core.localization import UNCLASSIFIED, code_of, disclosed
 
 from transfers.downloads_read_model import (  # noqa: E402 -- core's Downloads read model
     ACTIVITY_ORDER as _ACTIVITY_ORDER, bounded_request_kinds as _bounded_request_kinds, downloads_page,

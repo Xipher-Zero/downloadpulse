@@ -25,8 +25,8 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".github" / "localization"))
 
-from core.localization import (UNCLASSIFIED, CodedRuntimeError, CodedValueError, DisplayError, code_of, fact,  # noqa: E402
-                               refusal, said)
+from core.display_errors import DisplayError, refusal  # noqa: E402
+from core.localization import UNCLASSIFIED, CodedRuntimeError, CodedValueError, code_of, fact, said  # noqa: E402
 
 MESSAGES = json.loads((ROOT / "frontend" / "static" / "i18n" / "en.json").read_text(encoding="utf-8"))["messages"]
 

@@ -42,7 +42,7 @@ from fastapi import APIRouter, Depends
 from application.dependencies import get_application
 from application.service import ApplicationService
 from transfers.models import ExecutionState
-from core.localization import DisplayError
+from core.display_errors import DisplayError
 
 router = APIRouter()
 

@@ -599,7 +599,9 @@ class Words:
     def __init__(self, config_path: Path):
         from core import localization
         self._message = localization.message
-        self._tags = localization.locale_tags()
+        # Admitted by the manifest alone: the tray never reads every catalog
+        # (message() falls back to English for one it cannot read).
+        self._tags = localization.locale_tags(catalogs=False)
         try:
             tag = json.loads(config_path.read_text(encoding="utf-8")).get("default_locale")
         except (OSError, ValueError):

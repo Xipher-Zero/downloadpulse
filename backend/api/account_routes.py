@@ -26,7 +26,8 @@ from auth.policy import interactive_auth_enabled, password_auth_enabled, standal
 from auth.throttle import personal_notification_test_rate_limiter
 from core.config import apply_settings, config_write_lock, get_settings, journal_configuration_change, save_settings
 from core.logging_utils import sanitize_exception
-from core.localization import DisplayError, CodedRuntimeError, refusal
+from core.display_errors import DisplayError, refusal
+from core.localization import CodedRuntimeError
 from services import account_appearance
 from services import account_notifications
 from services import notification_service

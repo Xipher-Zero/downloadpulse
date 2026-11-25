@@ -25,7 +25,7 @@ from application.dependencies import get_application
 from application.service import ApplicationService
 from auth.permissions import require_destruction
 from transfers import file_selection as fs
-from core.localization import DisplayError, refusal
+from core.display_errors import DisplayError, refusal
 
 router = APIRouter()
 

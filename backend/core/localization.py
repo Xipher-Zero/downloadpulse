@@ -26,10 +26,10 @@ FormatJS formatter). The server reads the same files for three things only:
   enforces it), so ``message`` needs no general formatter. Before sign-in
   there is no account and so no account language: those pages are English
   unless a caller states a locale explicitly (``pre_sign_in_locale``);
-* ``DisplayError``: an error the interface shows, raised with a stable
-  ``code`` (and ``params``) beside its unchanged English ``detail``, so the
-  interface can show it in the reader's language while API clients keep the
-  English text and status they always had.
+* the error codes an error the interface shows carries beside its unchanged
+  English ``detail`` (the HTTP error itself, ``DisplayError``, and the
+  boundary's ``refusal`` are ``core.display_errors``'s: this module imports no
+  web framework, so the desktop supervisor reads its words without one).
 
 Error codes (WS3e). A refusal is named where its condition is known: at the
 raise, by ``DisplayError(status, detail, code=…)`` or by a ``Coded``
@@ -58,7 +58,6 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import HTTPException
 
 from core.logging_utils import sanitize_log_value
 
@@ -107,15 +106,21 @@ def test_locales_enabled() -> bool:
     return os.environ.get(TEST_LOCALES_ENV, "").strip() == "1"
 
 
-def locale_tags(*, include_test: bool | None = None) -> tuple[str, ...]:
+def locale_tags(*, include_test: bool | None = None, catalogs: bool = True) -> tuple[str, ...]:
     """Every locale an account may hold: the canonical language, each target
     the manifest marks ``supported`` that has a readable catalog, and the
-    pseudo locales where test locales are enabled. Never a ``planned`` one."""
+    pseudo locales where test locales are enabled. Never a ``planned`` one.
+
+    ``catalogs=False`` answers from the manifest alone, reading no catalog: for
+    a caller that only shows words in a tag (the desktop supervisor's tray),
+    where ``message`` already falls back to English, key by key, for a catalog
+    that cannot be read. Reading all of them costs every process that asks
+    about 25 MB it never gives back."""
     include_test = test_locales_enabled() if include_test is None else include_test
     admitted = []
     for tag, info in manifest()["locales"].items():
         status = info["status"]
-        if (status == "canonical" or status == "supported" and delivered(tag) is not None
+        if (status == "canonical" or status == "supported" and (not catalogs or delivered(tag) is not None)
                 or status == "pseudo" and include_test):
             admitted.append(tag)
     return tuple(admitted)
@@ -228,24 +233,6 @@ def pre_sign_in_locale(explicit: str | None = None) -> str:
     unless a caller explicitly states a locale the installation holds (the
     hook a later explicit pre-sign-in choice will use; today only tests)."""
     return explicit if explicit in locale_tags() else DEFAULT_LOCALE
-
-
-class DisplayError(HTTPException):
-    """An HTTP error the interface shows: ``detail`` stays the English text
-    API clients already receive; ``code`` (a key under ``error.`` in the
-    catalog) and ``params`` let the interface show it in its language."""
-
-    def __init__(self, status_code: int, detail: str, *, code: str, params: dict | None = None,
-                 headers: dict | None = None):
-        super().__init__(status_code=status_code, detail=detail, headers=headers)
-        # The params it sends never disclose more than ``detail`` (``disclosed``).
-        self.code, self.params = disclosed(detail, _checked_code(code), params)
-        # A boundary that wraps this refusal keeps its code (``code_of``).
-        self.display_code, self.display_params = self.code, self.params
-
-
-def display_error_body(error: DisplayError) -> dict:
-    return {"detail": error.detail, "code": error.code, "params": error.params}
 
 
 # ── error codes (WS3e) ─────────────────────────────────────────────────────
@@ -380,16 +367,3 @@ def code_of(exc: BaseException | None) -> tuple[str | None, dict]:
     """The code and params an exception names, if it names one."""
     code = getattr(exc, "display_code", None) if exc is not None else None
     return (code, dict(getattr(exc, "display_params", {}) or {})) if code else (None, {})
-
-
-def refusal(status_code: int, detail: str, cause: BaseException | None = None, *, code: str | None = None,
-            params: dict | None = None, headers: dict | None = None) -> DisplayError:
-    """The response a boundary raises: ``detail`` exactly the English it always
-    sent; named by the cause's own code where it has one, else by ``code``,
-    else ``unclassified`` (the interface then shows the English ``detail``)."""
-    named, named_params = code_of(cause)
-    if named:
-        return DisplayError(status_code, detail, code=named, params=named_params, headers=headers)
-    if code:
-        return DisplayError(status_code, detail, code=_checked_code(code), params=_safe_params(params), headers=headers)
-    return DisplayError(status_code, detail, code=UNCLASSIFIED, headers=headers)

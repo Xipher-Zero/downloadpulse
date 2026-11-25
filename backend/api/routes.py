@@ -170,7 +170,8 @@ from api.serializers import (
     public_torrent,
 )
 from executors.aria2.presentation import public_aria2_download
-from core.localization import CodedValueError, DisplayError, code_of, disclosed, refusal, fact
+from core.display_errors import DisplayError, refusal
+from core.localization import CodedValueError, code_of, disclosed, fact
 
 logger = logging.getLogger("downloadpulse.routes")
 router = APIRouter()

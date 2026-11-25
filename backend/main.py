@@ -66,7 +66,7 @@ from transfers.staged_input import MAX_STAGED_INPUT_BYTES
 from external.arr import UPLOAD_CEILINGS, adapter_of
 from external.arr import available as adapter_available
 from core.version import read_version
-from core.localization import DisplayError, display_error_body
+from core.display_errors import DisplayError, display_error_body
 from db.database import DatabaseMaintenanceActive, DatabaseSealed
 from application.dependencies import get_application
 from application.lifetime import (

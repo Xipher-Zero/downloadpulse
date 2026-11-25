@@ -118,6 +118,7 @@ debt, delivery and fallback are covered in `LOCALIZATION_RELEASE.md`.
 | First-paint veil | `frontend/static/ui-i18n.css` (`html[data-dp-locale-pending]`, 4 s failsafe) |
 | Catalog asset | `GET /i18n/{tag}.js` (`api.auth_routes.locale_catalog_script`): `window.DPI18nCatalog(tag, messages[, {stale}])`. English's ETag is sha256[:16] of `en.json`; a target's is sha256[:16] of the delivered body |
 | Server reads, pseudo, pre-sign-in text, coded errors | `backend/core/localization.py` |
+| The HTTP error the interface shows (`DisplayError`) and the boundary that raises it (`refusal`) | `backend/core/display_errors.py` (apart, so `core.localization` imports no web framework) |
 | Each account's language | `account_appearance.locale` (`services.account_appearance.load_locale` / `set_locale`), `GET/PUT /api/account/locale` |
 | The installation's default language (for accounts without their own) | `AppSettings.default_locale` in `config.json` (`services.account_appearance.default_locale` / `set_default_locale`), `GET/PUT /api/settings/default-locale` (Admin) |
 | First-paint projection | the `window.downloadPulseLocale=…` line of `/ui-theme-bootstrap.js` |
