@@ -26,7 +26,7 @@ import aiohttp
 import pytest
 
 from test_v114_desktop_control import Backend
-from desktop.supervisor import free_port
+from core.ports import free_port
 
 
 def _port_backend(tmp_path, port: int, **kwargs) -> Backend:

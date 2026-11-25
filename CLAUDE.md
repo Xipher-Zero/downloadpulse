@@ -104,8 +104,14 @@ All three `requirements*.in` files are compiled with `pip-compile … --strip-ex
 - Static-dir search (`main.py`): `STATIC_DIR` env → `<repo>/frontend/static` →
   `/app/frontend/static` → `/app/static`. The app **refuses to start** if no candidate
   has `index.html`.
-- `request_id_middleware` forces `Cache-Control: no-cache, must-revalidate` on `/`,
-  `*.html`, `*.js`, `*.css` so a new container can't run a stale JS/CSS mix.
+- `request_id_middleware` gives `/`, `*.html`, `*.js`, `*.css` the default
+  `Cache-Control: no-cache, must-revalidate` (a new container can't run a stale JS/CSS
+  mix); a response that declares its own policy keeps it. The static owner,
+  `core/static_assets.py` (`VersionedStaticFiles`), declares
+  `private, max-age=31536000, immutable` only for a request whose `v` equals the
+  sha256[:16] of the bytes it serves, and serves `index.html` and `style.css`
+  rewritten with those versions (children first; never an address a route answers,
+  e.g. `/app.js`, `/ui-theme-bootstrap.js`, `/i18n/*`).
 - Comms: REST + Server-Sent Events ("the pulse") + Prometheus metrics at `/api/metrics`.
 
 ### Middleware stack (`backend/main.py`)
@@ -143,8 +149,9 @@ before the session-issuing one) — ordered registration, not route-list surgery
 - `frontend/static/index.html` owns the shell + six nav surfaces: Dashboard, Downloads,
   Activity Log, Statistics, Settings, Help & License.
 - CSS: `style.css` is the one canonical `@import` graph (the former `style-v11.css` was
-  folded into it and retired); per-surface `ui-*.css`; `design-tokens.css`. Assets
-  cache-busted with `?v=N`.
+  folded into it and retired); per-surface `ui-*.css`; `design-tokens.css`. The `?v=`
+  in `index.html` and `style.css` are placeholders the server replaces with content
+  versions (`core/static_assets.py`): never bump them by hand for caching.
 - **`index.html` parser-loads the application and every bounded presentation owner as
   direct `<script defer>` tags**, in dependency order; nothing is lazy-injected, and
   `ui-provider-status.js` owns Provider Status only. The current owner map is in

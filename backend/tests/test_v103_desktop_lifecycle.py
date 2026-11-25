@@ -33,7 +33,7 @@ ROOT = BACKEND.parent
 sys.path.insert(0, str(ROOT))
 
 from desktop import supervisor  # noqa: E402
-from desktop.supervisor import free_port  # noqa: E402
+from core.ports import free_port  # noqa: E402
 from test_v114_desktop_control import Backend  # noqa: E402
 from test_v114_desktop_local_port import _port_backend  # noqa: E402
 

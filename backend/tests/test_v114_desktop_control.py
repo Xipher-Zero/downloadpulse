@@ -33,7 +33,8 @@ sys.path.insert(0, str(ROOT))
 
 from application import desktop_control  # noqa: E402
 from desktop import supervisor  # noqa: E402
-from desktop.supervisor import Channel, free_port  # noqa: E402
+from core.ports import free_port  # noqa: E402
+from desktop.supervisor import Channel  # noqa: E402
 from executors.process_ownership import ProcessOwnership  # noqa: E402
 
 PASSWORD = "correct horse battery staple 42"

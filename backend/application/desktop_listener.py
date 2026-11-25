@@ -1,8 +1,9 @@
 """The desktop application's external address: Local Port.
 
 The installed desktop application's window talks to its backend on a private
-loopback port the supervisor picks afresh each run (``desktop/supervisor.py``
-``free_port``). External clients -- the download-client dialects, the
+loopback port the supervisor chooses at each launch: the one it had last time
+while that is still free, so the window's address and its browser cache stay
+the same, else a free one (``desktop/supervisor.py`` ``window_port``). External clients -- the download-client dialects, the
 native external API, a browser extension -- need an address that stays put:
 this listener, on ``127.0.0.1`` at the installation's Local Port
 (``AppSettings.desktop_local_port``, 8095 unless changed).
@@ -243,8 +244,10 @@ def window_request(request) -> bool:
     of the relay's own connections (``LocalListener.relays``). The window
     sends no forwarding header, so a request carrying one (``X-Forwarded-For``,
     ``Forwarded``) is never the window's. (A browser pointed at the private
-    port by hand would come to it directly too; that port is picked afresh
-    each run and published nowhere but the window's own address.)"""
+    port by hand would come to it directly too. The port is no secret -- it is
+    remembered between launches and on the backend's command line -- and the
+    guard never relied on it: it is the connection the request arrived on,
+    direct and not through Local Port's relay, from this machine's loopback.)"""
     client = request.client
     return (internal_port() is not None and client is not None and not listener.relays(client)
             and "x-forwarded-for" not in request.headers and "forwarded" not in request.headers)

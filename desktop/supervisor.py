@@ -50,7 +50,6 @@ import logging
 import logging.handlers
 import os
 import signal
-import socket
 import sys
 import time
 from pathlib import Path
@@ -530,10 +529,33 @@ def single_instance(root: Path):
     return handle
 
 
-def free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
+WINDOW_PORT_FILE = "window-port"
+
+
+def window_port(runtime: Path) -> int:
+    """The window's loopback port: the one it had at the last launch while
+    that is still free -- so its address, and with it the browser cache of the
+    page's scripts and styles (core.static_assets), stays the same across
+    launches -- else a free one, remembered for the next. A local hint only:
+    a missing or unreadable record is a free port."""
+    from core.ports import free_port, loopback_port
+    record = runtime / WINDOW_PORT_FILE
+    try:
+        previous = int(record.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        previous = 0
+    if not 1024 <= previous <= 65535:
+        previous = 0
+    port = loopback_port(previous, name="the DownloadPulse window") if previous else free_port()
+    if port != previous:
+        try:
+            runtime.mkdir(parents=True, exist_ok=True)
+            temporary = record.with_suffix(".tmp")
+            temporary.write_text(f"{port}\n", encoding="ascii")
+            os.replace(temporary, record)
+        except OSError as exc:
+            logger.warning("the window's port could not be remembered: %s", exc)
+    return port
 
 
 # ── the private channel (supervisor end) ───────────────────────────────────
@@ -1501,7 +1523,7 @@ async def _run(paths: dict[str, Path], root: Path, config_path: Path, words: Wor
     for directory in (db_path.parent, config_path.parent):
         directory.mkdir(parents=True, exist_ok=True)
     processes = ProcessOwnership(root / "desktop-runtime")
-    port = free_port()
+    port = window_port(root / "desktop-runtime")
     channel = Channel()
     request_end, answer_end = channel.child_ends()
     env = processes.environment({

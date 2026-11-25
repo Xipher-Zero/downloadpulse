@@ -174,9 +174,12 @@ def test_shared_visual_contract_is_css_owned_not_runtime_injected() -> None:
 
 
 def test_static_frontend_resources_are_forced_to_revalidate() -> None:
+    # 1.0.5: revalidation is the default for every executable/presentation
+    # resource; only a response that declares its own policy keeps it (no-store,
+    # or core.static_assets' immutable caching of a proven current version).
     main = read(MAIN)
     assert 'path.endswith((".html", ".js", ".css", ".webmanifest"))' in main
-    assert '"no-store" not in existing_cache.lower()' in main
+    assert 'if static_frontend and "cache-control" not in response.headers:' in main
     assert 'response.headers["Cache-Control"] = "no-cache, must-revalidate"' in main
 
 

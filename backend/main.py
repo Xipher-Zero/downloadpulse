@@ -33,7 +33,6 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -67,6 +66,7 @@ from external.arr import UPLOAD_CEILINGS, adapter_of
 from external.arr import available as adapter_available
 from core.version import read_version
 from core.display_errors import DisplayError, display_error_body
+from core.static_assets import VersionedStaticFiles, routed_by
 from db.database import DatabaseMaintenanceActive, DatabaseSealed
 from application.dependencies import get_application
 from application.lifetime import (
@@ -607,17 +607,19 @@ async def request_id_middleware(request: Request, call_next):
         else APPLICATION_CONTENT_SECURITY_POLICY,
     )
 
-    # Frontend migration assets must never rely on manually bumped ?v= values as
-    # their only coherence boundary. Keep normal conditional caching (ETag /
-    # Last-Modified) but force browser revalidation of executable/presentation
-    # resources so a new container cannot silently run an older JS/CSS/HTML mix.
+    # Frontend assets never rely on manually bumped ?v= values as their
+    # coherence boundary. By default executable/presentation resources keep
+    # normal conditional caching (ETag / Last-Modified) but are revalidated, so
+    # a new container cannot silently run an older JS/CSS/HTML mix. Only a
+    # response that declares its own policy keeps it: no-store, or the static
+    # owner's immutable caching of a request that proves it asks for the
+    # current bytes (core.static_assets: versions derived from the content).
     static_frontend = (
         request.method.upper() in {"GET", "HEAD"}
         and (path == "/" or path in SHELL_SURFACE_PATHS
              or path.endswith((".html", ".js", ".css", ".webmanifest")))
     )
-    existing_cache = response.headers.get("Cache-Control", "")
-    if static_frontend and "no-store" not in existing_cache.lower():
+    if static_frontend and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response
 
@@ -672,7 +674,7 @@ if _static is None:
     )
 
 logger.info("Serving static files from: %s", sanitize_log_value(_static))
-_static_files = StaticFiles(directory=str(_static), html=True)
+_static_files = VersionedStaticFiles(directory=str(_static), html=True, routed=routed_by(app))
 
 
 async def application_shell(request: Request) -> Response:
