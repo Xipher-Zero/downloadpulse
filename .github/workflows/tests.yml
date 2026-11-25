@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - main
-      - '1.0.4'
+      - '1.0.5'
       - 'staging/**'
       - 'audit/**'
     tags:
@@ -14,7 +14,7 @@ on:
   pull_request:
     branches:
       - main
-      - '1.0.4'
+      - '1.0.5'
       - 'staging/**'
   workflow_dispatch:
     inputs:

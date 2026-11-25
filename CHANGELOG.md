@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.0.5] — Development
+
 ## [1.0.4] — A server secured from its first run, and signed-in YouTube downloads again
 
 ### Security
