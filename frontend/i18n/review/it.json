@@ -34545,6 +34545,30 @@
     "ai-review"
    ]
   },
+  "error.desktop.window_only": {
+   "source": "351bdf0847c72dd8",
+   "translation": "3f7eba45dae97220",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.window_request_only": {
+   "source": "9de007670151a9cd",
+   "translation": "6acfa51bc471db95",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.window_state_refused": {
+   "source": "94bbb8773c57a6ec",
+   "translation": "69f62ad8097ad87c",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "transfer.status_with_reason": {
    "source": "0897e092bbd86238",
    "translation": "0897e092bbd86238",

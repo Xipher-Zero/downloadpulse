@@ -373,6 +373,8 @@ ACTIONS: dict[str, Capability] = {
     "api.routes.local_port": _A,                             # the desktop application's Local Port
     "api.routes.desktop_frame": _A,                          # the desktop window's frame in the page's theme
     "api.routes.desktop_quit": _A,                           # Quit, confirmed in the desktop window's own page
+    "api.routes.desktop_window_state": _A,                   # the desktop window's release answer and kept state
+    "api.routes.desktop_window_restore": _A,                 # the state a released desktop window comes back to
     "api.routes.choose_local_port": _A,
     "api.routes.remove_backup": _A,
     "api.routes.restore_backup": _A,

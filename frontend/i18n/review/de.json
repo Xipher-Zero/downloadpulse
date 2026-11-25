@@ -34785,6 +34785,30 @@
     }
    ]
   },
+  "error.desktop.window_only": {
+   "source": "351bdf0847c72dd8",
+   "translation": "d156b149897ced17",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.window_request_only": {
+   "source": "9de007670151a9cd",
+   "translation": "a7b201e4651032fd",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.window_state_refused": {
+   "source": "94bbb8773c57a6ec",
+   "translation": "41c8a8fbe0e2ee3e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "transfer.status_with_reason": {
    "source": "0897e092bbd86238",
    "translation": "0897e092bbd86238",

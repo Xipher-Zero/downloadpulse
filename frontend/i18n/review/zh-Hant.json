@@ -33105,6 +33105,30 @@
     "ai-review"
    ]
   },
+  "error.desktop.window_only": {
+   "source": "351bdf0847c72dd8",
+   "translation": "b7a288d10de03ae1",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.window_request_only": {
+   "source": "9de007670151a9cd",
+   "translation": "3984908177ba08ed",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.desktop.window_state_refused": {
+   "source": "94bbb8773c57a6ec",
+   "translation": "18b22d10c12f841e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "transfer.status_with_reason": {
    "source": "0897e092bbd86238",
    "translation": "0897e092bbd86238",

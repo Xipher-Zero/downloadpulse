@@ -570,8 +570,8 @@ async def test_a_connected_browsers_open_brings_the_window_forward_as_the_trays_
 
 
 def test_the_control_channel_imports_no_api_and_the_edge_binds_what_only_it_holds():
-    """``desktop_control`` sits below the HTTP edge: the window's quit prompt and
-    the ``/api/stats`` counters are bound into it by ``api.routes`` at import
+    """``desktop_control`` sits below the HTTP edge: the window's quit and release
+    prompts and the ``/api/stats`` counters are bound into it by ``api.routes`` at import
     (``bind_edge``, as ``bind_publisher``), never imported from there."""
     import ast
 
@@ -579,4 +579,5 @@ def test_the_control_channel_imports_no_api_and_the_edge_binds_what_only_it_hold
     source = Path(desktop_control.__file__).read_text(encoding="utf-8")
     imported = [node.module for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom)]
     assert not [module for module in imported if module and module.split(".")[0] == "api"]
-    assert desktop_control._edge == {"prompt_window": routes._sse_prompt_window, "stats": routes.get_stats}
+    assert desktop_control._edge == {"prompt_window": routes._sse_prompt_window,
+                                     "prompt_release": routes._sse_prompt_release, "stats": routes.get_stats}

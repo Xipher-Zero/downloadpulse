@@ -1495,6 +1495,48 @@ async def desktop_quit(body: DesktopQuit, request: Request):
     return {"quitting": True}
 
 
+# ── the desktop window released while hidden, and its state kept ───────────
+# A window hidden in the tray long enough is released -- its shell ended to
+# free its memory (Linux) -- only when its own page says nothing would be lost.
+# The supervisor asks (application.desktop_control op release_prompt, event
+# desktop_release_prompt, to the window's own page alone); the page answers
+# here with the prompt's single-use nonce, whether it is releasable, and the
+# state it would come back to; after a release the relaunched page takes that
+# state once (GET), with the activity journal's position at the release. The
+# state lives in this process only. Only the window's own page
+# (``desktop_listener.window_request``), never a client through Local Port.
+
+class DesktopWindowState(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    nonce: str = Field(max_length=128)
+    releasable: bool
+    state: dict
+
+
+def _require_window(request: Request) -> None:
+    _require_desktop("Only the desktop application has a window.", "desktop.window_only")
+    from application.desktop_listener import window_request
+    if not window_request(request):
+        raise DisplayError(403, "Only the DownloadPulse window can do this.", code="desktop.window_request_only")
+
+
+@router.put("/desktop/window-state")
+async def desktop_window_state(body: DesktopWindowState, request: Request):
+    _require_window(request)
+    from application.desktop_control import answer_release
+    if not answer_release(body.nonce, body.releasable, body.state):
+        raise DisplayError(409, "This request to keep the window's state has expired.",
+                           code="desktop.window_state_refused")
+    return {"recorded": True}
+
+
+@router.get("/desktop/window-state")
+async def desktop_window_restore(request: Request):
+    _require_window(request)
+    from application.desktop_control import take_restore
+    return {"restore": take_restore()}
+
+
 # ── Show in folder: a completed download in the desktop's file manager ─────
 # Classified ``transfers.operate``. Asked by the desktop window's own page
 # (``desktop_listener.window_request``) -- never through Local Port, so no
@@ -2982,15 +3024,12 @@ def _sse_sessions_ended(fingerprints: frozenset[bytes], account_id: str | None, 
                 _sse_evict(queue, frame)            # it still learns why, then ends
 
 
-async def _sse_prompt_window(nonce: str) -> bool:
-    """The desktop window's quit prompt (``application.desktop_control`` op
-    ``quit_prompt``), sent to the window's own page alone: a connection opened
-    at the window's address (``_SseSubscriber.window``), still authorized, whose
-    current principal may answer it (POST /desktop/quit) -- never a browser
-    tab or a Local Port client. It carries the prompt's single-use nonce.
-    Whether any such page was sent it."""
-    capability = ACTIONS["api.routes.desktop_quit"]
-    frame = _SseGatedFrame(capability, f"event: desktop_quit_prompt\ndata: {_json.dumps({'nonce': nonce})}\n\n")
+async def _sse_window_only(event: str, nonce: str, capability) -> bool:
+    """One single-use prompt to the desktop window's own page alone: a
+    connection opened at the window's address (``_SseSubscriber.window``), still
+    authorized, whose current principal may answer it -- never a browser tab or
+    a Local Port client. Whether any such page was sent it."""
+    frame = _SseGatedFrame(capability, f"event: {event}\ndata: {_json.dumps({'nonce': nonce})}\n\n")
     sent = False
     async with _sse_lock:
         for queue, subscriber in list(_sse_subscribers.items()):
@@ -3005,8 +3044,25 @@ async def _sse_prompt_window(nonce: str) -> bool:
     return sent
 
 
+async def _sse_prompt_window(nonce: str) -> bool:
+    """The desktop window's quit prompt (``application.desktop_control`` op
+    ``quit_prompt``), sent to the window's own page alone: a connection opened
+    at the window's address (``_SseSubscriber.window``), still authorized, whose
+    current principal may answer it (POST /desktop/quit) -- never a browser
+    tab or a Local Port client. It carries the prompt's single-use nonce.
+    Whether any such page was sent it."""
+    return await _sse_window_only("desktop_quit_prompt", nonce, ACTIONS["api.routes.desktop_quit"])
+
+
+async def _sse_prompt_release(nonce: str) -> bool:
+    """The desktop window's release prompt (``application.desktop_control`` op
+    ``release_prompt``), to the window's own page alone, which answers it (PUT
+    /desktop/window-state) with the prompt's single-use nonce."""
+    return await _sse_window_only("desktop_release_prompt", nonce, ACTIONS["api.routes.desktop_window_state"])
+
+
 bind_publisher(_sse_broadcast)
-bind_desktop_edge(prompt_window=_sse_prompt_window, stats=get_stats)
+bind_desktop_edge(prompt_window=_sse_prompt_window, prompt_release=_sse_prompt_release, stats=get_stats)
 session_store.on_revocation(_sse_sessions_ended)
 
 

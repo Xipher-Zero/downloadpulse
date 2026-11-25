@@ -36,7 +36,18 @@ The tray asks four things, each answered by its existing owner:
   client (``api.routes._sse_prompt_window``, bound by the edge: ``bind_edge``)
   -- whether to quit, with a fresh
   single-use nonce the answer must carry; ``prompted`` says whether such a page
-  was there to ask (if not, the supervisor minimizes the window).
+  was there to ask (if not, the supervisor minimizes the window);
+* ``release_prompt`` -- the window has been hidden in the tray long enough to
+  be released (its shell ended to free its memory, Linux): ask the window's
+  own page, as ``quit_prompt`` does, whether it can be -- with a fresh
+  single-use nonce. The page answers (PUT /desktop/window-state,
+  ``answer_release``) whether nothing would be lost, with the state it would
+  come back to; ``show`` hands the supervisor that answer once (``release``:
+  the nonce and whether it is releasable, never the state);
+* ``released`` -- the supervisor released the window on that answer: its
+  state is kept here, in this process only, with the activity journal's
+  position at that moment, for the relaunched page to take once
+  (GET /desktop/window-state, ``take_restore``). Nothing is written anywhere.
 
 The two save operations are how a desktop save reaches the Save dialog only
 the supervisor can show (a page and this backend have no window of their
@@ -76,7 +87,8 @@ LIFECYCLE = frozenset({"transfer.accepted", "transfer.queued", "transfer.transfe
 _FIELDS = {"status": {"id", "op"}, "events": {"id", "op", "after", "limit"},
            "pause": {"id", "op"}, "resume": {"id", "op"},
            "saves": {"id", "op"}, "saved": {"id", "op", "save", "path"}, "frame": {"id", "op"},
-           "locale": {"id", "op"}, "show": {"id", "op"}, "quit_prompt": {"id", "op"}}
+           "locale": {"id", "op"}, "show": {"id", "op"}, "quit_prompt": {"id", "op"},
+           "release_prompt": {"id", "op"}, "released": {"id", "op", "nonce"}}
 # How long a desktop save waits for its destination: the supervisor's next
 # look (its loop) and the person's own time in the dialog.
 DESTINATION_WAIT_SECONDS = 600
@@ -87,11 +99,11 @@ MAX_PATH = 4096
 # ``services.event_bus.bind_publisher``): this module never imports the API.
 # ``prompt_window(nonce) -> bool``: the quit prompt, sent to the window's own
 # page alone; ``stats(application) -> dict``: the ``/api/stats`` counters.
-_edge: dict = {"prompt_window": None, "stats": None}
+_edge: dict = {"prompt_window": None, "prompt_release": None, "stats": None}
 
 
-def bind_edge(*, prompt_window, stats) -> None:
-    _edge.update(prompt_window=prompt_window, stats=stats)
+def bind_edge(*, prompt_window, prompt_release, stats) -> None:
+    _edge.update(prompt_window=prompt_window, prompt_release=prompt_release, stats=stats)
 
 
 # The window frame in the page's theme (``set_frame``, from PUT /desktop/frame):
@@ -186,6 +198,47 @@ def request_quit(nonce) -> bool:
     return True
 
 
+# The window's release (op ``release_prompt``): the nonce of the one prompt
+# pending; the page's answer to it, ``{"releasable", "state"}``, until the
+# supervisor takes it (op ``show``: ``release``) and, if it releases, says so
+# (op ``released``); then the state the relaunched page takes once
+# (``take_restore``), with the journal position at the release.
+_release_nonce: str | None = None
+_release_answer: dict | None = None
+_release_handed: bool = False
+_restore: dict | None = None
+# The page's state is the page's own record of what it showed: bounded, and
+# only ever handed back to the window's own page.
+MAX_WINDOW_STATE = 262144
+
+
+def _nonce_matches(nonce, pending: str | None) -> bool:
+    return bool(pending) and isinstance(nonce, str) and len(nonce) <= 128 \
+        and hmac.compare_digest(nonce.encode("utf-8"), pending.encode("utf-8"))
+
+
+def answer_release(nonce, releasable: bool, state: dict) -> bool:
+    """The window page's answer to the release prompt pending: whether nothing
+    would be lost, and the state it would come back to. False -- and nothing
+    changes -- without that prompt's nonce, or for a state that is not a
+    bounded JSON object."""
+    global _release_answer, _release_handed
+    if not _nonce_matches(nonce, _release_nonce) or not isinstance(releasable, bool) or not isinstance(state, dict) \
+            or len(json.dumps(state, separators=(",", ":"))) > MAX_WINDOW_STATE:
+        return False
+    _release_answer, _release_handed = {"releasable": releasable, "state": state}, False
+    return True
+
+
+def take_restore() -> dict | None:
+    """The state a released window comes back to, with the journal position at
+    its release: handed once, to the relaunched window's page; None otherwise
+    (an ordinary reload, a fresh launch)."""
+    global _restore
+    restore, _restore = _restore, None
+    return restore
+
+
 class ChannelRefused(RuntimeError):
     """The desktop backend's control channel is absent or not two private pipes."""
 
@@ -243,6 +296,8 @@ def _project_event(item: dict) -> dict:
 
 async def answer(application, request) -> dict:
     """The answer to one request; a refusal for anything outside its operations (``_FIELDS``)."""
+    global _show_requested, _quit_requested, _reveal, _quit_nonce
+    global _release_nonce, _release_answer, _release_handed, _restore
     if not isinstance(request, dict) or not isinstance(request.get("id"), int) or isinstance(request.get("id"), bool):
         return {"id": None, "error": "refused"}
     ident, op = request["id"], request.get("op")
@@ -256,18 +311,40 @@ async def answer(application, request) -> dict:
         result = await (application.pause_all() if op == "pause" else application.resume_all())
         return {"id": ident, "ok": bool(result.get("ok")), "paused": bool(result.get("paused"))}
     if op == "show":
-        global _show_requested, _quit_requested, _reveal
         asked, _show_requested = _show_requested, False
         quit_confirmed, _quit_requested = _quit_requested, False
         reveal, _reveal = _reveal, None
-        return {"id": ident, "show": asked, "quit": quit_confirmed, "reveal": reveal}
+        release = None
+        if _release_answer is not None and not _release_handed:
+            release, _release_handed = {"nonce": _release_nonce, "releasable": _release_answer["releasable"]}, True
+        return {"id": ident, "show": asked, "quit": quit_confirmed, "reveal": reveal, "release": release}
     if op == "quit_prompt":
         # A new prompt replaces any earlier one: only its nonce is accepted.
-        global _quit_nonce
         _quit_nonce = nonce = secrets.token_urlsafe(32)
         if _edge["prompt_window"] is None or not await _edge["prompt_window"](nonce):
             _quit_nonce = None                      # no window page to ask
         return {"id": ident, "prompted": _quit_nonce is not None}
+    if op == "release_prompt":
+        # A new prompt replaces any earlier one and its answer: only its nonce is accepted.
+        _release_nonce, _release_answer = secrets.token_urlsafe(32), None
+        if _edge["prompt_release"] is None or not await _edge["prompt_release"](_release_nonce):
+            _release_nonce = None                   # no window page to ask
+        return {"id": ident, "prompted": _release_nonce is not None}
+    if op == "released":
+        # The journal position first: the check and the keeping below happen with
+        # nothing awaited between them, so an answer the page sends meanwhile can
+        # never be kept in place of the one the supervisor was handed.
+        from db import event_journal
+        from db.database import get_db
+        async with get_db() as db:
+            since = await event_journal.latest_id(db)
+        # Only on the answer the supervisor was handed, and only a releasable one.
+        if _release_answer is None or not _release_handed or not _release_answer["releasable"] \
+                or not _nonce_matches(request.get("nonce"), _release_nonce):
+            return {"id": ident, "error": "refused"}
+        _restore = {"state": _release_answer["state"], "since": since}
+        _release_nonce, _release_answer = None, None
+        return {"id": ident, "ok": True}
     if op == "frame":
         return {"id": ident, "frame": dict(_frame) if _frame else None}
     if op == "locale":

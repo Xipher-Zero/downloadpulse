@@ -24052,6 +24052,24 @@
    "owner": "backend/api/routes.py",
    "criticality": "normal"
   },
+  "error.desktop.window_only": {
+   "category": "error",
+   "context": "Refusal of a request about the desktop application's window (keeping its state while it is released from memory), on a server, which has no window. Sent to the page itself; never shown in normal use.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
+  "error.desktop.window_request_only": {
+   "category": "error",
+   "context": "Refusal of a request about the desktop window's kept state when it did not come from the DownloadPulse window itself (for example another program on this computer reaching it through Local Port). Never shown in normal use.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
+  "error.desktop.window_state_refused": {
+   "category": "error",
+   "context": "Refusal when the desktop window's page answers an expired request to keep its state before the window is released from memory (a newer request replaced it). Sent by the page itself; never shown in normal use.",
+   "owner": "backend/api/routes.py",
+   "criticality": "normal"
+  },
   "transfer.status_with_reason": {
    "category": "status-chip",
    "context": "A transfer's status with the failure it is about, e.g. 'Failed · Rate Limited'. {status} is the status label; {reason} is the failure category, possibly with its next automatic attempt. Read as the status badge's tooltip and accessible name where the status column shows only its glyph.",
