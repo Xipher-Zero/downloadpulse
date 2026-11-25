@@ -45,6 +45,16 @@ const DPWindowState = (() => {
     return part === undefined ? null : part;
   }
 
+  // An owner's restore still under way (a page it fetches): the relaunched
+  // interface is not shown before every one has settled, or RESTORE_HOLD_MS.
+  const held = [];
+  const RESTORE_HOLD_MS = 8000;
+  function hold(work) {
+    if (restored && work && typeof work.then === 'function') held.push(Promise.resolve(work).catch(() => {}));
+    return work;
+  }
+  const settled = () => Promise.race([Promise.allSettled(held), new Promise(resolve => setTimeout(resolve, RESTORE_HOLD_MS))]);
+
   // The route the released window showed, and where the journal stood at the release.
   const route = () => (restored && typeof restored.state.route === 'string' ? restored.state.route : null);
   const since = () => (restored && Number.isInteger(restored.since) ? restored.since : null);
@@ -56,8 +66,9 @@ const DPWindowState = (() => {
     if (window.DPSettingsModal?.showing?.()) return false;
     const mode = window.DPModal?.mode;
     if (mode && mode !== 'details') return false;
+    // A tooltip holds nothing; a popover the state brings back is not in the way.
     const open = [...document.querySelectorAll(':popover-open')]
-      .filter(element => !element.hasAttribute('data-dp-window-state-restorable'));
+      .filter(element => element.getAttribute('role') !== 'tooltip' && !element.hasAttribute('data-dp-window-state-restorable'));
     if (open.length) return false;
     for (const [, hooks] of owners) {
       try {
@@ -98,6 +109,6 @@ const DPWindowState = (() => {
     } catch (_) {}
   }
 
-  return Object.freeze({active, ready, register, take, route, since, releasable, answer});
+  return Object.freeze({active, ready, register, take, hold, settled, route, since, releasable, answer});
 })();
 window.DPWindowState = DPWindowState;

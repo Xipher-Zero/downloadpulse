@@ -40,6 +40,8 @@
   const t = function (key, values) { return window.DPI18n.t(key, values); };
 
   let menuEl = null;
+  // An open chooser is nothing a released desktop window brings back (DPWindowState).
+  window.DPWindowState.register('group-candidates', {releasable: function () { return !menuVisible; }});
   // What the open chooser shows, held so a language change re-says it
   // without a request: {kind: 'loading'|'group'|'artifact'|'progress', ...}.
   let menuView = null;

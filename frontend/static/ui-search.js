@@ -6,8 +6,10 @@
  * answer, and whether that answer covered every eligible record. It never
  * interprets the text -- the server's one search language does
  * (core/search_contract.py) and reports back what it searched and how complete
- * the answer is -- and it never replaces, refills or focuses the input, so
- * typing is never interrupted.
+ * the answer is -- and it never focuses the input, nor replaces or refills it
+ * while the person types: only Reset Filters empties it (clear), and a
+ * released desktop window coming back puts back the search it had (restore,
+ * DPWindowState), so typing is never interrupted.
  *
  * Every request a list makes, search-driven or not (a page, a filter, a
  * refresh), takes a ticket here; only the newest ticket's answer may be
@@ -142,6 +144,16 @@
         }
         if (!editing()) show(error?.status === 503 ? 'unavailable' : 'error');
         return true;
+      },
+      // The search a released desktop window had, as the committed query the
+      // list's next request sends (DPWindowState); nothing is sent here.
+      restore(text) {
+        if (timer) { clearTimeout(timer); timer = null; }
+        input.value = String(text || '');
+        committed = input.value;
+        rejected = false;
+        supersede();
+        show(committed.trim() ? 'searching' : 'idle');
       },
       // Clear the search with the list's other filters (Reset Filters).
       clear() {

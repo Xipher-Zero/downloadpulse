@@ -123,7 +123,7 @@ function searchControl() {
     search = window.DPSearch.attach({
       input: document.getElementById('torrent-search'),
       noun: 'downloads',
-      onCommit() { clearSelection(); torrentPage = 1; loadTorrents().catch(() => {}); },
+      onCommit() { restoring++; clearSelection(); torrentPage = 1; loadTorrents().catch(() => {}); },
     });
   }
   return search;
@@ -498,7 +498,8 @@ function renderTorrentPagination(total, limit, offset) {
     last: () => goToTorrentPage(pages, {turn: true}),
   }});
 }
-function setFilter(element, status) {
+// The status filter's state and its tabs, as one (setFilter, and a restored entry).
+function showFilter(element, status) {
   document.querySelectorAll('#view-torrents .filter-tabs .ftab').forEach(tab => {
     tab.classList.remove('active');
     tab.setAttribute('aria-selected', 'false');
@@ -506,6 +507,10 @@ function setFilter(element, status) {
   if (element) { element.classList.add('active'); element.setAttribute('aria-selected', 'true'); }
   currentFilter = status;
   syncStatusFilterControl();
+}
+function setFilter(element, status) {
+  restoring++;
+  showFilter(element, status);
   torrentPage = 1;
   searchControl().invalidate();
   clearSelection();
@@ -632,13 +637,16 @@ function bindStatusFilterControl() {
 function onTorrentOrderChange(value) {
   const next = value === 'newest' ? 'newest' : 'queue';
   if (next === currentOrder) return;
+  restoring++;
   currentOrder = next;
   torrentPage = 1;
   searchControl().invalidate();
   clearSelection();
   loadTorrents();
 }
-function goToTorrentPage(p, {turn = false} = {}) {
+function goToTorrentPage(p, options) { restoring++; turnToPage(p, options); }
+// The page turn itself, answering when that page is drawn (a restored entry waits on it).
+function turnToPage(p, {turn = false} = {}) {
   const nextPage = Math.max(1, p);
   if (nextPage !== torrentPage) clearSelection();
   torrentPage = nextPage;
@@ -649,9 +657,10 @@ function goToTorrentPage(p, {turn = false} = {}) {
   searchControl().invalidate();
   // Inert until the requested page is rendered (or its request fails).
   window.DPPager?.pending(document.getElementById('torrent-page-btns'), true);
-  loadTorrents();
+  return loadTorrents();
 }
 function onPageSizeChange(v) {
+  restoring++;
   const nextSize = Math.min(Math.max(parseInt(v) || 25, 1), 100);
   if (nextSize !== torrentPageSize || torrentPage !== 1) clearSelection();
   torrentPageSize = nextSize;
@@ -986,6 +995,59 @@ const DRAG_THRESHOLD = 6;
 const PAGE_DWELL_MS = 650;
 let reorder = null;
 let pressed = null;
+
+// ── The desktop window's state (DPWindowState) ──────────────────────────
+// The restore under way, by number: any later entry or choice of the person
+// (a filter, order, page, page size or search) takes a new number, and a
+// restore whose number is no longer current stops where it is.
+let restoring = 0;
+// What a released window comes back to: the filter, search, order, the place
+// in the list (the first row's position, whatever the page size then is),
+// selection and the table's scroll. A reorder held or pressed is never
+// released. The entry reads it once (enterDownloads); every other entry opens
+// on page 1 with the search, filter and order kept, as before.
+DPWindowState.register('downloads', {
+  capture: () => ({shown: !!document.getElementById('view-torrents')?.classList.contains('active'),
+                   filter: currentFilter, order: currentOrder, offset: (torrentPage - 1) * torrentPageSize,
+                   search: document.getElementById('torrent-search')?.value || '',
+                   selection: [..._selectedIds], scroll: torrentTableWrap()?.scrollTop || 0}),
+  releasable: () => !reorder && !pressed,
+});
+function enterDownloads() {
+  const restore = DPWindowState.take('downloads');
+  if (!restore || typeof restore !== 'object') { clearSelection(); goToTorrentPage(1); return; }
+  const mine = ++restoring;
+  if (typeof restore.search === 'string') searchControl().restore(restore.search.slice(0, 512));
+  const tab = [...document.querySelectorAll('#view-torrents .filter-tabs .ftab')]
+    .find(element => (element.dataset.dpStatus || '') === String(restore.filter || ''));
+  if (tab) showFilter(tab, tab.dataset.dpStatus || '');
+  currentOrder = restore.order === 'newest' ? 'newest' : 'queue';
+  const order = document.getElementById('torrent-order');
+  if (order) order.value = currentOrder;
+  // The page, selection and scroll only where Downloads was the page shown;
+  // otherwise this is an ordinary entry with the search, filter and order kept.
+  if (!restore.shown) { clearSelection(); goToTorrentPage(1); return; }
+  const offset = Number.isInteger(restore.offset) && restore.offset > 0 ? restore.offset : 0;
+  const wanted = (Array.isArray(restore.selection) ? restore.selection : []).map(stableDownloadId).filter(id => id !== null);
+  // Page 1 first: it measures the page size the window has now; then the page
+  // holding the row the window showed first -- or, past the end, the last page.
+  clearSelection();
+  DPWindowState.hold(turnToPage(1).then(() => {
+    if (mine !== restoring) return;
+    const pages = Math.max(1, Math.ceil(torrentTotal / torrentPageSize));
+    const target = Math.min(pages, Math.floor(offset / torrentPageSize) + 1);
+    return target === torrentPage ? undefined : turnToPage(target);
+  }).then(() => {
+    if (mine !== restoring) return;
+    // Only transfers still on the page stay selected.
+    const shown = new Set([...document.querySelectorAll('#t-tbody tr[data-torrent-id]')].map(rowId).filter(id => id !== null));
+    _selectedIds = new Set(wanted.filter(id => shown.has(id)));
+    document.querySelectorAll('.t-chk').forEach(checkbox => { checkbox.checked = _selectedIds.has(stableDownloadId(checkbox.dataset.id)); });
+    syncDownloadSelectionUi();
+    const wrap = torrentTableWrap();
+    if (wrap && Number.isFinite(restore.scroll)) wrap.scrollTop = restore.scroll;
+  }).catch(() => {}));
+}
 // The click that ends a drag never opens Details.
 let suppressClick = false;
 
@@ -1663,7 +1725,7 @@ window.retryT = retryT;
 // the pause shim toggles); contextMenu is the row menu the application's one
 // context-menu policy (app.js) offers. No other member is exposed here --
 // there is no other real runtime consumer of Downloads' internal state.
-window.DPDownloads = Object.freeze({scheduleCapacityCheck, contextMenu});
+window.DPDownloads = Object.freeze({scheduleCapacityCheck, contextMenu, enter: enterDownloads});
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true});
 else init();

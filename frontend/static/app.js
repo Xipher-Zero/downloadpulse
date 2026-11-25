@@ -161,8 +161,9 @@ function navigateTo(el, {heading = true, address = 'push'} = {}) {
   syncDashboardSparkPulses();
   if (v === 'dashboard') { loadStats(); loadRecent(); }
   // Every sidebar selection is a new entry: Downloads opens on page 1 (its
-  // search, filter and order are kept), Settings on Services, Help on Quick Start.
-  if (v === 'torrents')  { clearSelection(); goToTorrentPage(1); }
+  // search, filter and order are kept), Settings on Services, Help on Quick Start
+  // -- or, a released desktop window, on what it showed (DPWindowState).
+  if (v === 'torrents')  window.DPDownloads.enter();
   if (v === 'events')    window.DPActivityLog.load();
   if (v === 'stats')     loadDetailedStats();
   if (v === 'settings')  loadSettings();
@@ -208,6 +209,8 @@ const dpAddressedPageShown = new Promise(resolve => document.addEventListener('D
     showAddressedPage();
     const scroll = DPWindowState.take('navigation');
     if (scroll && Number.isFinite(scroll.content) && scroll.content > 0) restoreContentScroll(scroll.content);
+    // The restored pages' own work (their fetches) settles behind the starting cover.
+    return DPWindowState.settled();
   }).finally(resolve);
 }));
 /* The outer scroll a released window had: applied to the restored page as soon
@@ -4603,6 +4606,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // height changes are ignored, so sizing never re-triggers itself.
   const quickAdd = document.getElementById('q-transfer-input');
   if (quickAdd) {
+    // The draft a released desktop window had, with its caret (DPWindowState).
+    DPWindowState.register('quick-add', {
+      capture: () => (quickAdd.value ? {text: quickAdd.value, start: quickAdd.selectionStart, end: quickAdd.selectionEnd} : undefined),
+    });
+    DPWindowState.ready.then(() => {
+      const draft = DPWindowState.take('quick-add');
+      if (!draft || typeof draft.text !== 'string') return;
+      quickAdd.value = draft.text;
+      if (Number.isInteger(draft.start) && Number.isInteger(draft.end)) quickAdd.setSelectionRange(draft.start, draft.end);
+      resizeDebridLinkInput(quickAdd);
+    });
     let quickAddWidth = -1;
     new ResizeObserver(() => {
       const width = quickAdd.clientWidth;

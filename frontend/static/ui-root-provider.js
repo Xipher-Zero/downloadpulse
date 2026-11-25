@@ -70,6 +70,8 @@
   }
 
   let menuEl = null;
+  // An open chooser is nothing a released desktop window brings back (DPWindowState).
+  window.DPWindowState.register('root-provider', {releasable: function () { return !menuEl || menuEl.hidden; }});
   let menuTrigger = null;
   let menuSurface = null;
   let menuTransferId = null;

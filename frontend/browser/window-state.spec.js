@@ -79,6 +79,7 @@ test('W03: anything unfinished or open that a relaunch would lose keeps the wind
   await page.route(url => url.pathname === '/api/desktop/frame', route => new Promise(resolve => { release = () => resolve(route.fulfill({status: 200, body: '{}'})); }));
   await page.evaluate(() => { window.__held = window.downloadPulseAuth.fetch('/api/desktop/frame', {method: 'PUT', body: '{}'}); });
   await expect.poll(() => releasable(page)).toBe(false);
+  await expect.poll(() => typeof release).toBe('function');
   release();
   await page.evaluate(() => window.__held);
   await expect.poll(() => releasable(page)).toBe(true);
@@ -199,4 +200,149 @@ test('W10: a restored scroll the page cannot hold yet never lands on a page the 
   // Long enough for the Dashboard to draw and for the restore's own bound to pass.
   await page.waitForTimeout(5500);
   expect(await page.evaluate(() => document.getElementById('content').scrollTop)).toBe(0);
+});
+
+// ── WS8b2: Downloads and Quick Add ──────────────────────────────────────
+// Needs transfers on the server (the scratch server is seeded with 41).
+// What the person sees on Downloads (its owner keeps its state private).
+const downloads = page => page.evaluate(() => ({
+  page: Number(document.querySelector('#torrent-page-btns [aria-current="page"]')?.textContent || 1),
+  order: document.getElementById('torrent-order').value,
+  filter: document.querySelector('#view-torrents .ftab.active')?.dataset.dpStatus ?? null,
+  checked: [...document.querySelectorAll('.t-chk:checked')].map(box => Number(box.dataset.id)).sort((a, b) => a - b),
+  search: document.getElementById('torrent-search').value}));
+const rowIds = page => page.evaluate(() => [...document.querySelectorAll('#t-tbody tr[data-torrent-id]')].map(row => Number(row.dataset.torrentId)));
+
+test('D01: Downloads comes back at the row it showed, in its order, with its selection reconciled', async ({page, request}) => {
+  // Independent of the page: the newest-first list as the API orders it.
+  const all = (await (await request.get('/api/torrents?order=newest&limit=100')).json()).items.map(item => item.id);
+  const offset = 10;
+  await asDesktop(page, {restore: {state: {route: '/downloads', owners: {downloads: {
+    shown: true, filter: '', order: 'newest', offset, search: '', selection: [all[offset], 999999], scroll: 0}}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
+  await expect.poll(async () => (await rowIds(page)).includes(all[offset])).toBe(true);
+  const shown = await rowIds(page);
+  const state = await downloads(page);
+  // Whatever the page size here: the page holding row `offset`, exactly as the API lists it.
+  const size = shown.length;
+  expect(state.page).toBe(Math.floor(offset / size) + 1);
+  expect(shown).toEqual(all.slice((state.page - 1) * size, state.page * size));
+  expect(state.order).toBe('newest');
+  expect(state.checked).toEqual([all[offset]]);                   // 999999 is not there: dropped
+});
+
+test('D02: the filter and search come back; a place past the end shows the last page', async ({page, request}) => {
+  const matching = (await (await request.get('/api/torrents?search=file-1&limit=100')).json()).items.map(item => item.id);
+  await asDesktop(page, {restore: {state: {route: '/downloads', owners: {downloads: {
+    shown: true, filter: '', order: 'queue', offset: 5000, search: 'file-1', selection: [], scroll: 0}}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-torrents .ftab[data-dp-status=""]')).toHaveClass(/\bactive\b/);
+  const state = await downloads(page);
+  expect(state.filter).toBe('');
+  expect(state.search).toBe('file-1');
+  // The last page, not an empty one past the end: rows are shown and nothing follows.
+  await expect.poll(() => rowIds(page).then(ids => ids.length)).toBeGreaterThan(0);
+  // The search is the one the list answers, not only the field's text.
+  expect((await rowIds(page)).every(id => matching.includes(id))).toBe(true);
+  expect(await page.evaluate(() => [...document.querySelectorAll('#torrent-page-btns button')]
+    .some(button => button.dataset.dpPager === 'next' && !button.disabled))).toBe(false);
+});
+
+test('D03: a window that was not on Downloads keeps only what an entry keeps', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/', owners: {downloads: {
+    shown: false, filter: 'processing', order: 'newest', offset: 30, search: '', selection: [1], scroll: 0}}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-dashboard')).toHaveClass(/\bactive\b/);
+  await page.locator('#sidebar .nav-item[data-view="torrents"]').click();
+  await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
+  await expect.poll(() => downloads(page).then(state => state.page)).toBe(1);
+  const state = await downloads(page);
+  expect([state.filter, state.order, state.checked]).toEqual(['processing', 'newest', []]);
+});
+
+test('D04: what the person set on Downloads is what the answer carries', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/downloads');
+  await page.locator('#torrent-order').selectOption('newest');
+  await expect.poll(() => downloads(page).then(state => state.order)).toBe('newest');
+  await page.locator('#torrent-page-btns button[data-dp-pager="next"]').click();
+  await expect.poll(() => downloads(page).then(state => state.page)).toBe(2);
+  const first = (await rowIds(page))[0];
+  await page.locator(`.t-chk[data-id="${first}"]`).check();
+  await expect.poll(() => releasable(page)).toBe(true);
+  await page.evaluate(() => window.DPWindowState.answer('nonce-d'));
+  await expect.poll(() => seen.puts.length).toBe(1);
+  expect(seen.puts[0].releasable).toBe(true);
+  expect(seen.puts[0].state.route).toBe('/downloads');
+  const size = (await rowIds(page)).length;
+  expect(seen.puts[0].state.owners.downloads).toMatchObject({shown: true, filter: '', order: 'newest', offset: size, selection: [first]});
+});
+
+test('Q01: the Quick Add draft and its caret come back, and are what the answer carries', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/', owners: {'quick-add': {text: 'https://example.invalid/a\nhttps://example.invalid/b', start: 4, end: 9}}}, since: 1}});
+  await load(page, '/');
+  const field = page.locator('#q-transfer-input');
+  await expect(field).toHaveValue('https://example.invalid/a\nhttps://example.invalid/b');
+  expect(await field.evaluate(input => [input.selectionStart, input.selectionEnd])).toEqual([4, 9]);
+});
+
+test('Q02: a typed Quick Add draft is captured, and an empty one is not', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/');
+  await expect.poll(() => releasable(page)).toBe(true);
+  await page.evaluate(() => window.DPWindowState.answer('nonce-q0'));
+  await expect.poll(() => seen.puts.length).toBe(1);
+  expect(seen.puts[0].state.owners['quick-add']).toBeUndefined();
+  await page.locator('#q-transfer-input').fill('magnet:?xt=urn:btih:spec');
+  await expect.poll(() => releasable(page)).toBe(true);
+  await page.evaluate(() => window.DPWindowState.answer('nonce-q1'));
+  await expect.poll(() => seen.puts.length).toBe(2);
+  expect(seen.puts[1].state.owners['quick-add']).toMatchObject({text: 'magnet:?xt=urn:btih:spec'});
+});
+
+test('D05: the table scroll comes back where the page can hold it', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/downloads', owners: {downloads: {
+    shown: true, filter: '', order: 'queue', offset: 0, search: '', selection: [], scroll: 60}}}, since: 1}});
+  await load(page, '/', {height: 600});
+  await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
+  const room = await page.evaluate(() => { const wrap = document.querySelector('#view-torrents .dp-downloads-table-wrap'); return wrap.scrollHeight - wrap.clientHeight; });
+  await expect.poll(() => page.evaluate(() => document.querySelector('#view-torrents .dp-downloads-table-wrap').scrollTop))
+    .toBe(Math.min(60, room));
+});
+
+test('D06: a slow restore settles before the interface is shown, and never overrides the person afterwards', async ({page}) => {
+  await page.route(url => url.pathname === '/api/torrents', async route => { await new Promise(resolve => setTimeout(resolve, 1200)); route.continue(); });
+  await asDesktop(page, {restore: {state: {route: '/downloads', owners: {downloads: {
+    shown: true, filter: '', order: 'queue', offset: 20, search: '', selection: [], scroll: 0}}}, since: 1}});
+  await page.addInitScript(() => {
+    window.__readyPage = null;
+    document.addEventListener('downloadpulse:interface-ready', () => {
+      window.__readyPage = Number(document.querySelector('#torrent-page-btns [aria-current="page"]')?.textContent || 0);
+    }, {once: true});
+  });
+  await load(page, '/');
+  // When the interface is ready, the page is already the restored one (not page 1 on its way there).
+  await expect.poll(() => page.evaluate(() => window.__readyPage), {timeout: 20000}).toBeGreaterThan(1);
+  // The person's own entry afterwards is an ordinary one: page 1, nothing selected.
+  await page.locator('#sidebar .nav-item[data-view="dashboard"]').click();
+  await page.locator('#sidebar .nav-item[data-view="torrents"]').click();
+  await expect.poll(() => downloads(page).then(state => state.page), {timeout: 10000}).toBe(1);
+  await page.waitForTimeout(3000);
+  expect((await downloads(page)).page).toBe(1);
+  expect((await downloads(page)).checked).toEqual([]);
+});
+
+test('D07: an open source chooser keeps the window', async ({page}) => {
+  await asDesktop(page);
+  await load(page, '/downloads');
+  await expect.poll(() => rowIds(page).then(ids => ids.length)).toBeGreaterThan(0);
+  expect(await releasable(page)).toBe(true);
+  const id = (await rowIds(page))[0];
+  // The route status the chooser reads first (a labelled mock: the seeded direct links have no route to choose).
+  await page.route(url => url.pathname === `/api/torrents/${id}/route`, route => route.fulfill({status: 200,
+    contentType: 'application/json', body: JSON.stringify({scope: 'artifact', options: [], current: null})}));
+  await page.evaluate(id => window.DPRootProvider.open(id, document.querySelector(`#t-tbody tr[data-torrent-id="${id}"]`)), id);
+  await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('.dp-root-provider-menu')].some(menu => !menu.hidden))).toBe(true);
+  expect(await releasable(page)).toBe(false);
 });
