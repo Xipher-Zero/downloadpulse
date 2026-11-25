@@ -2202,3 +2202,110 @@ def test_a_challenge_is_retried_only_within_the_existing_bounded_budgets():
         (RecoveryAction.BACKOFF, now + 60.0, f"retry_at:{now + 60.0}"),
         (RecoveryAction.WAIT_FOR_OPERATOR, None, "operator_retry"),
     ]
+
+
+# -- DRM-protected media, and yt-dlp's warnings as failure evidence ----------------------
+# yt-dlp drops DRM-flagged formats itself. When only storyboard images remain it
+# says so in a warning and the selection then matches nothing; when nothing at
+# all remains, its error says so. Nothing reaches a network: the selection runs on
+# hand-authored formats, through the worker's own parameters and logger.
+
+# Verbatim, as yt-dlp 2026.11.23 words it (it capitalizes the sentence, lowering "DRM").
+_DRM_SKIPPED = "This video is drm protected and only images are available for download. use --list-formats to see them"
+
+
+def _selection_failure(formats):
+    """A real yt-dlp format selection, with the worker's own selector and
+    logger, over ``formats``: the failure it raises and what its logger kept."""
+    from yt_dlp.utils import DownloadError, ExtractorError
+    log = worker._Log()
+    chosen = planning.selection("best")
+    params = worker._params({"proxy": "http://127.0.0.1:9"}, log, format=chosen["format"],
+                            format_sort=chosen["format_sort"])
+    # extract_info would wrap the same ExtractorError in a DownloadError; classify reads either.
+    with YoutubeDL(params) as ydl, pytest.raises((DownloadError, ExtractorError)) as raised:
+        ydl.process_ie_result({"id": "x", "title": "x", "extractor": "youtube", "extractor_key": "Youtube",
+                               "webpage_url": "https://www.youtube.com/watch?v=x", "formats": formats},
+                              download=False)
+    return raised.value, log
+
+
+_STORYBOARD = {"format_id": "sb0", "url": "https://i.ytimg.test/sb/x/storyboard3_L2/M$M.jpg", "ext": "mhtml",
+               "protocol": "mhtml", "vcodec": "none", "acodec": "none", "width": 160, "height": 90}
+
+
+def _protected(format_id, **fields):
+    return {"format_id": format_id, "url": f"https://cdn.test/{format_id}", "ext": "mp4", "protocol": "https",
+            "has_drm": True, **fields}
+
+
+def test_media_offered_only_with_drm_is_drm_protected_from_yt_dlps_own_warning_and_error():
+    formats = [_STORYBOARD, _protected("137", vcodec="avc1", acodec="none", height=1080),
+               _protected("140", vcodec="none", acodec="mp4a.40.2")]
+    failure, log = _selection_failure(formats)
+    assert "Requested format is not available" in str(failure)
+    assert log.warnings == [_DRM_SKIPPED]
+    for acquire in (False, True):
+        classified = worker.classify(failure, acquire=acquire, warnings=log.warnings)
+        assert classified.code == "drm_protected"
+        # The detail says why: yt-dlp's error, then its warning.
+        assert classified.detail.startswith("[youtube] x: Requested format is not available")
+        assert classified.detail.endswith(" | " + _DRM_SKIPPED)
+    # No storyboard either: yt-dlp's own error names the DRM.
+    failure, log = _selection_failure([_protected("137", vcodec="avc1", acodec="none", height=1080)])
+    assert "DRM protected" in str(failure)
+    assert worker.classify(failure, acquire=False, warnings=log.warnings).code == "drm_protected"
+
+
+def test_drm_warnings_beside_any_other_failure_change_nothing_but_the_evidence():
+    from yt_dlp.utils import DownloadError
+    nothing = DownloadError("ERROR: [youtube] x: Requested format is not available. Use --list-formats for a list "
+                            "of available formats")
+    other = "Some web client https formats have been skipped as they are missing a url"
+    # The selection failed for another reason: the outcome is unchanged and the warning is its evidence.
+    plain = worker.classify(nothing, acquire=False, warnings=[other])
+    assert plain.code == "no_usable_formats" and other[:40] in plain.detail
+    assert worker.classify(nothing, acquire=True, warnings=[other]).code == "format_unavailable"
+    assert worker.classify(nothing, acquire=False).code == "no_usable_formats"
+    # yt-dlp's YouTube extractor's partial warning (other formats remain) is evidence, never the outcome.
+    partial = ("Some tv_samsung client https formats have been skipped as they are DRM protected. The current "
+               "session may have an experiment that applies DRM to all videos on the tv client.")
+    for acquire, code in ((False, "no_usable_formats"), (True, "format_unavailable")):
+        classified = worker.classify(nothing, acquire=acquire, warnings=[partial])
+        assert classified.code == code and "skipped as they are DRM protected" in classified.detail
+    # A DRM warning decides only a selection that matched nothing.
+    age = _extraction_failure(f"Sign in to confirm your age. This video may be inappropriate for some users. "
+                              f"{_LOGIN_HINT}")
+    assert worker.classify(age, acquire=False, warnings=[_DRM_SKIPPED]).code == "auth_required"
+    assert worker.classify(_http_error(429), acquire=False, warnings=[_DRM_SKIPPED]).code == "rate_limited"
+    # An earlier classification is final; warnings never rewrite it.
+    done = worker.Failure("identity_changed", "the source now identifies a different medium")
+    assert worker.classify(done, acquire=True, warnings=[_DRM_SKIPPED]) is done
+    assert done.detail == "the source now identifies a different medium"
+
+
+def test_the_logger_keeps_bounded_sanitized_warnings_only():
+    log = worker._Log()
+    secret = "cookie-value-123456"
+    worker._SECRETS.append(secret)
+    try:
+        log.warning(f"skipped https://cdn.test/a?sig=1 with {secret}")
+        log.error("ERROR: the exception itself carries this")
+        log.info("info"), log.debug("debug")
+        assert log.warnings == ["skipped <url> with <redacted>"]
+        for index in range(worker.MAX_WARNINGS + 5):
+            log.warning(f"w{index}")
+        assert len(log.warnings) == worker.MAX_WARNINGS
+        failure = worker.classify(RuntimeError("x " * 400), acquire=False, warnings=log.warnings)
+        assert len(failure.detail) <= worker.MAX_DETAIL_CHARS and secret not in failure.detail
+    finally:
+        worker._SECRETS.remove(secret)
+
+
+def test_drm_protected_is_final_and_says_so_in_details():
+    error = outcome_error("drm_protected", Stage.RESOLUTION, detail="ERROR: [youtube] x: Requested format")
+    assert (error.category, error.retryability, error.origin) == (Category.SOURCE_UNAVAILABLE, Retryability.NEVER,
+                                                                  Origin.REMOTE_SOURCE)
+    assert "drm_protected" in OUTCOMES
+    reason, explanation = media_definition.presentation.error_reason("drm_protected")
+    assert reason == "Protected by DRM" and "does not download DRM-protected media" in explanation

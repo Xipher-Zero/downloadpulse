@@ -30,6 +30,9 @@ _OUTCOMES = {
     "live_unsupported": (Domain.REQUEST, Category.UNSUPPORTED_REQUEST, Retryability.NEVER, Origin.REMOTE_SOURCE),
     "unavailable": (Domain.RESOLUTION, Category.SOURCE_NOT_FOUND, Retryability.NEVER, Origin.REMOTE_SOURCE),
     "geo_restricted": (Domain.RESOLUTION, Category.SOURCE_UNAVAILABLE, Retryability.NEVER, Origin.REMOTE_SOURCE),
+    # The source offers the medium only with DRM (copy protection), which
+    # DownloadPulse never circumvents: a fact about the medium, final.
+    "drm_protected": (Domain.RESOLUTION, Category.SOURCE_UNAVAILABLE, Retryability.NEVER, Origin.REMOTE_SOURCE),
     "no_usable_formats": (Domain.RESOLUTION, Category.NO_TRANSFER_CANDIDATE, Retryability.NEVER,
                           Origin.REMOTE_SOURCE),
     # A component would need a transport that cannot be carried by the guard.
@@ -85,6 +88,9 @@ OPERATOR_REASONS = (
     ("verification_challenge", "YouTube requested verification",
      "YouTube requested additional verification during media extraction. This may be temporary; an account "
      "requirement has not been established."),
+    ("drm_protected", "Protected by DRM",
+     "The source offers this media only with DRM (copy protection). DownloadPulse does not download DRM-protected "
+     "media, so this will not be retried."),
 )
 
 

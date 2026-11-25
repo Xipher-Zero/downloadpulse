@@ -54,6 +54,8 @@ MAX_SPEC_BYTES = 1024 * 1024
 MAX_SUBTITLE_BYTES = 16 * 1024 * 1024
 MAX_DESCRIPTION_CHARS = 16 * 1024
 MAX_DETAIL_CHARS = 300
+# yt-dlp warnings one extraction or acquisition keeps as failure evidence.
+MAX_WARNINGS = 20
 # A finalizing helper whose output has not changed for this long has stopped
 # making progress: it is ended rather than waited for without limit. (A
 # lossless copy of a large file may rightly take far longer in total, so the
@@ -296,14 +298,14 @@ def command_line(line: str) -> list[str]:
 
 
 class _Log:
-    """yt-dlp's logger: bounded, URL-free diagnostics only."""
+    """yt-dlp's logger. Its warnings -- bounded, URL- and secret-free -- are
+    the evidence a failure carries beside yt-dlp's own error (``classify``),
+    such as why formats were skipped; yt-dlp hands every warning to its logger
+    whatever ``no_warnings`` says. Its errors arrive as the exception itself,
+    and debug and info lines are not kept."""
 
     def __init__(self):
-        self.lines: list[str] = []
-
-    def _keep(self, message):
-        if len(self.lines) < 20:
-            self.lines.append(_detail(message))
+        self.warnings: list[str] = []
 
     def debug(self, message):
         pass
@@ -312,10 +314,11 @@ class _Log:
         pass
 
     def warning(self, message):
-        self._keep(message)
+        if len(self.warnings) < MAX_WARNINGS:
+            self.warnings.append(_detail(message))
 
     def error(self, message):
-        self._keep(message)
+        pass
 
 
 def _emit(event: dict) -> None:
@@ -382,6 +385,15 @@ _NO_FORMATS = re.compile(r"(?i)requested format is not available|no video format
 # message -- never "sign in" or "cookies" alone, never another site.
 _VERIFICATION = re.compile(r"(?i)confirm you[’']re not a bot|requiring a captcha challenge before playback")
 _YOUTUBE_EXTRACTOR = "youtube"
+# yt-dlp's own words for media offered only with DRM: its error ("This video is
+# DRM protected", when no format at all remains) or, when only storyboard images
+# remain, its warning ("This video is drm protected and only images are
+# available for download" -- it capitalizes the sentence), after which the
+# selection matches nothing. Only these whole-medium words: yt-dlp's YouTube
+# extractor also warns "Some <client> client <protocol> formats have been
+# skipped as they are DRM protected" while other formats remain usable, and
+# that never makes a failure DRM's.
+_DRM = re.compile(r"(?i)\bthis video is drm protected\b")
 
 
 def _verification_challenge(exc) -> bool:
@@ -395,12 +407,22 @@ def _verification_challenge(exc) -> bool:
                and _VERIFICATION.search(str(getattr(item, "orig_msg", "") or "")) for item in _chain(exc))
 
 
-def classify(exc, *, acquire: bool, phase: str = "") -> Failure:
+def classify(exc, *, acquire: bool, phase: str = "", warnings=()) -> Failure:
     """One yt-dlp failure, as the shared outcome vocabulary, read from that
     failure's own causal chain. ``phase`` is the attempt's phase when it
-    failed (``_Phase``)."""
+    failed (``_Phase``); ``warnings`` are the warnings yt-dlp gave the same
+    work (``_Log``). They decide only one outcome -- a selection that matched
+    nothing because the formats were DRM-protected -- and otherwise follow
+    yt-dlp's error in the detail, as the evidence of why it failed."""
     if isinstance(exc, Failure):
         return exc
+    failure = _outcome(exc, acquire=acquire, phase=phase, warnings=tuple(warnings))
+    if warnings:
+        failure.detail = _detail(" | ".join((failure.detail, *warnings)))
+    return failure
+
+
+def _outcome(exc, *, acquire: bool, phase: str, warnings: tuple) -> Failure:
     from yt_dlp.networking.exceptions import HTTPError, ProxyError, TransportError
     from yt_dlp.utils import GeoRestrictedError, UnsupportedError
     message = str(exc)
@@ -446,6 +468,8 @@ def classify(exc, *, acquire: bool, phase: str = "") -> Failure:
             return Failure("network", str(item))
     if "No suitable extractor" in message:
         return Failure("unsupported", message)
+    if _DRM.search(message) or (_NO_FORMATS.search(message) and any(_DRM.search(line) for line in warnings)):
+        return Failure("drm_protected", message)
     if _NO_FORMATS.search(message):
         return Failure("format_unavailable" if acquire else "no_usable_formats", message)
     if _verification_challenge(exc):
@@ -552,7 +576,7 @@ def extract(spec: dict) -> dict:
         try:
             info = ydl.extract_info(spec["url"], download=False)
         except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
-            raise classify(exc, acquire=False) from None
+            raise classify(exc, acquire=False, warnings=log.warnings) from None
         if not isinstance(info, dict):
             raise Failure("extractor_failed", "no information")
         if info.get("_type") not in {"playlist", "multi_video"}:
@@ -567,13 +591,14 @@ def extract(spec: dict) -> dict:
                 continue
             address = str(entry.get("url") or entry.get("webpage_url") or "")
             member = {"url": address, "id": str(entry.get("id") or ""), "title": str(entry.get("title") or "")[:512]}
+            log.warnings.clear()                      # each member's outcome reads only its own warnings
             try:
                 detail = ydl.extract_info(address, download=False)
                 if not isinstance(detail, dict) or detail.get("_type") in {"playlist", "multi_video"}:
                     raise Failure("unsupported", "nested collection")
                 member.update(_facts(detail))
             except Exception as exc:  # noqa: BLE001 -- the member's own outcome
-                failure = classify(exc, acquire=False)
+                failure = classify(exc, acquire=False, warnings=log.warnings)
                 if failure.code in {"egress_refused", "transport_unsupported", "network", "rate_limited"}:
                     raise failure from None
                 member["outcome"] = failure.code
@@ -791,7 +816,7 @@ def acquire(spec: dict, phase: _Phase) -> int:
         try:
             info = ydl.extract_info(spec["url"], download=False)
         except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
-            raise classify(exc, acquire=True, phase=phase.name) from None
+            raise classify(exc, acquire=True, phase=phase.name, warnings=log.warnings) from None
         if not isinstance(info, dict) or info.get("_type") in {"playlist", "multi_video"} or (
                 str(info.get("extractor_key") or ""), str(info.get("id") or "")) != (plan["extractor"], plan["id"]):
             raise Failure("identity_changed", "the source now identifies a different medium")
@@ -817,7 +842,7 @@ def acquire(spec: dict, phase: _Phase) -> int:
                 with ydl.urlopen(track["url"]) as response:
                     data = response.read(MAX_SUBTITLE_BYTES + 1)
             except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
-                raise classify(exc, acquire=True, phase=phase.name) from None
+                raise classify(exc, acquire=True, phase=phase.name, warnings=log.warnings) from None
             if not data or len(data) > MAX_SUBTITLE_BYTES:
                 raise Failure("format_unavailable", "the planned subtitle could not be read")
             path = os.path.join(workspace, f"subtitle.{chosen['ext']}")
@@ -852,7 +877,7 @@ def acquire(spec: dict, phase: _Phase) -> int:
             try:
                 ydl.dl(path, item)
             except Exception as exc:  # noqa: BLE001 -- classified, never swallowed
-                raise classify(exc, acquire=True, phase=phase.name) from None
+                raise classify(exc, acquire=True, phase=phase.name, warnings=log.warnings) from None
             if not os.path.isfile(path):
                 raise Failure("output_missing", "a component was not written")
             components.append((path, fmt))
