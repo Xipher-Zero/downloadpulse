@@ -138,7 +138,6 @@
       <h1 id="page-title" data-i18n="shell.page.dashboard.title">Dashboard</h1>
       <p id="page-subtitle" class="dp-page-subtitle" data-i18n="shell.page.dashboard.subtitle">Download activity and system status.</p>
     </div>
-    <template data-requires="administer"><button id="update-badge" class="dp-update-badge" type="button" hidden data-dp-click="openUpdateNotice" data-i18n-attr="aria-label:update.badge.aria;data-tooltip:update.badge.aria" data-i18n-values='{"version":""}'><span data-update-badge-label data-i18n="update.badge.label" data-i18n-values='{"version":""}'></span></button></template>
     <template data-requires="administer"><div id="topbar-actions"></div></template>
     <div id="runtime-speed-badge" style="display:flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--text2);cursor:default" data-tooltip="Active / max — live speed — download speed cap" data-i18n-attr="data-tooltip:runtime_badge.tooltip_admin">
       <span style="color:var(--green)">&#9660;</span><template data-requires="administer"><span id="runtime-badge-active">0</span><span style="color:var(--text3)">/</span><span id="runtime-badge-max">0</span>
@@ -583,6 +582,11 @@
       </div>
     </template>
 
+    <!-- The update badge: an overlay floating above the active page's master
+         surface just inside its bottom edge, right-aligned with the version
+         datum below it; not part of any page or its contents. Its x hides it
+         until the next update check. -->
+    <div class="dp-update-anchor"><template data-requires="administer"><div id="update-badge-group" class="dp-update-badge-group" hidden><button id="update-badge" class="dp-update-badge" type="button" data-dp-click="openUpdateNotice" data-i18n-attr="aria-label:update.badge.aria;data-tooltip:update.badge.aria" data-i18n-values='{"version":""}'><span data-update-badge-label data-i18n="update.badge.label" data-i18n-values='{"version":""}'></span></button><button id="update-badge-dismiss" class="dp-update-badge-dismiss" type="button" data-dp-click="dismissUpdateBadge" aria-label="Hide until the next update check" data-tooltip="Hide until the next update check" data-i18n-attr="aria-label:update.badge.dismiss;data-tooltip:update.badge.dismiss"><svg class="lucide dp-utility-icon" data-dp-lucide="x" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div></template></div>
     <!-- The one version datum: just below the active page's master surface. -->
     <div class="logo-ver dp-app-version" id="sidebar-version" aria-label="DownloadPulse version" data-i18n-attr="aria-label:shell.version_label">v…</div>
   </div>
@@ -620,7 +624,7 @@
 <!-- Localization: the formatter (a module, in document order with the deferred scripts) and the
      canonical English catalog, both in place before the application script. -->
 <script type="module" src="/ui-i18n-formatter.js?v=1"></script>
-<script src="/i18n/en.js?v=58e5cebba181d022" defer></script>
+<script src="/i18n/en.js?v=970333e0b157c898" defer></script>
 <script src="/ui-error-semantics.js?v=3" defer></script>
 <script src="/operator-title.js?v=31" defer></script>
 <!-- The control wiring every renderer delegates through (DPActions): before them all. -->

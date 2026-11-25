@@ -265,8 +265,7 @@ body.light .conn-row .dot {
   gap: 9px;
 }
 #topbar-actions .btn,
-#runtime-speed-badge,
-#update-badge {
+#runtime-speed-badge {
   height: 37px;
   min-height: 37px;
   border-radius: 8px !important;
@@ -379,7 +378,6 @@ body.light #page-title { color: var(--dp-chrome-title); }
 body.light .dp-page-subtitle { color: var(--dp-chrome-subtitle); }
 body.light #topbar-actions .btn,
 body.light #runtime-speed-badge,
-body.light #update-badge,
 body.light .theme-toggle {
   background: rgba(255,255,255,.90) !important;
   border-color: #d9deed !important;

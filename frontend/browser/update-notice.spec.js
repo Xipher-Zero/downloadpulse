@@ -13,8 +13,9 @@ const { test, expect } = require('@playwright/test');
  *   - a server has no download, only Close and the release notes;
  *   - the desktop downloads through DownloadPulse, follows the transfer's row
  *     and then offers Show in folder;
- *   - after it is dismissed the topbar badge stays and opens it again, and
- *     fits at a phone's width and in en-XA. */
+ *   - after it is dismissed the badge stays and opens it again: an overlay
+ *     over the page surface's bottom edge, right-aligned with the version
+ *     below it, also in en-XA, and not shown on a handheld. */
 
 const RELEASE = 'https://github.com/Xipher-Zero/downloadpulse/releases/tag/v9.9.9';
 const record = (extra = {}) => ({
@@ -180,26 +181,98 @@ test('U08: a refused download says why and points at the release notes', async (
   await expect(notice(page).getByRole('button', {name: await t(page, 'update.download')})).toBeHidden();
 });
 
-test('U09: the badge fits at a phone\'s width and in en-XA', async ({page}) => {
+test('U09: the badge floats over the page surface\'s bottom edge, right-aligned with the version above it', async ({page}) => {
   await answer(page, record());
-  for (const width of [390, 1180]) {
+  await load(page, {width: 1440});
+  await expect(notice(page)).toBeVisible();
+  await notice(page).locator('[data-modal-cancel]').click();
+  await expect(notice(page)).toHaveCount(0);
+  await expect(badge(page)).toBeVisible();
+  const place = () => page.evaluate(() => {
+    // On a page taller than the window it is seen at the page's end, as the version is.
+    document.getElementById('update-badge-group').scrollIntoView({block: 'nearest'});
+    const box = document.getElementById('update-badge').getBoundingClientRect();
+    const version = document.getElementById('sidebar-version').getBoundingClientRect();
+    const surface = document.querySelector('#content > .view.active').getBoundingClientRect();
+    return {fromVersionRight: version.right - box.right, aboveVersion: version.top - box.bottom,
+      insideRight: surface.right - box.right, insideBottom: surface.bottom - box.bottom,
+      inTopbar: !!document.getElementById('update-badge').closest('#topbar'),
+      // Nothing on the page paints over it: the badge and its x are what lies at their own centres.
+      onTop: [document.getElementById('update-badge'), document.getElementById('update-badge-dismiss')].every(item => {
+        const r = item.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return Boolean(hit) && item.contains(hit);
+      }),
+      left: box.left, right: box.right, viewport: window.innerWidth,
+      overflow: document.scrollingElement.scrollWidth - window.innerWidth};
+  });
+  const first = await place();
+  expect(first.inTopbar).toBe(false);
+  // Its right edge on the version's (and so the surface's) right edge, just inside the surface's bottom edge.
+  expect(Math.abs(first.fromVersionRight)).toBeLessThan(1);
+  expect(Math.abs(first.insideRight)).toBeLessThan(1);
+  expect(first.insideBottom).toBeGreaterThan(0);
+  expect(first.insideBottom).toBeLessThan(24);
+  expect(first.aboveVersion).toBeGreaterThan(0);
+  // One place relative to the version, whatever page is shown and however far it is scrolled.
+  for (const view of ['torrents', 'stats', 'events', 'help', 'settings', 'dashboard']) {
+    await page.locator(`#sidebar .nav-item[data-view="${view}"]`).click();
+    await expect(page.locator(`#view-${view}`)).toHaveClass(/\bactive\b/);
+    const shown = await place();
+    expect(shown.onTop).toBe(true);
+    expect(Math.abs(shown.fromVersionRight - first.fromVersionRight)).toBeLessThan(1);
+    expect(Math.abs(shown.aboveVersion - first.aboveVersion)).toBeLessThan(1);
+    expect(shown.insideBottom).toBeGreaterThan(0);
+  }
+  await page.locator('#content').evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const scrolled = await place();
+  expect(Math.abs(scrolled.fromVersionRight - first.fromVersionRight)).toBeLessThan(1);
+  expect(Math.abs(scrolled.aboveVersion - first.aboveVersion)).toBeLessThan(1);
+  // The longer en-XA label still fits the window.
+  expect(await page.evaluate(() => window.DPI18n.setLocale('en-XA'))).toBe('en-XA');
+  await expect(badge(page)).toContainText('⟦');
+  const long = await place();
+  expect(long.left).toBeGreaterThanOrEqual(0);
+  expect(long.right).toBeLessThanOrEqual(long.viewport);
+  expect(long.overflow).toBeLessThanOrEqual(0);
+});
+
+test('U09b: a handheld has no place for the badge: it is not shown below 780px', async ({page}) => {
+  await answer(page, record());
+  for (const [width, shown] of [[390, false], [779, false], [780, true]]) {
     await load(page, {width});
     if (await notice(page).count()) await notice(page).locator('[data-modal-cancel]').click();
-    for (const locale of ['en', 'en-XA']) {
-      expect(await page.evaluate(locale => window.DPI18n.setLocale(locale), locale)).toBe(locale);
-      await expect(badge(page)).toBeVisible();
-      if (locale === 'en-XA') await expect(badge(page)).toContainText('⟦');
-      const fit = await badge(page).evaluate(element => {
-        const box = element.getBoundingClientRect();
-        return {left: box.left, right: box.right, width: box.width, viewport: window.innerWidth,
-          overflow: document.scrollingElement.scrollWidth - window.innerWidth};
-      });
-      expect(fit.width).toBeGreaterThan(0);
-      expect(fit.left).toBeGreaterThanOrEqual(0);
-      expect(fit.right).toBeLessThanOrEqual(fit.viewport);
-      expect(fit.overflow).toBeLessThanOrEqual(0);
-    }
+    await expect(page.locator('#update-badge')).toBeAttached();
+    if (shown) await expect(badge(page)).toBeVisible();
+    else await expect(badge(page)).toBeHidden();
   }
+});
+
+test('U09c: its x hides the badge until the next update check, which shows it again', async ({page}) => {
+  let checkedAt = 1;
+  await page.route(url => url.pathname === '/api/version/check',
+    route => route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(record({checked_at: checkedAt}))}));
+  await page.clock.install();
+  await load(page, {width: 1440});
+  await expect(notice(page)).toBeVisible();
+  await notice(page).locator('[data-modal-cancel]').click();
+  await expect(notice(page)).toHaveCount(0);
+  await expect(badge(page)).toBeVisible();
+  const dismiss = page.locator('#update-badge-dismiss');
+  await expect(dismiss).toHaveAttribute('aria-label', await t(page, 'update.badge.dismiss'));
+  await dismiss.click();
+  await expect(badge(page)).toBeHidden();
+  await expect(notice(page)).toHaveCount(0);           // hiding the badge opens nothing
+  // The same check's record keeps it hidden, a reload included.
+  await page.reload();
+  await expect(page.locator('#sidebar .nav-item[data-view="dashboard"]')).toBeAttached();
+  await page.evaluate(() => window.DPI18n.ready);
+  await expect(page.locator('#update-badge')).toBeAttached();
+  await expect(badge(page)).toBeHidden();
+  // The next check makes a newer record; the page's next read shows the badge again, unreloaded.
+  checkedAt = 2;
+  await page.clock.fastForward('30:01');
+  await expect(badge(page)).toBeVisible();
 });
 
 test('U10: the desktop Quit prompt opens above an open notice', async ({page}) => {

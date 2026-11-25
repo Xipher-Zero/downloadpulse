@@ -33145,6 +33145,14 @@
     "ai-review"
    ]
   },
+  "update.badge.dismiss": {
+   "source": "55a4e0f6da107140",
+   "translation": "d096d2a7b1df59a1",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.error.start_failed_title": {
    "source": "3c18e0c8b75d0e05",
    "translation": "2b30c84525115228",

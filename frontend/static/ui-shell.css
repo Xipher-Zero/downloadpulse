@@ -316,11 +316,34 @@ body.light :is(.dot.check, .dot.warn) { color: var(--yellow); }
 }
 #topbar-actions .btn svg { width: 15px; height: 15px; }
 
+/* The update badge's place: a zero-height anchor laid out exactly like the
+   version datum after it (the active view's width, at its bottom edge). The
+   badge, absolutely placed in it, floats above the page's master surface just
+   inside its bottom edge, its right edge on the version's right edge, so it
+   stands at one fixed place above the version whatever page is shown. It is
+   no part of the page: it takes no space and may cover what lies beneath it.
+   Its x sits on the badge's upper-right corner.
+   A handheld (779px and below) has no place for it: it is not shown there. */
+#content > .dp-update-anchor {
+  display: block;
+  position: relative;
+  width: min(100%, var(--dp-content-max-width));
+  height: 0;
+  margin: 0 auto;
+  contain: layout;
+}
+#update-badge-group {
+  position: absolute;
+  right: 0;
+  bottom: 10px;
+  z-index: 2;
+  display: block;
+  max-width: 100%;
+}
+#update-badge-group[hidden] { display: none; }
 #update-badge {
   display: inline-flex;
   align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
   max-width: 100%;
   border: 1px solid;
   font-family: inherit;
@@ -336,7 +359,28 @@ body.light :is(.dot.check, .dot.warn) { color: var(--yellow); }
   font-size: 10px !important;
 }
 #update-badge > span { overflow: hidden; text-overflow: ellipsis; }
-#update-badge[hidden] { display: none; }
+#update-badge-dismiss {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--dp-accent-purple) 30%, var(--dp-border-default));
+  border-radius: 50%;
+  background: var(--dp-surface-2);
+  color: var(--dp-text-secondary);
+  cursor: pointer;
+}
+#update-badge-dismiss svg { width: 11px; height: 11px; }
+#update-badge-dismiss:hover,
+#update-badge-dismiss:focus-visible { color: var(--dp-accent-purple-bright); }
+@media (max-width: 779px) {
+  #content > .dp-update-anchor { display: none; }
+}
 
 #runtime-speed-badge {
   box-sizing: border-box;

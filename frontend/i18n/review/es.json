@@ -33883,6 +33883,14 @@
     "ai-review"
    ]
   },
+  "update.badge.dismiss": {
+   "source": "55a4e0f6da107140",
+   "translation": "a29ac30b1ba805a1",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.error.start_failed_title": {
    "source": "3c18e0c8b75d0e05",
    "translation": "8259cd58592dc015",

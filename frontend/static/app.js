@@ -822,10 +822,14 @@ function askDesktopQuit(nonce) {
  * the #modal shell's Details): it waits until the dialog owner says its last
  * dialog closed (downloadpulse:dialogs-closed) or DPModal says it closed
  * (downloadpulse:modal-closed), and a dialog opened later stacks above it. A
- * newer release that arrives while the notice is open is shown once it closes. After it is dismissed the topbar's
- * #update-badge keeps the update in view and opens it again. */
+ * newer release that arrives while the notice is open is shown once it closes. After it is dismissed
+ * #update-badge, floating over the page's bottom-right corner, keeps the update in view and opens it
+ * again. Its x hides it, in this browser, until the next update check: the record is read again every
+ * UPDATE_READ_MS, and the badge returns once a later check has made a newer record (checked_at). */
 const UPDATE_SHOWN_KEY = 'dp.update.shown';
+const UPDATE_DISMISSED_KEY = 'dp.update.badge-dismissed';
 const UPDATE_POLL_MS = 2000;
+const UPDATE_READ_MS = 30 * 60 * 1000;
 const DPUpdateNotice = (() => {
   let record = null;
   let dialog = null;
@@ -833,6 +837,8 @@ const DPUpdateNotice = (() => {
   let waiting = false;
   const shown = () => { try { return sessionStorage.getItem(UPDATE_SHOWN_KEY) || ''; } catch (_) { return ''; } };
   const markShown = version => { try { sessionStorage.setItem(UPDATE_SHOWN_KEY, version); } catch (_) {} };
+  // The check (checked_at) whose badge the person hid; a later check shows it again.
+  const dismissed = () => { try { return localStorage.getItem(UPDATE_DISMISSED_KEY) || ''; } catch (_) { return ''; } };
   const admin = () => Boolean(window.downloadPulseAuth?.can?.('administer'));
 
   function said(element, key, values) {
@@ -844,10 +850,11 @@ const DPUpdateNotice = (() => {
   }
 
   function paintBadge() {
+    const group = document.getElementById('update-badge-group');
     const badge = document.getElementById('update-badge');
-    if (!badge) return;
+    if (!group || !badge) return;
     const available = Boolean(record && record.update_available);
-    badge.hidden = !available;
+    group.hidden = !available || dismissed() === String(record.checked_at);
     if (!available) return;
     const values = JSON.stringify({version: record.latest});
     badge.dataset.i18nValues = values;
@@ -1024,10 +1031,18 @@ const DPUpdateNotice = (() => {
   document.addEventListener('downloadpulse:dialogs-closed', () => { if (waiting) open(); });
   // ... and when the shared #modal shell (DPModal) closes.
   document.addEventListener('downloadpulse:modal-closed', () => { if (waiting) open(); });
+  // The badge's x: hidden until a later check (the next read that finds a newer checked_at).
+  function dismissBadge() {
+    if (!record) return;
+    try { localStorage.setItem(UPDATE_DISMISSED_KEY, String(record.checked_at)); } catch (_) {}
+    paintBadge();
+  }
+  document.addEventListener('downloadpulse:interface-ready', () => { setInterval(read, UPDATE_READ_MS); }, {once: true});
   return Object.freeze({
     read,
-    // The topbar badge: the same dialog again, from the record this page holds.
+    // The badge: the same dialog again, from the record this page holds.
     open: () => { if (record) open(); else read({reopen: true}); },
+    dismissBadge,
   });
 })();
 window.DPUpdateNotice = DPUpdateNotice;
@@ -4192,6 +4207,7 @@ window.DPActions.delegate(document.body, 'click', {
   toggleSidebarOverlay: () => toggleSidebarOverlay(),
   toggleTheme: () => toggleTheme(),
   openUpdateNotice: () => DPUpdateNotice.open(),
+  dismissUpdateBadge: () => DPUpdateNotice.dismissBadge(),
   toggleSpeedCapMenu: (el, event) => toggleSpeedCapMenu(event),
   applyTopbarSpeedCap: el => applyTopbarSpeedCap(Number(el.dataset.capBps)),
   applyTopbarCustomSpeedCap: () => applyTopbarCustomSpeedCap(),

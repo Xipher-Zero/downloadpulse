@@ -208,6 +208,7 @@
   "update.download_failed": "The update could not be downloaded. You can get it from the release notes instead.",
   "update.badge.label": "{version} available",
   "update.badge.aria": "DownloadPulse {version} is available. Show the update.",
+  "update.badge.dismiss": "Hide until the next update check",
   "desktop.notice.accepted": "Transfer accepted",
   "desktop.notice.completed": "Transfer completed",
   "desktop.notice.paused_many": "Transfers paused: {count}",

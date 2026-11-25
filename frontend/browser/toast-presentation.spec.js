@@ -152,7 +152,8 @@ test('canonical toast has no dismiss control and independent lifetimes include f
 
 test('desktop structured toast stays in the topbar and resize recomputes a short toast without occupant overlap', async ({ page }) => {
   await page.setViewportSize({width: 1440, height: 900});
-  // The update badge is a topbar occupant too (WS27): shown, from a mocked release record.
+  // The update badge floats over the page's bottom-right corner (WS27, 1.0.5): shown, from a mocked
+  // release record, so a toast is proven never to overlap it either.
   await page.route(url => url.pathname === '/api/version/check', route => route.fulfill({status: 200,
     contentType: 'application/json', body: JSON.stringify({checked: true, checked_at: 1, current: '1.0.3',
       latest: '9.9.9', update_available: true, release_url: null, published_at: null, installer: null,

@@ -24005,22 +24005,28 @@
   },
   "update.badge.label": {
    "category": "status-chip",
-   "context": "Topbar badge an Admin sees while a newer DownloadPulse release exists; pressing it opens the update notice. {version} is the release's version number. Keep it short: it sits in the topbar beside the speed badge.",
+   "context": "Badge an Admin sees while a newer DownloadPulse release exists; pressing it opens the update notice. {version} is the release's version number. Keep it short: it floats over the bottom-right corner of the page, above the version number.",
    "owner": "frontend/static/index.html",
    "criticality": "normal",
    "args": {
     "version": "string: the latest release's version number"
    },
-   "geometry": "One short line in the topbar; must stay legible at 320 px."
+   "geometry": "One short line in a small badge over the page's bottom-right corner; not shown below 780 px."
   },
   "update.badge.aria": {
    "category": "tooltip/aria",
-   "context": "Accessible name and tooltip of the topbar update badge: says a newer release exists and that pressing it shows the update notice. {version} is the release's version number.",
+   "context": "Accessible name and tooltip of the update badge: says a newer release exists and that pressing it shows the update notice. {version} is the release's version number.",
    "owner": "frontend/static/index.html",
    "criticality": "normal",
    "args": {
     "version": "string: the latest release's version number"
    }
+  },
+  "update.badge.dismiss": {
+   "category": "tooltip/aria",
+   "context": "Accessible name and tooltip of the small x on the update badge. Pressing it hides the badge until DownloadPulse next checks for a new release (the Update Check Interval); the badge then shows again if an update is still available.",
+   "owner": "frontend/static/index.html",
+   "criticality": "normal"
   },
   "desktop.error.start_failed_title": {
    "category": "toast",
