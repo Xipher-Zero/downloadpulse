@@ -133,3 +133,15 @@ def test_global_pause_all_settles_the_signal_where_it_stands_then_the_red_flatli
     assert frame.index("state.beats = []") < frame.index("syncDashboardHeartbeatFlatline();")
     assert app.count("dash-hero--flatline") == 1                    # the one flatline owner (syncDashboardHeartbeatFlatline)
     assert "settle: null" in app[app.index("if (_dashboardSparkReducedMotion.matches) {"):]
+
+
+def test_each_sparkline_repaints_in_its_own_layer():
+    # 1.0.5: the heartbeat redraws the line every frame; one layer per sparkline
+    # keeps a Chromium renderer ~55 MB smaller. One rule, in the sparkline's owner.
+    css = (Path(__file__).resolve().parents[2] / "frontend/static/ui-dashboard.css").read_text(encoding="utf-8")
+    rule = re.search(r"(?m)^\.dp-card-spark \{([^}]*)\}", css).group(1)
+    assert re.search(r"(?m)^\s*will-change:\s*transform;", rule)
+    static = Path(__file__).resolve().parents[2] / "frontend/static"
+    owners = [path.name for path in static.glob("*.css")
+              if re.search(r"\.dp-card-spark\b[^{]*\{[^}]*will-change", path.read_text(encoding="utf-8"))]
+    assert owners == ["ui-dashboard.css"]

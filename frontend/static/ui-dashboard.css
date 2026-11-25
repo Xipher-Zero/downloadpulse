@@ -408,6 +408,11 @@ body.light #view-dashboard .t-table thead th { background: #f7f9fd; }
   opacity: 1;
   pointer-events: none;
   overflow: visible;
+  /* Its own compositing layer: the heartbeat redraws the line every frame,
+     and a repaint confined to it keeps a Chromium renderer about 55 MB
+     smaller (1.0.5 measurement; neutral in the desktop's WebKitGTK). It
+     changes nothing that is drawn. */
+  will-change: transform;
 }
 /* The line is one calligraphic brush stroke, the page title's: a filled outline
    around the signal, its width a broad nib's (app.js dashboardBrushOutline),
