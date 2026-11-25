@@ -22,6 +22,11 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
+  # glibc keeps one malloc arena per thread that ever allocated, for good: two
+  # bound the supervisor's memory. Everything in the sandbox inherits it, and
+  # processes started through executors.process_ownership are given the same;
+  # aria2 keeps its own stricter 1 (executors.aria2.runtime).
+  - --env=MALLOC_ARENA_MAX=2
   # Only this session-bus name is reachable besides the desktop portals and
   # the application's own ID (xdg-dbus-proxy): the tray's StatusNotifierWatcher.
   # Notices go through the notification portal. No systemd, no other service

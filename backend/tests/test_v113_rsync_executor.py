@@ -277,7 +277,7 @@ async def test_a_daemon_file_completes_with_direct_argv_and_no_destructive_optio
     assert argv[argv.index("--") + 1:] == [f"rsync://rsync-origin.test:{origin.port}/pub/payload.bin", str(target)]
     assert "-I" in argv and "--chmod=F666" in argv
     assert not set(FORBIDDEN_NATIVE) & set(argv[:argv.index("--")])
-    assert set(env) == {"PATH", "LC_ALL", "LANG", "HOME", "RSYNC_PROXY"}
+    assert set(env) == {"PATH", "LC_ALL", "LANG", "HOME", "RSYNC_PROXY"} | ({"MALLOC_ARENA_MAX"} if sys.platform.startswith("linux") else set())
     assert env["RSYNC_PROXY"].endswith(f"@127.0.0.1:{guard.bound_port}")
 
 

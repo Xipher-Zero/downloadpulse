@@ -15,6 +15,7 @@ import re
 
 from i18n_node import english, says
 import socket
+import sys
 
 import pytest
 from yt_dlp import YoutubeDL
@@ -47,6 +48,10 @@ VIDEO = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 SHORT = "https://youtu.be/dQw4w9WgXcQ"
 PLAYLIST = "https://www.youtube.com/playlist?list=PLbpi6ZahtOH6Ar_3GPy3workQZiTQKzxs"
 PLAIN = ("https://files.example.org/archive.zip", "https://cdn.example.org/clip.mp4", "https://example.com/")
+
+
+# The environment every owned process is given on Linux also bounds glibc's malloc arenas.
+_ARENAS = {"MALLOC_ARENA_MAX"} if sys.platform.startswith("linux") else set()
 
 
 def media_facts(**overrides):
@@ -675,8 +680,9 @@ def test_the_executor_claims_only_media_plans_and_promises_only_a_restart(tmp_pa
     for name in ("HTTP_PROXY", "https_proxy", "ALL_PROXY", "NO_PROXY", "XDG_CONFIG_HOME", "YTDLP_PLUGINS"):
         monkeypatch.setenv(name, "ambient")
     environment = executor.sandbox.environment(tmp_path / "workspace")
+    # glibc's arena bound is given on Linux only (executors.process_ownership.MALLOC_ARENA_MAX).
     assert set(environment) == {"PATH", "LC_ALL", "LANG", "HOME", "YTDLP_NO_PLUGINS", "NO_COLOR", "TMPDIR",
-                                "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "DENO_DIR", "DENO_NO_UPDATE_CHECK"}
+                                "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "DENO_DIR", "DENO_NO_UPDATE_CHECK"} | _ARENAS
     assert "ambient" not in environment.values() and environment["HOME"].startswith(str(tmp_path / "runtime"))
     assert executor.sandbox.argv()[1:3] == ["-I", "-B"] and len(executor.sandbox.argv()) == 4
     assert executor.capabilities.continuation == frozenset({ContinuationCapability.FULL_RESTART})

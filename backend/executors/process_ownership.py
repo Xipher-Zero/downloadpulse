@@ -62,6 +62,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _WINDOWS = os.name == "nt"
+# The glibc malloc arenas a native process started through ``environment`` may
+# keep (the desktop backend, rsync, the media worker...); the server image and
+# the Flatpak give their own first process the same, and SABnzbd inherits it.
+# aria2 keeps its own stricter 1 (executors.aria2.runtime, since 1.0.0).
+MALLOC_ARENA_MAX = "2"
 if _WINDOWS:
     import ctypes
     import msvcrt
@@ -268,6 +273,11 @@ class ProcessOwnership:
         diagnostics), an empty private home, and only what the caller adds."""
         env = {"PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
                "LC_ALL": "C", "LANG": "C", "HOME": str(self.home)}
+        if sys.platform.startswith("linux"):
+            # glibc's allocator: two malloc arenas, not one per thread that ever
+            # allocated (up to 8 per core), which a long-running process keeps
+            # for good. Other C libraries ignore it.
+            env["MALLOC_ARENA_MAX"] = MALLOC_ARENA_MAX
         if _WINDOWS:
             # Windows programs find their home, profile and temporary files
             # through these instead of HOME: all of them are the private home.

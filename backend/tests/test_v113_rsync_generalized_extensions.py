@@ -309,7 +309,7 @@ async def test_secrets_reach_a_process_only_through_one_shot_pipes(tmp_path, mon
     assert output == b"pipe-secret|stdin-secret"
     argv, env = seen[0]
     assert "pipe-secret" not in repr(argv) + repr(env) and "stdin-secret" not in repr(argv) + repr(env)
-    assert set(env) == {"PATH", "LC_ALL", "LANG", "HOME"}
+    assert set(env) == {"PATH", "LC_ALL", "LANG", "HOME"} | ({"MALLOC_ARENA_MAX"} if sys.platform.startswith("linux") else set())
     assert not any(path.is_file() and (b"pipe-secret" in path.read_bytes() or b"stdin-secret" in path.read_bytes())
                    for path in (tmp_path / "runtime").rglob("*"))
 

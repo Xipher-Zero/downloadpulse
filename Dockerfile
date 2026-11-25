@@ -190,6 +190,12 @@ RUN mkdir -p /app/data /app/data/usenet /app/config /download && \
 # application's build identity (core.version.read_build_revision).
 ENV DOWNLOADPULSE_BUILD_REVISION=${VCS_REF}
 
+# glibc keeps one malloc arena per thread that ever allocated, for good: two
+# bound the server's memory over a long uptime. SABnzbd inherits it; processes
+# started through executors.process_ownership are given the same; aria2 keeps
+# its own stricter 1 (executors.aria2.runtime).
+ENV MALLOC_ARENA_MAX=2
+
 EXPOSE 8095
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
