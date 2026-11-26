@@ -17,6 +17,7 @@ import pytest
 from application.service import ApplicationService
 from services import event_bus
 from test_v113_usenet_service_lifetime import FakeRuntime, admin_for
+from integrations.definition import ConfigurationApplication
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -58,6 +59,7 @@ async def test_a_starting_service_announces_non_ready_then_converged():
 
     async def apply():
         applied.append(True)
+        return ConfigurationApplication(True, "configuration applied")
 
     admin, _runtime, signals = _notifying_admin(enabled=True, applied=apply)
     await admin.start()
@@ -69,9 +71,16 @@ async def test_a_starting_service_announces_non_ready_then_converged():
 
 @pytest.mark.asyncio
 async def test_a_healthy_service_announces_nothing():
-    admin, runtime, signals = _notifying_admin(enabled=True, runtime=FakeRuntime(running=True))
+    admin, runtime, signals = _notifying_admin(enabled=True, runtime=FakeRuntime(running=True), applied=_noop)
+    # 1.0.5 WS9: a new administration's first look converges the running
+    # service (ready only once started AND converged): announced, never restarted.
     await admin.maintain()
-    assert signals == [] and runtime.restarts == 0
+    assert signals[-1] == ("healthy", 0, 0, 0) and runtime.restarts == 0
+    # Healthy and converged thereafter: maintenance announces nothing.
+    signals.clear()
+    await admin.maintain()
+    await admin.maintain()
+    assert signals == [] and runtime.restarts == 0 and runtime.starts == 0
 
 
 @pytest.mark.asyncio
@@ -102,7 +111,8 @@ async def test_a_service_stopped_because_it_is_no_longer_required_is_announced()
 
 
 async def _noop():
-    return None
+    # The converge path's applier body (1.0.5 WS9: ``admin_for`` patches it), applying cleanly.
+    return ConfigurationApplication(True, "configuration applied")
 
 
 def test_the_usenet_lifecycle_receives_the_neutral_notifier():

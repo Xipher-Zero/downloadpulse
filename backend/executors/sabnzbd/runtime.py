@@ -271,7 +271,8 @@ class UsenetRuntime:
 
     async def stop(self) -> Dict[str, Any]:
         """Stop the service; the answer is its status, with ``exit_code`` the
-        exit of THIS stop (0: the service stopped itself cleanly). Afterwards
+        exit of THIS stop (0: the service stopped itself cleanly; a kill after
+        the bound reports its signal, never 0). Afterwards
         ``status()`` reports no exit: a stop DownloadPulse asked for is never
         read later as the service ending by itself (1.0.5 WS9 C3)."""
         asked_exit = None
@@ -290,6 +291,12 @@ class UsenetRuntime:
                         await asyncio.wait_for(self._process.wait(), timeout=15)
                     except asyncio.TimeoutError:
                         self._process.kill()
+                        # Reaped before it is let go, so the kill is this stop's exit
+                        # (never read later as the service ending by itself).
+                        try:
+                            await asyncio.wait_for(self._process.wait(), timeout=5)
+                        except asyncio.TimeoutError:
+                            logger.warning("usenet stop: the service did not end after a kill")
                 self._started_at = 0.0
                 await self._cancel_drains()
                 if self._process is None or self._process.returncode is not None:

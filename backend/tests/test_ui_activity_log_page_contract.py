@@ -87,9 +87,10 @@ def test_auto_refresh_follows_the_one_stream_and_reads_rows_only_from_the_journa
     # becomes the ordinary newest-page request, coalesced.
     assert "EventSource" not in runtime and "setInterval" not in runtime
     assert "document.addEventListener('downloadpulse:activity-journal-changed',hint);" in runtime
-    assert "const kept={cursor,request,nav};restart();void fetchPage({quiet:kept});" in runtime
+    # 1.0.5 WS8b: the snapshot also keeps the answered request (what a released window restores).
+    assert "const kept={cursor,request,nav,answered};restart();void fetchPage({quiet:kept});" in runtime
     # A failed Auto Refresh restores the page's snapshot, cursors and pager and says nothing.
-    assert "if(quiet){cursor=quiet.cursor;request=quiet.request;nav=quiet.nav;" in runtime
+    assert "if(quiet){cursor=quiet.cursor;request=quiet.request;nav=quiet.nav;answered=quiet.answered;" in runtime
     # A row is only ever rendered from a GET /events answer.
     assert runtime.count("render(payload,c);") == 1     # the one call, in fetchPage
     assert "event?.detail?.latest" in runtime and "items" not in runtime[runtime.index("function hint("):

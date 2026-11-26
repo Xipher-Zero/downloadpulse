@@ -356,6 +356,47 @@ async def test_a_deliberate_stop_is_no_exit_to_report():
     crashed._process.returncode = 1                                   # ended without being asked
     assert "exited with code 1" in (await crashed.status()).get("last_error", "")
 
+    # A stop that ends by a signal reports that signal, never a clean 0.
+    signalled = UsenetRuntime()
+    signalled._process = Process()
+    signalled._process.terminate = lambda: setattr(signalled._process, "returncode", -15)
+    assert (await signalled.stop())["exit_code"] == -15
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_must_kill_reports_the_kill_and_never_a_later_crash(monkeypatch):
+    """A service that ignores SIGTERM past the bound is killed; the stop waits
+    for it to be reaped, reports the kill as its own exit, and a later status
+    says no exit (no "exited with code -9")."""
+    from executors.sabnzbd import runtime as runtime_module
+    from executors.sabnzbd.runtime import UsenetRuntime
+
+    class Stubborn:
+        def __init__(self):
+            self.returncode, self.ended = None, asyncio.Event()
+
+        def terminate(self):
+            pass                                                      # ignored
+
+        def kill(self):
+            self.ended.set()                                          # its code is known once it is reaped
+
+        async def wait(self):
+            await self.ended.wait()
+            self.returncode = -9
+            return self.returncode
+    real_wait_for = asyncio.wait_for
+
+    async def quick(awaitable, timeout):
+        return await real_wait_for(awaitable, min(timeout, 0.2))
+    monkeypatch.setattr(runtime_module.asyncio, "wait_for", quick)
+    runtime = UsenetRuntime()
+    runtime._process = Stubborn()
+    stopped = await runtime.stop()
+    assert stopped["exit_code"] == -9 and stopped["running"] is False and runtime._process is None
+    later = await runtime.status()
+    assert later["exit_code"] is None and not later["last_error"]
+
 
 # ── core: the runtime coordinator ──────────────────────────────────────────
 
