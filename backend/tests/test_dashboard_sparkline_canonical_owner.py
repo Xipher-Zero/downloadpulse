@@ -67,7 +67,9 @@ def test_dashboard_pulse_owner_is_lifecycle_bound():
     assert "const DASHBOARD_HEARTBEAT_SPEED = 0.24;" in app
     assert "setDashboardHeartbeatThroughput(data.download_bytes_per_second, data.sustained_peak_bytes_per_second);" in app
     assert "matchMedia('(prefers-reduced-motion: reduce)')" in app
-    assert app.count("syncDashboardSparkPulses();") == 2  # nav() and boot
+    # nav(), boot, and (1.0.5 WS8c) the desktop window's state arriving: the strip's first start waits for it.
+    assert app.count("syncDashboardSparkPulses();") == 3
+    assert "DPWindowState.ready.then(() => { dashboardHeartbeatStateReady = true; syncDashboardSparkPulses(); });" in app
     assert "document.addEventListener('visibilitychange', syncDashboardSparkPulses);" in app
     assert "new ResizeObserver(remeasureDashboardHeartbeat).observe(document.getElementById('dash-hero'));" in app
     assert app.count("setTimeout(dashboardHeartbeat,") == 1  # one timer chain, scheduled in one place

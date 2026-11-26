@@ -2703,7 +2703,7 @@ function easeDashboardHeartbeat(now) {
 function dashboardHeartbeatWait(now, lastBorn = _dashboardHeartbeat.beats[_dashboardHeartbeat.beats.length - 1]?.born ?? -Infinity) {
   const state = _dashboardHeartbeat;
   return Math.max((1 - state.phase) * 60000 / state.bpm,
-    lastBorn + 60000 / DASHBOARD_HEARTBEAT_BPM[1] - now, state.earliest - now, 0);
+    lastBorn + 60000 / DASHBOARD_HEARTBEAT_BPM[1] - now, state.earliest ? state.earliest - now : 0, 0);   // 0: no clearance owed
 }
 
 /* (Re)time the pending heartbeat. */
@@ -2726,6 +2726,53 @@ function dashboardHeartbeat() {
   scheduleDashboardHeartbeat(now);
   if (!dashboardHeartbeatShown()) liveDashboardHeartbeats(now);   // off screen: only those still on the strip are kept
   else if (!state.frame) state.frame = requestAnimationFrame(dashboardHeartbeatFrame);
+}
+
+/* The desktop window's state (DPWindowState): a released window's heartbeat
+ * goes on from where its clock stood, as if the page had never ended. The
+ * clock is said in wall-clock time (performance.timeOrigin + t) and taken back
+ * into this page's own; the restored clock starts suspended and resumes through
+ * the ordinary resume branch, which births the heartbeats due meanwhile at their
+ * own instants -- assuming throughput stayed what it was when the window was
+ * hidden -- and keeps only those still on the strip. A held strip, a clock that
+ * never started, and a saved state that is future, older than a day or not
+ * well formed are never restored: that entry is an ordinary start. */
+const DASHBOARD_HEARTBEAT_RESTORE_MAX_MS = 24 * 60 * 60 * 1000;
+let dashboardHeartbeatStateReady = !DPWindowState.active, dashboardHeartbeatAwaiting = false;
+DPWindowState.register('heartbeat', {capture() {
+  const state = _dashboardHeartbeat;
+  if (!state.running || state.held || _dashboardSparkReducedMotion.matches) return undefined;
+  const wall = t => performance.timeOrigin + t;
+  return {at: wall(performance.now()), bpm: state.bpm, phase: state.phase, advancedAt: wall(state.advancedAt),
+    earliest: state.earliest ? wall(state.earliest) : 0, bytesPerSecond: state.bytesPerSecond, sustainedPeak: state.sustainedPeak,
+    beats: state.beats.map(beat => ({born: wall(beat.born), shape: beat.shape}))};
+}});
+function restoredDashboardHeartbeat(now) {
+  const saved = DPWindowState.take('heartbeat');
+  if (!saved || typeof saved !== 'object') return null;
+  const finite = value => typeof value === 'number' && Number.isFinite(value);
+  const local = t => t - performance.timeOrigin;
+  const wallNow = performance.timeOrigin + now;
+  if (![saved.at, saved.bpm, saved.phase, saved.advancedAt, saved.earliest, saved.bytesPerSecond, saved.sustainedPeak].every(finite)) return null;
+  const recent = t => t <= wallNow && wallNow - t <= DASHBOARD_HEARTBEAT_RESTORE_MAX_MS;
+  // The catch-up runs from advancedAt to now: bounded by the day, as every other instant.
+  if (!recent(saved.at) || !recent(saved.advancedAt) || saved.advancedAt > saved.at) return null;
+  if (saved.earliest && !(saved.earliest - saved.at <= 60000 && wallNow - saved.earliest <= DASHBOARD_HEARTBEAT_RESTORE_MAX_MS)) return null;
+  if (saved.bpm < DASHBOARD_HEARTBEAT_BPM[0] || saved.bpm > DASHBOARD_HEARTBEAT_BPM[1] || saved.phase < 0 || saved.phase > 1) return null;
+  // A shape as dashboardHeartbeatShape draws one: the complex's points, x in order from 0 to at
+  // most 1.32 of its width, y within its deflections' bounds, width and qrs where its points put them.
+  const point = value => Array.isArray(value) && value.length === 2 && value.every(finite)
+    && value[0] >= 0 && value[0] <= 1.32 * DASHBOARD_HEARTBEAT_WIDTH && value[1] >= -12 && value[1] <= 40;
+  const shape = value => value && Array.isArray(value.points) && value.points.length === DASHBOARD_HEARTBEAT_COMPLEX.length
+    && value.points.every(point) && value.points[0][0] === 0
+    && value.points.every((p, i) => i === 0 || p[0] >= value.points[i - 1][0])
+    && value.width === value.points[value.points.length - 1][0] && value.qrs === value.points[7][0];
+  const beats = Array.isArray(saved.beats) ? saved.beats : [];
+  if (beats.length > 64 || !beats.every(beat => beat && finite(beat.born) && beat.born <= saved.at && recent(beat.born) && shape(beat.shape))) return null;
+  return {bpm: saved.bpm, phase: saved.phase, advancedAt: local(saved.advancedAt), earliest: saved.earliest ? local(saved.earliest) : 0,
+    bytesPerSecond: Math.max(0, saved.bytesPerSecond), sustainedPeak: Math.max(0, saved.sustainedPeak),
+    beats: beats.map(beat => ({born: local(beat.born), shape: Object.freeze({points: Object.freeze(beat.shape.points.map(p => Object.freeze([p[0], p[1]]))),
+      width: beat.shape.width, qrs: beat.shape.qrs})}))};
 }
 
 /* The heartbeat's one lifecycle, on every view change, document visibility
@@ -2757,6 +2804,19 @@ function syncDashboardSparkPulses() {
   }
   const shown = dashboardHeartbeatShown();
   const now = performance.now();
+  // In the desktop window the strip's first start waits for the window's state (behind the starting cover).
+  if (!state.running && shown && !dashboardHeartbeatStateReady) {
+    if (!dashboardHeartbeatAwaiting) {
+      dashboardHeartbeatAwaiting = true;
+      DPWindowState.ready.then(() => { dashboardHeartbeatStateReady = true; syncDashboardSparkPulses(); });
+    }
+    return;
+  }
+  const restored = !state.running && shown && processingPaused !== true ? restoredDashboardHeartbeat(now) : null;
+  if (restored) {
+    // A released window's clock: running, suspended since it was hidden, its route measured first.
+    Object.assign(state, restored, {running: true, suspended: true, held: false, route: measureDashboardHeartbeatRoute(), nextAt: Infinity});
+  }
   if (!state.running) {
     if (!shown) return;
     const held = processingPaused === true;        // entering a held strip: the flat red lines at once

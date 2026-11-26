@@ -32,8 +32,8 @@ async function asDesktop(page, {restore = null, holdMs = 0} = {}) {
   return seen;
 }
 
-async function load(page, path = '/', {height = 900} = {}) {
-  await page.emulateMedia({reducedMotion: 'reduce'});
+async function load(page, path = '/', {height = 900, motion = 'reduce'} = {}) {
+  await page.emulateMedia({reducedMotion: motion});
   await page.setViewportSize({width: 1440, height});
   await page.route('https://fonts.googleapis.com/**', route => route.fulfill({status: 200, contentType: 'text/css', body: ''}));
   await page.goto(path);
@@ -703,4 +703,105 @@ test('U01: the update notice already shown in the tab session stays shown', asyn
   // A new page is a new tab session: nothing in its sessionStorage but what the state says back.
   const again = await relaunched(page, state);
   await expect.poll(() => again.evaluate(() => sessionStorage.getItem('dp.update.shown'))).toBe('9.9.9');
+});
+
+// ── WS8c: the heartbeat across a release ────────────────────────────────
+// This run prefers reduced motion; a desktop window does not. `still` throughput
+// (none, no sustained peak) holds the cadence at its lowest, 3.5 BPM, so the test
+// can say where every heartbeat is from the saved clock alone.
+const BPM = 3.5, PERIOD = 60000 / BPM;
+async function still(p) {
+  await p.route(url => url.pathname === '/api/execution/throughput', route => route.fulfill({status: 200, contentType: 'application/json',
+    body: JSON.stringify({ok: true, download_bytes_per_second: 0, sustained_peak_bytes_per_second: 0, max_download_bytes_per_second: 0})}));
+}
+async function relaunchMoving(page, state, {desktop = true} = {}) {
+  const again = await page.context().newPage();
+  await still(again);
+  if (desktop) await asDesktop(again, {restore: {state, since: 1}});
+  await load(again, '/', {motion: 'no-preference'});      // motion allowed from the first instant, as the desktop window
+  await expect.poll(() => again.evaluate(() => _dashboardHeartbeat.running)).toBe(true);
+  return again;
+}
+const heartbeatWall = p => p.evaluate(() => ({origin: performance.timeOrigin, held: _dashboardHeartbeat.held,
+  beats: _dashboardHeartbeat.beats.map(beat => performance.timeOrigin + beat.born), nextAt: performance.timeOrigin + _dashboardHeartbeat.nextAt,
+  kept: performance.timeOrigin + performance.now() - (_dashboardHeartbeat.route.end + 2 * DASHBOARD_HEARTBEAT_WIDTH + DASHBOARD_HEARTBEAT_TRAIL) / DASHBOARD_HEARTBEAT_SPEED}));
+const wallNow = p => p.evaluate(() => ({wall: performance.timeOrigin + performance.now(), shape: dashboardHeartbeatShape()}));
+const clock = (W, shape, over = {}) => ({at: W - 2000, bpm: BPM, phase: 0.5, advancedAt: W - 50000, earliest: 0, bytesPerSecond: 0, sustainedPeak: 0,
+  beats: [], ...over});
+
+test('P01: a released window\'s heartbeat goes on at the cadence its clock was keeping, motion allowed from the first instant', async ({page}) => {
+  await asDesktop(page);
+  await load(page, '/');
+  const {wall: W, shape} = await wallNow(page);
+  // Hidden 50 s ago half way to its next heartbeat, at 3.5 BPM: due at W-50000+PERIOD/2, then every PERIOD.
+  const again = await relaunchMoving(page, {route: '/', owners: {heartbeat: clock(W, shape)}});
+  const state = await heartbeatWall(again);
+  const due = [];
+  for (let t = W - 50000 + PERIOD / 2; t < state.origin + 60000; t += PERIOD) due.push(t);
+  const born = due.filter(t => t < state.origin);
+  expect(Math.abs(state.nextAt - due.find(t => t > W))).toBeLessThan(3);
+  // Every heartbeat due while it was away that can still be on the strip, at its own instant; nothing else before this page.
+  const expected = born.filter(t => t >= state.kept - 5);
+  const before = state.beats.filter(t => t < state.origin);
+  expect(before.length).toBe(expected.length);
+  expected.forEach((t, k) => expect(Math.abs(before[k] - t)).toBeLessThan(3));
+  expect(state.beats.length).toBeLessThanOrEqual(born.length + 1);
+});
+
+test('P02: a saved clock that is future, a day old, too long or malformed is never restored', async ({page}) => {
+  await asDesktop(page);
+  await load(page, '/');
+  const {wall: W, shape} = await wallNow(page);
+  // Each carries a heartbeat born 1 s before (and captured after it), which would be on the strip were the clock taken.
+  const fresh = {born: W - 1000, shape};
+  const clockAt = (over = {}) => clock(W, shape, {at: W - 500, ...over});
+  const cases = {
+    future: clockAt({at: W + 600000, advancedAt: W + 600000, beats: [fresh]}),
+    day_old: clockAt({advancedAt: W - 25 * 3600 * 1000, beats: [fresh]}),
+    shape: clockAt({beats: [fresh, {born: W - 900, shape: {...shape, width: shape.width + 1}}]}),
+    huge_shape: clockAt({beats: [fresh, {born: W - 900, shape: {...shape, points: shape.points.map(([x, y], i) => [i ? x * 1e6 : 0, y]), width: shape.points.at(-1)[0] * 1e6}}]}),
+    bpm: clockAt({bpm: 500, beats: [fresh]}),
+    beats: clockAt({beats: Array.from({length: 65}, () => fresh)}),
+  };
+  // The control: the same clock, well formed, is taken (so each case would show it).
+  const control = await relaunchMoving(page, {route: '/', owners: {heartbeat: clockAt({beats: [fresh]})}});
+  expect((await heartbeatWall(control)).beats.some(t => Math.abs(t - fresh.born) < 1)).toBe(true);
+  await control.close();
+  for (const [name, saved] of Object.entries(cases)) {
+    const again = await relaunchMoving(page, {route: '/', owners: {heartbeat: saved}});
+    const state = await heartbeatWall(again);
+    expect(state.beats.filter(t => t < state.origin), name).toEqual([]);
+    await again.close();
+  }
+});
+
+test('P03: the heartbeat is what the answer carries, in wall-clock time', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/', {motion: 'no-preference'});
+  await expect.poll(() => page.evaluate(() => _dashboardHeartbeat.running)).toBe(true);
+  const before = await page.evaluate(() => ({bpm: _dashboardHeartbeat.bpm, wall: performance.timeOrigin + performance.now()}));
+  const part = (await answerOf(page, seen, 'nonce-p3')).owners.heartbeat;
+  expect(part.bpm).toBeCloseTo(before.bpm, 5);
+  expect(Math.abs(part.at - before.wall)).toBeLessThan(5000);
+  expect(part.advancedAt).toBeLessThanOrEqual(part.at);
+});
+
+test('P04: a held strip (Global Pause All) carries no clock', async ({page}) => {
+  await page.route(url => url.pathname === '/api/stats', async route => {
+    const response = await route.fetch();
+    route.fulfill({response, body: JSON.stringify({...(await response.json()), paused: true})});
+  });
+  const seen = await asDesktop(page);
+  await load(page, '/', {motion: 'no-preference'});
+  await expect.poll(() => page.evaluate(() => _dashboardHeartbeat.running && _dashboardHeartbeat.held)).toBe(true);
+  expect((await answerOf(page, seen, 'nonce-p4')).owners.heartbeat).toBeUndefined();
+});
+
+test('P05: a server page asks for no window state and restores no clock', async ({page}) => {
+  let asked = 0;
+  await page.route(url => url.pathname === '/api/desktop/window-state', route => { asked += 1; route.fulfill({status: 404, body: '{}'}); });
+  const again = await relaunchMoving(page, null, {desktop: false});
+  expect(asked).toBe(0);
+  expect(await again.evaluate(() => window.DPWindowState.active)).toBe(false);
+  expect((await heartbeatWall(again)).beats.filter(t => t < (performance.timeOrigin || 0))).toEqual([]);
 });
