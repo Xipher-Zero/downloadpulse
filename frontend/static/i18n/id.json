@@ -3734,7 +3734,14 @@
   "error.setup.from_internet": "Selesaikan penyiapan DownloadPulse dari jaringan Anda sendiri terlebih dahulu: penyiapan tidak tersedia dari internet.",
   "error.setup.password_pending": "Tetapkan kata sandi sebelum melanjutkan",
   "error.setup.deployment_locked": "Jenis penerapan tidak dapat diubah setelah Administrator ada selama penyiapan; selesaikan penyiapan terlebih dahulu",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Wizard penyiapan:</b> instalasi baru membuka Wizard penyiapan, yang menetapkan bahasa dan Folder unduhan serta meminta kata sandi yang akan Anda gunakan untuk masuk. <b>Selesai & buka Dasbor</b> membuka Dasbor. Untuk menggunakan DownloadPulse tanpa kata sandi di jaringan yang Anda percayai, pilih <b>Kosongkan kata sandi</b> di <b>Akun saya</b> setelahnya. Jalankan lagi Wizard penyiapan dari <b>Akun saya</b>."
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Wizard penyiapan:</b> instalasi baru membuka Wizard penyiapan, yang menetapkan bahasa dan Folder unduhan serta meminta kata sandi yang akan Anda gunakan untuk masuk. <b>Selesai & buka Dasbor</b> membuka Dasbor. Untuk menggunakan DownloadPulse tanpa kata sandi di jaringan yang Anda percayai, pilih <b>Kosongkan kata sandi</b> di <b>Akun saya</b> setelahnya. Jalankan lagi Wizard penyiapan dari <b>Akun saya</b>.",
+  "settings.provider.import_elsewhere": "Impor unduhan yang dimulai di tempat lain",
+  "settings.provider.import_elsewhere_hint": "Tambahkan juga unduhan di akun {provider} Anda yang dimulai di tempat lain, misalnya dari instalasi DownloadPulse lain atau situs web {provider}.",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "Impor unduhan yang dimulai di tempat lain (aktif secara bawaan): DownloadPulse juga menambahkan unduhan di akun AllDebrid Anda yang tidak dimulainya sendiri, misalnya dari instalasi DownloadPulse lain atau situs web AllDebrid. Nonaktifkan untuk hanya menambahkan unduhan yang dimulai di sini. Unduhan yang sudah ditambahkan tetap ada, dan unduhan yang dimulai di sini terus diperbarui.",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "Impor unduhan yang dimulai di tempat lain (aktif secara bawaan): DownloadPulse juga menambahkan unduhan di akun Debrid-Link Anda yang tidak dimulainya sendiri, misalnya dari instalasi DownloadPulse lain atau situs web Debrid-Link. Nonaktifkan untuk hanya menambahkan unduhan yang dimulai di sini. Unduhan yang sudah ditambahkan tetap ada, dan unduhan yang dimulai di sini terus diperbarui.",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "Impor unduhan yang dimulai di tempat lain (aktif secara bawaan): DownloadPulse juga menambahkan unduhan di akun Premiumize Anda yang tidak dimulainya sendiri, misalnya dari instalasi DownloadPulse lain atau situs web Premiumize. Nonaktifkan untuk hanya menambahkan unduhan yang dimulai di sini. Unduhan yang sudah ditambahkan tetap ada, dan unduhan yang dimulai di sini terus diperbarui.",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "Impor unduhan yang dimulai di tempat lain (aktif secara bawaan): DownloadPulse juga menambahkan unduhan di akun Real-Debrid Anda yang tidak dimulainya sendiri, misalnya dari instalasi DownloadPulse lain atau situs web Real-Debrid. Nonaktifkan untuk hanya menambahkan unduhan yang dimulai di sini. Unduhan yang sudah ditambahkan tetap ada, dan unduhan yang dimulai di sini terus diperbarui.",
+  "help.topic.torbox.additional_settings.import_downloads_started": "Impor unduhan yang dimulai di tempat lain (aktif secara bawaan): DownloadPulse juga menambahkan unduhan di akun TorBox Anda yang tidak dimulainya sendiri, misalnya dari instalasi DownloadPulse lain atau situs web TorBox. Nonaktifkan untuk hanya menambahkan unduhan yang dimulai di sini. Unduhan yang sudah ditambahkan tetap ada, dan unduhan yang dimulai di sini terus diperbarui."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7469,6 +7476,13 @@
   "error.setup.from_internet": "c1efb9522cbb138c",
   "error.setup.password_pending": "6209ce853ab00d6f",
   "error.setup.deployment_locked": "1f71b35286c304a5",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813",
+  "settings.provider.import_elsewhere": "6df6c4c1c393b625",
+  "settings.provider.import_elsewhere_hint": "e23ec1a005530126",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "ff7929e4cf23afb3",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "e7e4a618a30bf11b",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "afa2d28148344730",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "1370a4292e51a5e3",
+  "help.topic.torbox.additional_settings.import_downloads_started": "a4ae7da9cfa4ce24"
  }
 }

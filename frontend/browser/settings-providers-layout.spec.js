@@ -153,15 +153,16 @@ test.describe('the AllDebrid card header rail carries state, Test and Enable', (
       parseFloat(getComputedStyle(el).borderTopWidth))).toBe(0);
   });
 
-  test('expanded: exactly three compact tuning cells, each still bound to its setting',
+  test('expanded: exactly four compact tuning cells, each still bound to its setting',
     async ({page}) => {
       await summary(page).click();
       await expect(optionBody(page)).toBeVisible();
-      await expect(cells(page)).toHaveCount(3);
-      // The backup-torrent toggle is a cell of the same set (its checkbox is
-      // the visually hidden control behind the track).
-      await expect(page.locator('.dp-settings-tuning-grid [data-setting="alldebrid_prepare_backup_torrents"]'))
-        .toHaveCount(1);
+      await expect(cells(page)).toHaveCount(4);
+      // The backup-torrent and import toggles are cells of the same set (each
+      // checkbox is the visually hidden control behind its track).
+      for (const key of ['alldebrid_prepare_backup_torrents', 'alldebrid_import_account_downloads']) {
+        await expect(page.locator(`.dp-settings-tuning-grid [data-setting="${key}"]`)).toHaveCount(1);
+      }
       for (const id of ['#dp-settings-field-alldebrid-rate-limit-per-minute',
                         '#dp-settings-field-alldebrid-max-active-torrents']) {
         await expect(page.locator(id)).toBeVisible();
@@ -187,22 +188,23 @@ test.describe('the AllDebrid card header rail carries state, Test and Enable', (
 
       // DP 1.0.13 Settings consolidation: one lane per cell of the fixed set,
       // with a bounded card centred in each. A lane is its cell plus the slack
-      // centring the card in it. The set of three fills one row of three,
+      // centring the card in it. The set of four fills one row of four,
       // spanning the usable width (the five-lane row ceiling is proven by the
       // larger Downloads sets below).
       await expect(card(page).locator('.dp-settings-tuning-grid'))
-        .toHaveAttribute('data-tuning-lanes', '3');
+        .toHaveAttribute('data-tuning-lanes', '4');
       const lanes = await cells(page).evaluateAll(nodes => nodes.map(node => {
         const style = getComputedStyle(node);
         return node.getBoundingClientRect().width + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
       }));
-      expect(lanes.length, 'the set lost a lane').toBe(3);
+      expect(lanes.length, 'the set lost a lane').toBe(4);
       expect(Math.max(...lanes) - Math.min(...lanes), 'the lanes are not equal')
         .toBeLessThanOrEqual(1);
-      expect(grid.width - (lanes.reduce((a, b) => a + b, 0) + 2 * 16),
-        'three lanes do not span the usable width').toBeLessThanOrEqual(2);
+      // The gaps between lanes: (lanes - 1) x --dp-tuning-gap (16px).
+      expect(grid.width - (lanes.reduce((a, b) => a + b, 0) + (lanes.length - 1) * 16),
+        'four lanes do not span the usable width').toBeLessThanOrEqual(2);
 
-      for (let i = 0; i < 3; i += 1) {
+      for (let i = 0; i < 4; i += 1) {
         const cell = cells(page).nth(i);
         const cellBox = await boxOf(cell);
         // Bounded: a card never stretches edge to edge in its lane.
@@ -259,9 +261,9 @@ test.describe('the AllDebrid card header rail carries state, Test and Enable', (
       // the VIEWPORT is deliberately not asserted: the Settings chrome has its
       // own breakpoints, so the region's own width is not a monotonic function
       // of the window's -- and the lane rule answers to the region alone.
-      expect(seen[0], `the set did not hold its three lanes: ${seen}`).toBe(3);
-      for (const lanes of seen) expect(lanes).toBeLessThanOrEqual(3);
-      expect(Math.min(...seen), `lane count never dropped: ${seen}`).toBeLessThan(3);
+      expect(seen[0], `the set did not hold its four lanes: ${seen}`).toBe(4);
+      for (const lanes of seen) expect(lanes).toBeLessThanOrEqual(4);
+      expect(Math.min(...seen), `lane count never dropped: ${seen}`).toBeLessThan(4);
       await page.setViewportSize({width: 1440, height: 1000});
     });
 

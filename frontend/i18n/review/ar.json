@@ -33622,6 +33622,62 @@
     "ai-generated",
     "ai-review"
    ]
+  },
+  "settings.provider.import_elsewhere": {
+   "source": "6df6c4c1c393b625",
+   "translation": "4f02dab2f04108a8",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "settings.provider.import_elsewhere_hint": {
+   "source": "e23ec1a005530126",
+   "translation": "24d97e5f73328358",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.topic.alldebrid.additional_settings.import_downloads_started": {
+   "source": "ff7929e4cf23afb3",
+   "translation": "28a66474b6990789",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.topic.debridlink.additional_settings.import_downloads_started": {
+   "source": "e7e4a618a30bf11b",
+   "translation": "be9331d642ddbaf5",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.topic.premiumize.additional_settings.import_downloads_started": {
+   "source": "afa2d28148344730",
+   "translation": "0c43eb17a05ae5c6",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.topic.realdebrid.additional_settings.import_downloads_started": {
+   "source": "1370a4292e51a5e3",
+   "translation": "59671838e1154cdc",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.topic.torbox.additional_settings.import_downloads_started": {
+   "source": "a4ae7da9cfa4ce24",
+   "translation": "2a99affe7b69ee89",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
   }
  }
 }

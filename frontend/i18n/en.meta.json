@@ -10114,6 +10114,21 @@
     "provider": "string: provider name (a proper name)"
    }
   },
+  "settings.provider.import_elsewhere": {
+   "category": "label",
+   "context": "Services › a premium provider card (AllDebrid, Debrid-Link, Premiumize, Real-Debrid, TorBox): toggle label. On, this installation also adds the account's downloads that it did not start itself (another installation, the service's website, another app).",
+   "owner": "frontend/static/ui-settings-page.js",
+   "criticality": "normal"
+  },
+  "settings.provider.import_elsewhere_hint": {
+   "category": "hint",
+   "context": "Services › a premium provider card: explanatory hint beside the Import Downloads Started Elsewhere toggle. {provider} is the service's proper name.",
+   "owner": "frontend/static/ui-settings-page.js",
+   "criticality": "normal",
+   "args": {
+    "provider": "string: provider name (a proper name)"
+   }
+  },
   "settings.provider.debridlink.prepare_backup_hint": {
    "category": "hint",
    "context": "Services › a premium provider card: explanatory hint beside a control.",
@@ -21329,6 +21344,12 @@
    "owner": "frontend/static/ui-settings-help.js",
    "criticality": "normal"
   },
+  "help.topic.alldebrid.additional_settings.import_downloads_started": {
+   "category": "long-form-help",
+   "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (AllDebrid), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
+   "owner": "frontend/static/ui-settings-help.js",
+   "criticality": "normal"
+  },
   "help.topic.alldebrid.additional_settings.maximum_active_torrents": {
    "category": "long-form-help",
    "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (AllDebrid), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
@@ -21431,6 +21452,12 @@
    "owner": "frontend/static/ui-settings-help.js",
    "criticality": "normal"
   },
+  "help.topic.debridlink.additional_settings.import_downloads_started": {
+   "category": "long-form-help",
+   "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (Debrid-Link), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
+   "owner": "frontend/static/ui-settings-help.js",
+   "criticality": "normal"
+  },
   "help.topic.debridlink.additional_settings.request_timeout": {
    "category": "long-form-help",
    "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (Debrid-Link), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
@@ -21497,6 +21524,12 @@
    "owner": "frontend/static/ui-settings-help.js",
    "criticality": "normal"
   },
+  "help.topic.premiumize.additional_settings.import_downloads_started": {
+   "category": "long-form-help",
+   "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (Premiumize), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
+   "owner": "frontend/static/ui-settings-help.js",
+   "criticality": "normal"
+  },
   "help.topic.premiumize.additional_settings.request_timeout": {
    "category": "long-form-help",
    "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (Premiumize), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
@@ -21549,6 +21582,12 @@
    "criticality": "normal"
   },
   "help.topic.realdebrid.additional_settings.prepare_backup_torrents": {
+   "category": "long-form-help",
+   "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (Real-Debrid), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
+   "owner": "frontend/static/ui-settings-help.js",
+   "criticality": "normal"
+  },
+  "help.topic.realdebrid.additional_settings.import_downloads_started": {
    "category": "long-form-help",
    "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (Real-Debrid), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
    "owner": "frontend/static/ui-settings-help.js",
@@ -21633,6 +21672,12 @@
    "criticality": "normal"
   },
   "help.topic.torbox.additional_settings.prepare_backup_torrents": {
+   "category": "long-form-help",
+   "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (TorBox), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
+   "owner": "frontend/static/ui-settings-help.js",
+   "criticality": "normal"
+  },
+  "help.topic.torbox.additional_settings.import_downloads_started": {
    "category": "long-form-help",
    "context": "Settings Help: a paragraph or list item of a Settings card's help dialog (TorBox), shown only where it applies to the reader (role, deployment type, Easy or Advanced). Interface labels it names are the interface's own words.",
    "owner": "frontend/static/ui-settings-help.js",

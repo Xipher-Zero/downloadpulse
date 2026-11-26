@@ -3734,7 +3734,14 @@
   "error.setup.from_internet": "Önce DownloadPulse kurulumunu kendi ağınızdan tamamlayın: Kurulum internet üzerinden kullanılamaz.",
   "error.setup.password_pending": "Devam etmeden önce parolayı belirleyin",
   "error.setup.deployment_locked": "Kurulum sırasında Yönetici oluşturulduktan sonra dağıtım türü değiştirilemez; önce kurulumu tamamlayın",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Kurulum sihirbazı:</b> yeni bir kurulum Kurulum sihirbazını açar; sihirbaz dili ve İndirme klasörünü belirler ve oturum açarken kullanacağınız parolayı ister. <b>Bitir ve Panoyu aç</b> Panoyu açar. DownloadPulse'u güvendiğiniz bir ağda parola olmadan kullanmak için daha sonra <b>Parolayı temizle</b> seçeneğini <b>Hesabım</b> içinde seçin. Kurulum sihirbazını <b>Hesabım</b> içinden yeniden çalıştırabilirsiniz."
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Kurulum sihirbazı:</b> yeni bir kurulum Kurulum sihirbazını açar; sihirbaz dili ve İndirme klasörünü belirler ve oturum açarken kullanacağınız parolayı ister. <b>Bitir ve Panoyu aç</b> Panoyu açar. DownloadPulse'u güvendiğiniz bir ağda parola olmadan kullanmak için daha sonra <b>Parolayı temizle</b> seçeneğini <b>Hesabım</b> içinde seçin. Kurulum sihirbazını <b>Hesabım</b> içinden yeniden çalıştırabilirsiniz.",
+  "settings.provider.import_elsewhere": "Başka yerde başlatılan indirmeleri içe aktar",
+  "settings.provider.import_elsewhere_hint": "Başka bir DownloadPulse kurulumu veya {provider} web sitesi gibi başka bir yerde başlatılan, {provider} hesabınızdaki indirmeler de eklenir.",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "“Başka yerde başlatılan indirmeleri içe aktar” (varsayılan olarak açık): DownloadPulse, AllDebrid hesabınızdaki kendisinin başlatmadığı indirmeleri de ekler; örneğin başka bir DownloadPulse kurulumundan veya AllDebrid web sitesinden başlatılanlar. Yalnızca burada başlatılan indirmelerin eklenmesi için bunu kapatın. Önceden eklenen indirmeler kalır ve burada başlatılanlar güncellenmeye devam eder.",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "“Başka yerde başlatılan indirmeleri içe aktar” (varsayılan olarak açık): DownloadPulse, Debrid-Link hesabınızdaki kendisinin başlatmadığı indirmeleri de ekler; örneğin başka bir DownloadPulse kurulumundan veya Debrid-Link web sitesinden başlatılanlar. Yalnızca burada başlatılan indirmelerin eklenmesi için bunu kapatın. Önceden eklenen indirmeler kalır ve burada başlatılanlar güncellenmeye devam eder.",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "“Başka yerde başlatılan indirmeleri içe aktar” (varsayılan olarak açık): DownloadPulse, Premiumize hesabınızdaki kendisinin başlatmadığı indirmeleri de ekler; örneğin başka bir DownloadPulse kurulumundan veya Premiumize web sitesinden başlatılanlar. Yalnızca burada başlatılan indirmelerin eklenmesi için bunu kapatın. Önceden eklenen indirmeler kalır ve burada başlatılanlar güncellenmeye devam eder.",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "“Başka yerde başlatılan indirmeleri içe aktar” (varsayılan olarak açık): DownloadPulse, Real-Debrid hesabınızdaki kendisinin başlatmadığı indirmeleri de ekler; örneğin başka bir DownloadPulse kurulumundan veya Real-Debrid web sitesinden başlatılanlar. Yalnızca burada başlatılan indirmelerin eklenmesi için bunu kapatın. Önceden eklenen indirmeler kalır ve burada başlatılanlar güncellenmeye devam eder.",
+  "help.topic.torbox.additional_settings.import_downloads_started": "“Başka yerde başlatılan indirmeleri içe aktar” (varsayılan olarak açık): DownloadPulse, TorBox hesabınızdaki kendisinin başlatmadığı indirmeleri de ekler; örneğin başka bir DownloadPulse kurulumundan veya TorBox web sitesinden başlatılanlar. Yalnızca burada başlatılan indirmelerin eklenmesi için bunu kapatın. Önceden eklenen indirmeler kalır ve burada başlatılanlar güncellenmeye devam eder."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7469,6 +7476,13 @@
   "error.setup.from_internet": "c1efb9522cbb138c",
   "error.setup.password_pending": "6209ce853ab00d6f",
   "error.setup.deployment_locked": "1f71b35286c304a5",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813",
+  "settings.provider.import_elsewhere": "6df6c4c1c393b625",
+  "settings.provider.import_elsewhere_hint": "e23ec1a005530126",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "ff7929e4cf23afb3",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "e7e4a618a30bf11b",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "afa2d28148344730",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "1370a4292e51a5e3",
+  "help.topic.torbox.additional_settings.import_downloads_started": "a4ae7da9cfa4ce24"
  }
 }

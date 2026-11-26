@@ -214,15 +214,18 @@
     alldebrid_api_key: {scope: 'integration:alldebrid', option: 'api_key'},
     alldebrid_rate_limit_per_minute: {scope: 'integration:alldebrid', option: 'rate_limit_per_minute'},
     alldebrid_prepare_backup_torrents: {scope: 'integration:alldebrid', option: 'prepare_backup_torrents', commit: 'immediate'},
+    alldebrid_import_account_downloads: {scope: 'integration:alldebrid', option: 'import_account_downloads', commit: 'immediate'},
     alldebrid_max_active_torrents: {scope: 'integration:alldebrid', option: 'max_active_torrents', blank: null},
     debridlink_api_key: {scope: 'integration:debridlink', option: 'api_key'},
     debridlink_request_timeout_seconds: {scope: 'integration:debridlink', option: 'request_timeout_seconds'},
     debridlink_torrent_upload_timeout_seconds: {scope: 'integration:debridlink', option: 'torrent_upload_timeout_seconds'},
     debridlink_host_refresh_interval_hours: {scope: 'integration:debridlink', option: 'host_refresh_interval_hours'},
     debridlink_prepare_backup_torrents: {scope: 'integration:debridlink', option: 'prepare_backup_torrents', commit: 'immediate'},
+    debridlink_import_account_downloads: {scope: 'integration:debridlink', option: 'import_account_downloads', commit: 'immediate'},
     premiumize_api_key: {scope: 'integration:premiumize', option: 'api_key'},
     premiumize_use_before_usenet: {scope: 'integration:premiumize', option: 'use_before_usenet', commit: 'immediate'},
     premiumize_prepare_backup_torrents: {scope: 'integration:premiumize', option: 'prepare_backup_torrents', commit: 'immediate'},
+    premiumize_import_account_downloads: {scope: 'integration:premiumize', option: 'import_account_downloads', commit: 'immediate'},
     premiumize_request_timeout_seconds: {scope: 'integration:premiumize', option: 'request_timeout_seconds'},
     premiumize_upload_timeout_seconds: {scope: 'integration:premiumize', option: 'upload_timeout_seconds'},
     premiumize_host_refresh_interval_hours: {scope: 'integration:premiumize', option: 'host_refresh_interval_hours'},
@@ -231,9 +234,11 @@
     realdebrid_torrent_upload_timeout_seconds: {scope: 'integration:realdebrid', option: 'torrent_upload_timeout_seconds'},
     realdebrid_host_refresh_interval_hours: {scope: 'integration:realdebrid', option: 'host_refresh_interval_hours'},
     realdebrid_prepare_backup_torrents: {scope: 'integration:realdebrid', option: 'prepare_backup_torrents', commit: 'immediate'},
+    realdebrid_import_account_downloads: {scope: 'integration:realdebrid', option: 'import_account_downloads', commit: 'immediate'},
     realdebrid_max_active_torrents: {scope: 'integration:realdebrid', option: 'max_active_torrents', blank: null},
     torbox_use_before_usenet: {scope: 'integration:torbox', option: 'use_before_usenet', commit: 'immediate'},
     torbox_prepare_backup_torrents: {scope: 'integration:torbox', option: 'prepare_backup_torrents', commit: 'immediate'},
+    torbox_import_account_downloads: {scope: 'integration:torbox', option: 'import_account_downloads', commit: 'immediate'},
     // Empty is "no ceiling of my own": it commits null and follows the plan's maximum.
     torbox_max_active_torrents: {scope: 'integration:torbox', option: 'max_active_torrents', blank: null},
     torbox_rate_limit_per_minute: {scope: 'integration:torbox', option: 'rate_limit_per_minute'},
@@ -2552,6 +2557,9 @@
                 hint: say('settings.provider.alldebrid.max_active_hint')
               }),
             ),
+            tuningToggle('alldebrid_import_account_downloads', say('settings.provider.import_elsewhere'),
+              say('settings.provider.import_elsewhere_hint', {provider: 'AllDebrid'}),
+              allDebridOf(s).import_account_downloads !== false),
             input('alldebrid_rate_limit_per_minute', say('settings.provider.rate_limit'), allDebridOf(s).rate_limit_per_minute ?? 60, {
               type: 'number', min: 0, max: 600,
               hint: say('settings.provider.alldebrid.rate_limit_hint')
@@ -2581,6 +2589,9 @@
                 hint: say('settings.provider.realdebrid.max_active_hint')
               }),
             ),
+            tuningToggle('realdebrid_import_account_downloads', say('settings.provider.import_elsewhere'),
+              say('settings.provider.import_elsewhere_hint', {provider: 'Real-Debrid'}),
+              realDebridOf(s).import_account_downloads !== false),
             input('realdebrid_rate_limit_per_minute', say('settings.provider.rate_limit'), realDebridOf(s).rate_limit_per_minute ?? 240, {
               type: 'number', min: 1, max: 250, limitMessage: apiLimitMessage('Real-Debrid', 250),
               hint: say('settings.provider.rate_limit_hint_capped', {provider: 'Real-Debrid', max: 250})
@@ -2622,6 +2633,9 @@
                 hint: say('settings.provider.torbox.max_active_hint')
               }),
             ),
+            tuningToggle('torbox_import_account_downloads', say('settings.provider.import_elsewhere'),
+              say('settings.provider.import_elsewhere_hint', {provider: 'TorBox'}),
+              torBoxOf(s).import_account_downloads !== false),
             tuningToggle('torbox_use_before_usenet', say('settings.provider.before_usenet', {provider: 'TorBox'}),
               say('settings.provider.before_usenet_hint', {provider: 'TorBox'}),
               torBoxOf(s).use_before_usenet === true),
@@ -2674,6 +2688,9 @@
             tuningToggle('debridlink_prepare_backup_torrents', say('settings.provider.prepare_backup'),
               say('settings.provider.debridlink.prepare_backup_hint'),
               debridLinkOf(s).prepare_backup_torrents === true),
+            tuningToggle('debridlink_import_account_downloads', say('settings.provider.import_elsewhere'),
+              say('settings.provider.import_elsewhere_hint', {provider: 'Debrid-Link'}),
+              debridLinkOf(s).import_account_downloads !== false),
             input('debridlink_request_timeout_seconds', say('settings.provider.request_timeout'), debridLinkOf(s).request_timeout_seconds ?? 30, {
               type: 'number', min: 5, max: 300,
               hint: say('settings.provider.request_timeout_hint')
@@ -2706,6 +2723,9 @@
             tuningToggle('premiumize_prepare_backup_torrents', say('settings.provider.prepare_backup'),
               say('settings.provider.premiumize.prepare_backup_hint'),
               premiumizeOf(s).prepare_backup_torrents === true),
+            tuningToggle('premiumize_import_account_downloads', say('settings.provider.import_elsewhere'),
+              say('settings.provider.import_elsewhere_hint', {provider: 'Premiumize'}),
+              premiumizeOf(s).import_account_downloads !== false),
             tuningToggle('premiumize_use_before_usenet', say('settings.provider.before_usenet', {provider: 'Premiumize'}),
               say('settings.provider.before_usenet_hint', {provider: 'Premiumize'}),
               premiumizeOf(s).use_before_usenet === true),

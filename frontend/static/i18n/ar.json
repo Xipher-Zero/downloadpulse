@@ -3734,7 +3734,14 @@
   "error.setup.from_internet": "أكمل أولًا إعداد DownloadPulse من شبكتك الخاصة: الإعداد غير متاح من الإنترنت.",
   "error.setup.password_pending": "عيّن كلمة المرور قبل المتابعة",
   "error.setup.deployment_locked": "لا يمكن تغيير نوع النشر بعد وجود المسؤول أثناء الإعداد؛ أكمل الإعداد أولًا",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>معالج الإعداد:</b> يفتح التثبيت الجديد معالج الإعداد، الذي يضبط اللغة و«مجلد التنزيل» ويطلب كلمة المرور التي ستسجّل الدخول بها. يفتح <b>إنهاء وفتح لوحة المعلومات</b> لوحة المعلومات. لاستخدام DownloadPulse دون كلمة مرور على شبكة تثق بها، اختر بعد ذلك <b>مسح كلمة المرور</b> في <b>حسابي</b>. شغّل معالج الإعداد مرة أخرى من <b>حسابي</b>."
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>معالج الإعداد:</b> يفتح التثبيت الجديد معالج الإعداد، الذي يضبط اللغة و«مجلد التنزيل» ويطلب كلمة المرور التي ستسجّل الدخول بها. يفتح <b>إنهاء وفتح لوحة المعلومات</b> لوحة المعلومات. لاستخدام DownloadPulse دون كلمة مرور على شبكة تثق بها، اختر بعد ذلك <b>مسح كلمة المرور</b> في <b>حسابي</b>. شغّل معالج الإعداد مرة أخرى من <b>حسابي</b>.",
+  "settings.provider.import_elsewhere": "استيراد التنزيلات التي بدأت في مكان آخر",
+  "settings.provider.import_elsewhere_hint": "أضف أيضًا التنزيلات الموجودة في حسابك على {provider} التي بدأت في مكان آخر، مثل تثبيت DownloadPulse آخر أو موقع {provider}.",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "«استيراد التنزيلات التي بدأت في مكان آخر» (مفعّل افتراضيًا): يضيف DownloadPulse أيضًا التنزيلات الموجودة في حسابك على AllDebrid التي لم يبدأها بنفسه، مثل التنزيلات القادمة من تثبيت DownloadPulse آخر أو من موقع AllDebrid. أوقف تشغيله لإضافة التنزيلات التي بدأت هنا فقط. وتبقى التنزيلات المضافة من قبل، وتستمر التنزيلات التي بدأت هنا في التحديث.",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "«استيراد التنزيلات التي بدأت في مكان آخر» (مفعّل افتراضيًا): يضيف DownloadPulse أيضًا التنزيلات الموجودة في حسابك على Debrid-Link التي لم يبدأها بنفسه، مثل التنزيلات القادمة من تثبيت DownloadPulse آخر أو من موقع Debrid-Link. أوقف تشغيله لإضافة التنزيلات التي بدأت هنا فقط. وتبقى التنزيلات المضافة من قبل، وتستمر التنزيلات التي بدأت هنا في التحديث.",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "«استيراد التنزيلات التي بدأت في مكان آخر» (مفعّل افتراضيًا): يضيف DownloadPulse أيضًا التنزيلات الموجودة في حسابك على Premiumize التي لم يبدأها بنفسه، مثل التنزيلات القادمة من تثبيت DownloadPulse آخر أو من موقع Premiumize. أوقف تشغيله لإضافة التنزيلات التي بدأت هنا فقط. وتبقى التنزيلات المضافة من قبل، وتستمر التنزيلات التي بدأت هنا في التحديث.",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "«استيراد التنزيلات التي بدأت في مكان آخر» (مفعّل افتراضيًا): يضيف DownloadPulse أيضًا التنزيلات الموجودة في حسابك على Real-Debrid التي لم يبدأها بنفسه، مثل التنزيلات القادمة من تثبيت DownloadPulse آخر أو من موقع Real-Debrid. أوقف تشغيله لإضافة التنزيلات التي بدأت هنا فقط. وتبقى التنزيلات المضافة من قبل، وتستمر التنزيلات التي بدأت هنا في التحديث.",
+  "help.topic.torbox.additional_settings.import_downloads_started": "«استيراد التنزيلات التي بدأت في مكان آخر» (مفعّل افتراضيًا): يضيف DownloadPulse أيضًا التنزيلات الموجودة في حسابك على TorBox التي لم يبدأها بنفسه، مثل التنزيلات القادمة من تثبيت DownloadPulse آخر أو من موقع TorBox. أوقف تشغيله لإضافة التنزيلات التي بدأت هنا فقط. وتبقى التنزيلات المضافة من قبل، وتستمر التنزيلات التي بدأت هنا في التحديث."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7469,6 +7476,13 @@
   "error.setup.from_internet": "c1efb9522cbb138c",
   "error.setup.password_pending": "6209ce853ab00d6f",
   "error.setup.deployment_locked": "1f71b35286c304a5",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813",
+  "settings.provider.import_elsewhere": "6df6c4c1c393b625",
+  "settings.provider.import_elsewhere_hint": "e23ec1a005530126",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "ff7929e4cf23afb3",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "e7e4a618a30bf11b",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "afa2d28148344730",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "1370a4292e51a5e3",
+  "help.topic.torbox.additional_settings.import_downloads_started": "a4ae7da9cfa4ce24"
  }
 }

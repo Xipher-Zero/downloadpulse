@@ -5098,6 +5098,13 @@ class TransferEngine:
                                 await self.repository.rearm_retired_cleanup(
                                     held["binding_id"], item.state, authority, now=self.clock())
                         continue
+                    # The operator's per-provider choice ("Import Downloads
+                    # Started Elsewhere", ``imports_account_inventory``): off,
+                    # an account download this installation never bound is
+                    # left to whoever started it. A provider that declares
+                    # nothing keeps the inherited behaviour (import).
+                    if not getattr(provider, "imports_account_inventory", True):
+                        continue
                     try:
                         transfer = await self.submit((item.request,), name=item.name, source="inventory",
                                                      independent=False, observed=(item.resource, item.state))

@@ -3734,7 +3734,14 @@
   "error.setup.from_internet": "Terminez d’abord la configuration de DownloadPulse depuis votre propre réseau : la configuration n’est pas disponible depuis Internet.",
   "error.setup.password_pending": "Définissez le mot de passe avant de continuer",
   "error.setup.deployment_locked": "Le type de déploiement ne peut plus changer une fois que l’administrateur existe pendant la configuration ; terminez d’abord la configuration",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Assistant de configuration :</b> une nouvelle installation ouvre l’assistant de configuration, qui définit la langue et le Dossier de téléchargement, et demande le mot de passe avec lequel vous vous connecterez. <b>Terminer et ouvrir l’Aperçu</b> ouvre l’Aperçu. Pour utiliser DownloadPulse sans mot de passe sur un réseau de confiance, choisissez ensuite <b>Effacer le mot de passe</b> dans <b>Mon compte</b>. Relancez l’assistant de configuration depuis <b>Mon compte</b>."
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Assistant de configuration :</b> une nouvelle installation ouvre l’assistant de configuration, qui définit la langue et le Dossier de téléchargement, et demande le mot de passe avec lequel vous vous connecterez. <b>Terminer et ouvrir l’Aperçu</b> ouvre l’Aperçu. Pour utiliser DownloadPulse sans mot de passe sur un réseau de confiance, choisissez ensuite <b>Effacer le mot de passe</b> dans <b>Mon compte</b>. Relancez l’assistant de configuration depuis <b>Mon compte</b>.",
+  "settings.provider.import_elsewhere": "Importer les téléchargements lancés ailleurs",
+  "settings.provider.import_elsewhere_hint": "Ajouter aussi les téléchargements de votre compte {provider} lancés ailleurs, par exemple depuis une autre installation de DownloadPulse ou depuis le site web {provider}.",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "Importer les téléchargements lancés ailleurs (activé par défaut) : DownloadPulse ajoute aussi les téléchargements de votre compte AllDebrid qu’il n’a pas lancés lui-même, par exemple ceux d’une autre installation de DownloadPulse ou du site web d’AllDebrid. Désactivez-le pour n’ajouter que les téléchargements lancés ici. Les téléchargements déjà ajoutés restent, et ceux lancés ici continuent d’être mis à jour.",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "Importer les téléchargements lancés ailleurs (activé par défaut) : DownloadPulse ajoute aussi les téléchargements de votre compte Debrid-Link qu’il n’a pas lancés lui-même, par exemple ceux d’une autre installation de DownloadPulse ou du site web de Debrid-Link. Désactivez-le pour n’ajouter que les téléchargements lancés ici. Les téléchargements déjà ajoutés restent, et ceux lancés ici continuent d’être mis à jour.",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "Importer les téléchargements lancés ailleurs (activé par défaut) : DownloadPulse ajoute aussi les téléchargements de votre compte Premiumize qu’il n’a pas lancés lui-même, par exemple ceux d’une autre installation de DownloadPulse ou du site web de Premiumize. Désactivez-le pour n’ajouter que les téléchargements lancés ici. Les téléchargements déjà ajoutés restent, et ceux lancés ici continuent d’être mis à jour.",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "Importer les téléchargements lancés ailleurs (activé par défaut) : DownloadPulse ajoute aussi les téléchargements de votre compte Real-Debrid qu’il n’a pas lancés lui-même, par exemple ceux d’une autre installation de DownloadPulse ou du site web de Real-Debrid. Désactivez-le pour n’ajouter que les téléchargements lancés ici. Les téléchargements déjà ajoutés restent, et ceux lancés ici continuent d’être mis à jour.",
+  "help.topic.torbox.additional_settings.import_downloads_started": "Importer les téléchargements lancés ailleurs (activé par défaut) : DownloadPulse ajoute aussi les téléchargements de votre compte TorBox qu’il n’a pas lancés lui-même, par exemple ceux d’une autre installation de DownloadPulse ou du site web de TorBox. Désactivez-le pour n’ajouter que les téléchargements lancés ici. Les téléchargements déjà ajoutés restent, et ceux lancés ici continuent d’être mis à jour."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7469,6 +7476,13 @@
   "error.setup.from_internet": "c1efb9522cbb138c",
   "error.setup.password_pending": "6209ce853ab00d6f",
   "error.setup.deployment_locked": "1f71b35286c304a5",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813",
+  "settings.provider.import_elsewhere": "6df6c4c1c393b625",
+  "settings.provider.import_elsewhere_hint": "e23ec1a005530126",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "ff7929e4cf23afb3",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "e7e4a618a30bf11b",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "afa2d28148344730",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "1370a4292e51a5e3",
+  "help.topic.torbox.additional_settings.import_downloads_started": "a4ae7da9cfa4ce24"
  }
 }

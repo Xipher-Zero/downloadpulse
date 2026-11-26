@@ -19,6 +19,11 @@ class PremiumizeOptions(BaseModel):
     # from it. On by default; a saved choice (on or off) is kept. A backup uses
     # the account's resources.
     prepare_backup_torrents: bool = True
+    # "Import Downloads Started Elsewhere": whether this installation adds
+    # the account's downloads it did not start itself (another installation,
+    # the service's website, another app) as its own transfers when the
+    # inventory scan finds them. On by default (the inherited behaviour).
+    import_account_downloads: bool = True
     # Operational allowances, never retry policy -- the same DownloadPulse
     # conventions every premium provider uses: one ordinary exchange, one
     # torrent or NZB upload, and how often the service catalogue becomes due
@@ -76,6 +81,7 @@ def build(options, environment):
         notify=getattr(commands, "notify_applicability_changed", None),
         notify_status=getattr(commands, "notify_status_changed", None))
     provider.lifecycle = (provider.hosts, provider.account)
+    provider.imports_account_inventory = options.import_account_downloads
     return provider
 
 

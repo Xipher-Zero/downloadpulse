@@ -594,3 +594,9 @@ async def test_a_cleanup_its_runtime_cannot_answer_wakes_whoever_brings_it_up(tm
     await core.engine.cancel(transfer.id)
     await core.engine.tick()
     assert woken                                                         # the cleanup pass woke its owner
+
+
+def test_the_idle_grace_is_the_operators_one_minute():
+    # 1.0.5 operator decision: an idle SABnzbd stops one minute after the last
+    # work needed it (was ten), whether the desktop window is open or not.
+    assert IDLE_GRACE_SECONDS == 60.0

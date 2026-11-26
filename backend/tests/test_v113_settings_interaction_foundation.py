@@ -749,7 +749,7 @@ def test_no_localized_save_action_survives_for_the_alldebrid_credential():
 
 def test_the_alldebrid_additional_settings_are_its_tuning_cells():
     """Tuning-only behind its disclosure: the API rate limit, the backup-torrent
-    toggle and its ceiling, each still bound to the same canonical setting, in
+    toggle and its ceiling, the Import Downloads Started Elsewhere toggle, each still bound to the same canonical setting, in
     the reusable tuning grid. The global provider intervals and resolution
     retries live under Downloads -> Download Behavior & Limits. The disclosure row carries no
     Test, no Save and no action footer."""
@@ -759,10 +759,10 @@ def test_the_alldebrid_additional_settings_are_its_tuning_cells():
     additional = panel[panel.index("${providerAdditional("):panel.index("`, allDebrid, {")]
     assert "tuningCells(" in additional
     for field in ("alldebrid_rate_limit_per_minute", "alldebrid_prepare_backup_torrents",
-                  "alldebrid_max_active_torrents"):
+                  "alldebrid_max_active_torrents", "alldebrid_import_account_downloads"):
         assert field in additional, field
     assert additional.count("input(") == 2, "the collection does not hold exactly two inputs"
-    assert additional.count("tuningToggle(") == 1
+    assert additional.count("tuningToggle(") == 2
     for banned in ("test-alldebrid", "Save", "dp-settings-provider-actions"):
         assert banned not in additional, banned
 

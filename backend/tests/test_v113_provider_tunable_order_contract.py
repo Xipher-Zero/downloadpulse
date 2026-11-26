@@ -1,8 +1,9 @@
 """A/B: one tunable grammar across the five Premium Services provider cards.
 
 Prepare Backup Torrents first, Maximum Active Torrents second -- the two in
-one existing ``tuningGroup`` where both exist -- then any provider-before-
-Usenet preference, then the remaining operational tunables. Read from the
+one existing ``tuningGroup`` where both exist -- then Import Downloads Started
+Elsewhere (1.0.5), then any provider-before-Usenet preference, then the
+remaining operational tunables. Read from the
 one Settings markup owner; no provider gets CSS of its own for it."""
 from __future__ import annotations
 
@@ -37,17 +38,17 @@ def groups(block: str) -> list[list[str]]:
 
 
 ORDER = {
-    "alldebrid": ["alldebrid_prepare_backup_torrents", "alldebrid_max_active_torrents",
+    "alldebrid": ["alldebrid_prepare_backup_torrents", "alldebrid_max_active_torrents", "alldebrid_import_account_downloads",
                   "alldebrid_rate_limit_per_minute"],
-    "debridlink": ["debridlink_prepare_backup_torrents", "debridlink_request_timeout_seconds",
+    "debridlink": ["debridlink_prepare_backup_torrents", "debridlink_import_account_downloads", "debridlink_request_timeout_seconds",
                    "debridlink_torrent_upload_timeout_seconds", "debridlink_host_refresh_interval_hours"],
-    "premiumize": ["premiumize_prepare_backup_torrents", "premiumize_use_before_usenet",
+    "premiumize": ["premiumize_prepare_backup_torrents", "premiumize_import_account_downloads", "premiumize_use_before_usenet",
                    "premiumize_request_timeout_seconds", "premiumize_upload_timeout_seconds",
                    "premiumize_host_refresh_interval_hours"],
-    "realdebrid": ["realdebrid_prepare_backup_torrents", "realdebrid_max_active_torrents",
+    "realdebrid": ["realdebrid_prepare_backup_torrents", "realdebrid_max_active_torrents", "realdebrid_import_account_downloads",
                    "realdebrid_rate_limit_per_minute", "realdebrid_request_timeout_seconds",
                    "realdebrid_torrent_upload_timeout_seconds", "realdebrid_host_refresh_interval_hours"],
-    "torbox": ["torbox_prepare_backup_torrents", "torbox_max_active_torrents", "torbox_use_before_usenet",
+    "torbox": ["torbox_prepare_backup_torrents", "torbox_max_active_torrents", "torbox_import_account_downloads", "torbox_use_before_usenet",
                "torbox_rate_limit_per_minute", "torbox_request_timeout_seconds", "torbox_upload_timeout_seconds",
                "torbox_host_refresh_interval_hours"],
 }

@@ -183,6 +183,7 @@
         ]},
         {heading: 'help.topic.heading.additional_settings', when: shown('provider-additional-settings'), list: [
           'help.topic.alldebrid.additional_settings.prepare_backup_torrents',
+          'help.topic.alldebrid.additional_settings.import_downloads_started',
           'help.topic.alldebrid.additional_settings.maximum_active_torrents',
           'help.topic.alldebrid.additional_settings.api_calls_per',
         ]},
@@ -213,6 +214,7 @@
         ]},
         {heading: 'help.topic.heading.additional_settings', when: shown('provider-additional-settings'), list: [
           'help.topic.debridlink.additional_settings.prepare_backup_torrents',
+          'help.topic.debridlink.additional_settings.import_downloads_started',
           'help.topic.debridlink.additional_settings.request_timeout',
         ]},
         {heading: 'help.topic.heading.shared_settings', when: inSettings, text: [
@@ -243,6 +245,7 @@
         {heading: 'help.topic.heading.additional_settings', when: shown('provider-additional-settings'), list: [
           'help.topic.premiumize.additional_settings.use_premiumize_before',
           'help.topic.premiumize.additional_settings.prepare_backup_torrents',
+          'help.topic.premiumize.additional_settings.import_downloads_started',
           'help.topic.premiumize.additional_settings.request_timeout',
         ]},
         {heading: 'help.topic.heading.shared_settings', when: inSettings, text: [
@@ -270,6 +273,7 @@
         ]},
         {heading: 'help.topic.heading.additional_settings', when: shown('provider-additional-settings'), list: [
           'help.topic.realdebrid.additional_settings.prepare_backup_torrents',
+          'help.topic.realdebrid.additional_settings.import_downloads_started',
           'help.topic.realdebrid.additional_settings.maximum_active_torrents',
           'help.topic.realdebrid.additional_settings.api_calls_per',
           'help.topic.realdebrid.additional_settings.request_timeout',
@@ -301,6 +305,7 @@
         ]},
         {heading: 'help.topic.heading.additional_settings', when: shown('provider-additional-settings'), list: [
           'help.topic.torbox.additional_settings.prepare_backup_torrents',
+          'help.topic.torbox.additional_settings.import_downloads_started',
           'help.topic.torbox.additional_settings.maximum_active_torrents',
           'help.topic.torbox.additional_settings.use_torbox_before',
           'help.topic.torbox.additional_settings.api_calls_per',

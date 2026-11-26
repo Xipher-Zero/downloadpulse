@@ -61,7 +61,13 @@ test('the Premiumize card is the API-key premium card with exactly the scoped Ad
   await card.locator('.dp-settings-additional > summary').click();
   const tuning = card.locator('.dp-settings-additional-body');
   await expect(tuning.locator('.dp-settings-tuning-grid')).toHaveCount(1);
-  await expect(tuning.locator('[data-setting]')).toHaveCount(5);
+  await expect(tuning.locator('[data-setting]')).toHaveCount(6);
+  const imports = tuning.locator('[data-setting="premiumize_import_account_downloads"]');
+  // 1.0.5: Import Downloads Started Elsewhere is on by default.
+  await expect(imports).toBeChecked();
+  await expect(imports).toHaveAttribute('data-commit', 'immediate');
+  await expect(imports).toHaveAttribute('data-commit-scope', 'integration:premiumize');
+  await expect(tuning).toContainText('Import Downloads Started Elsewhere');
   const nzb = tuning.locator('[data-setting="premiumize_use_before_usenet"]');
   await expect(nzb).not.toBeChecked();
   await expect(tuning).toContainText('Use Premiumize Before Usenet');

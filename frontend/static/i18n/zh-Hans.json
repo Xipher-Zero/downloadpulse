@@ -3734,7 +3734,14 @@
   "error.setup.from_internet": "请先在您自己的网络中完成DownloadPulse的设置：无法通过互联网进行设置。",
   "error.setup.password_pending": "请先设置密码，然后再继续",
   "error.setup.deployment_locked": "设置期间管理员一经存在，部署类型便无法更改；请先完成设置",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>设置向导：</b>新安装会打开设置向导，用于设置语言和下载文件夹，并要求设置您将用于登录的密码。<b>完成并打开仪表板</b>会打开仪表板。如需在您信任的网络中无密码使用DownloadPulse，请在之后选择<b>清除密码</b>（位于<b>我的账户</b>中）。可从<b>我的账户</b>再次运行设置向导。"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>设置向导：</b>新安装会打开设置向导，用于设置语言和下载文件夹，并要求设置您将用于登录的密码。<b>完成并打开仪表板</b>会打开仪表板。如需在您信任的网络中无密码使用DownloadPulse，请在之后选择<b>清除密码</b>（位于<b>我的账户</b>中）。可从<b>我的账户</b>再次运行设置向导。",
+  "settings.provider.import_elsewhere": "导入在其他地方开始的下载",
+  "settings.provider.import_elsewhere_hint": "同时添加您{provider}账户中在其他地方开始的下载，例如来自另一个DownloadPulse安装或{provider}网站的下载。",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "“导入在其他地方开始的下载”（默认开启）：DownloadPulse还会添加您AllDebrid账户中并非由它自己开始的下载，例如来自另一个DownloadPulse安装或AllDebrid网站的下载。关闭后，仅添加在此处开始的下载。已添加的下载会保留，在此处开始的下载会继续更新。",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "“导入在其他地方开始的下载”（默认开启）：DownloadPulse还会添加您Debrid-Link账户中并非由它自己开始的下载，例如来自另一个DownloadPulse安装或Debrid-Link网站的下载。关闭后，仅添加在此处开始的下载。已添加的下载会保留，在此处开始的下载会继续更新。",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "“导入在其他地方开始的下载”（默认开启）：DownloadPulse还会添加您Premiumize账户中并非由它自己开始的下载，例如来自另一个DownloadPulse安装或Premiumize网站的下载。关闭后，仅添加在此处开始的下载。已添加的下载会保留，在此处开始的下载会继续更新。",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "“导入在其他地方开始的下载”（默认开启）：DownloadPulse还会添加您Real-Debrid账户中并非由它自己开始的下载，例如来自另一个DownloadPulse安装或Real-Debrid网站的下载。关闭后，仅添加在此处开始的下载。已添加的下载会保留，在此处开始的下载会继续更新。",
+  "help.topic.torbox.additional_settings.import_downloads_started": "“导入在其他地方开始的下载”（默认开启）：DownloadPulse还会添加您TorBox账户中并非由它自己开始的下载，例如来自另一个DownloadPulse安装或TorBox网站的下载。关闭后，仅添加在此处开始的下载。已添加的下载会保留，在此处开始的下载会继续更新。"
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7469,6 +7476,13 @@
   "error.setup.from_internet": "c1efb9522cbb138c",
   "error.setup.password_pending": "6209ce853ab00d6f",
   "error.setup.deployment_locked": "1f71b35286c304a5",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813",
+  "settings.provider.import_elsewhere": "6df6c4c1c393b625",
+  "settings.provider.import_elsewhere_hint": "e23ec1a005530126",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "ff7929e4cf23afb3",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "e7e4a618a30bf11b",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "afa2d28148344730",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "1370a4292e51a5e3",
+  "help.topic.torbox.additional_settings.import_downloads_started": "a4ae7da9cfa4ce24"
  }
 }

@@ -170,7 +170,13 @@ test('the Real-Debrid card uses the shipped mark and keeps Additional Settings f
   await card.locator('.dp-settings-additional > summary').click();
   const tuning = card.locator('.dp-settings-additional-body');
   await expect(tuning.locator('.dp-settings-tuning-grid')).toHaveCount(1);
-  await expect(tuning.locator('[data-setting]')).toHaveCount(6);
+  await expect(tuning.locator('[data-setting]')).toHaveCount(7);
+  const imports = tuning.locator('[data-setting="realdebrid_import_account_downloads"]');
+  // 1.0.5: Import Downloads Started Elsewhere is on by default.
+  await expect(imports).toBeChecked();
+  await expect(imports).toHaveAttribute('data-commit', 'immediate');
+  await expect(imports).toHaveAttribute('data-commit-scope', 'integration:realdebrid');
+  await expect(tuning).toContainText('Import Downloads Started Elsewhere');
   const backups = tuning.locator('[data-setting="realdebrid_prepare_backup_torrents"]');
   // Ledger (1.0.13, route-resource retention): Prepare Backup Torrents is on by default.
   await expect(backups).toBeChecked();

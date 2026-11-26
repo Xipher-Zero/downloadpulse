@@ -23,6 +23,11 @@ class DebridLinkOptions(BaseModel):
     # states no active-torrent maximum to read, so there is no ceiling to tune:
     # its own refusal is final.
     prepare_backup_torrents: bool = True
+    # "Import Downloads Started Elsewhere": whether this installation adds
+    # the account's downloads it did not start itself (another installation,
+    # the service's website, another app) as its own transfers when the
+    # inventory scan finds them. On by default (the inherited behaviour).
+    import_account_downloads: bool = True
 
 
 def canonical_options(settings) -> DebridLinkOptions:
@@ -70,6 +75,7 @@ def build(options, environment):
         notify=getattr(commands, "notify_applicability_changed", None),
         notify_status=getattr(commands, "notify_status_changed", None))
     provider.lifecycle = (provider.hosts, provider.account)
+    provider.imports_account_inventory = options.import_account_downloads
     return provider
 
 

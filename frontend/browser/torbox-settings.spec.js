@@ -110,7 +110,13 @@ test('the TorBox card uses the shipped mark, the shared island, and concise Addi
 
   await card.locator('.dp-settings-additional > summary').click();
   const tuning = card.locator('.dp-settings-additional-body');
-  await expect(tuning.locator('[data-setting]')).toHaveCount(7);
+  await expect(tuning.locator('[data-setting]')).toHaveCount(8);
+  const imports = tuning.locator('[data-setting="torbox_import_account_downloads"]');
+  // 1.0.5: Import Downloads Started Elsewhere is on by default.
+  await expect(imports).toBeChecked();
+  await expect(imports).toHaveAttribute('data-commit', 'immediate');
+  await expect(imports).toHaveAttribute('data-commit-scope', 'integration:torbox');
+  await expect(tuning).toContainText('Import Downloads Started Elsewhere');
   const toggle = tuning.locator('[data-setting="torbox_use_before_usenet"]');
   await expect(toggle).not.toBeChecked();
   await expect(toggle).toHaveAttribute('data-commit', 'immediate');

@@ -104,8 +104,12 @@ def server_keyword(server) -> str:
     return MANAGED_PREFIX + safe
 
 
-# Enabled but idle: how long after the last work needed it the service stops.
-IDLE_GRACE_SECONDS = 600.0
+# Enabled but idle: how long after the last work needed it the service stops
+# (1.0.5, operator: 1 minute; it was 10). Owned and observed work (a
+# succeeded attempt still verifying) keeps it up whatever this is, so the
+# grace only bridges gaps between submissions; the maintenance pass that
+# applies it runs about once a minute, so the stop comes 1-2 minutes after.
+IDLE_GRACE_SECONDS = 60.0
 # After a failed start or apply, how long before the next try (then the last, repeatedly).
 START_BACKOFF_SECONDS = (30.0, 60.0, 120.0, 300.0, 600.0)
 

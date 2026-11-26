@@ -3734,7 +3734,14 @@
   "error.setup.from_internet": "Schließen Sie die Einrichtung von DownloadPulse zuerst in Ihrem eigenen Netzwerk ab: Die Einrichtung ist aus dem Internet nicht verfügbar.",
   "error.setup.password_pending": "Legen Sie das Passwort fest, bevor Sie fortfahren",
   "error.setup.deployment_locked": "Der Bereitstellungstyp kann nicht mehr geändert werden, sobald der Administrator während der Einrichtung existiert; schließen Sie zuerst die Einrichtung ab",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Einrichtungsassistent:</b> Eine neue Installation öffnet den Einrichtungsassistenten, der die Sprache und den Download-Ordner festlegt und nach dem Passwort fragt, mit dem Sie sich anmelden werden. <b>Abschließen & Dashboard öffnen</b> öffnet das Dashboard. Um DownloadPulse in einem Netzwerk, dem Sie vertrauen, ohne Passwort zu verwenden, wählen Sie anschließend <b>Passwort entfernen</b> in <b>Mein Konto</b>. Führen Sie den Einrichtungsassistenten über <b>Mein Konto</b> erneut aus."
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "<b>Einrichtungsassistent:</b> Eine neue Installation öffnet den Einrichtungsassistenten, der die Sprache und den Download-Ordner festlegt und nach dem Passwort fragt, mit dem Sie sich anmelden werden. <b>Abschließen & Dashboard öffnen</b> öffnet das Dashboard. Um DownloadPulse in einem Netzwerk, dem Sie vertrauen, ohne Passwort zu verwenden, wählen Sie anschließend <b>Passwort entfernen</b> in <b>Mein Konto</b>. Führen Sie den Einrichtungsassistenten über <b>Mein Konto</b> erneut aus.",
+  "settings.provider.import_elsewhere": "Anderswo gestartete Downloads importieren",
+  "settings.provider.import_elsewhere_hint": "Auch Downloads aus Ihrem Konto bei {provider} hinzufügen, die anderswo gestartet wurden, etwa in einer anderen Installation von DownloadPulse oder auf der Website von {provider}.",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "„Anderswo gestartete Downloads importieren“ (standardmäßig eingeschaltet): DownloadPulse fügt zusätzlich Downloads aus Ihrem Konto bei AllDebrid hinzu, die es nicht selbst gestartet hat, etwa aus einer anderen Installation von DownloadPulse oder von der Website von AllDebrid. Schalten Sie die Option aus, um nur die hier gestarteten Downloads hinzuzufügen. Bereits hinzugefügte Downloads bleiben erhalten, und die hier gestarteten werden weiter aktualisiert.",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "„Anderswo gestartete Downloads importieren“ (standardmäßig eingeschaltet): DownloadPulse fügt zusätzlich Downloads aus Ihrem Konto bei Debrid-Link hinzu, die es nicht selbst gestartet hat, etwa aus einer anderen Installation von DownloadPulse oder von der Website von Debrid-Link. Schalten Sie die Option aus, um nur die hier gestarteten Downloads hinzuzufügen. Bereits hinzugefügte Downloads bleiben erhalten, und die hier gestarteten werden weiter aktualisiert.",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "„Anderswo gestartete Downloads importieren“ (standardmäßig eingeschaltet): DownloadPulse fügt zusätzlich Downloads aus Ihrem Konto bei Premiumize hinzu, die es nicht selbst gestartet hat, etwa aus einer anderen Installation von DownloadPulse oder von der Website von Premiumize. Schalten Sie die Option aus, um nur die hier gestarteten Downloads hinzuzufügen. Bereits hinzugefügte Downloads bleiben erhalten, und die hier gestarteten werden weiter aktualisiert.",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "„Anderswo gestartete Downloads importieren“ (standardmäßig eingeschaltet): DownloadPulse fügt zusätzlich Downloads aus Ihrem Konto bei Real-Debrid hinzu, die es nicht selbst gestartet hat, etwa aus einer anderen Installation von DownloadPulse oder von der Website von Real-Debrid. Schalten Sie die Option aus, um nur die hier gestarteten Downloads hinzuzufügen. Bereits hinzugefügte Downloads bleiben erhalten, und die hier gestarteten werden weiter aktualisiert.",
+  "help.topic.torbox.additional_settings.import_downloads_started": "„Anderswo gestartete Downloads importieren“ (standardmäßig eingeschaltet): DownloadPulse fügt zusätzlich Downloads aus Ihrem Konto bei TorBox hinzu, die es nicht selbst gestartet hat, etwa aus einer anderen Installation von DownloadPulse oder von der Website von TorBox. Schalten Sie die Option aus, um nur die hier gestarteten Downloads hinzuzufügen. Bereits hinzugefügte Downloads bleiben erhalten, und die hier gestarteten werden weiter aktualisiert."
  },
  "sources": {
   "shell.nav.group.queue": "3b2fe03e36893916",
@@ -7469,6 +7476,13 @@
   "error.setup.from_internet": "c1efb9522cbb138c",
   "error.setup.password_pending": "6209ce853ab00d6f",
   "error.setup.deployment_locked": "1f71b35286c304a5",
-  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813"
+  "help.quickstart.before_begin.setup_wizard.standalone_server": "b315456dcb51f813",
+  "settings.provider.import_elsewhere": "6df6c4c1c393b625",
+  "settings.provider.import_elsewhere_hint": "e23ec1a005530126",
+  "help.topic.alldebrid.additional_settings.import_downloads_started": "ff7929e4cf23afb3",
+  "help.topic.debridlink.additional_settings.import_downloads_started": "e7e4a618a30bf11b",
+  "help.topic.premiumize.additional_settings.import_downloads_started": "afa2d28148344730",
+  "help.topic.realdebrid.additional_settings.import_downloads_started": "1370a4292e51a5e3",
+  "help.topic.torbox.additional_settings.import_downloads_started": "a4ae7da9cfa4ce24"
  }
 }
