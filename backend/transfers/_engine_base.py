@@ -111,6 +111,10 @@ import time
 from weakref import WeakValueDictionary
 
 
+# The artifact states with an execution that every reconcile pass observes
+# through its executor: work the executor's runtime must be there for.
+OBSERVED_EXECUTION_STATES = frozenset({"queued", "downloading", "unknown", "verifying", "paused"})
+
 class ObservationBatch(dict):
     """One reconcile cycle's batched observations, by attempt id, with each
     attempt's durable write count (``TransferRepository.execution_writes``)
@@ -545,6 +549,21 @@ class TransferEngine:
         """Converge executor ceilings to the configured global limit; neutral status."""
         async with self._dispatch_lock:
             return await self.runtime.converge()
+
+    def _candidate_past_expiry(self, candidate) -> bool:
+        """The one candidate-expiry gate every dispatch path (and the waiting-work fact) reads."""
+        return candidate.expires_at is not None and candidate.expires_at <= self.clock()
+
+    async def executors_with_observed_work(self) -> frozenset[str]:
+        """The executor identities whose runtime the reconcile pass observes
+        work through (``OBSERVED_EXECUTION_STATES``) -- a superset of durable
+        live work: a succeeded attempt still ``verifying`` among it."""
+        identities = set()
+        for transfer in await self.repository.active():
+            for artifact in await self.repository.artifacts(transfer.id):
+                if artifact.execution is not None and artifact.state in OBSERVED_EXECUTION_STATES:
+                    identities.add(str(artifact.execution.executor_id))
+        return frozenset(identities)
 
     async def _live(self, transfer_id: int, *, admission=False) -> bool:
         transfer = await self.repository.get(transfer_id)
@@ -1445,7 +1464,7 @@ class TransferEngine:
             grouped = {}
             for transfer in transfers:
                 for artifact in artifacts_by_transfer[transfer.id]:
-                    if artifact.execution and artifact.state in {"queued", "downloading", "unknown", "verifying", "paused"}:
+                    if artifact.execution and artifact.state in OBSERVED_EXECUTION_STATES:
                         grouped.setdefault(artifact.execution.executor_id, []).append(artifact.execution)
             observations = ObservationBatch()
             reservation_facts = {}
@@ -1963,7 +1982,7 @@ class TransferEngine:
             if not await self._live(transfer_id):
                 break
             try:
-                if artifact.execution and artifact.state in {"queued", "downloading", "unknown", "verifying", "paused"}:
+                if artifact.execution and artifact.state in OBSERVED_EXECUTION_STATES:
                     executor = self.registry.executor_for_handle(artifact.execution)
                     if executor is None:
                         error = self._error(Category.UNSUPPORTED_CAPABILITY, Stage.RECONCILIATION, domain=Domain.REQUEST, retryability=Retryability.NEVER)
@@ -3393,7 +3412,7 @@ class TransferEngine:
             if challenge is not None and challenge.origin == InputOrigin.EXECUTOR:
                 return False
             candidate = waiting.candidates[waiting.selected]
-            if candidate.expires_at is not None and candidate.expires_at <= self.clock():
+            if self._candidate_past_expiry(candidate):
                 return False
             admission = await self.repository.materialization_authorization(waiting)
             return admission.kind == MaterializationAdmissionKind.PROCEED
@@ -3524,7 +3543,7 @@ class TransferEngine:
             if await self._possessed(artifact, candidate, work, footprint, state, facts):
                 await self.repository.artifact_state(artifact.id, "completed")
                 return
-            if candidate.expires_at is not None and candidate.expires_at <= self.clock():
+            if self._candidate_past_expiry(candidate):
                 error = self._error(Category.CANDIDATE_EXPIRED, Stage.CANDIDATE_PREPARATION, domain=Domain.RESOLUTION,
                     retryability=Retryability.AFTER_RERESOLUTION)
                 await self._schedule_refresh(artifact, error)
@@ -4724,6 +4743,10 @@ class TransferEngine:
                     await self.repository.execution_cleanup_complete(handle.attempt_id)
                     continue
                 if observed.error is not None:
+                    if observed.error.category == Category.EXECUTOR_UNAVAILABLE:
+                        # Its runtime is not up (an integration that stops it while idle):
+                        # this cleanup is work it is needed for.
+                        self.runtime.wake(executor.descriptor.id)
                     await self.repository.execution_cleanup_retry(handle.attempt_id, observed.error, poll_at)
                     errors.append(observed.error)
                     continue

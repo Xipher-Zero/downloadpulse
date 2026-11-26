@@ -85,6 +85,10 @@ CONTROL_TIMEOUT_SECONDS = 15.0
 _UNBOUNDED = None
 
 
+# The least time between two not-current wakeups for one executor (``not_current``).
+WAKE_INTERVAL_SECONDS = 5.0
+
+
 @dataclass(frozen=True)
 class RuntimeLimitStatus:
     """Configured desired value and the value currently proven enforced across
@@ -139,9 +143,34 @@ class ExecutionRuntimeCoordinator:
         self._error: NormalizedError | None = None
         self._unproven: set[str] = set()
         self._gated: set[str] = set()
+        # Executors whose lift to Unlimited waits until they are current again:
+        # not reserved and not running (an integration that stops its service
+        # while idle) -- never an error, applied before their next admission.
+        self._deferred_lift: set[str] = set()
+        # The composition's wakeup for whoever brings an executor's runtime up
+        # (``not_current()``): called when admission is refused because the
+        # executor is not current, at most once per WAKE_INTERVAL_SECONDS each.
+        self.not_current: Callable[[], None] | None = None
+        self._woke: dict[str, float] = {}
 
     def configure(self, max_download_bytes_per_second: int) -> None:
         self._configured = max(0, int(max_download_bytes_per_second or 0))
+        if self._configured:
+            self._deferred_lift.clear()          # a finite cap sets a newcomer's ceiling explicitly
+
+    def wake(self, identity: str) -> None:
+        """Tell whoever brings ``identity``'s runtime up that work needs it
+        (``not_current``), at most once per WAKE_INTERVAL_SECONDS."""
+        if self.not_current is None:
+            return
+        now = self._clock()
+        if now - self._woke.get(identity, float("-inf")) < WAKE_INTERVAL_SECONDS:
+            return
+        self._woke[identity] = now
+        try:
+            self.not_current()
+        except Exception:  # noqa: BLE001 -- a wakeup is a hint; admission is unchanged
+            pass
 
     @property
     def configured(self) -> int:
@@ -360,8 +389,14 @@ class ExecutionRuntimeCoordinator:
         # authority for a new native side effect by itself.
         if await self._current(executor, ceiling=bool(self._configured)) is None:
             self._error = _runtime_error(integration_id=identity)
+            self.wake(identity)
             return False
         if not self._configured:
+            if identity in self._deferred_lift:
+                # A lift deferred while it was not current: proven before it acquires.
+                if not await self._apply(executor, 0):
+                    return False
+                self._deferred_lift.discard(identity)
             self._reserved.add(identity)
             return True
         if identity in self._reserved:
@@ -464,6 +499,10 @@ class ExecutionRuntimeCoordinator:
                 executor = executors.get(identity)
                 if (self._confirmed.get(identity) == 0 or executor is None
                         or not executor.capabilities.aggregate_bandwidth_ceiling):
+                    continue
+                if identity not in self._reserved and not await self._available(executor):
+                    # Not running and owning nothing: lifted before its next admission, without error.
+                    self._deferred_lift.add(identity)
                     continue
                 if not await self._apply(executor, 0):
                     self._unproven.add(identity)

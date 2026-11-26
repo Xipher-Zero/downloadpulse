@@ -5987,6 +5987,22 @@
     "ai-review"
    ]
   },
+  "provider_status.state.idle": {
+   "source": "104e7970b871ff6a",
+   "translation": "9a84a4f2a3193366",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.using.provider_status_sidebar.blue": {
+   "source": "d5733df10fc64fb7",
+   "translation": "24b7658ec69cda4d",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "provider_status.row_tooltip": {
    "source": "12191a17a10d8c38",
    "translation": "12191a17a10d8c38",

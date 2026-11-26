@@ -158,6 +158,11 @@ class ApplicationService:
         # The one in-flight integration startup (``begin_integrations``).
         self._integration_startup: asyncio.Task | None = None
 
+    def wake_integrations(self) -> None:
+        """Wake the integrations' maintenance now (engine: admission refused
+        because an executor's runtime is not up -- whoever owns it brings it up)."""
+        self.integration_wakeup.set()
+
     def notify_applicability_changed(self, _integration_id: str) -> None:
         """Wake canonical maintenance and route resolution after neutral fact changes."""
         self.resolution_wakeup.set()

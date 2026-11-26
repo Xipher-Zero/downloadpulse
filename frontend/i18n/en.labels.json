@@ -902,6 +902,13 @@
     "reason": "Lead naming a status colour/animation; not displayed text."
    }
   ],
+  "help.using.provider_status_sidebar.blue": [
+   {
+    "text": "Blue:",
+    "kind": "emphasis",
+    "reason": "Lead naming a status colour/animation; not displayed text."
+   }
+  ],
   "help.using.provider_status_sidebar.network_sources_share": [
    {
     "text": "aria2",

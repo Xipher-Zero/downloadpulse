@@ -6015,6 +6015,22 @@
     "ai-review"
    ]
   },
+  "provider_status.state.idle": {
+   "source": "104e7970b871ff6a",
+   "translation": "f4f41243e372f8b4",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.using.provider_status_sidebar.blue": {
+   "source": "d5733df10fc64fb7",
+   "translation": "83fe353039a3ca87",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "provider_status.row_tooltip": {
    "source": "12191a17a10d8c38",
    "translation": "12191a17a10d8c38",

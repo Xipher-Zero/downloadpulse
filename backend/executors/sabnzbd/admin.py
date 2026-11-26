@@ -25,8 +25,11 @@ import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import asyncio
+import time
+
 from executors.sabnzbd import topology
-from executors.sabnzbd.client import SabApiError, SabTransportError
+from executors.sabnzbd.client import SabApiError, SabTransportError, ServiceNotRunning
 from integrations.definition import ConfigurationApplication
 from integrations.usenet.definition import MAX_CONNECTIONS, MIN_CONNECTIONS
 
@@ -101,6 +104,39 @@ def server_keyword(server) -> str:
     return MANAGED_PREFIX + safe
 
 
+# Enabled but idle: how long after the last work needed it the service stops.
+IDLE_GRACE_SECONDS = 600.0
+# After a failed start or apply, how long before the next try (then the last, repeatedly).
+START_BACKOFF_SECONDS = (30.0, 60.0, 120.0, 300.0, 600.0)
+
+
+class ServiceRunState:
+    """One managed service's run decision (1.0.5 WS9), held by its runtime so
+    it outlives every administration built on it: Tests in progress; the
+    last time work needed it; whether the enable check ran; whether it is
+    started and converged (``ready_for_work``); the last failed start or apply
+    and its backoff; the decision lock; and the native-submission fence."""
+
+    def __init__(self) -> None:
+        self.tests = 0
+        self.needed_at: float | None = None
+        self.checked = False
+        self.ready = False
+        self.start_failed: str | None = None
+        self.failures = 0
+        self.retry_at = 0.0
+        self.lock = asyncio.Lock()
+        self.uses = asyncio.Condition()
+        self.in_use = 0
+        self.stopping = False
+
+
+def _shared(name: str) -> property:
+    """An administration attribute that is its service's run state."""
+    return property(lambda self: getattr(self._state, name),
+                    lambda self, value: setattr(self._state, name, value))
+
+
 class ServerIdentityError(ValueError):
     """A configured server cannot be mapped to a stable native identity."""
 
@@ -164,11 +200,43 @@ class SabnzbdAdministration:
         # The application's neutral live-status signal: how a runtime
         # transition this lifecycle owns reaches Provider Status.
         self._notify_status = notify_status
-        # Server Tests in progress (``test_server``): each needs the service
-        # for its duration, whether or not Usenet is enabled.
-        self._tests = 0
+        self._clock = time.monotonic
+        # The service's run state lives with the service, not with this
+        # surface: every configuration rebuilds the administration while the
+        # one process (``runtime``) goes on, so its decision facts, its lock and
+        # its fence are the runtime's own (``ServiceRunState``), shared by every
+        # administration built on it (1.0.5 WS9). A runtime without that slot
+        # (a test double) gives this surface a state of its own.
+        state = getattr(runtime, "demand", None) if runtime is not None else None
+        if state is None:
+            state = ServiceRunState()
+            if runtime is not None and hasattr(runtime, "demand"):
+                runtime.demand = state
+        self._state = state
+
+    _tests = _shared("tests")
+    _needed_at = _shared("needed_at")
+    _checked = _shared("checked")
+    _ready = _shared("ready")
+    _start_failed = _shared("start_failed")
+    _failures = _shared("failures")
+    _retry_at = _shared("retry_at")
+    _lock = _shared("lock")
+    _uses = _shared("uses")
+    _in_use = _shared("in_use")
+    _stopping = _shared("stopping")
 
     # --- managed lifecycle (the generic IntegrationLifecycle seam) --------
+    #
+    # The service runs while it is needed (1.0.5 WS9): a server Test, work
+    # core owns or observes through this executor, queued work that waits for
+    # it, the one check when Usenet is enabled (or DownloadPulse starts with it
+    # enabled), and an idle grace after the last of those. Enabled but idle, it
+    # is stopped; queued work brings it up again (core's admission refusal
+    # wakes ``maintain``). Every decision and transition holds ``_lock``; the
+    # executor's native submissions hold the fence (``native_use``), which a
+    # stop takes exclusively -- so a submission never meets a service being
+    # stopped, and a stop never ends one under way.
 
     @property
     def _accepts_new_work(self) -> bool:
@@ -178,92 +246,175 @@ class SabnzbdAdministration:
         descriptor = getattr(self.executor, "descriptor", None)
         return bool(getattr(descriptor, "enabled", False))
 
-    async def _owns_durable_work(self) -> bool:
-        """Whether any durable execution still belongs to this executor.
+    @property
+    def _identity(self) -> str:
+        return str(getattr(getattr(self.executor, "descriptor", None), "id", ""))
 
-        Uncertainty counts as ownership: if the durable answer cannot be
-        obtained, the service is kept available rather than stranding an
-        execution that may still exist.
-        """
-        identity = getattr(getattr(self.executor, "descriptor", None), "id", "")
+    async def _owns_durable_work(self) -> bool:
+        """Whether any execution still belongs to this executor: durable live
+        work, or work the reconcile pass observes through it (a succeeded
+        attempt still verifying) -- whatever the enable toggle, so disabling
+        Usenet never strands one. Uncertainty counts as ownership."""
         if self.executions is None:
             return True
         try:
-            return await self.executions.has_live_work(identity)
+            return (await self.executions.has_live_work(self._identity)
+                    or await self.executions.has_observed_work(self._identity))
         except Exception:
             return True
 
-    async def _service_required(self) -> bool:
-        """The service is needed to accept new work OR to serve work already
-        owned. Disabling Usenet stops new routing; it never strands a durable
-        execution, which must stay observable, controllable and recoverable."""
-        return self._tests > 0 or self._accepts_new_work or await self._owns_durable_work()
+    async def _work_waiting(self) -> bool:
+        """Whether queued work waits for this executor (enabled only: core
+        routes nothing to a disabled one). Uncertainty counts as waiting."""
+        if not self._accepts_new_work or self.executions is None:
+            return False
+        try:
+            return await self.executions.has_waiting_work(self._identity)
+        except Exception:
+            return True
+
+    def ready_for_work(self) -> bool:
+        """The executor's readiness: the service was started AND converged on
+        the canonical configuration (its own API answers before that), and no
+        stop is under way."""
+        return self._ready and not self._stopping
+
+    @contextlib.asynccontextmanager
+    async def native_use(self):
+        """One native submission's hold on the service. Refused -- definitely,
+        before anything is sent -- while it is not ready for work (stopped, or
+        being stopped); a stop waits for every hold to end."""
+        async with self._uses:
+            if not self.ready_for_work():
+                raise ServiceNotRunning("the acquisition service is not running")
+            self._in_use += 1
+        try:
+            yield
+        finally:
+            async with self._uses:
+                self._in_use -= 1
+                self._uses.notify_all()
 
     async def start(self) -> None:
-        if self.runtime is None or not await self._service_required():
-            return
-        await self._converge()
+        await self.maintain()
 
     async def stop(self) -> None:
         if self.runtime is not None:
-            await self.runtime.stop()
+            async with self._lock:
+                self._ready = False
+                await self.runtime.stop()
 
     async def maintain(self) -> None:
         """Converge the internal service on what is actually required.
 
         Nothing here inspects or mutates DP-owned executions; it only decides
-        whether the executor's service must be available.
-        """
+        whether the executor's service must be available. Waiting work is read
+        before owned work, so a submission moving from queued to prepared in
+        between is seen as one or the other."""
         if self.runtime is None:
             return
-        if not await self._service_required():
+        async with self._lock:
+            now = self._clock()
+            enabled = self._accepts_new_work
+            if not enabled:
+                self._checked = False                         # enabling again is checked again
+            waiting = await self._work_waiting()
+            owned = await self._owns_durable_work()
+            if waiting or owned:
+                self._needed_at = now
+            grace = enabled and self._needed_at is not None and now - self._needed_at < IDLE_GRACE_SECONDS
+            if self._tests or owned or waiting or grace or (enabled and not self._checked):
+                if await self._service_converged():
+                    if enabled and not self._checked:
+                        # Converged by another path (a configuration change, a Test):
+                        # the enable check is done; the grace runs from here.
+                        self._checked, self._needed_at = True, now
+                    return
+                if now < self._retry_at:
+                    return                                    # a failed start backs off; no wakeup hurries it
+                await self._converge()
+                if enabled and self._ready and not self._checked:
+                    self._checked = True                      # the enable check: then the grace runs from here
+                    self._needed_at = now
+                return
             if (await self.runtime.status())["running"]:
-                await self.runtime.stop()
-                await self._status_changed()
-            return
-        await self._converge()
+                await self._stop_when_unused()
+
+    async def _service_converged(self) -> bool:
+        return self._ready and await self.runtime.healthy()
+
+    async def _stop_when_unused(self) -> None:
+        """Stop the service once no native submission holds it, unless one
+        that began meanwhile made it needed again (read again under the fence)."""
+        async with self._uses:
+            self._stopping = True
+            while self._in_use:
+                await self._uses.wait()
+        try:
+            if await self._work_waiting() or await self._owns_durable_work():
+                return
+            self._ready = False
+            await self.runtime.stop()
+            await self._status_changed()
+        finally:
+            async with self._uses:
+                self._stopping = False
 
     @contextlib.asynccontextmanager
     async def _serving_for_test(self):
         """The service for one server Test, enabled or not: brought up for it
         when it is not running (the managed path, ``_converge``), and
-        afterwards left exactly as ``maintain`` decides -- stopped again while
-        Usenet is disabled and owns no work, kept when it is enabled by then
-        or work needs it. While any Test runs, the service is required, so a
-        concurrent Test or a periodic ``maintain`` never stops it under one."""
+        afterwards left exactly as ``maintain`` decides. The lock is held for
+        the decisions, never across the Test itself, so ``maintain`` runs
+        meanwhile -- and finds a Test counted, so never stops the service."""
         if self.runtime is None:
             yield
             return
-        self._tests += 1
+        async with self._lock:
+            self._tests += 1
+            try:
+                if not await self._service_converged():
+                    await self._converge()
+            except BaseException:
+                self._tests -= 1
+                raise
         try:
-            await self._converge()
             yield
         finally:
-            self._tests -= 1
-            if self._tests == 0:
-                await self.maintain()
+            async with self._lock:
+                self._tests -= 1
+            await self.maintain()
 
     async def _converge(self) -> None:
-        """Bring the service to healthy, then to the canonical configuration.
-
-        A live-but-unhealthy process is RESTARTED: starting an already-running
-        process is a no-op, so it would otherwise never recover. Configuration
-        is applied whenever the service was (re)started, so enabling Usenet
-        converges without a second Save or an application restart.
-
-        Both runtime transitions are announced as they happen -- found not
-        healthy, then converged -- so the operator watches the service go down
-        and come back instead of whatever was last observed.
-        """
-        if await self.runtime.healthy():
-            return
+        """Bring the service to healthy, then to the canonical configuration
+        (``_lock`` held). A live-but-unhealthy process is RESTARTED: starting an
+        already-running process is a no-op, so it would otherwise never
+        recover. Ready for work only once started AND, while Usenet is enabled,
+        converged on the configuration: a failed start or apply is recorded
+        (``start_failed``) and retried after a backoff, never hidden.
+        Both runtime transitions are announced as they happen."""
+        self._ready = False
         await self._status_changed()
-        if (await self.runtime.status())["running"]:
-            await self.runtime.restart()
+        # A healthy running service is left running (only converged on the
+        # configuration); a live-but-unhealthy one is restarted; else started.
+        if not await self.runtime.healthy():
+            if (await self.runtime.status())["running"]:
+                await self.runtime.restart()
+            else:
+                await self.runtime.start()
+        problem = None
+        if not await self.runtime.healthy():
+            problem = (await self.runtime.status()).get("last_error") or "the acquisition service did not start"
+        elif self._accepts_new_work:
+            applied = await self._apply_configuration()
+            if not applied.ok:
+                problem = applied.detail or "the configuration did not apply"
+        if problem is None:
+            self._ready, self._start_failed, self._failures, self._retry_at = True, None, 0, 0.0
         else:
-            await self.runtime.start()
-        if await self.runtime.healthy() and self._accepts_new_work:
-            await self.apply_configuration()
+            self._start_failed = str(problem)
+            self._failures += 1
+            self._retry_at = self._clock() + START_BACKOFF_SECONDS[min(self._failures, len(START_BACKOFF_SECONDS)) - 1]
         await self._status_changed()
 
     async def _status_changed(self) -> None:
@@ -271,6 +422,25 @@ class SabnzbdAdministration:
             await self._notify_status()
 
     async def apply_configuration(self) -> ConfigurationApplication:
+        """Push the canonical desired configuration into the native service:
+        the ONE production path from a settings mutation (and the configuration
+        applier's entry). While the service is stopped because it was idle,
+        the change brings it up for that change as a Test does -- start, apply,
+        drift check, the honest result -- and the grace runs from there."""
+        if self.runtime is None:
+            return await self._apply_configuration()
+        async with self._lock:
+            if self._accepts_new_work and not await self._service_converged():
+                await self._converge()
+                self._needed_at = self._clock()
+                if self._ready:
+                    self._checked = True
+                if self._start_failed is not None:
+                    return ConfigurationApplication(False, self._start_failed, ("service",))
+                return ConfigurationApplication(True, "configuration applied")
+            return await self._apply_configuration()
+
+    async def _apply_configuration(self) -> ConfigurationApplication:
         """Push the canonical desired configuration into the native service.
 
         This is the ONE production path from a settings mutation to the native
@@ -543,6 +713,18 @@ class SabnzbdAdministration:
                    if s.enabled and str(s.host or "").strip()]
         if not servers:
             return {"state": "unconfigured", "configured": False, "servers": 0}
+        counted = {"configured": True, "servers": len(servers)}
+        if self.runtime is not None:
+            # Started on demand (1.0.5 WS9): a failed start or apply is said as
+            # such; a stopped service is Idle only once it was seen to start and
+            # converge (the enable check) and while it can start again -- and
+            # while it is being started for work, it is still Idle, not down.
+            if not self.runtime.installed():
+                return {**counted, "state": "unhealthy", "error": "the Usenet acquisition service is not installed"}
+            if self._start_failed is not None:
+                return {**counted, "state": "unhealthy", "error": self._start_failed}
+            if not self._ready:
+                return {**counted, "state": "idle" if self._checked else "checking"}
         try:
             version = await self.client.version()
         except (SabTransportError, SabApiError) as exc:

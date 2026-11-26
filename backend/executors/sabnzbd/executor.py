@@ -55,6 +55,8 @@ the existing observation machinery to converge.
 """
 from __future__ import annotations
 
+import contextlib
+
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -64,7 +66,7 @@ from typing import Awaitable, Callable
 
 from executors.sabnzbd import topology
 from executors.sabnzbd.client import (
-    NATIVE_PRIORITY_PAUSED, PP_REPAIR_ONLY, SabApiError, SabTransportError,
+    NATIVE_PRIORITY_PAUSED, PP_REPAIR_ONLY, SabApiError, SabTransportError, ServiceNotRunning,
 )
 from executors.sabnzbd.translation import (
     EXECUTOR_ID, failure, native_activity, native_contributors, native_failure, native_progress, native_state,
@@ -439,33 +441,49 @@ class SabnzbdExecutor:
             return ExecutionObservation(handle, ExecutionState.FAILED, error=exc.error)
 
         try:
-            # The staged input is proven intact BEFORE a byte of it is sent, so
-            # altered or truncated input is never submitted, and it is streamed
-            # rather than read whole -- a manifest can be hundreds of megabytes.
-            with self.staged_input.opened(staged) as manifest:
-                # ALWAYS paused on arrival, whatever core intends. The job is
-                # created carrying the correlation token, and nothing may run
-                # under that name -- including during an acknowledgement this
-                # call never receives.
-                nzo_id = await self.client.addfile(
-                    manifest, job_name=token, pp=PP_REPAIR_ONLY,
-                    priority=NATIVE_PRIORITY_PAUSED,
-                )
-        except StagedInputError as exc:
-            # Nothing was submitted: the input could not be proven.
-            return ExecutionObservation(handle, ExecutionState.FAILED, error=failure(
-                Category.INVALID_REQUEST, stage=Stage.QUEUE, domain=Domain.REQUEST,
-                diagnostic=sanitize(str(exc), secrets)))
-        except (SabTransportError, SabApiError) as exc:
-            # The submission may or may not have reached SAB. Reconcile by the
-            # durable correlation token; NEVER submit a second time.
-            return await self._reconcile_ambiguous_start(handle, sanitize(str(exc), secrets),
+            # The service's hold for this submission (its administration's
+            # fence): a stop waits for it, and a stopped service refuses it
+            # before anything is sent -- a definite "not submitted", never an
+            # ambiguous start.
+            async with self._native_use():
+                try:
+                    # The staged input is proven intact BEFORE a byte of it is sent, so
+                    # altered or truncated input is never submitted, and it is streamed
+                    # rather than read whole -- a manifest can be hundreds of megabytes.
+                    with self.staged_input.opened(staged) as manifest:
+                        # ALWAYS paused on arrival, whatever core intends. The job is
+                        # created carrying the correlation token, and nothing may run
+                        # under that name -- including during an acknowledgement this
+                        # call never receives.
+                        nzo_id = await self.client.addfile(
+                            manifest, job_name=token, pp=PP_REPAIR_ONLY,
+                            priority=NATIVE_PRIORITY_PAUSED,
+                        )
+                except StagedInputError as exc:
+                    # Nothing was submitted: the input could not be proven.
+                    return ExecutionObservation(handle, ExecutionState.FAILED, error=failure(
+                        Category.INVALID_REQUEST, stage=Stage.QUEUE, domain=Domain.REQUEST,
+                        diagnostic=sanitize(str(exc), secrets)))
+                except (SabTransportError, SabApiError) as exc:
+                    # The submission may or may not have reached SAB. Reconcile by the
+                    # durable correlation token; NEVER submit a second time.
+                    return await self._reconcile_ambiguous_start(handle, sanitize(str(exc), secrets),
+                                                                 paused=request.paused)
+                except Exception as exc:
+                    return ExecutionObservation(handle, ExecutionState.UNKNOWN,
+                                                error=unreachable(sanitize(str(exc), secrets)))
+                return await self._establish_native_name(self._bind(handle, nzo_id),
                                                          paused=request.paused)
-        except Exception as exc:
-            return ExecutionObservation(handle, ExecutionState.UNKNOWN,
-                                        error=unreachable(sanitize(str(exc), secrets)))
-        return await self._establish_native_name(self._bind(handle, nzo_id),
-                                                 paused=request.paused)
+        except ServiceNotRunning as exc:
+            return ExecutionObservation(handle, ExecutionState.FAILED, error=failure(
+                Category.EXECUTOR_UNAVAILABLE, stage=Stage.QUEUE, retryability=Retryability.BACKOFF,
+                diagnostic=str(exc)))
+
+    def _native_use(self):
+        """The administration's hold on the service for one submission, or none
+        (an executor built without its managed lifecycle)."""
+        use = getattr(getattr(self, "lifecycle", None), "native_use", None)
+        return use() if use is not None else contextlib.nullcontext()
 
     async def _establish_native_name(self, handle: ExecutionHandle, *,
                                      paused: bool) -> ExecutionObservation:
@@ -839,6 +857,11 @@ class SabnzbdExecutor:
     # --- health ----------------------------------------------------------
 
     async def health(self) -> ExecutorHealth:
+        # Ready only once its administration started the service AND converged
+        # it on the canonical configuration: its API answers before that.
+        ready_for_work = getattr(getattr(self, "lifecycle", None), "ready_for_work", None)
+        if ready_for_work is not None and not ready_for_work():
+            return ExecutorHealth(False, False, error=unreachable("the acquisition service is not running"))
         try:
             version = await self.client.version() if hasattr(self.client, "version") else "ok"
         except Exception as exc:

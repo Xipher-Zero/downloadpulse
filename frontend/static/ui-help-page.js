@@ -248,6 +248,7 @@
               <li ${keyed('help.using.provider_status_sidebar.amber')}></li>
               <li ${keyed('help.using.provider_status_sidebar.red')}></li>
               <li ${keyed('help.using.provider_status_sidebar.pulsing_amber')}></li>
+              <li ${keyed('help.using.provider_status_sidebar.blue')}></li>
             </ul>
             <p ${keyed('help.using.provider_status_sidebar.network_sources_share')}></p>`) : ''}
 

@@ -6360,6 +6360,16 @@ class TransferRepository:
             await db.commit()
         return None
 
+    async def quota_would_admit(self, keys, artifact_id: int, now: float) -> float | None:
+        """``quota_admission``'s decision without its reservation: ``None`` when
+        ``artifact_id`` could ask in ``keys`` now, else until when it could not.
+        Reads only (the waiting-work fact); the turn is reserved by dispatch."""
+        if not keys:
+            return None
+        async with get_db() as db:
+            rows = await self._quota_rows(db, keys)
+        return self._quota_blocked_until(rows, int(artifact_id), float(now))
+
     async def quota_issuance(self, keys, artifact_id: int | None, now: float, *, requalify_seconds: float,
                              lease_seconds: float) -> float | None:
         """The issuance gate itself, checked as the provider is about to be

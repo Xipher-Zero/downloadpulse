@@ -72,6 +72,11 @@ class SabTransportError(Exception):
     """SAB was unreachable or did not answer. Never proof of absence."""
 
 
+class ServiceNotRunning(RuntimeError):
+    """A native submission refused before anything was sent: the managed
+    service is stopped or being stopped (the administration's ``native_use``)."""
+
+
 class SabApiError(Exception):
     """SAB answered with an unusable/non-JSON body. Never proof of absence."""
 

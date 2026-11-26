@@ -83,7 +83,7 @@
   const statusHost = () => document.getElementById('provider-status-list');
 
   function dotClass(state) {
-    return ({healthy:'ok', degraded:'warn', auth_required:'error', unhealthy:'error', unconfigured:'warn', unverified:'warn', unknown:'check', checking:'check', mixed:'warn', unavailable:'error', disabled:'error'})[state] || 'check';
+    return ({healthy:'ok', degraded:'warn', auth_required:'error', unhealthy:'error', unconfigured:'warn', unverified:'warn', unknown:'check', checking:'check', mixed:'warn', unavailable:'error', disabled:'error', idle:'idle'})[state] || 'check';
   }
 
   /* Runtime health and verification are two different questions, asked in that
@@ -102,7 +102,9 @@
    * Nothing here names an integration and nothing here decides, records or
    * second-guesses what is verified. */
   function verificationAdjusted(entry) {
-    if (entry.state !== 'healthy') return entry;
+    // Idle (a service stopped while it has nothing to do, started when work
+    // needs it) is as ready as healthy: an unproven configuration warns alike.
+    if (entry.state !== 'healthy' && entry.state !== 'idle') return entry;
     if (!entry.verifiable || !entry.configured || entry.verified) return entry;
     return {...entry, state: 'unverified'};
   }
@@ -153,7 +155,9 @@
     if (enabled.some(entry => entry.state === 'unconfigured')) return 'unconfigured';
     if (enabled.some(entry => entry.state === 'unverified')) return 'unverified';
     if (enabled.some(entry => ['unknown', 'checking'].includes(entry.state))) return 'unknown';
-    if (enabled.every(entry => entry.state === 'healthy')) return 'healthy';
+    if (enabled.every(entry => entry.state === 'idle')) return 'idle';
+    // Idle members are ready (they start when needed): with healthy ones, the group is healthy.
+    if (enabled.every(entry => ['healthy', 'idle'].includes(entry.state))) return 'healthy';
     return 'unknown';
   }
 
@@ -161,7 +165,7 @@
   // name, and with its row's name the DP tooltip the compact sidebar rail
   // gives the row once that name is no longer shown.
   const STATES = new Set(['healthy', 'degraded', 'auth_required', 'unhealthy', 'unconfigured', 'unverified', 'unknown',
-    'checking', 'mixed', 'unavailable', 'disabled', 'inactive']);
+    'checking', 'mixed', 'unavailable', 'disabled', 'inactive', 'idle']);
   function stateLabel(state) {
     return window.DPI18n.t(`provider_status.state.${STATES.has(state) ? state : 'unknown'}`);
   }

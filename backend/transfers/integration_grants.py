@@ -9,7 +9,9 @@ It gets exactly these instead:
 * ``ExecutionGrants`` -- core's own decisions about executions: whether one
   attempt (or a batch) may still act (``authorize``), the attempts of ONE
   executor identity without their candidates (``attempts_of``), and whether
-  that executor still has live work (``has_live_work``). Read-only.
+  that executor still has live work (``has_live_work``), work the reconcile
+  pass observes through it (``has_observed_work``) and queued work that waits
+  for it (``has_waiting_work``). Read-only: each is one boolean per identity.
 * ``IntegrationCommands`` -- the operator commands an integration-owned
   administration surface may forward (pause, resume, cancel one artifact) and
   the one status notification. Nothing else of the application.
@@ -22,10 +24,14 @@ from dataclasses import is_dataclass, replace
 class ExecutionGrants:
     """Core's execution decisions, lent read-only (module docstring)."""
 
-    __slots__ = ("_repository",)
+    __slots__ = ("_repository", "_observed", "_waiting")
 
-    def __init__(self, repository):
+    def __init__(self, repository, *, observed=None, waiting=None):
         self._repository = repository
+        # The engine's own facts (``executors_with_observed_work``,
+        # ``executors_with_waiting_work``), held, never lent.
+        self._observed = observed
+        self._waiting = waiting
 
     def __repr__(self) -> str:
         return "<ExecutionGrants>"
@@ -50,6 +56,16 @@ class ExecutionGrants:
     async def has_live_work(self, executor_id: str) -> bool:
         """Whether core still holds live work for this executor identity."""
         return str(executor_id) in await self._repository.executors_with_live_work()
+
+    async def has_observed_work(self, executor_id: str) -> bool:
+        """Whether the reconcile pass observes work through this executor
+        (a superset of live work: a succeeded attempt still verifying)."""
+        return self._observed is not None and str(executor_id) in await self._observed()
+
+    async def has_waiting_work(self, executor_id: str) -> bool:
+        """Whether queued work waits for this executor: the next dispatch
+        would hand it there were its runtime ready."""
+        return self._waiting is not None and str(executor_id) in await self._waiting()
 
 
 class IntegrationCommands:

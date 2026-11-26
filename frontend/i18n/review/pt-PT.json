@@ -5964,6 +5964,22 @@
     "ai-review"
    ]
   },
+  "provider_status.state.idle": {
+   "source": "104e7970b871ff6a",
+   "translation": "7bd9d18b246657ae",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "help.using.provider_status_sidebar.blue": {
+   "source": "d5733df10fc64fb7",
+   "translation": "a8991e5afb1fddf8",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "provider_status.row_tooltip": {
    "source": "12191a17a10d8c38",
    "translation": "12191a17a10d8c38",

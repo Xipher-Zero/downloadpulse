@@ -4644,6 +4644,12 @@
    "owner": "frontend/static/ui-provider-status.js",
    "criticality": "normal"
   },
+  "provider_status.state.idle": {
+   "category": "status-chip",
+   "context": "A provider's or group's health 'Idle': its status dot's accessible name and tooltip. The provider is ready, but its download service is stopped to save memory while it has nothing to do, and starts by itself when work needs it. Keep the brief explanation in brackets.",
+   "owner": "frontend/static/ui-provider-status.js",
+   "criticality": "normal"
+  },
   "provider_status.row_tooltip": {
    "category": "tooltip/aria",
    "context": "Tooltip of a provider row in the compact sidebar rail.",
@@ -17827,6 +17833,12 @@
    "criticality": "normal"
   },
   "help.using.provider_status_sidebar.pulsing_amber": {
+   "category": "long-form-help",
+   "context": "Field Manual (the Help page), Everyday Use → Provider Status (sidebar, Admin only): a list item. Bold words name the interface's own labels and places; use the words the interface itself shows. Some passages have several wordings, each shown only to the readers it fits; translate each as a whole.",
+   "owner": "frontend/static/ui-help-page.js",
+   "criticality": "normal"
+  },
+  "help.using.provider_status_sidebar.blue": {
    "category": "long-form-help",
    "context": "Field Manual (the Help page), Everyday Use → Provider Status (sidebar, Admin only): a list item. Bold words name the interface's own labels and places; use the words the interface itself shows. Some passages have several wordings, each shown only to the readers it fits; translate each as a whole.",
    "owner": "frontend/static/ui-help-page.js",

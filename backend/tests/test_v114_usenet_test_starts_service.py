@@ -55,8 +55,9 @@ def administration(*, enabled: bool, running: bool, live_work=frozenset(), clien
                                   "/download", runtime, executor, executions=repository)
 
     async def applied():
-        return None
-    admin.apply_configuration = applied          # configuration push is another test's concern
+        from integrations.definition import ConfigurationApplication
+        return ConfigurationApplication(True, "configuration applied")
+    admin._apply_configuration = applied         # configuration push is another test's concern (1.0.5 WS9: the body)
     return admin, runtime, client, descriptor
 
 

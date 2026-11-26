@@ -64,7 +64,7 @@ def admin_for(*, enabled, live_work=frozenset(), runtime=None, applied=None):
     admin = SabnzbdAdministration(FakeSab(), options, "/download", runtime, executor,
                                   executions=ExecutionGrants(repository))
     if applied is not None:
-        admin.apply_configuration = applied
+        admin._apply_configuration = applied       # 1.0.5 WS9: the converge path's applier body
     return admin, runtime
 
 

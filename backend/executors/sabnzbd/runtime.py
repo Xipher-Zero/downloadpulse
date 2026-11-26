@@ -177,6 +177,9 @@ class UsenetRuntime:
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._started_at = 0.0
+        # Its administration's run decision (``admin.ServiceRunState``), kept
+        # here so it outlives every administration built on this runtime.
+        self.demand = None
         self._last_error = ""
         self._stdout_task = None
         self._stderr_task = None
@@ -197,6 +200,10 @@ class UsenetRuntime:
 
     def _alive(self) -> bool:
         return self._process is not None and self._process.returncode is None
+
+    def installed(self) -> bool:
+        """Whether the acquisition service is present to be started."""
+        return self._binary() is not None
 
     @staticmethod
     def _binary() -> str | None:
@@ -283,6 +290,9 @@ class UsenetRuntime:
                 if self._process is None or self._process.returncode is not None:
                     global _service_port
                     _service_port = None         # no service: its address is the usual one until a start
+                    # Stopped because DownloadPulse asked: no exit to report (status() reads an
+                    # unasked exit from a process it still holds; 1.0.5 WS9 C3).
+                    self._process = None
             except Exception as exc:
                 self._last_error = str(exc)
                 logger.warning("usenet stop failed: %s", exc)

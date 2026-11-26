@@ -54,7 +54,12 @@ def configure(application):
     apply_settings(settings)
     application.definitions = definitions
     registry = IntegrationRegistry()
-    register(registry, settings, IntegrationEnvironment(ExecutionGrants(application.repository),
+    grants = ExecutionGrants(application.repository, observed=application.engine.executors_with_observed_work,
+                             waiting=application.engine.executors_with_waiting_work)
+    # Admission refused because an executor's runtime is not up wakes the
+    # integrations' maintenance, which brings up what queued work waits for.
+    application.engine.runtime.not_current = application.wake_integrations
+    register(registry, settings, IntegrationEnvironment(grants,
                                                         settings.download_folder,
                                                         commands=IntegrationCommands(application),
                                                         persist_option=persist_rotated_option,

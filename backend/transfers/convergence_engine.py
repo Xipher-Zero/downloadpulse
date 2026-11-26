@@ -187,6 +187,28 @@ class TransferEngine(_QualifiedTransferEngine):
             integration_id=candidate.provider_id if candidate else "",
         )
 
+    def _dispatch_readiness(self, candidate) -> str | None:
+        """The one verdict of the readiness gates every dispatch path (and the
+        waiting-work fact) applies to a selected candidate, in their order --
+        ``"provider"`` (its provider is not enabled), ``"executor"`` (no
+        executor claims it), ``"expired"`` -- or ``None``. Pure: it decides;
+        each caller acts on it."""
+        if not self._candidate_provider_enabled(candidate):
+            return "provider"
+        if not self.registry.claimants(ExecutionSubject.of(candidate)):
+            return "executor"
+        if self._candidate_past_expiry(candidate):
+            return "expired"
+        return None
+
+    async def _quota_held(self, artifact: Artifact, candidate, *, reserve: bool) -> bool:
+        """The provider quota gate: whether ``artifact`` may not ask through
+        ``candidate`` now. Dispatch ``reserve``s the one requalification turn
+        it is given (``_quota_admit``); the waiting-work fact only asks."""
+        if reserve:
+            return await self._quota_admit(artifact, candidate) is not None
+        return await self.repository.quota_would_admit(self._quota_keys(candidate), artifact.id, self.clock()) is not None
+
     async def _quota_admit(self, artifact: Artifact, candidate) -> float | None:
         """The provider quota gate before asking a provider for a dispatch:
         ``None`` when ``artifact`` may ask through ``candidate`` now (no hold,
@@ -195,6 +217,44 @@ class TransferEngine(_QualifiedTransferEngine):
         return await self.repository.quota_admission(
             self._quota_keys(candidate), artifact.id, self.clock(),
             lease_seconds=self.policy.quota_probe_lease_seconds)
+
+    async def executors_with_waiting_work(self) -> frozenset[str]:
+        """The executor identities a queued artifact waits for: one the next
+        dispatch would hand to that executor were its runtime ready. The same
+        gate functions every dispatch path reads (``_dispatch``, this class's
+        pre-gate, ``_dispatch_claimed``), reads only -- the transfer admitted
+        (not terminal, not paused, not globally paused) and dispatch permitted;
+        queued, no execution, due; the selected candidate's provider enabled,
+        its first claimant this identity, not expired, its quota not held;
+        no failed route replacement; materialization authorized (PROCEED).
+        Deliberately a superset of what dispatch admits: capacity, queue rank,
+        possession, fresh-material issuance and ``prepare`` are not asked --
+        a full slot keeps the executor's runtime up for the work behind it."""
+        if not self.dispatch_permitted:
+            return frozenset()
+        now, waiting = self.clock(), set()
+        for transfer in await self.repository.active():
+            if not await self._live(transfer.id, admission=True):
+                continue
+            for artifact in await self.repository.artifacts(transfer.id):
+                if (artifact.state != "queued" or artifact.execution is not None or artifact.retry_at > now
+                        or not 0 <= artifact.selected < len(artifact.candidates)):
+                    continue
+                candidate = artifact.candidates[artifact.selected]
+                claimants = self.registry.claimants(ExecutionSubject.of(candidate))
+                if not claimants:
+                    continue
+                identity = str(claimants[0].descriptor.id)
+                if identity in waiting:
+                    continue                                  # identity first: each answered once
+                if (self._dispatch_readiness(candidate) is not None
+                        or await self._quota_held(artifact, candidate, reserve=False)
+                        or await self.repository.route_replacement_failure(artifact.id) is not None
+                        or (await self.repository.materialization_authorization(artifact)).kind
+                        != MaterializationAdmissionKind.PROCEED):
+                    continue
+                waiting.add(identity)
+        return frozenset(waiting)
 
     @staticmethod
     def _executor_wait_error(executor_id: str = "") -> NormalizedError:
@@ -615,13 +675,9 @@ class TransferEngine(_QualifiedTransferEngine):
             await self.repository.artifact_state(current.id, "unresolved", release=True)
             await self.repository.retry_requests(current.transfer_id, request_id=current.request_id)
             return True
-        if not self._candidate_provider_enabled(candidate):
+        if self._dispatch_readiness(candidate) is not None:
             return False
-        if not self.registry.claimants(ExecutionSubject.of(candidate)):
-            return False
-        if candidate.expires_at is not None and candidate.expires_at <= self.clock():
-            return False
-        if await self._quota_admit(current, candidate) is not None:
+        if await self._quota_held(current, candidate, reserve=True):
             # Its provider quota scope is held: the scheduler's dispatch
             # routes it to recovery, which goes on elsewhere or waits.
             return False
@@ -1012,7 +1068,7 @@ class TransferEngine(_QualifiedTransferEngine):
                          retirement_reason=retirement_reason)
 
         candidate = self._candidate(current)
-        if candidate is not None and candidate.expires_at is not None and candidate.expires_at <= self.clock():
+        if candidate is not None and self._candidate_past_expiry(candidate):
             expiry = NormalizedError(
                 Domain.RESOLUTION,
                 Category.CANDIDATE_EXPIRED,
@@ -2334,19 +2390,20 @@ class TransferEngine(_QualifiedTransferEngine):
     async def _dispatch(self, artifact: Artifact, *, reason: str = "admission"):
         """Route pre-execution readiness failures through canonical recovery."""
         candidate = self._candidate(artifact)
-        if candidate is not None and not self._candidate_provider_enabled(candidate):
+        readiness = self._dispatch_readiness(candidate) if candidate is not None else None
+        if readiness == "provider":
             return await self.recover_artifact(
                 artifact,
                 trigger=RecoveryTrigger.AUTO_RETRY,
                 error=self._provider_wait_error(candidate),
             )
-        if candidate is not None and not self.registry.claimants(ExecutionSubject.of(candidate)):
+        if readiness == "executor":
             return await self.recover_artifact(
                 artifact,
                 trigger=RecoveryTrigger.AUTO_RETRY,
                 error=self._executor_wait_error(),
             )
-        if candidate is not None and candidate.expires_at is not None and candidate.expires_at <= self.clock():
+        if readiness == "expired":
             error = NormalizedError(
                 Domain.RESOLUTION,
                 Category.CANDIDATE_EXPIRED,
@@ -2360,7 +2417,7 @@ class TransferEngine(_QualifiedTransferEngine):
                 trigger=RecoveryTrigger.AUTO_RETRY,
                 error=error,
             )
-        if candidate is not None and await self._quota_admit(artifact, candidate) is not None:
+        if candidate is not None and await self._quota_held(artifact, candidate, reserve=True):
             # The provider is not asked while the source's quota scope is held
             # (or another file holds its requalification turn): recovery goes
             # on through another source, or waits for the requalification.

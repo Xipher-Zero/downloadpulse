@@ -30,7 +30,10 @@ def test_provider_status_owner_is_provider_neutral():
 def test_operational_health_is_derived_from_member_observations_not_enablement():
     assert "configured ? 'healthy'" not in STATUS
     assert "enabled ? 'healthy'" not in STATUS
-    assert "enabled.every(entry => entry.state === 'healthy')" in STATUS
+    # Healthy only when every member's own observation is healthy -- or Idle,
+    # which is as ready (1.0.5 WS9: its service starts when work needs it).
+    assert "enabled.every(entry => ['healthy', 'idle'].includes(entry.state))" in STATUS
+    assert "enabled.every(entry => entry.state === 'idle')" in STATUS
     assert "enabled.some(entry => ['unhealthy', 'auth_required'].includes(entry.state))" in STATUS
     assert "enabled.length !== entries.length" in STATUS
     assert "await api('GET', candidate.endpoint)" in STATUS
