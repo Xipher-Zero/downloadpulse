@@ -1,6 +1,54 @@
 # Changelog
 
-## [1.0.5] — Development
+## [1.0.5] — A lighter desktop that comes back as you left it, and Usenet only when it is needed
+
+### Added
+
+- **Choose whether a provider imports downloads started elsewhere.** Each premium service
+  (AllDebrid, Debrid-Link, Premiumize, Real-Debrid, TorBox) has **Import Downloads Started
+  Elsewhere** in its Additional Settings. It is on by default, as before: a download on your
+  account that another installation (or the service's own website) started is added here too.
+  Turned off, only this installation's own downloads are followed, so a torrent your server
+  started no longer appears in your desktop application.
+- **A desktop window reopened from the tray says what happened while it was away (Linux).** One notice names what
+  completed, what failed and what needs attention, and points to the Activity Log for the rest.
+  When nothing happened, nothing is said.
+
+### Changed
+
+- **The Linux desktop frees its window's memory while it sits in the tray.** A window hidden
+  for 10 minutes is closed behind the scenes and opened again from the tray as it was: the
+  same page, filters, search, place in the list, open Details, Settings or Help section, Quick
+  Add draft and dashboard pulse. A window that would lose something (a setting not yet saved, an
+  open dialog, a sign-in under way) is kept as it is. In our testing an idle desktop dropped from
+  600–1000 MB to about 150–180 MB.
+- **A window reopened from the tray opens as soon as it is ready (Linux).** It shows no
+  three-second loading screen; it draws one only if loading takes longer than half a second. A
+  cold start keeps its loading screen.
+- **The window's first frame follows the theme.** It is black in dark mode and white in light
+  mode when the application starts (Linux and Windows), instead of a white flash.
+- **SABnzbd runs only while it is needed.** With Usenet enabled, the bundled SABnzbd starts for
+  a server test or an NZB and stops one minute after its last work. Provider Status shows it as
+  **Idle** (blue): a new NZB starts it again.
+- **Less memory and faster page loads.** On Linux the server and the desktop keep fewer malloc
+  arenas; the desktop supervisor no longer loads a web framework and every language to show its
+  tray words; a dashboard sparkline repaints in its own layer; and scripts and stylesheets are
+  cached until they change, so a page opened again loads most of them from the browser's cache.
+  The desktop window keeps its port between launches so that cache survives.
+- **The update badge floats in the page's bottom-right corner.** Its x hides it in this browser
+  until the next update check. It is not shown on screens narrower than 780px.
+
+### Fixed
+
+- **Show in folder works in the Linux desktop.** It opens your file manager with the file
+  selected; before, the Flatpak's sandbox refused the request.
+- **A video offered only with DRM says so.** Details reported "Requested format is not
+  available"; it now says the media is DRM protected, which DownloadPulse cannot download.
+
+### Known limitations
+
+- **A window reopened from the tray can flash white for an instant.** On Linux, after the window
+  was released, it can show white before the page draws, whatever the theme.
 
 ## [1.0.4] — A server secured from its first run, and signed-in YouTube downloads again
 
