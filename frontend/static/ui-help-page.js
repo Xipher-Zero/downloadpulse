@@ -1192,10 +1192,40 @@ ${adminSees('download-behavior-advanced') ? `<p ${keyed('help.trouble.download_s
     document.dispatchEvent(new CustomEvent('downloadpulse:help-rendered', {detail: {view: 'help'}}));
   }
 
-  // The one Help entry (app.js navigation): every entry opens on Quick Start.
+  /* The desktop window's state (DPWindowState): a released window comes back
+   * to the section it showed, its open accordions and its scroll. An
+   * accordion is named by its section and its place there -- the manual
+   * composed for the same reader (signature) has the same accordions in the
+   * same places; composed for another, none is reopened. */
+  const accordions = view => Array.from(view.querySelectorAll('.dp-help-panel:not(.dp-motion-still *)'))
+    .flatMap(section => Array.from(section.querySelectorAll('details.dp-help-accordion'))
+      .map((details, index) => [`${section.dataset.panel}:${index}`, details]));
+  window.DPWindowState.register('help', {capture() {
+    const view = root();
+    if (!view?.dataset.dpHelpRendered) return undefined;
+    return {shown: view.classList.contains('active'), tab: state.activeTab, signature: view.dataset.dpHelpRendered,
+      open: accordions(view).filter(([, details]) => details.open && details.dataset.dpClosing !== '1').map(([name]) => name),
+      scroll: view.querySelector('.dp-help-scroll')?.scrollTop || 0};
+  }});
+
+  // The one Help entry (app.js navigation): every entry opens on Quick Start
+  // -- or, a released desktop window, on what it showed.
   function load() {
-    state.activeTab = 'quickstart';
+    const restore = window.DPWindowState.take('help');
+    const restoring = restore && typeof restore === 'object' && restore.shown;
+    state.activeTab = restoring && typeof restore.tab === 'string' ? restore.tab : 'quickstart';
     render();
+    const view = root();
+    if (!restore || typeof restore !== 'object' || !view) return;
+    // Every accordion as it was -- opened, or closed though open by default --
+    // whichever page was shown: an unreleased window keeps its composed manual.
+    if (restore.signature === view.dataset.dpHelpRendered && Array.isArray(restore.open)) {
+      const open = new Set(restore.open);
+      for (const [name, details] of accordions(view)) details.open = open.has(name);
+    }
+    if (!restoring) return;
+    const scroller = view.querySelector('.dp-help-scroll');
+    if (scroller && Number.isFinite(restore.scroll)) scroller.scrollTop = restore.scroll;
   }
 
   // Fonts that finish loading change the tabs' and the copy's own widths.

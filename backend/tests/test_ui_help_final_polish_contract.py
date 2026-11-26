@@ -132,5 +132,9 @@ def test_help_header_is_one_row_through_the_shared_section_navigator():
     assert "+ (travel.dataset.helpEnd === 'previous' ? -1 : 1);" in travel
     assert "chooseTab(target.dataset.tab, document.activeElement === travel && (index === 0 || index === tabs.length - 1), 'travel');" in travel
     assert "tabs[0]" not in travel and "tabs.at(-1)" not in travel
-    # Every entry still opens Quick Start.
-    assert "function load() {\n    state.activeTab = 'quickstart';\n    render();\n  }" in runtime
+    # Every entry still opens Quick Start -- except the one entry of a released
+    # desktop window, which takes the section it showed (1.0.5 WS8b4) and then
+    # composes as every entry does.
+    assert ("    state.activeTab = restoring && typeof restore.tab === 'string' ? restore.tab : 'quickstart';\n"
+            "    render();\n") in runtime
+    assert "const restoring = restore && typeof restore === 'object' && restore.shown;" in runtime

@@ -490,3 +490,151 @@ test('A08: while a page is being asked for, the Activity Log keeps the window', 
   release();
   await expect.poll(() => releasable(page)).toBe(true);
 });
+
+// ── WS8b4: Settings and Help ────────────────────────────────────────────
+// The page's own answer, then a second window relaunched from exactly that answer.
+async function answerOf(page, seen, nonce) {
+  await expect.poll(() => releasable(page)).toBe(true);
+  await page.evaluate(nonce => window.DPWindowState.answer(nonce), nonce);
+  await expect.poll(() => seen.puts.length).toBeGreaterThan(0);
+  return seen.puts[seen.puts.length - 1].state;
+}
+async function relaunched(page, state, {height = 900} = {}) {
+  const again = await page.context().newPage();
+  await asDesktop(again, {restore: {state, since: 1}});
+  await load(again, '/', {height});
+  return again;
+}
+const settingsScroll = page => page.evaluate(() => document.querySelector('#view-settings .dp-settings-scroll')?.scrollTop || 0);
+
+test('T01: Settings comes back to its tab and scroll', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/settings', {height: 600});
+  await page.locator('#view-settings .stab[data-tab="downloads"]').click();
+  await expect(page.locator('#view-settings .stab[data-tab="downloads"]')).toHaveAttribute('aria-selected', 'true');
+  await page.evaluate(() => { const s = document.querySelector('#view-settings .dp-settings-scroll'); if (s) s.scrollTop = 180; });
+  const scrolled = await settingsScroll(page);
+  const state = await answerOf(page, seen, 'nonce-t1');
+  expect(state.owners.settings.tab).toBe('downloads');
+  const again = await relaunched(page, state, {height: 600});
+  await expect(again.locator('#view-settings')).toHaveClass(/\bactive\b/);
+  await expect(again.locator('#view-settings .stab[data-tab="downloads"]')).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => settingsScroll(again)).toBe(scrolled);
+});
+
+test('T02: a provider card opened on Services comes back open; an ordinary entry still opens it closed', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/settings');
+  const chip = page.locator('#view-settings .dp-settings-provider-card .dp-settings-disclosure').first();
+  await expect(chip).toHaveAttribute('aria-expanded', 'false');
+  const body = await chip.getAttribute('aria-controls');
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-expanded', 'true');
+  const state = await answerOf(page, seen, 'nonce-t2');
+  expect(state.owners.settings.open).toContain(body);
+  const again = await relaunched(page, state);
+  await expect(again.locator(`#view-settings .dp-settings-disclosure[aria-controls="${body}"]`)).toHaveAttribute('aria-expanded', 'true');
+  await expect(again.locator(`#${body}`)).toBeVisible();
+  // Taken once: the next entry is an ordinary one.
+  await again.locator('#sidebar .nav-item[data-view="dashboard"]').click();
+  await again.locator('#sidebar .nav-item[data-view="settings"]').click();
+  await expect(again.locator(`#view-settings .dp-settings-disclosure[aria-controls="${body}"]`)).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('T03: a Settings value not yet saved keeps the window', async ({page}) => {
+  await asDesktop(page);
+  await load(page, '/settings');
+  await page.locator('#view-settings .stab[data-tab="downloads"]').click();
+  await expect.poll(() => releasable(page)).toBe(true);
+  const field = page.locator('#view-settings input[type="text"][data-commit-key]:visible, #view-settings input[type="number"][data-commit-key]:visible').first();
+  await field.click();
+  await field.press('End');
+  await field.type('7');
+  expect(await releasable(page)).toBe(false);
+});
+
+test('H01: Help comes back to its section, open accordions and scroll', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/help', {height: 600});
+  await page.locator('#view-help .dp-help-tab[data-tab="trouble"]').click();
+  await expect(page.locator('#view-help .dp-help-panel[data-panel="trouble"]')).toBeVisible();
+  const summary = page.locator('#view-help .dp-help-panel[data-panel="trouble"] details.dp-help-accordion > summary').nth(1);
+  await summary.click();
+  await expect.poll(() => page.evaluate(() => document.querySelectorAll('#view-help .dp-help-panel[data-panel="trouble"] details.dp-help-accordion')[1].open)).toBe(true);
+  await page.evaluate(() => { document.querySelector('#view-help .dp-help-scroll').scrollTop = 150; });
+  const scrolled = await page.evaluate(() => document.querySelector('#view-help .dp-help-scroll').scrollTop);
+  const state = await answerOf(page, seen, 'nonce-h1');
+  expect(state.owners.help.open).toContain('trouble:1');
+  const again = await relaunched(page, state, {height: 600});
+  await expect(again.locator('#view-help .dp-help-panel[data-panel="trouble"]')).toBeVisible();
+  // Every accordion of every section as the released window had it (opened by the person, or open by default).
+  const accordionStates = p => p.evaluate(() => [...document.querySelectorAll('#view-help details.dp-help-accordion')].map(d => d.open));
+  expect(await accordionStates(again)).toEqual(await accordionStates(page));
+  await expect.poll(() => again.evaluate(() => document.querySelector('#view-help .dp-help-scroll').scrollTop)).toBe(scrolled);
+});
+
+test('T04: the Users tab comes back to its scroll once its accounts are drawn', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/settings', {height: 600});
+  await page.locator('#view-settings .stab[data-tab="users"]').click();
+  await expect(page.locator('#view-settings .stab[data-tab="users"]')).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => page.evaluate(() => { const s = document.querySelector('#view-settings .dp-settings-scroll'); return s.scrollHeight - s.clientHeight; })).toBeGreaterThan(300);
+  await page.evaluate(() => { document.querySelector('#view-settings .dp-settings-scroll').scrollTop = 300; });
+  const scrolled = await settingsScroll(page);
+  expect(scrolled).toBeGreaterThan(0);
+  const again = await relaunched(page, await answerOf(page, seen, 'nonce-t4'), {height: 600});
+  await expect(again.locator('#view-settings .stab[data-tab="users"]')).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => settingsScroll(again)).toBe(scrolled);
+});
+
+test('T05: a provider sign-in showing its code keeps the window', async ({page}) => {
+  await asDesktop(page);
+  // A labelled mock of the provider's device authorization (no provider here).
+  await page.route(url => /\/api\/integrations\/(realdebrid|torbox)\/authorization$/.test(url.pathname), route =>
+    route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({state: 'pending', user_code: 'ABCD1234',
+      verification_url: 'https://example.com/device', interval: 600, expires_in: 1800})}));
+  await load(page, '/settings');
+  await expect.poll(() => releasable(page)).toBe(true);
+  const connect = page.locator('#view-settings [data-action^="connect-"]').first();
+  const chip = connect.locator('xpath=ancestor::*[contains(@class,"dp-settings-provider-card")]').locator('.dp-settings-disclosure').first();
+  if (await chip.getAttribute('aria-expanded') !== 'true') await chip.click();
+  await connect.click();
+  await expect(page.locator('#view-settings .dp-settings-account-code').first()).toHaveValue('ABCD1234');
+  // Nothing in flight between polls: only the code itself keeps the window.
+  await page.waitForTimeout(500);
+  expect(await releasable(page)).toBe(false);
+});
+
+test('H02: a default-open accordion the person closed comes back closed', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/help');
+  await page.locator('#view-help .dp-help-tab[data-tab="trouble"]').click();
+  const first = page.locator('#view-help .dp-help-panel[data-panel="trouble"] details.dp-help-accordion').first();
+  test.skip(!(await first.evaluate(d => d.open)), 'no default-open accordion in this section');
+  await first.locator('> summary').click();
+  await expect.poll(() => first.evaluate(d => d.open)).toBe(false);
+  const again = await relaunched(page, await answerOf(page, seen, 'nonce-h2'));
+  await expect(again.locator('#view-help .dp-help-panel[data-panel="trouble"]')).toBeVisible();
+  expect(await again.locator('#view-help .dp-help-panel[data-panel="trouble"] details.dp-help-accordion').first().evaluate(d => d.open)).toBe(false);
+});
+
+test('H03: released on another page, Help and Settings keep what they kept for the next visit', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/help');
+  const states = p => p.evaluate(() => [...document.querySelectorAll('#view-help details.dp-help-accordion')].map(d => d.open));
+  // Open an accordion closed by default in Troubleshooting, then leave Help for the Dashboard.
+  await page.locator('#view-help .dp-help-tab[data-tab="trouble"]').click();
+  const second = page.locator('#view-help .dp-help-panel[data-panel="trouble"] details.dp-help-accordion').nth(1);
+  expect(await second.evaluate(d => d.open)).toBe(false);
+  await second.locator('> summary').click();
+  await expect.poll(() => second.evaluate(d => d.open)).toBe(true);
+  const kept = await states(page);
+  await page.locator('#sidebar .nav-item[data-view="dashboard"]').click();
+  await expect(page.locator('#view-dashboard')).toHaveClass(/\bactive\b/);
+  const state = await answerOf(page, seen, 'nonce-h3');
+  expect(state.route).toBe('/');
+  const again = await relaunched(page, state);
+  await again.locator('#sidebar .nav-item[data-view="help"]').click();
+  await expect(again.locator('#view-help')).toHaveClass(/\bactive\b/);
+  expect(await states(again)).toEqual(kept);
+});

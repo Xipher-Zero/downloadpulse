@@ -9077,14 +9077,79 @@
     }
   }
 
-  // The one Settings entry (app.js navigation): every entry opens on Services.
+  /* The desktop window's state (DPWindowState). A released window comes back
+   * to the tab it showed, the disclosures open in it (the remembered choices,
+   * and the cards and Additional Settings opened this visit) and its scroll.
+   * A value not yet saved -- a field, a carried draft, the credential draft --
+   * or anything under way (a load, an OIDC window) is nothing a relaunch could
+   * bring back faithfully: it keeps the window instead. */
+  window.DPWindowState.register('settings', {
+    releasable() {
+      if (state.loading || state.oidc.popup || drafts.size) return false;
+      // A provider sign-in showing its code: the code lives only here, and a relaunch could not resume it.
+      if (Object.values(deviceConnections).some(connection => connection.authorization)) return false;
+      const view = root();
+      return !view || ![...view.querySelectorAll(DRAFTABLE)].some(control => draftIdentity(control) && unsaved(control));
+    },
+    capture() {
+      const view = root();
+      if (!view || !view.querySelector('.dp-settings-master-card, .stab')) return undefined;
+      return {
+        shown: settingsActive(), tab: state.activeTab, viewport: captureSettingsViewport(),
+        choices: [...disclosureChoices],
+        open: [...view.querySelectorAll('.dp-settings-disclosure:not([data-disclosure-persist])')]
+          .filter(button => button.getAttribute('aria-expanded') === 'true')
+          .map(button => button.getAttribute('aria-controls')).filter(Boolean),
+        additional: [...view.querySelectorAll('details.dp-settings-additional[open]:not([data-dp-closing="1"])')]
+          .map(details => details.parentElement?.closest('[id]')?.id).filter(Boolean),
+      };
+    },
+  });
+  // What a restored entry starts from: its tab and remembered choices are the
+  // render's own inputs; the opened bodies and the scroll follow the last render.
+  // The remembered choices last the page's lifetime, so they come back whichever
+  // page was shown; the tab, the cards opened this visit and the scroll only
+  // where Settings was the page shown (otherwise the entry is an ordinary one).
+  function restoredEntry() {
+    const restore = window.DPWindowState.take('settings');
+    if (!restore || typeof restore !== 'object') return null;
+    for (const entry of Array.isArray(restore.choices) ? restore.choices : []) {
+      if (Array.isArray(entry) && typeof entry[0] === 'string') disclosureChoices.set(entry[0], entry[1] === true);
+    }
+    return restore.shown ? restore : null;
+  }
+  function reopen(restore) {
+    const view = root();
+    // A tab the person has chosen since (a slow read past the starting cover) is theirs.
+    if (!view || !settingsActive() || state.activeTab !== tabName(restore.tab)) return;
+    for (const id of Array.isArray(restore.open) ? restore.open : []) {
+      const button = typeof id === 'string' && view.querySelector(`.dp-settings-disclosure[aria-controls="${CSS.escape(id)}"]`);
+      if (button && button.getAttribute('aria-expanded') !== 'true') setDisclosureExpanded(button, true);
+    }
+    for (const id of Array.isArray(restore.additional) ? restore.additional : []) {
+      const details = typeof id === 'string' && document.getElementById(id)?.querySelector('details.dp-settings-additional');
+      if (details && view.contains(details)) details.open = true;
+    }
+    if (restore.viewport && typeof restore.viewport === 'object') {
+      restoreSettingsViewport(restore.viewport);
+      if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => restoreSettingsViewport(restore.viewport));
+    }
+  }
+
+  // The one Settings entry (app.js navigation): every entry opens on Services
+  // -- or, a released desktop window, on what it showed.
   async function load() {
     if (selfContext()) return loadOwnNotifications();
     drafts.clear();
-    state.activeTab = 'sources';
+    const restore = restoredEntry();
+    state.activeTab = restore && typeof restore.tab === 'string' ? restore.tab : 'sources';
     document.getElementById('content')?.classList.remove('settings-active');
 
     if (state.loading) return state.loading;
+    // A restored entry is finished -- after the page's last render -- behind the
+    // starting cover; any entry that ends sooner (no page, a failed read) ends it too.
+    let finish = () => {}, reopening = false;
+    if (restore) window.DPWindowState.hold(new Promise(resolve => { finish = resolve; }));
     const generation = ++loadGeneration;
     state.loading = (async () => {
       const view = root();
@@ -9115,7 +9180,11 @@
       state.users = {accounts: null, tokens: {}, error: ''};
       state.profiles = {catalog: null, error: ''};
       render();
-      void loadUsers();
+      const usersRead = loadUsers();
+      reopening = !!restore;
+      // After the page's last renders: auth's, and the Users panel's own read (it paints once its accounts are in).
+      if (restore) void Promise.allSettled([authPromise, usersRead]).then(() => new Promise(resolve => setTimeout(resolve, 0)))
+        .then(() => { if (generation === loadGeneration) reopen(restore); }).finally(finish);
 
       void recordedPromise.then(recorded => {
         if (generation === loadGeneration) showRecordedEvents(recorded);
@@ -9133,6 +9202,7 @@
       });
     })().finally(() => {
       state.loading = null;
+      if (!reopening) finish();
     });
     return state.loading;
   }
@@ -9142,8 +9212,12 @@
   async function loadOwnNotifications() {
     drafts.clear();
     state.activeTab = 'notifications';
+    const restore = restoredEntry();
     document.getElementById('content')?.classList.remove('settings-active');
     if (state.loading) return state.loading;
+    // A restored entry comes back to its scroll and open sections behind the starting cover.
+    let finish = () => {};
+    if (restore) window.DPWindowState.hold(new Promise(resolve => { finish = resolve; }));
     const generation = ++loadGeneration;
     state.loading = (async () => {
       const view = root();
@@ -9162,8 +9236,10 @@
       if (generation !== loadGeneration || !settingsActive()) return;
       syncNotificationDocument(own);
       renderOwnNotifications();
+      if (restore) reopen({...restore, tab: 'notifications'});
     })().finally(() => {
       state.loading = null;
+      finish();
     });
     return state.loading;
   }
