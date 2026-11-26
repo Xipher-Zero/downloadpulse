@@ -66,6 +66,8 @@ RELEASE_AFTER_SECONDS = 600
 RELEASE_RETRY_SECONDS = 60
 # A relaunch's own bound (Open after a release), well inside READY_SECONDS.
 RELAUNCH_SECONDS = 20
+# How long a spawn waits for the interface's mode (its background) before opening on the default.
+APPEARANCE_SECONDS = 2
 # The shell's run-scoped cookie store (DOWNLOADPULSE_COOKIE_STORE): the sign-in
 # outlives a relaunch within one run, never a new run.
 COOKIE_STORE = "shell-cookies"
@@ -1256,7 +1258,15 @@ def shell_binary_path(shell_dir: Path, platform: str = sys.platform) -> Path:
     return shell_dir / "downloadpulse-shell"
 
 
-def shell_environment(root: Path, environ=None, platform: str = sys.platform) -> dict[str, str]:
+# What the window's view shows before its page paints, in the interface's mode
+# (op ``appearance``): Linux through linux-background.patch, Windows through
+# WebView2's documented default-background override (AARRGGBB). An unknown
+# mode, or none, leaves each platform's own.
+SHELL_BACKGROUNDS = {"dark": ("#000000", "FF000000"), "light": ("#ffffff", "FFFFFFFF")}
+
+
+def shell_environment(root: Path, environ=None, platform: str = sys.platform, *,
+                      mode: str | None = None) -> dict[str, str]:
     """The native shell's environment: this process's own, plus
       - Windows: its WebView2 profile inside DownloadPulse's data root
         (Microsoft's documented override, not Neutralino's default
@@ -1266,13 +1276,22 @@ def shell_environment(root: Path, environ=None, platform: str = sys.platform) ->
         drew stale and blank frames as a page change ended (measured in the
         GNOME 49 runtime's WebKitGTK 2.54.1 on KDE Wayland; compositing stays
         on). Where the person running DownloadPulse has set it, their value
-        stands."""
+        stands;
+      - Linux and Windows: the view's background before its page paints, in
+        the interface's ``mode`` (``SHELL_BACKGROUNDS``), never a white frame
+        on a dark interface."""
     environ = os.environ if environ is None else environ
     env = {**environ, "PATH": environ.get("PATH", "")}
     if platform == "win32":
         env["WEBVIEW2_USER_DATA_FOLDER"] = str(root / "webview2")
     elif platform.startswith("linux"):
         env.setdefault("WEBKIT_USE_SKIA_FOR_COMPOSITION", "0")
+    if mode in SHELL_BACKGROUNDS:
+        linux, windows = SHELL_BACKGROUNDS[mode]
+        if platform == "win32":
+            env["WEBVIEW2_DEFAULT_BACKGROUND_COLOR"] = windows
+        elif platform.startswith("linux"):
+            env["DOWNLOADPULSE_BACKGROUND"] = linux
     return env
 
 
@@ -1576,7 +1595,10 @@ async def _run(paths: dict[str, Path], root: Path, config_path: Path, words: Wor
             # one owner launches it -- now, and again after a release (Window).
             clear_cookie_store(root / "desktop-runtime")   # a new run asks for sign-in, as ever
             logs.append(ChildLog(root / "logs" / "shell.log"))
-            window = Window(session=session, processes=processes, paths=paths, root=root, port=port, log=logs[1])
+            async def appearance() -> str | None:
+                return (await channel.ask("appearance")).get("mode")
+            window = Window(session=session, processes=processes, paths=paths, root=root, port=port, log=logs[1],
+                            appearance=appearance)
             try:
                 await window.spawn(time.monotonic() + READY_SECONDS)
                 if sys.platform.startswith("linux"):
@@ -1643,8 +1665,10 @@ class Window:
     current one's end can mean Quit."""
 
     def __init__(self, *, session=None, processes=None, paths=None, root: Path | None = None, port: int = 0,
-                 events: asyncio.Queue | None = None, log: "ChildLog | None" = None):
+                 events: asyncio.Queue | None = None, log: "ChildLog | None" = None, appearance=None):
         self.session, self.processes, self.paths, self.root, self.port = session, processes, paths, root, port
+        # ``appearance() -> mode``: the interface's mode, asked at each spawn (the backend's op).
+        self.appearance = appearance
         self.events: asyncio.Queue = events if events is not None else asyncio.Queue()
         self.log, self.drains = log, []
         self.shell: Shell | None = None
@@ -1672,7 +1696,7 @@ class Window:
         binary = shell_binary_path(self.paths["shell"])
         shell = Shell(self.session, self.events, generation=self.generation + 1)
         shell.binary = str(binary)
-        env = shell_environment(self.root)
+        env = shell_environment(self.root, mode=await self._mode())
         if sys.platform.startswith("linux"):
             runtime = self.root / "desktop-runtime"
             private_directory(runtime)
@@ -1688,6 +1712,23 @@ class Window:
         # Owned from its spawn: whatever happens next, Quit ends it (``end``).
         self.shell, self.owned, self.generation = shell, owned, shell.generation
         await shell.connect(auth_file, deadline, owned)
+
+    async def _mode(self) -> str | None:
+        """The interface's mode now, or None (unknown: each platform's own background).
+
+        A slow answer is waited for at most APPEARANCE_SECONDS, but never
+        cancelled: an ask in flight keeps the channel (its lock and its answer
+        line) until its answer is read, so the next request never reads it."""
+        if self.appearance is None:
+            return None
+        try:
+            asked = asyncio.ensure_future(self.appearance())
+            asked.add_done_callback(lambda task: task.cancelled() or task.exception())   # read, never logged
+            return await asyncio.wait_for(asyncio.shield(asked), APPEARANCE_SECONDS)
+        except Exception as exc:  # noqa: BLE001 -- a background is never worth a failed launch
+            logger.warning("the interface's mode is unknown; the window opens on its default background: %s",
+                           exc or type(exc).__name__)
+            return None
 
     async def call(self, method: str, data: dict | list | None = None) -> None:
         if self.shell is not None:

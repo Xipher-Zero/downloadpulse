@@ -231,3 +231,24 @@ html[data-dp-desktop-lifting] .dp-desktop-start {
 html:not([data-dp-desktop-lettered]) :is(.dp-desktop-start-brand, .dp-desktop-start-text) {
   visibility: hidden;
 }
+
+/* A window opened again from the tray (data-dp-desktop-resuming, 1.0.5): the
+   page waits hidden on its own background, in the theme in force, and the
+   cover draws -- its artwork and words fading in -- only once 500ms have
+   passed without the interface being ready; ready sooner, the interface simply
+   opens. Hidden by opacity, which no descendant can undo (a visibility a
+   descendant sets would show it); the cover, transparent meanwhile, still
+   covers the page and takes its clicks. */
+html[data-dp-desktop-resuming] body > :not(.dp-desktop-start) {
+  opacity: 0;
+}
+html[data-dp-desktop-resuming] .dp-desktop-start {
+  animation: dp-desktop-start-draw 160ms ease 500ms both;
+}
+@keyframes dp-desktop-start-draw {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-dp-desktop-resuming] .dp-desktop-start { animation-duration: 1ms; }
+}

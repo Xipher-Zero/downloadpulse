@@ -20,6 +20,13 @@
  * navigation's own clock): an interface ready sooner waits out the rest, one
  * ready later lifts it at once -- never a fixed wait added to a slow start.
  *
+ * A window opened again from the tray after its release (1.0.5: the server
+ * says so before the first paint, window.downloadPulseResuming) is not a cold
+ * start: no minimum, and no fade -- the interface shows the moment it is
+ * ready. Until then the page stays hidden on its own background, and the
+ * cover's artwork and words draw only if it is still not ready after
+ * RESUME_DRAW_MS (ui-desktop-start.css), so a quick reopen just opens.
+ *
  * Its words are drawn once, in the face they are set in: the title and the
  * message wait (keeping their place; their line heights are fixed, so the
  * card's size does not depend on the face) until Outfit has loaded -- the
@@ -39,6 +46,7 @@
   const STARTING = 'data-dp-desktop-starting';
   const LIFTING = 'data-dp-desktop-lifting';
   const LETTERED = 'data-dp-desktop-lettered';
+  const RESUMING = 'data-dp-desktop-resuming';
   const FACE_WAIT_MS = 1000;
   const READY_EVENT = 'downloadpulse:interface-ready';
   const MIN_SHOWN_MS = 3000;
@@ -60,6 +68,8 @@
   }
 
   root.setAttribute(STARTING, '');
+  const resuming = window.downloadPulseResuming === true;
+  if (resuming) root.setAttribute(RESUMING, '');
   // The words show once the face their own style names has loaded (each
   // weight and size they are set in), or at FACE_WAIT_MS; a page with no
   // such face (offline) shows them at once. Read once they are parsed.
@@ -86,10 +96,11 @@
     const done = () => {
       root.removeAttribute(LIFTING);
       root.removeAttribute(STARTING);
+      root.removeAttribute(RESUMING);
       document.getElementById('dp-desktop-start')?.remove();
       resolveLifted(reason);
     };
-    if (still) { done(); return; }
+    if (still || resuming) { done(); return; }
     root.setAttribute(LIFTING, '');
     setTimeout(done, FADE_MS);
   }
@@ -99,8 +110,8 @@
     lift('failsafe');
   }, LIFT_AFTER_MS);
   document.addEventListener(READY_EVENT, () => {
-    setTimeout(() => lift('ready'), Math.max(0, MIN_SHOWN_MS - performance.now()));
+    setTimeout(() => lift('ready'), resuming ? 0 : Math.max(0, MIN_SHOWN_MS - performance.now()));
   }, {once: true});
 
-  window.DPDesktopStart = Object.freeze({active: true, lifted, diagnostics: () => problems.slice()});
+  window.DPDesktopStart = Object.freeze({active: true, resuming, lifted, diagnostics: () => problems.slice()});
 })();

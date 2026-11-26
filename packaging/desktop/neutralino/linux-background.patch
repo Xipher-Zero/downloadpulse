@@ -1,0 +1,21 @@
+diff --git a/lib/webview/webview.h b/lib/webview/webview.h
+index 01d263e..638d3db 100755
+--- a/lib/webview/webview.h
++++ b/lib/webview/webview.h
+@@ -343,6 +343,16 @@ public:
+     else {
+       GtkStyleContext* context = gtk_widget_get_style_context(m_window);
+       gtk_style_context_lookup_color(context, "theme_bg_color", &color);
++      // DownloadPulse: what the view shows before its page paints, in the
++      // interface's own mode (DOWNLOADPULSE_BACKGROUND, set by the supervisor:
++      // "#000000" dark, "#ffffff" light), so a dark interface never opens on
++      // a white frame. Unset or unparseable: the GTK theme's, as before.
++      if(const char *background = std::getenv("DOWNLOADPULSE_BACKGROUND")) {
++        GdkRGBA chosen;
++        if(gdk_rgba_parse(&chosen, background)) {
++          color = chosen;
++        }
++      }
+     }
+     webkit_web_view_set_background_color((WebKitWebView*)(m_webview), &color);
+ 

@@ -49,11 +49,13 @@ finish-args:
 modules:
   # The native shell: Neutralino 6.10.0 built from its pinned source (the tag's
   # tree, commit 4361b63eb1157fc7dedb29b92815a08ec0002767) with DownloadPulse's
-  # two Linux patches (packaging/desktop/neutralino/): linux-gtk-main-thread.patch
+  # three Linux patches (packaging/desktop/neutralino/): linux-gtk-main-thread.patch
   # (window methods and the tray run on the GTK main loop, where GTK requires
   # them; the released binary calls GTK from its WebSocket thread) and
   # linux-cookie-store.patch (1.0.5: a run-scoped cookie store the supervisor
-  # names, so the sign-in outlives a relaunch of the window within one run),
+  # names, so the sign-in outlives a relaunch of the window within one run) and
+  # linux-background.patch (1.0.5: the view's background before its page paints
+  # is the interface's mode, black or white, never the GTK theme's white frame),
   # against this runtime. The downloadpulse module installs it as the shell.
   - name: neutralino
     buildsystem: simple
@@ -70,11 +72,16 @@ modules:
       - type: patch
         path: ../neutralino/linux-cookie-store.patch
         options: ["-p1"]
+      - type: patch
+        path: ../neutralino/linux-background.patch
+        options: ["-p1"]
       # The same patches' bytes, for their digests in the shell's provenance.
       - type: file
         path: ../neutralino/linux-gtk-main-thread.patch
       - type: file
         path: ../neutralino/linux-cookie-store.patch
+      - type: file
+        path: ../neutralino/linux-background.patch
     build-commands:
       # Neutralino's CMake links the legacy libstdc++fs, which this toolchain
       # (GCC with std::filesystem inside libstdc++) no longer ships: an empty
@@ -88,9 +95,10 @@ modules:
       # (the commit is the one flatpak-builder verified for the tag).
       - >-
         printf '{"neutralino": "v6.10.0", "commit": "4361b63eb1157fc7dedb29b92815a08ec0002767",
-        "patches": {"linux-gtk-main-thread.patch": "%s", "linux-cookie-store.patch": "%s"}, "architecture": "%s",
+        "patches": {"linux-gtk-main-thread.patch": "%s", "linux-cookie-store.patch": "%s", "linux-background.patch": "%s"}, "architecture": "%s",
         "cmake": "%s", "compiler": "%s", "sdk": "%s", "binary_sha256": "%s"}\n'
         "$(sha256sum linux-gtk-main-thread.patch | cut -d' ' -f1)" "$(sha256sum linux-cookie-store.patch | cut -d' ' -f1)"
+        "$(sha256sum linux-background.patch | cut -d' ' -f1)"
         "$(uname -m)" "$(cmake --version | head -1)"
         "$(gcc --version | head -1)" "$(. /etc/os-release && echo "$NAME $VERSION_ID")"
         "$(sha256sum /app/lib/neutralino/downloadpulse-shell | cut -d' ' -f1)" > /app/lib/neutralino/PROVENANCE.json

@@ -311,16 +311,19 @@ def test_the_flatpak_builds_the_shell_from_the_pinned_commit_with_the_linux_patc
     sources = modules["neutralino"]["sources"]
     assert sources[0] == {"type": "git", "url": "https://github.com/neutralinojs/neutralinojs.git",
                           "tag": "v6.10.0", "commit": NEUTRALINO_COMMIT}
-    # 1.0.5: a second Linux patch (the run-scoped cookie store), applied after the first.
+    # 1.0.5: a second Linux patch (the run-scoped cookie store), then a third (the view's
+    # background in the interface's mode), each applied after the one before.
     assert sources[1] == {"type": "patch", "path": "../neutralino/linux-gtk-main-thread.patch", "options": ["-p1"]}
     assert sources[2] == {"type": "patch", "path": "../neutralino/linux-cookie-store.patch", "options": ["-p1"]}
-    assert sources[3] == {"type": "file", "path": "../neutralino/linux-gtk-main-thread.patch"}
-    assert sources[4] == {"type": "file", "path": "../neutralino/linux-cookie-store.patch"}
+    assert sources[3] == {"type": "patch", "path": "../neutralino/linux-background.patch", "options": ["-p1"]}
+    assert sources[4] == {"type": "file", "path": "../neutralino/linux-gtk-main-thread.patch"}
+    assert sources[5] == {"type": "file", "path": "../neutralino/linux-cookie-store.patch"}
+    assert sources[6] == {"type": "file", "path": "../neutralino/linux-background.patch"}
     # Its provenance (build-macos.sh's schema), recorded in the installed BUILD-INFO.json
     # only once the installed executable is the binary it names.
     provenance = modules["neutralino"]["build-commands"][-1]
     assert f'"commit": "{NEUTRALINO_COMMIT}"' in provenance and "sha256sum linux-gtk-main-thread.patch" in provenance
-    assert "sha256sum linux-cookie-store.patch" in provenance
+    assert "sha256sum linux-cookie-store.patch" in provenance and "sha256sum linux-background.patch" in provenance
     assert "sha256sum /app/lib/neutralino/downloadpulse-shell" in provenance
     record = next(c for c in modules["downloadpulse"]["build-commands"] if "BUILD-INFO.json" in c)
     commands = modules["downloadpulse"]["build-commands"]
@@ -337,7 +340,8 @@ def test_each_patch_is_the_one_its_recipes_pin_and_each_recipe_verifies_the_comm
     import hashlib
     here = ROOT / "packaging/desktop/neutralino"
     digests = {name: hashlib.sha256((here / name).read_bytes()).hexdigest()
-               for name in ("linux-gtk-main-thread.patch", "linux-cookie-store.patch", "macos-main-thread-shutdown.patch",
+               for name in ("linux-gtk-main-thread.patch", "linux-cookie-store.patch", "linux-background.patch",
+                            "macos-main-thread-shutdown.patch",
                             "macos-frame-theme.patch")}
     build, source = (here / "build-macos.sh").read_text(encoding="utf-8"), (here / "source.sh").read_text(encoding="utf-8")
     assert f"PATCH_SHA256={digests['macos-main-thread-shutdown.patch']}" in build
@@ -348,11 +352,14 @@ def test_each_patch_is_the_one_its_recipes_pin_and_each_recipe_verifies_the_comm
     for script in (build, source):
         assert f"COMMIT={NEUTRALINO_COMMIT}" in script and '[ "$(git -C "$work/src" rev-parse HEAD)" = "$COMMIT" ]' in script
     # Each patch keeps to its own system: reviewable apart.
-    linux, cookies, macos, frame = ((here / name).read_text(encoding="utf-8") for name in digests)
+    linux, cookies, background, macos, frame = ((here / name).read_text(encoding="utf-8") for name in digests)
     assert "dispatch_sync" not in linux and "pthread_main_np" in macos and "g_main_context_is_owner" not in macos
     # The cookie store: Linux-only (webview.h's GTK path), named by the supervisor, nothing persistent unless named.
     assert 'std::getenv("DOWNLOADPULSE_COOKIE_STORE")' in cookies and "webkit_cookie_manager_set_persistent_storage" in cookies
     assert "dispatch_sync" not in cookies and "+++ b/lib/webview/webview.h" in cookies
+    # The background (1.0.5): Linux-only, named by the supervisor, the GTK theme's when unset.
+    assert 'std::getenv("DOWNLOADPULSE_BACKGROUND")' in background and "gdk_rgba_parse" in background
+    assert "+++ b/lib/webview/webview.h" in background and "dispatch_sync" not in background
     # The frame patch: one window method, macOS-only behaviour, registered with the router.
     assert '{"window.setFrameTheme", window::controllers::setFrameTheme},' in frame
     assert "setTitlebarAppearsTransparent:" in frame and "#if defined(__APPLE__)" in frame

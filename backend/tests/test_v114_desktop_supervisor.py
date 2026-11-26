@@ -983,6 +983,14 @@ def test_the_shell_composites_with_texturemapper_on_linux_and_a_persons_own_choi
     assert supervisor.shell_environment(tmp_path, base, "win32") == {**base, "WEBVIEW2_USER_DATA_FOLDER": str(tmp_path / "webview2")}
     assert supervisor.shell_environment(tmp_path, base, "darwin") == base
     assert "PATH" in supervisor.shell_environment(tmp_path, {}, "darwin")        # always passed on, empty or not
+    # 1.0.5: the view's background before its page paints is the interface's mode, black or white.
+    assert supervisor.shell_environment(tmp_path, base, "linux", mode="dark")["DOWNLOADPULSE_BACKGROUND"] == "#000000"
+    assert supervisor.shell_environment(tmp_path, base, "linux", mode="light")["DOWNLOADPULSE_BACKGROUND"] == "#ffffff"
+    assert supervisor.shell_environment(tmp_path, base, "win32", mode="dark")["WEBVIEW2_DEFAULT_BACKGROUND_COLOR"] == "FF000000"
+    assert supervisor.shell_environment(tmp_path, base, "win32", mode="light")["WEBVIEW2_DEFAULT_BACKGROUND_COLOR"] == "FFFFFFFF"
+    assert supervisor.shell_environment(tmp_path, base, "darwin", mode="dark") == base       # no patch there
+    for unknown in (None, "sepia"):
+        assert "DOWNLOADPULSE_BACKGROUND" not in supervisor.shell_environment(tmp_path, base, "linux", mode=unknown)
     assert base == {"PATH": "/usr/bin", "HOME": "/home/someone"}                  # the caller's mapping is not changed
 
 
@@ -1160,3 +1168,57 @@ def test_the_portal_is_never_handed_a_symlink(monkeypatch, tmp_path):
     (tmp_path / "film.mkv").symlink_to(tmp_path / "real.mkv")
     monkeypatch.setattr(blocking, "open_dbus_connection", lambda *_a, **_k: pytest.fail("no bus call"))
     assert supervisor.portal_open_directory(str(tmp_path / "film.mkv")) is False
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_asks_the_mode_and_an_unanswered_one_never_fails_the_launch(monkeypatch):
+    """The interface's mode is asked at each spawn (Window.appearance); one that
+    fails or does not answer in APPEARANCE_SECONDS is None: the default
+    background, never a failed window."""
+    import asyncio as _asyncio
+    async def light():
+        return "light"
+    assert await supervisor.Window(appearance=light)._mode() == "light"
+    assert await supervisor.Window()._mode() is None
+    async def broken():
+        raise ConnectionError("the backend's control channel ended")
+    assert await supervisor.Window(appearance=broken)._mode() is None
+    monkeypatch.setattr(supervisor, "APPEARANCE_SECONDS", 0.05)
+    async def silent():
+        await _asyncio.sleep(10)
+    assert await supervisor.Window(appearance=silent)._mode() is None
+
+
+@pytest.mark.asyncio
+async def test_a_slow_mode_answer_is_never_read_by_the_next_request(monkeypatch):
+    """The real Channel, with a backend that answers the mode late: the spawn
+    stops waiting at APPEARANCE_SECONDS, but the ask is never cancelled, so the
+    late answer is read by the ask that sent it and every later request reads
+    its own (cancelled, the next request would read the late bytes)."""
+    import json as _json
+    import threading
+    import time as _time
+    channel = supervisor.Channel()
+    requests = os.fdopen(channel.request_read, "rb", buffering=0)
+    answers = os.fdopen(channel.answer_write, "wb", buffering=0)
+    channel._out = os.fdopen(channel.request_write, "wb", buffering=0)
+    channel._in = os.fdopen(channel.answer_read, "rb", buffering=0)
+
+    def backend():
+        first = True
+        while line := requests.readline():
+            request = _json.loads(line)
+            if first:
+                _time.sleep(0.4)
+                first = False
+            answer = {"id": request["id"], "mode": "dark"} if request["op"] == "appearance" \
+                else {"id": request["id"], "cursor": request["id"]}
+            answers.write(_json.dumps(answer).encode() + b"\n")
+    threading.Thread(target=backend, daemon=True).start()
+
+    async def appearance():
+        return (await channel.ask("appearance")).get("mode")
+    monkeypatch.setattr(supervisor, "APPEARANCE_SECONDS", 0.05)
+    assert await supervisor.Window(appearance=appearance)._mode() is None      # stopped waiting
+    assert await channel.ask("events") == {"id": 2, "cursor": 2}               # its own answer, whole
+    assert await channel.ask("events") == {"id": 3, "cursor": 3}

@@ -17,10 +17,11 @@ cp "$work/src/LICENSE" "$out/LICENSE"
 sha256sum -c - <<SUMS
 5c5b8ff90f62bb8474857e3128a5768ea8cf55273d9887c879c82f47abc4cc22  $here/linux-gtk-main-thread.patch
 8ebba2d8aa66f0a2074a1f58b66d58273e1605207c7a9bdf82066d4ec9367865  $here/linux-cookie-store.patch
+91f21bdc838dad5df8588ad8d2ad62caff06e17a0b4d00ab370fb24204bae5ed  $here/linux-background.patch
 1a7ccc59b73a080c5f288fd5995071adeec5888318a57af21a5638d3af7c9896  $here/macos-main-thread-shutdown.patch
 209ba63df784de9344708e4755d3b689ae177a1b1b095222bdf0f588c114430f  $here/macos-frame-theme.patch
 SUMS
-cp "$here/linux-gtk-main-thread.patch" "$here/linux-cookie-store.patch" "$here/macos-main-thread-shutdown.patch" \
+cp "$here/linux-gtk-main-thread.patch" "$here/linux-cookie-store.patch" "$here/linux-background.patch" "$here/macos-main-thread-shutdown.patch" \
    "$here/macos-frame-theme.patch" \
    "$here/build-macos.sh" "$out/"
 cat > "$out/BUILD.md" <<EOF
@@ -29,7 +30,7 @@ cat > "$out/BUILD.md" <<EOF
 Source: \`neutralinojs-6.10.0-$COMMIT.tar.gz\`, the tree of tag $TAG at commit $COMMIT
 (https://github.com/neutralinojs/neutralinojs).
 
-- **Linux (the Flatpak):** \`linux-gtk-main-thread.patch\` then \`linux-cookie-store.patch\` applied
+- **Linux (the Flatpak):** \`linux-gtk-main-thread.patch\`, \`linux-cookie-store.patch\` then \`linux-background.patch\` applied
   (\`patch -p1\`), then, in the
   GNOME 49 SDK: \`mkdir -p stubs && ar rc stubs/libstdc++fs.a\` (an empty archive for the legacy
   library Neutralino's CMake names), \`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

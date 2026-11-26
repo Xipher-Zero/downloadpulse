@@ -87,7 +87,7 @@ LIFECYCLE = frozenset({"transfer.accepted", "transfer.queued", "transfer.transfe
 _FIELDS = {"status": {"id", "op"}, "events": {"id", "op", "after", "limit"},
            "pause": {"id", "op"}, "resume": {"id", "op"},
            "saves": {"id", "op"}, "saved": {"id", "op", "save", "path"}, "frame": {"id", "op"},
-           "locale": {"id", "op"}, "show": {"id", "op"}, "quit_prompt": {"id", "op"},
+           "locale": {"id", "op"}, "appearance": {"id", "op"}, "show": {"id", "op"}, "quit_prompt": {"id", "op"},
            "release_prompt": {"id", "op"}, "released": {"id", "op", "nonce"}}
 # How long a desktop save waits for its destination: the supervisor's next
 # look (its loop) and the person's own time in the dialog.
@@ -230,6 +230,13 @@ def answer_release(nonce, releasable: bool, state: dict) -> bool:
     return True
 
 
+def restore_pending() -> bool:
+    """Whether a released window's state waits for its relaunched page (read,
+    never taken): the page that loads next is that relaunch, opened from the
+    tray, not a cold start."""
+    return _restore is not None
+
+
 def take_restore() -> dict | None:
     """The state a released window comes back to, with the journal position at
     its release: handed once, to the relaunched window's page; None otherwise
@@ -354,6 +361,12 @@ async def answer(application, request) -> dict:
         from auth.accounts import DEFAULT_ADMIN_ID
         from services.account_appearance import load_locale
         return {"id": ident, "locale": (await load_locale(DEFAULT_ADMIN_ID))["locale"]}
+    if op == "appearance":
+        # The interface's mode (dark or light), the default Admin's as for ``locale``: the
+        # supervisor gives the window's shell that background before its page paints (1.0.5).
+        from auth.accounts import DEFAULT_ADMIN_ID
+        from services.account_appearance import load
+        return {"id": ident, "mode": (await load(DEFAULT_ADMIN_ID))["mode"]}
     if op == "saves":
         waiting = [(number, entry) for number, entry in sorted(_saves.items()) if not entry[2]]
         for _number, entry in waiting:

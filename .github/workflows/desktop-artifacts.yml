@@ -742,7 +742,7 @@ jobs:
           echo "$d  $src/sabnzbd/SABnzbd-$v-src.tar.gz" | sha256sum -c -
           if [[ "$platforms" == *" windows "* ]]; then windows_sources="$src/windows-tools/rsync-and-msys2-runtime/SOURCES"; else windows_sources=""; fi
           for required in $windows_sources "$src/macos-and-flatpak-tools/7z2501-src.tar.xz" \
-                          "$src/neutralino/BUILD.md" "$src/neutralino/linux-gtk-main-thread.patch" "$src/neutralino/linux-cookie-store.patch" \
+                          "$src/neutralino/BUILD.md" "$src/neutralino/linux-gtk-main-thread.patch" "$src/neutralino/linux-cookie-store.patch" "$src/neutralino/linux-background.patch" \
                           "$src/neutralino/macos-main-thread-shutdown.patch" \
                           "$src/neutralino/macos-frame-theme.patch"; do
             [ -s "$required" ] || { echo "missing from the corresponding source: $required"; exit 1; }

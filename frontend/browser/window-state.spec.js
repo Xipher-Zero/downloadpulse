@@ -10,11 +10,12 @@ const { test, expect } = require('@playwright/test');
  * of the restore the relaunched page is handed, and the answer it sends -- so
  * the page's own behaviour is what they prove. */
 
-async function asDesktop(page, {restore = null, holdMs = 0} = {}) {
+async function asDesktop(page, {restore = null, holdMs = 0, resuming = false} = {}) {
   const seen = {gets: 0, puts: []};
   await page.route(url => url.pathname === '/ui-theme-bootstrap.js', async route => {
     const response = await route.fetch();
-    route.fulfill({response, body: (await response.text()) + '\nwindow.downloadPulseDesktop = true;\n'});
+    route.fulfill({response, body: (await response.text()) + '\nwindow.downloadPulseDesktop = true;\n'
+      + (resuming ? 'window.downloadPulseResuming = true;\n' : '')});
   });
   // This scratch server has no aria2: its start-up check (a POST) would stay in
   // flight here, which is a fact of the environment, not of the page.
@@ -201,6 +202,35 @@ test('W10: a restored scroll the page cannot hold yet never lands on a page the 
   // Long enough for the Dashboard to draw and for the restore's own bound to pass.
   await page.waitForTimeout(5500);
   expect(await page.evaluate(() => document.getElementById('content').scrollTop)).toBe(0);
+});
+
+// 1.0.5: a window opened again from the tray is not a cold start. Its starting
+// cover (ui-desktop-start.js) has no minimum and no fade: the interface shows
+// the moment it says it is ready.
+test('W11: a window opened again from the tray opens as soon as it is ready, with no minimum', async ({page}) => {
+  await asDesktop(page, {resuming: true, restore: {state: {route: '/statistics', owners: {}}, since: 1}});
+  await page.addInitScript(() => {
+    document.addEventListener('downloadpulse:interface-ready', () => { window.__readyAt = performance.now(); }, {once: true});
+    new MutationObserver((_records, observer) => {
+      if (document.documentElement.hasAttribute('data-dp-desktop-lifting')) window.__faded = true;
+      if (!document.documentElement.hasAttribute('data-dp-desktop-starting') && window.__readyAt !== undefined) {
+        window.__liftedAt = performance.now();
+        observer.disconnect();
+      }
+    // The init script runs before the root exists: the document is observed, the root's attribute read.
+    }).observe(document, {subtree: true, attributes: true,
+                          attributeFilter: ['data-dp-desktop-starting', 'data-dp-desktop-lifting']});
+  });
+  await load(page, '/');
+  expect(await page.evaluate(() => window.DPDesktopStart.resuming)).toBe(true);
+  expect(await page.evaluate(() => window.DPDesktopStart.lifted)).toBe('ready');
+  const {ready, lifted} = await page.evaluate(() => ({ready: window.__readyAt, lifted: window.__liftedAt}));
+  // Lifted on the next task after ready (no MIN_SHOWN_MS wait), whenever ready came, and never faded.
+  expect(lifted - ready).toBeLessThan(100);
+  expect(await page.evaluate(() => window.__faded === true)).toBe(false);
+  expect(await page.evaluate(() => document.documentElement.hasAttribute('data-dp-desktop-resuming'))).toBe(false);
+  await expect(page.locator('#dp-desktop-start')).toHaveCount(0);
+  await expect(page.locator('#view-stats')).toHaveClass(/\bactive\b/);
 });
 
 // The Downloads and Activity Log cases need more than one page of transfers and

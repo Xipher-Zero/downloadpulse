@@ -428,7 +428,8 @@ def test_the_first_paint_script_says_whether_this_is_the_desktop_application():
     paint is told, and the starting cover acts on nothing else."""
     import subprocess
     source = (BACKEND / "api" / "auth_routes.py").read_text(encoding="utf-8")
-    assert "window.downloadPulseDesktop={'true' if desktop_installation() else 'false'};" in source
+    assert "desktop = desktop_installation()" in source
+    assert "window.downloadPulseDesktop={'true' if desktop else 'false'};" in source
     probe = "from core.config import desktop_installation; print(desktop_installation())"
     for value, expected in (("1", "True"), ("", "False"), ("true", "False")):
         env = {key: item for key, item in os.environ.items() if key != "DOWNLOADPULSE_DESKTOP"}
@@ -445,7 +446,8 @@ def test_the_first_paint_script_says_whether_this_is_the_desktop_application():
     assert "html:not([data-dp-desktop-lettered]) :is(.dp-desktop-start-brand, .dp-desktop-start-text) {\n  visibility: hidden;" in css
     assert "line-height: 46px;" in css and "line-height: 24px;" in css      # the card's size does not depend on the face
     assert "const MIN_SHOWN_MS = 3000;" in cover                           # at least 3 s from the page's start ...
-    assert "setTimeout(() => lift('ready'), Math.max(0, MIN_SHOWN_MS - performance.now()));" in cover  # ... never added
+    # ... never added (a cold start; a window opened again from the tray has no minimum, 1.0.5)
+    assert "setTimeout(() => lift('ready'), resuming ? 0 : Math.max(0, MIN_SHOWN_MS - performance.now()));" in cover
     assert "const LIFT_AFTER_MS = 20000;" in cover                         # never a trap
     app = (BACKEND.parent / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
     assert app.count("new CustomEvent('downloadpulse:interface-ready')") == 1   # said once, by one owner
@@ -583,3 +585,38 @@ def test_the_control_channel_imports_no_api_and_the_edge_binds_what_only_it_hold
     assert not [module for module in imported if module and module.split(".")[0] == "api"]
     assert desktop_control._edge == {"prompt_window": routes._sse_prompt_window,
                                      "prompt_release": routes._sse_prompt_release, "stats": routes.get_stats}
+
+
+@pytest.mark.asyncio
+async def test_the_first_paint_says_a_released_window_is_opened_again_and_the_channel_gives_the_mode(monkeypatch):
+    """1.0.5: the page that loads while a released window's state waits is that
+    relaunch (``restore_pending``, read and never taken), so its cover has no
+    minimum; and the supervisor asks the interface's mode for the shell's
+    background before the page paints."""
+    from application import desktop_control
+    from api import auth_routes
+    monkeypatch.setattr(desktop_control, "_restore", None)
+    assert desktop_control.restore_pending() is False
+    monkeypatch.setattr(desktop_control, "_restore", {"state": {"route": "/"}, "since": 3})
+    assert desktop_control.restore_pending() is True
+    assert desktop_control.restore_pending() is True            # reading it never takes it
+    assert desktop_control.take_restore() == {"state": {"route": "/"}, "since": 3}
+    assert desktop_control.restore_pending() is False
+    source = (BACKEND / "api" / "auth_routes.py").read_text(encoding="utf-8")
+    assert "window.downloadPulseResuming={'true' if resuming else 'false'};" in source
+    assert "resuming = restore_pending() and window_request(request)" in source   # the window's own page only and auth_routes.desktop_installation is not None
+    cover = (BACKEND.parent / "frontend" / "static" / "ui-desktop-start.js").read_text(encoding="utf-8")
+    assert "const resuming = window.downloadPulseResuming === true;" in cover
+    assert "resuming ? 0 : Math.max(0, MIN_SHOWN_MS - performance.now())" in cover
+    assert "if (still || resuming) { done(); return; }" in cover
+    css = (BACKEND.parent / "frontend" / "static" / "ui-desktop-start.css").read_text(encoding="utf-8")
+    assert "html[data-dp-desktop-resuming] body > :not(.dp-desktop-start) {\n  opacity: 0;" in css
+    assert "animation: dp-desktop-start-draw 160ms ease 500ms both;" in css
+
+    async def mode(account_id):
+        return {"mode": "light", "dark_palette": "x", "light_palette": "y"}
+    from services import account_appearance
+    monkeypatch.setattr(account_appearance, "load", mode)
+    answer = await desktop_control.answer(None, {"id": 7, "op": "appearance"})
+    assert answer == {"id": 7, "mode": "light"}
+    assert (await desktop_control.answer(None, {"id": 8, "op": "appearance", "x": 1}))["error"] == "refused"

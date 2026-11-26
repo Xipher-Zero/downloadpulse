@@ -829,18 +829,28 @@ async def theme_bootstrap_script(request: Request):
     parsed, so a page in another language never shows English first. Whether
     this is the installed desktop application comes with it too
     (``window.downloadPulseDesktop``): ``ui-desktop-start.js`` shows its starting
-    cover from the first paint only there."""
+    cover from the first paint only there; and whether this page is a released
+    window opened again from the tray (``window.downloadPulseResuming``, 1.0.5):
+    its cover then has no minimum and draws only if the page is slow."""
     principal = getattr(request.state, "principal", Principal.anonymous())
     appearance = json.dumps(await _appearance(principal), separators=(",", ":"))
     locale = json.dumps(await _locale(principal), separators=(",", ":"))
     script = _static_asset("ui-theme-bootstrap.js").read_text(encoding="utf-8")
     logo = json.dumps(_APP_LOGO_SVG).replace("<", "\\u003c")
     field = json.dumps(_SIGNAL_FIELD_SVG).replace("<", "\\u003c")
+    desktop = desktop_installation()
+    if desktop:
+        from application.desktop_control import restore_pending
+        from application.desktop_listener import window_request
+        resuming = restore_pending() and window_request(request)
+    else:
+        resuming = False
     response = Response(
         content=(f"window.downloadPulseLogo={logo};\nwindow.downloadPulseSignalField={field};\n"
                  f"window.downloadPulseAppearance=Object.freeze({appearance});\n"
                  f"window.downloadPulseLocale=Object.freeze({locale});\n"
-                 f"window.downloadPulseDesktop={'true' if desktop_installation() else 'false'};\n{script}"),
+                 f"window.downloadPulseDesktop={'true' if desktop else 'false'};\n"
+                 f"window.downloadPulseResuming={'true' if resuming else 'false'};\n{script}"),
         media_type="application/javascript",
     )
     response.headers["Cache-Control"] = "no-store"
