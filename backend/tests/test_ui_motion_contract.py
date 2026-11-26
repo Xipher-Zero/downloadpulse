@@ -110,7 +110,10 @@ def test_only_the_operators_own_navigation_moves_anything() -> None:
     downloads = read("ui-downloads.js")
     assert downloads.count("window.DPMotion.slide(") == 1
     assert downloads.count("{turn: true}") == 4                    # the pager's four actions, nothing else
-    assert "goToTorrentPage(1);" in app                            # sidebar entry: no page turn
+    # The sidebar entry is Downloads' own entry, and it turns no page: an ordinary
+    # entry opens page 1, a restored one its pages (1.0.5 WS8b2), never with {turn: true}.
+    assert "if (v === 'torrents')  window.DPDownloads.enter();" in app
+    assert "clearSelection(); goToTorrentPage(1); return;" in downloads
     activity = read("ui-activity-log-runtime.js")
     assert activity.count("window.DPMotion.slide(") == 1
     # Only the pager's four actions turn a page (go), and only a turn slides.

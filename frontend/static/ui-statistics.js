@@ -627,7 +627,19 @@
     if (queued) { queued.waiters.forEach(function (resolve) { resolve(null); }); queued = null; }
   }
 
+  // The period a released desktop window showed (DPWindowState): the first
+  // entry without a period of its own takes it, as the period filter's choice.
+  window.DPWindowState.register('statistics', {capture: function () { return {period: selectedPeriod()}; }});
+  function restoredPeriod() {
+    const restore = window.DPWindowState.take('statistics');
+    const tab = restore && periodTabs().find(function (each) { return each.dataset.period === restore.period; });
+    if (!tab) return;
+    periodTabs().forEach(function (each) { each.classList.toggle('active', each === tab); });
+    syncPeriodControl();
+  }
+
   function loadDetailedStats(period) {
+    if (!period) restoredPeriod();
     const resolved = selectedPeriod(period);
     const chartTitle = document.getElementById('chart-title');
     if (chartTitle) { chartTitle.removeAttribute('data-i18n'); chartTitle.textContent = t('stats.chart.subtitle', {period: periodWord(resolved)}); }

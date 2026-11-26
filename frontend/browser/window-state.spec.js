@@ -57,7 +57,8 @@ test('W02: an idle window is releasable and answers with the page it shows', asy
   await load(page, '/statistics');
   await expect(page.locator('#view-stats')).toHaveClass(/\bactive\b/);
   expect(seen.gets).toBe(1);
-  expect(await releasable(page)).toBe(true);
+  // Once start-up's own requests are answered, nothing keeps an idle window.
+  await expect.poll(() => releasable(page)).toBe(true);
   await page.evaluate(() => window.DPWindowState.answer('nonce-1'));
   await expect.poll(() => seen.puts.length).toBe(1);
   const [answer] = seen.puts;
@@ -73,7 +74,7 @@ test('W02: an idle window is releasable and answers with the page it shows', asy
 test('W03: anything unfinished or open that a relaunch would lose keeps the window', async ({page}) => {
   const seen = await asDesktop(page);
   await load(page);
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   // A change sent and not yet answered.
   let release;
   await page.route(url => url.pathname === '/api/desktop/frame', route => new Promise(resolve => { release = () => resolve(route.fulfill({status: 200, body: '{}'})); }));
@@ -87,7 +88,7 @@ test('W03: anything unfinished or open that a relaunch would lose keeps the wind
   await page.evaluate(() => document.getElementById('stats-period-menu').showPopover());
   expect(await releasable(page)).toBe(false);
   await page.evaluate(() => document.getElementById('stats-period-menu').hidePopover());
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   // An open dialog.
   await page.evaluate(() => window.DPSettingsHelp.open(window.DPSettingsHelp.topics[0]));
   await expect.poll(() => releasable(page)).toBe(false);
@@ -123,10 +124,10 @@ test('W05: an ordinary reload is never a restore', async ({page}) => {
 test('W06: each owner that holds what a relaunch would lose keeps the window', async ({page}) => {
   await asDesktop(page);
   await load(page);
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   // The #modal shell: Details is brought back, file selection is not.
   await page.evaluate(() => window.DPModal.open({mode: 'details', title: 'x', closeLabel: 'Close', pending: true}));
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   await page.evaluate(() => window.DPModal.requestModalClose());
   await expect.poll(() => page.evaluate(() => window.DPModal.mode)).toBe(null);
   await page.evaluate(() => window.DPModal.open({mode: 'file-selection', title: 'x', closeLabel: 'Close', pending: true}));
@@ -144,10 +145,10 @@ test('W06: each owner that holds what a relaunch would lose keeps the window', a
     document.getElementById('page-title'), {label: 'x', items: [{label: 'y', run: () => {}}]}));
   expect(await releasable(page)).toBe(false);
   await page.evaluate(() => dpCloseContextMenu(false));
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   // A popover the state brings back is not in the way.
   await page.evaluate(() => { const menu = document.getElementById('stats-period-menu'); menu.setAttribute('data-dp-window-state-restorable', ''); menu.showPopover(); });
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   await page.evaluate(() => { const menu = document.getElementById('stats-period-menu'); menu.hidePopover(); menu.removeAttribute('data-dp-window-state-restorable'); });
   // An owner that cannot say is not releasable.
   await page.evaluate(() => window.DPWindowState.register('spec-throws', {releasable: () => { throw new Error('x'); }}));
@@ -161,7 +162,7 @@ test('W07: a legal document open in Help keeps the window', async ({page}) => {
   const opener = page.locator('[data-legal-document="gpl"]');
   await page.evaluate(() => window.DPHelpPage?.activateTab?.('license', false));
   await expect(opener).toBeVisible();
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   await opener.click();
   await expect(page.locator('body')).toHaveClass(/dp-help-legal-modal-open/);
   expect(await releasable(page)).toBe(false);
@@ -171,7 +172,7 @@ test('W08: an owner whose part cannot be captured is never released with it miss
   const seen = await asDesktop(page);
   await load(page);
   await page.evaluate(() => window.DPWindowState.register('spec-capture', {capture: () => { throw new Error('x'); }}));
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   await page.evaluate(() => window.DPWindowState.answer('nonce-3'));
   await expect.poll(() => seen.puts.length).toBe(1);
   expect(seen.puts[0]).toEqual({nonce: 'nonce-3', releasable: false, state: {}});
@@ -337,7 +338,7 @@ test('D07: an open source chooser keeps the window', async ({page}) => {
   await asDesktop(page);
   await load(page, '/downloads');
   await expect.poll(() => rowIds(page).then(ids => ids.length)).toBeGreaterThan(0);
-  expect(await releasable(page)).toBe(true);
+  await expect.poll(() => releasable(page)).toBe(true);
   const id = (await rowIds(page))[0];
   // The route status the chooser reads first (a labelled mock: the seeded direct links have no route to choose).
   await page.route(url => url.pathname === `/api/torrents/${id}/route`, route => route.fulfill({status: 200,
@@ -345,4 +346,147 @@ test('D07: an open source chooser keeps the window', async ({page}) => {
   await page.evaluate(id => window.DPRootProvider.open(id, document.querySelector(`#t-tbody tr[data-torrent-id="${id}"]`)), id);
   await expect.poll(() => page.evaluate(() => [...document.querySelectorAll('.dp-root-provider-menu')].some(menu => !menu.hidden))).toBe(true);
   expect(await releasable(page)).toBe(false);
+});
+
+// ── WS8b3: Activity Log and Statistics ──────────────────────────────────
+const shownEvents = page => page.evaluate(() => [...document.querySelectorAll('#event-list .dp-activity-row')].map(row => row._dpEvent?.id));
+
+test('A01: the Activity Log comes back to the same investigation and page', async ({page, request}) => {
+  const first = await (await request.get('/api/events?limit=100')).json();
+  const second = await (await request.get(`/api/events?limit=100&snapshot=${first.snapshot}&before=${first.next_before}`)).json();
+  await asDesktop(page, {restore: {state: {route: '/activity', owners: {activity: {
+    shown: true, applied: {timeframe: 'all', level: '', category: ''}, search: '',
+    cursor: {snapshot: first.snapshot, windowStart: first.window_start ?? null},
+    request: {kind: 'next', before: first.next_before, after: null}, nav: {page: 2, pages: null, lastUnavailable: null},
+    open: [], scroll: 0}}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-events')).toHaveClass(/\bactive\b/);
+  await expect.poll(() => shownEvents(page)).toEqual(second.items.map(item => item.id));
+  await expect(page.locator('#ev-pagination [aria-current="page"], .dp-activity-pagination [aria-current="page"]').first()).toHaveText('2');
+});
+
+test('A02: filters and search come back; a window not on the Activity Log starts a new investigation with them', async ({page, request}) => {
+  const newest = await (await request.get('/api/events?limit=100&category=routing')).json();
+  await asDesktop(page, {restore: {state: {route: '/', owners: {activity: {
+    shown: false, applied: {timeframe: 'all', level: '', category: 'routing'}, search: '',
+    cursor: {snapshot: 1, windowStart: null}, request: {kind: 'next', before: 5, after: null}, nav: {page: 4, pages: null, lastUnavailable: null},
+    open: [], scroll: 0}}}, since: 1}});
+  await load(page, '/');
+  await page.locator('#sidebar .nav-item[data-view="events"]').click();
+  await expect(page.locator('#view-events')).toHaveClass(/\bactive\b/);
+  await expect.poll(() => shownEvents(page)).toEqual(newest.items.map(item => item.id));
+});
+
+test('A03: an Auto Refresh switched off comes back off', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/activity', owners: {'activity-live': false}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-events')).toHaveClass(/\bactive\b/);
+  await expect(page.locator('#ev-live')).not.toBeChecked();
+});
+
+test('A04: the investigation the person set is what the answer carries', async ({page, request}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/activity');
+  await expect.poll(() => shownEvents(page).then(ids => ids.length)).toBeGreaterThan(0);
+  const first = await shownEvents(page);
+  await page.locator('#ev-pagination button[data-dp-pager="next"], .dp-activity-pagination button[data-dp-pager="next"]').first().click();
+  await expect.poll(() => shownEvents(page).then(ids => ids[0] !== first[0])).toBe(true);
+  await page.locator('.dp-activity-live').click();
+  await expect(page.locator('#ev-live')).not.toBeChecked();
+  await expect.poll(() => releasable(page)).toBe(true);
+  await page.evaluate(() => window.DPWindowState.answer('nonce-a'));
+  await expect.poll(() => seen.puts.length).toBe(1);
+  const part = seen.puts[0].state.owners.activity;
+  expect(part.shown).toBe(true);
+  expect(part.request.kind).toBe('next');
+  expect(part.nav.page).toBe(2);
+  expect(Number.isInteger(part.cursor.snapshot)).toBe(true);
+  expect(seen.puts[0].state.owners['activity-live']).toBe(false);
+});
+
+test('A05: an open event detail comes back open', async ({page, request}) => {
+  const first = await (await request.get('/api/events?limit=100')).json();
+  const withDetail = first.items.find(item => item.detail);
+  test.skip(!withDetail, 'no event with a detail on this server');
+  await asDesktop(page, {restore: {state: {route: '/activity', owners: {activity: {
+    shown: true, applied: {timeframe: 'all', level: '', category: ''}, search: '',
+    cursor: {snapshot: first.snapshot, windowStart: first.window_start ?? null}, request: {kind: null, before: null, after: null},
+    nav: {page: 1, pages: null, lastUnavailable: null}, open: [withDetail.id], scroll: 0}}}, since: 1}});
+  await load(page, '/');
+  await expect.poll(() => page.evaluate(id => [...document.querySelectorAll('#event-list .dp-activity-row')]
+    .find(row => row._dpEvent?.id === id)?.querySelector('.dp-activity-detail')?.open, withDetail.id)).toBe(true);
+});
+
+test('S01: the Statistics period comes back, and is what the answer carries', async ({page}) => {
+  const seen = await asDesktop(page, {restore: {state: {route: '/statistics', owners: {statistics: {period: '30d'}}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-stats')).toHaveClass(/\bactive\b/);
+  await expect(page.locator('#stats-period-tabs .ftab[data-period="30d"]')).toHaveClass(/\bactive\b/);
+  await page.locator('#stats-period-tabs .ftab[data-period="24h"]').click();
+  await expect.poll(() => releasable(page)).toBe(true);
+  await page.evaluate(() => window.DPWindowState.answer('nonce-s'));
+  await expect.poll(() => seen.puts.length).toBe(1);
+  expect(seen.puts[0].state.owners.statistics).toEqual({period: '24h'});
+});
+
+test('A06: an opened detail stays open when the page is drawn again, and is what the answer carries', async ({page, request}) => {
+  const first = await (await request.get('/api/events?limit=100')).json();
+  const withDetail = first.items.find(item => item.detail);
+  test.skip(!withDetail, 'no event with a detail on this server');
+  const seen = await asDesktop(page);
+  await load(page, '/activity');
+  const detail = id => page.evaluate(id => [...document.querySelectorAll('#event-list .dp-activity-row')]
+    .find(row => row._dpEvent?.id === id)?.querySelector('.dp-activity-detail'), id);
+  await expect.poll(() => shownEvents(page).then(ids => ids.includes(withDetail.id))).toBe(true);
+  await page.evaluate(id => { [...document.querySelectorAll('#event-list .dp-activity-row')].find(row => row._dpEvent?.id === id).querySelector('.dp-activity-detail > summary').click(); }, withDetail.id);
+  await page.locator('#ev-refresh, [data-dp-click="loadActivityLog"]').first().click();
+  await expect.poll(() => page.evaluate(id => [...document.querySelectorAll('#event-list .dp-activity-row')]
+    .find(row => row._dpEvent?.id === id)?.querySelector('.dp-activity-detail')?.open, withDetail.id)).toBe(true);
+  await page.evaluate(() => window.DPWindowState.answer('nonce-o'));
+  await expect.poll(() => seen.puts.length).toBe(1);
+  expect(seen.puts[0].state.owners.activity.open).toEqual([withDetail.id]);
+});
+
+// The page shown is what comes back -- never a page turn that was refused or failed.
+for (const [name, from, refuse] of [['a refused Last', 'last', 409], ['a failed Next', 'next', 500]]) {
+  test(`A07: after ${name}, the answer carries the page still shown`, async ({page, request}) => {
+    const seen = await asDesktop(page);
+    await load(page, '/activity');
+    await page.locator('.dp-activity-live').click();
+    await expect(page.locator('#ev-live')).not.toBeChecked();
+    await expect.poll(() => shownEvents(page).then(ids => ids.length)).toBeGreaterThan(0);
+    const shown = await shownEvents(page);
+    await page.route(url => url.pathname === '/api/events' && url.searchParams.has(from === 'last' ? 'last' : 'before'),
+      route => route.fulfill({status: refuse, contentType: 'application/json', body: JSON.stringify({detail: {message: 'refused'}})}));
+    await page.locator(`.dp-activity-pagination button[data-dp-pager="${from}"], #ev-pagination button[data-dp-pager="${from}"]`).first().click();
+    await expect.poll(() => releasable(page)).toBe(true);
+    // A refused Last leaves the page as it was; a failed turn says it failed (nothing to bring back).
+    if (from === 'last') expect(await shownEvents(page)).toEqual(shown);
+    await page.evaluate(() => window.DPWindowState.answer('nonce-f'));
+    await expect.poll(() => seen.puts.length).toBe(1);
+    const part = seen.puts[0].state.owners.activity;
+    expect(part.nav.page).toBe(1);
+    expect(part.request.kind).not.toBe(from);
+    // Restored from that answer, the same rows -- the API's own newest page in that snapshot.
+    const newest = await (await request.get(`/api/events?limit=${shown.length}&snapshot=${part.cursor.snapshot}`)).json();
+    expect(newest.items.map(item => item.id)).toEqual(shown);
+    const again = await page.context().newPage();
+    await asDesktop(again, {restore: {state: {route: '/activity', owners: {activity: part}}, since: 1}});
+    await load(again, '/');
+    await expect.poll(() => shownEvents(again)).toEqual(shown);
+  });
+}
+
+test('A08: while a page is being asked for, the Activity Log keeps the window', async ({page}) => {
+  await asDesktop(page);
+  await load(page, '/activity');
+  await expect.poll(() => shownEvents(page).then(ids => ids.length)).toBeGreaterThan(0);
+  await expect.poll(() => releasable(page)).toBe(true);
+  let release;
+  await page.route(url => url.pathname === '/api/events', route => new Promise(resolve => { release = () => resolve(route.continue()); }));
+  await page.locator('[data-dp-click="loadActivityLog"]').first().click();
+  await expect.poll(() => typeof release).toBe('function');
+  expect(await releasable(page)).toBe(false);
+  release();
+  await expect.poll(() => releasable(page)).toBe(true);
 });

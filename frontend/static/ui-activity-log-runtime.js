@@ -45,6 +45,14 @@ const PAGE_SIZES=[50,100,250],DEFAULT_PAGE_SIZE=100;
 const T=(key,values)=>window.DPI18n.t(key,values);
 const CATEGORIES=new Set(['transfer','routing','resource','selection','consolidation','execution','recovery','storage','extraction','input','integration','configuration','administration']);
 let search=null,bound=false;
+// The answer the page shown came from: its investigation's cursor, the request
+// that was answered and the page it is -- set only when an answer is accepted,
+// never by a request still under way or one that failed (DPWindowState).
+let answered=null;
+// The events whose details the operator has open, by id: every drawing of the
+// page draws them open -- an Auto Refresh, a language change, a restored
+// window -- until closed. A new filter or search starts with none.
+let opened=new Set();
 let cursor={snapshot:null,windowStart:null},request={},nav=null,pending=false;
 // Auto Refresh: on/off, a coalescing timer, a hint that arrived while a request
 // was in flight (dirty), the newest id last hinted, and the investigation a
@@ -129,7 +137,7 @@ function pageSize(){let value=DEFAULT_PAGE_SIZE;try{value=Number(settingsData?.a
 // {condition:'unproven'} (the search has not read every event) or {served} (the
 // server's own refusal); the pager says it in the page's language when it is drawn.
 function unavailableWords(value){if(!value)return '';return value.condition==='unproven'?T('activity.last_page_unproven'):String(value.served||'');}
-function restart(){cursor={snapshot:null,windowStart:null};request={};nav=null;investigation++;}
+function restart(){cursor={snapshot:null,windowStart:null};request={};nav=null;answered=null;investigation++;}
 // One page request within the snapshot; ``page`` is resolved from the accepted answer.
 // A page turn answers at once: it slides to its destination before that page is
 // fetched, drawn as a placeholder (or, already answered, as itself), and the
@@ -158,7 +166,7 @@ list.scrollTop=0;list.replaceChildren(block);}
 function replace(commit){const list=document.getElementById('event-list'),block=list?.querySelector(':scope > .dp-activity-placeholder:not(.dp-motion-still)');
 if(block&&window.DPMotion)window.DPMotion.resolve({region:block,host:list,content:()=>Array.from(list.children).filter(node=>!node.classList.contains('dp-motion-still'))},commit);else commit();}
 const ACTIONS=Object.freeze({first:()=>go({kind:'first'}),previous:()=>go({kind:'previous',after:nav.first}),next:()=>go({kind:'next',before:nav.oldest}),last:()=>go({kind:'last'})});
-function changed(c){restart();void fetchPage();}
+function changed(c){opened=new Set();restart();void fetchPage();}
 function bind(){const c=controls();if(!c||bound)return c;bound=true;
 search=window.DPSearch.attach({input:c.search,noun:'events',onCommit:()=>changed(c)});
 // Clear Filters: the defaults at once, Search untouched. (Filter Results opens the panel through popovertarget.)
@@ -194,16 +202,18 @@ const subject=row.querySelector('.dp-activity-transfer');if(subject)subject.text
 const time=row.querySelector('.dp-activity-time');if(time)time.textContent=formatTimestamp(event.occurred_at);}
 let lastShown=null;// {payload,c}: the page on screen
 function render(payload,c){const list=document.getElementById('event-list');if(!list)return;lastShown={payload,c};list.replaceChildren();const items=Array.isArray(payload?.items)?payload.items:[];if(!items.length){if(search.completeness()!=='complete')empty(list,T('activity.empty.searched_so_far'));else if(filters(search.accepted()))empty(list,T('activity.empty.filtered'));else empty(list,payload?.history_started_at?T('activity.empty.history_begins',{date:formatTimestamp(payload.history_started_at)}):T('activity.empty.none'));}
-for(const event of items){const row=document.createElement('div');row.className='dp-activity-row';row.dataset.eventType=String(event.type||'');const sev=String(event.severity||'info').toLowerCase();const level=document.createElement('div');level.className=`elevel dp-activity-level ${sev==='warning'?'warn':sev==='error'?'error':'info'}`;level.setAttribute('role','img');level.setAttribute('aria-label',levelWords(sev));const copy=document.createElement('div');copy.className='dp-activity-copy';const msg=document.createElement('div');msg.className='emsg dp-activity-message';msg.textContent=String(event.message??'');copy.appendChild(msg);const subject=document.createElement('div');subject.className='ename dp-activity-transfer';subject.textContent=subjectLine(event);copy.appendChild(subject);if(event.detail){const detail=document.createElement('details');detail.className='dp-activity-detail';const summary=document.createElement('summary');summary.textContent=T('activity.details');const body=document.createElement('div');body.className='dp-activity-detail-text';body.textContent=String(event.detail);detail.append(summary,body);copy.appendChild(detail);}const time=document.createElement('div');time.className='etime dp-activity-time';time.textContent=formatTimestamp(event.occurred_at);row._dpEvent=event;row.append(level,copy,time);list.appendChild(row);}
+for(const event of items){const row=document.createElement('div');row.className='dp-activity-row';row.dataset.eventType=String(event.type||'');const sev=String(event.severity||'info').toLowerCase();const level=document.createElement('div');level.className=`elevel dp-activity-level ${sev==='warning'?'warn':sev==='error'?'error':'info'}`;level.setAttribute('role','img');level.setAttribute('aria-label',levelWords(sev));const copy=document.createElement('div');copy.className='dp-activity-copy';const msg=document.createElement('div');msg.className='emsg dp-activity-message';msg.textContent=String(event.message??'');copy.appendChild(msg);const subject=document.createElement('div');subject.className='ename dp-activity-transfer';subject.textContent=subjectLine(event);copy.appendChild(subject);if(event.detail){const detail=document.createElement('details');detail.className='dp-activity-detail';if(opened.has(event.id))detail.open=true;detail.addEventListener('toggle',()=>{if(detail.open)opened.add(event.id);else opened.delete(event.id);});const summary=document.createElement('summary');summary.textContent=T('activity.details');const body=document.createElement('div');body.className='dp-activity-detail-text';body.textContent=String(event.detail);detail.append(summary,body);copy.appendChild(detail);}const time=document.createElement('div');time.className='etime dp-activity-time';time.textContent=formatTimestamp(event.occurred_at);row._dpEvent=event;row.append(level,copy,time);list.appendChild(row);}
 document.dispatchEvent(new CustomEvent('downloadpulse:activity-rendered'));}
 // The page an answer to a `kind` request lands on, from the page it left.
 function pageOf(kind,from,payload){let page=kind==='next'?from+1:kind==='previous'?from-1:kind==='last'?Number(payload?.page)||1:1;if(kind==='previous'&&payload?.has_newer===false)page=1;return Math.max(1,page);}
 function accept(payload){const items=Array.isArray(payload?.items)?payload.items:[];const previous=nav||{page:1,pages:null,lastUnavailable:null};const kind=request.kind;
-const page=pageOf(kind,previous.page,payload);
+// A restored page is the page it was (restoreInvestigation); every other is reached from the one before.
+const page=kind==='restore'?request.page:pageOf(kind,previous.page,payload);
 // A page count is only ever the server's (from Last); an answer whose final page is unproven cannot offer Last.
 const pages=kind==='last'?page:previous.pages;
 const lastUnavailable=payload?.search?.finality==='unproven'?{condition:'unproven'}:previous.lastUnavailable||null;
-nav={page,pages,lastUnavailable,first:items.length?items[0].id:null,oldest:payload?.has_more?payload.next_before:null,following:payload?.has_more?(payload.more_after_next?2:1):0};}
+nav={page,pages,lastUnavailable,first:items.length?items[0].id:null,oldest:payload?.has_more?payload.next_before:null,following:payload?.has_more?(payload.more_after_next?2:1):0};
+answered={cursor:{...cursor},request:{kind:kind||null,before:request.before??null,after:request.after??null},page};}
 // An answer that could not search every event says why here, with its pages.
 const INCOMPLETE=Object.freeze({index_incomplete:'activity.search.index_incomplete',unavailable:'search.unavailable'});
 function renderPagination(payload,c){if(!c.pagination||!nav)return;c.newest.hidden=!payload?.newer_available;const incomplete=INCOMPLETE[search.completeness()]?T(INCOMPLETE[search.completeness()]):'';c.info.textContent=[nav.pages?T('activity.page_of',{page:nav.page,pages:nav.pages}):'',incomplete].filter(Boolean).join(' · ');
@@ -224,7 +234,7 @@ function schedule(){if(!timer)timer=setTimeout(()=>{timer=null;catchUp();},COALE
 // Bring the view up to the journal: a new investigation at the newest event
 // when following, else only say whether newer events exist.
 function catchUp(){if(!live||!active())return;const c=bind();if(!c)return;if(pending){dirty=true;return;}
-if(!nav||following()){const kept={cursor,request,nav};restart();void fetchPage({quiet:kept});return;}
+if(!nav||following()){const kept={cursor,request,nav,answered};restart();void fetchPage({quiet:kept});return;}
 if(hinted!==null&&cursor.snapshot!==null){if(hinted!==cursor.snapshot)renderPagination({newer_available:true},c);return;}
 void probeNewer(c);}
 // Whether events newer than this investigation's snapshot exist: the page's
@@ -251,10 +261,45 @@ if(request.kind==='last'&&error?.status===409&&nav){back();nav={...nav,lastUnava
 setPending(c,false);
 // An Auto Refresh that fails keeps the page -- and its snapshot, cursors and
 // pager -- as they were and says nothing; the next hint or reconnect tries again.
-if(quiet){cursor=quiet.cursor;request=quiet.request;nav=quiet.nav;dirty=false;return null;}
+if(quiet){cursor=quiet.cursor;request=quiet.request;nav=quiet.nav;answered=quiet.answered;dirty=false;return null;}
 if(search.fail(ticket,error)==='retried'){back();return null;}replace(()=>renderFailure(c,message));try{toast(message,'error');}catch(_){}return null;}
 finally{if(search.current(ticket))list?.removeAttribute('aria-busy');}}
-function load(){restart();return fetchPage();}
+function load(){const restore=DPWindowState.take('activity');if(restore&&typeof restore==='object')return restoreInvestigation(restore);restart();return fetchPage();}
+// ── The desktop window's state (DPWindowState) ─────────────────────────
+// A released window comes back to the same investigation: its filters and
+// search, and -- where the Activity Log was the page shown -- the same
+// snapshot, page, open details and scroll (newer events then show as "Show
+// newest events", as on a window that was only hidden). Elsewhere it is an
+// ordinary entry with the filters and search kept. Auto Refresh is the tab
+// session's own choice (sessionStorage), which a relaunched window has lost:
+// it is said back as soon as the state arrives, before any page is entered.
+const isId=value=>Number.isInteger(value)&&value>=0;
+DPWindowState.register('activity-live',{capture:()=>chosen()});
+DPWindowState.ready.then(()=>{const on=DPWindowState.take('activity-live');if(typeof on==='boolean')choose(on);});
+// While a page is being asked for, what it will show is not yet known: the window is kept.
+DPWindowState.register('activity',{releasable:()=>!pending,capture(){const list=document.getElementById('event-list');
+return{shown:!!document.getElementById('view-events')?.classList.contains('active'),applied:{...applied},search:document.getElementById('ev-search')?.value||'',
+cursor:answered?{...answered.cursor}:{snapshot:null,windowStart:null},request:answered?{...answered.request}:{kind:null,before:null,after:null},
+nav:answered&&nav?{page:answered.page,pages:nav.pages,lastUnavailable:nav.lastUnavailable}:null,
+open:[...(list?.querySelectorAll('.dp-activity-row')||[])].map(row=>row._dpEvent?.id).filter(id=>isId(id)&&opened.has(id)),
+scroll:list?.scrollTop||0};}});
+function restoreInvestigation(r){const c=bind();
+applied=Object.freeze(Object.fromEntries(FILTERS.map(key=>[key,typeof r.applied?.[key]==='string'?r.applied[key]:DEFAULT_FILTERS[key]])));
+if(c){setDraft(c,applied);syncFilter(c);}
+if(typeof r.search==='string'&&search)search.restore(r.search.slice(0,512));
+restart();
+if(!r.shown||!isId(r.cursor?.snapshot))return fetchPage();
+opened=new Set(Array.isArray(r.open)?r.open.filter(isId):[]);
+cursor={snapshot:r.cursor.snapshot,windowStart:Number.isFinite(r.cursor.windowStart)?r.cursor.windowStart:null};
+const page=Number.isInteger(r.nav?.page)&&r.nav.page>0?r.nav.page:1;
+nav={page,pages:Number.isInteger(r.nav?.pages)?r.nav.pages:null,lastUnavailable:r.nav?.lastUnavailable||null,first:null,oldest:null,following:0};
+request=r.request?.kind==='last'?{kind:'last'}:{kind:'restore',page,before:isId(r.request?.before)?r.request.before:null,after:isId(r.request?.after)?r.request.after:null};
+// Behind the starting cover (DPWindowState.hold); its scroll only while
+// this is still the investigation shown -- a filter, search, refresh or page the person
+// chose since supersedes them.
+const mine=investigation,restored=request;
+return DPWindowState.hold(fetchPage().then(result=>{if(mine!==investigation||request!==restored)return result;const list=document.getElementById('event-list');
+if(list&&Number.isFinite(r.scroll))list.scrollTop=r.scroll;return result;}));}
 // A language change: the rows on screen are relabelled in place (an empty or failed page is said again),
 // and the controls this owner words follow (the static markup is ui-i18n.js's).
 document.addEventListener('downloadpulse:locale-changed',()=>{const c=controls();if(!c||!bound)return;const list=document.getElementById('event-list');
