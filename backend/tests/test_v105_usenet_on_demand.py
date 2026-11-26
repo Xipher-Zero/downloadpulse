@@ -330,7 +330,9 @@ async def test_the_executor_is_ready_only_once_converged_and_refuses_definitely_
 @pytest.mark.asyncio
 async def test_a_deliberate_stop_is_no_exit_to_report():
     """The runtime itself (no process launched): a process it was asked to stop
-    leaves no "exited with code N" behind, while one that ended unasked does."""
+    leaves no "exited with code N" behind, while one that ended unasked does.
+    The stop's own answer still says how that stop ended (its exit code: the
+    desktop artifacts' Usenet check proves a clean stop is exit 0)."""
     from executors.sabnzbd.runtime import UsenetRuntime
 
     class Process:
@@ -338,7 +340,7 @@ async def test_a_deliberate_stop_is_no_exit_to_report():
             self.returncode = None
 
         def terminate(self):
-            self.returncode = -15
+            self.returncode = 0                                       # it stopped itself cleanly
 
         async def wait(self):
             return self.returncode
@@ -346,6 +348,9 @@ async def test_a_deliberate_stop_is_no_exit_to_report():
     runtime._process = Process()
     status = await runtime.stop()
     assert runtime._process is None and not status.get("last_error")
+    assert status["exit_code"] == 0 and status["running"] is False         # this stop's own exit
+    later = await runtime.status()
+    assert later["exit_code"] is None and not later["last_error"]          # never read later as a crash
     crashed = UsenetRuntime()
     crashed._process = Process()
     crashed._process.returncode = 1                                   # ended without being asked

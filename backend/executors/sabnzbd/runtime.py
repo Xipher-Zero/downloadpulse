@@ -270,6 +270,11 @@ class UsenetRuntime:
             return await self.status()
 
     async def stop(self) -> Dict[str, Any]:
+        """Stop the service; the answer is its status, with ``exit_code`` the
+        exit of THIS stop (0: the service stopped itself cleanly). Afterwards
+        ``status()`` reports no exit: a stop DownloadPulse asked for is never
+        read later as the service ending by itself (1.0.5 WS9 C3)."""
+        asked_exit = None
         async with self._lock:
             try:
                 if self._process and self._process.returncode is None:
@@ -290,13 +295,18 @@ class UsenetRuntime:
                 if self._process is None or self._process.returncode is not None:
                     global _service_port
                     _service_port = None         # no service: its address is the usual one until a start
-                    # Stopped because DownloadPulse asked: no exit to report (status() reads an
-                    # unasked exit from a process it still holds; 1.0.5 WS9 C3).
+                    # Stopped because DownloadPulse asked: no exit to report later (status()
+                    # reads an unasked exit from a process it still holds; 1.0.5 WS9 C3).
+                    if self._process is not None:
+                        asked_exit = self._process.returncode
                     self._process = None
             except Exception as exc:
                 self._last_error = str(exc)
                 logger.warning("usenet stop failed: %s", exc)
-            return await self.status()
+            status = await self.status()
+            if asked_exit is not None:
+                status["exit_code"] = asked_exit     # how the stop asked for here ended
+            return status
 
     async def _request_shutdown(self) -> None:
         from executors.sabnzbd.client import SabApiError, SabEndpoint, SabnzbdClient
