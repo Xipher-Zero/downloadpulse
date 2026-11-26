@@ -638,3 +638,69 @@ test('H03: released on another page, Help and Settings keep what they kept for t
   await expect(again.locator('#view-help')).toHaveClass(/\bactive\b/);
   expect(await states(again)).toEqual(kept);
 });
+
+// ── WS8b5: Details and the update notice ────────────────────────────────
+const detailState = p => p.evaluate(() => {
+  const body = document.getElementById('modal-body');
+  return {mode: window.DPModal.mode, title: document.getElementById('modal-title')?.textContent || '',
+    open: [...(body?.querySelectorAll('details') || [])].map(node => node.open), scroll: body?.scrollTop || 0};
+});
+
+test('X01: an open Details comes back to its transfer, open disclosures and scroll', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/downloads', {height: 600});
+  await expect.poll(() => rowIds(page).then(ids => ids.length)).toBeGreaterThan(0);
+  const id = (await rowIds(page))[0];
+  await page.evaluate(id => window.showDetail(id), id);
+  await expect.poll(() => detailState(page).then(s => s.mode)).toBe('details');
+  await expect(page.locator('#modal-body details').first()).toBeAttached();
+  await page.locator('#modal-body details > summary').first().click();
+  await page.evaluate(() => { document.getElementById('modal-body').scrollTop = 120; });
+  const before = await detailState(page);
+  expect(before.open).toContain(true);
+  expect(before.scroll).toBeGreaterThan(0);
+  const state = await answerOf(page, seen, 'nonce-x1');
+  expect(state.owners.details.id).toBe(id);
+  const again = await relaunched(page, state, {height: 600});
+  await expect.poll(() => detailState(again).then(s => s.mode)).toBe('details');
+  await expect.poll(() => detailState(again)).toEqual(before);
+  await expect(again.locator('#view-torrents')).toHaveClass(/\bactive\b/);
+});
+
+test('X02: Details of a transfer gone since comes back saying it is gone, as the open window would', async ({page, request}) => {
+  const gone = 987654321;
+  expect((await request.get(`/api/torrents/${gone}`)).status()).toBe(404);
+  await asDesktop(page, {restore: {state: {route: '/downloads', owners: {details: {id: gone, scroll: 0, open: []}}}, since: 1}});
+  await load(page, '/');
+  await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
+  await expect.poll(() => page.evaluate(() => window.DPModal.mode)).toBe('details');
+  // The opening's own failure, in the page's words (details.load_failed), and its toast.
+  const said = await page.evaluate(() => window.DPI18n.t('details.load_failed', {reason: ''}).trim().replace(/[:\s]+$/, ''));
+  await expect(page.locator('#modal-body')).toContainText(said);
+  await expect(page.getByRole('alert').first()).toBeVisible();
+});
+
+test('X03: a Details with nothing drawn keeps what it was opened for, and comes back to it', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/downloads');
+  await expect.poll(() => rowIds(page).then(ids => ids.length)).toBeGreaterThan(0);
+  const id = (await rowIds(page))[0];
+  // The transfer is gone by the time Details reads it (a labelled 404 for this one read).
+  await page.route(url => url.pathname === `/api/torrents/${id}`, route => route.fulfill({status: 404, contentType: 'application/json',
+    body: JSON.stringify({detail: {code: 'transfer.not_found', message: 'Transfer not found'}})}));
+  await page.evaluate(id => window.showDetail(id), id);
+  await expect.poll(() => page.evaluate(() => window.DPModal.mode)).toBe('details');
+  const state = await answerOf(page, seen, 'nonce-x3');
+  expect(state.owners.details.id).toBe(id);
+});
+
+test('U01: the update notice already shown in the tab session stays shown', async ({page}) => {
+  const seen = await asDesktop(page);
+  await load(page, '/');
+  await page.evaluate(() => sessionStorage.setItem('dp.update.shown', '9.9.9'));
+  const state = await answerOf(page, seen, 'nonce-u1');
+  expect(state.owners['update-notice']).toBe('9.9.9');
+  // A new page is a new tab session: nothing in its sessionStorage but what the state says back.
+  const again = await relaunched(page, state);
+  await expect.poll(() => again.evaluate(() => sessionStorage.getItem('dp.update.shown'))).toBe('9.9.9');
+});

@@ -50,7 +50,7 @@ def test_detail_modal_opens_before_detail_request_finishes():
     js = (REPO_ROOT / "frontend/static/app.js").read_text()
 
     detail = js.split(
-        "async function showDetail(id)", 1
+        "async function showDetail(id, {restore = null} = {})", 1   # 1.0.5 WS8b5: a released window's reopening
     )[1].split(
         "function closeModal", 1
     )[0]

@@ -209,6 +209,9 @@ const dpAddressedPageShown = new Promise(resolve => document.addEventListener('D
     showAddressedPage();
     const scroll = DPWindowState.take('navigation');
     if (scroll && Number.isFinite(scroll.content) && scroll.content > 0) restoreContentScroll(scroll.content);
+    // Details open over it comes back with it (its own opening, its place kept).
+    const detail = DPWindowState.take('details');
+    if (detail && Number.isInteger(detail.id) && detail.id > 0) DPWindowState.hold(showDetail(detail.id, {restore: detail}));
     // The restored pages' own work (their fetches) settles behind the starting cover.
     return DPWindowState.settled();
   }).finally(resolve);
@@ -887,6 +890,10 @@ const DPUpdateNotice = (() => {
   let waiting = false;
   const shown = () => { try { return sessionStorage.getItem(UPDATE_SHOWN_KEY) || ''; } catch (_) { return ''; } };
   const markShown = version => { try { sessionStorage.setItem(UPDATE_SHOWN_KEY, version); } catch (_) {} };
+  // The tab session's "already shown", which a relaunched desktop shell has lost
+  // (DPWindowState): said back as soon as the state arrives, before any check is read.
+  DPWindowState.register('update-notice', {capture: () => shown() || undefined});
+  DPWindowState.ready.then(() => { const version = DPWindowState.take('update-notice'); if (typeof version === 'string' && version) markShown(version); });
   // The check (checked_at) whose badge the person hid; a later check shows it again.
   const dismissed = () => { try { return localStorage.getItem(UPDATE_DISMISSED_KEY) || ''; } catch (_) { return ''; } };
   const admin = () => Boolean(window.downloadPulseAuth?.can?.('administer'));
@@ -3976,13 +3983,38 @@ window.addEventListener('blur', dpDetailPointerReleased);   // the window's own 
  * the shell was closed or given to another view, is never shown. */
 const DETAIL_LOADING_GRACE_MS = 300;
 let dpDetailOpening = 0;
-async function showDetail(id) {
+/* The desktop window's state (DPWindowState): an open Details comes back to
+ * its transfer, its scroll and the disclosures open in it, each named by what
+ * it is (its class) and its place among those -- the same transfer draws the
+ * same structure. It names the transfer it was opened for even when nothing
+ * is drawn (an opening still answering, a failure, a transfer gone), so it
+ * comes back saying what it said: a transfer gone since says so through the
+ * opening's own failure (Transfer not found), as the open window would. */
+let dpDetailOpenedFor = null;          // the transfer the open Details was opened for
+document.addEventListener('downloadpulse:detail-closed', () => { dpDetailOpenedFor = null; });
+const dpDetailDisclosures = body => {
+  const count = new Map();
+  return Array.from(body.querySelectorAll('details'), node => {
+    const kind = node.className || 'details', index = count.get(kind) || 0;
+    count.set(kind, index + 1);
+    return [`${kind}:${index}`, node];
+  });
+};
+DPWindowState.register('details', {capture() {
+  const body = document.getElementById('modal-body');
+  const id = Number(dpDetailShown?.id ?? dpDetailOpenedFor);
+  if (DPModal.mode !== 'details' || !Number.isInteger(id) || id <= 0 || !body) return undefined;
+  return {id, scroll: body.scrollTop,
+    open: dpDetailDisclosures(body).filter(([, node]) => node.open).map(([name]) => name)};
+}});
+async function showDetail(id, {restore = null} = {}) {
   const modalTitle = document.getElementById('modal-title');
   const modalBody = document.getElementById('modal-body');
   dpDetailResource = null;
   dpCloseContextMenu(false);
   const opening = ++dpDetailOpening;
   const current = () => opening === dpDetailOpening && DPModal.mode === 'details';
+  dpDetailOpenedFor = Number(id);
   dpDetailShown = null;              // until this opening's answer, there is nothing to keep live
   dpDetailHeld = null;               // nor an earlier opening's answer to draw
 
@@ -4003,6 +4035,11 @@ async function showDetail(id) {
 
     dpDetailShown = t;
     dpPaintDetail(t);
+    if (restore && modalBody) {
+      const open = new Set(Array.isArray(restore.open) ? restore.open : []);
+      dpDetailDisclosures(modalBody).forEach(([name, node]) => { node.open = open.has(name); });
+      if (Number.isFinite(restore.scroll)) modalBody.scrollTop = restore.scroll;
+    }
   } catch(e) {
     if (!current()) return;
     dpDetailFailed(id, e);
