@@ -62,7 +62,7 @@ def test_the_loop_redraws_the_tray_when_the_language_changes():
     # macOS: the application menu (its Quit, Cmd+Q) is set again in the new language.
     assert 'if relabel and sys.platform == "darwin":\n' in source
     relabelled = source[source.index('if relabel and sys.platform == "darwin":'):]
-    assert relabelled.index('await _window(shell, "window.setMainMenu", main_menu(words))') < 200
+    assert relabelled.index('await window.call("window.setMainMenu", main_menu(words))') < 200   # 1.0.5 WS8d: the Window owner
 
 
 def test_the_macos_application_menu_is_drawn_in_the_chosen_language(tmp_path):

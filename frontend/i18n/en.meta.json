@@ -24079,6 +24079,18 @@
    "owner": "frontend/static/index.html",
    "criticality": "normal"
   },
+  "desktop.error.reopen_failed_title": {
+   "category": "toast",
+   "context": "Desktop notification title when the DownloadPulse window -- closed to the system tray, then released there to save memory -- could not be opened again. DownloadPulse itself keeps running. Parallel to desktop.error.start_failed_title.",
+   "owner": "desktop/supervisor.py",
+   "criticality": "normal"
+  },
+  "desktop.error.reopen_failed_body": {
+   "category": "toast",
+   "context": "Body of that notification: choosing the tray's own Open DownloadPulse (desktop.tray.open, named exactly as it says) tries again; the reason is in the log file named, as desktop.error.start_failed says it.",
+   "owner": "desktop/supervisor.py",
+   "criticality": "normal"
+  },
   "desktop.error.start_failed_title": {
    "category": "toast",
    "context": "Desktop notification title when the desktop application fails to start (its window does not open).",

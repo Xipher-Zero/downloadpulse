@@ -32859,6 +32859,22 @@
     "ai-review"
    ]
   },
+  "desktop.error.reopen_failed_title": {
+   "source": "9e6732e911e1e5ee",
+   "translation": "6eae03e655264819",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.error.reopen_failed_body": {
+   "source": "ee60d1ef2becc890",
+   "translation": "cb91908aae5ec3d5",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.error.start_failed_title": {
    "source": "3c18e0c8b75d0e05",
    "translation": "f969ba59dbcba54c",

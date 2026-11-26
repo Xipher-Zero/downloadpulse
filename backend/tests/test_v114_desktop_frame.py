@@ -80,7 +80,8 @@ def test_the_frame_is_wired_from_the_page_to_the_shell():
     assert "window.setFrameTheme" in config["nativeAllowList"]
     source = (ROOT / "desktop" / "supervisor.py").read_text(encoding="utf-8")
     assert 'frame = (await channel.ask("frame")).get("frame")' in source
-    assert "if frame and frame != applied_frame:" in source                       # only a change is applied
+    # Only a change is applied, and only to a window that has a shell (1.0.5 WS8d: a released one has none).
+    assert "if frame and frame != applied_frame and window.shell is not None:" in source
     app = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
     block = app[app.index("(function desktopFrame() {"):app.index("})();", app.index("(function desktopFrame() {"))]
     assert "if (window.downloadPulseDesktop !== true) return;" in block               # the desktop application only

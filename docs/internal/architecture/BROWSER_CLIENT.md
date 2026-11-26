@@ -125,8 +125,15 @@ withdrawal and the per-client limits. Its pause and resume are its person's own 
 `POST /api/browser/v1/application/show` (a browser token; nothing else is
 admitted). On the installed desktop application it asks its supervisor to bring
 the window forward -- exactly the tray's Open: a window closed to the tray is
-shown again, a minimized one asked back, a shown one raised -- and answers
-`{"desktop": true}`. The request is a flag on the backend's private control
+shown again, a minimized one asked back, a shown one raised, and a released one
+launched again -- and answers `{"desktop": true}`. On Linux, where the tray is
+the supervisor's own, a window hidden in the tray for ten minutes is released
+(its native shell ended to free its memory) once its own page answers that
+nothing would be lost; Open then launches it again within about a second, back
+at its size, its page, the state it held and still signed in (a run-scoped
+cookie store), with a note of what happened while it was away. A relaunch that
+fails says so in a notification and leaves DownloadPulse running; the next Open
+tries again. Windows and macOS keep the hidden window, as before. The request is a flag on the backend's private control
 channel (`application.desktop_control`, op `show`), which the supervisor reads
 every half second; asked twice before it looks is shown once. Whether the
 window may take the focus is the operating system's decision (Windows and some

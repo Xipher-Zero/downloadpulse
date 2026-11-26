@@ -34414,6 +34414,22 @@
     "ai-review"
    ]
   },
+  "desktop.error.reopen_failed_title": {
+   "source": "9e6732e911e1e5ee",
+   "translation": "2dacf31e71d17bf0",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.error.reopen_failed_body": {
+   "source": "ee60d1ef2becc890",
+   "translation": "2d2749f664870b11",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.error.start_failed_title": {
    "source": "3c18e0c8b75d0e05",
    "translation": "2faa75b48dcf29ee",

@@ -3659,6 +3659,8 @@
   "error.local_port.desktop_only": "Local Port is only available in the desktop application.",
   "desktop.local_port.unavailable_title": "Local Port unavailable",
   "desktop.local_port.unavailable": "Port {port} is in use by another program. External applications cannot reach DownloadPulse until it is free or changed in Settings.",
+  "desktop.error.reopen_failed_title": "DownloadPulse could not open its window",
+  "desktop.error.reopen_failed_body": "Choose Open DownloadPulse in the tray to try again. The reason is recorded in logs/desktop.log in DownloadPulse's data folder.",
   "desktop.error.start_failed_title": "DownloadPulse could not start",
   "desktop.error.start_failed": "The reason is recorded in logs/desktop.log in DownloadPulse's data folder.",
   "help.topic.heading.local_port": "Local Port",

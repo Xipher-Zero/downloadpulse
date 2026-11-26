@@ -528,6 +528,7 @@ class _QuietTray:
 @pytest.mark.asyncio
 async def test_a_connected_browsers_open_brings_the_window_forward_as_the_trays_open_does(tmp_path):
     from test_browser_pairing import CHROMIUM, Person, extension, pair
+    from test_v103_desktop_lifecycle import window_of
 
     backend = await Backend(tmp_path).start()
     loop_task = None
@@ -542,7 +543,8 @@ async def test_a_connected_browsers_open_brings_the_window_forward_as_the_trays_
         assert nothing["show"] is False and nothing["quit"] is False
         shell = _RecordingShell()
         loop_task = asyncio.ensure_future(supervisor._serve(
-            shell, backend.channel, supervisor.Words(tmp_path / "config" / "config.json"), backend.owned, _QuietTray()))
+            backend.channel, supervisor.Words(tmp_path / "config" / "config.json"), backend.owned, _QuietTray(),
+            window_of(shell)))
         # The window's own calls (macOS also sets its application menu first, once: not the window's state).
         window = lambda: [call for call in shell.calls if call != "window.setMainMenu"]  # noqa: E731
         await shell.events.put(("windowClose", None))              # closed to the tray

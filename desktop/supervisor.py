@@ -59,6 +59,16 @@ APP_ID = "net.downloadpulse.desktop"
 BACKEND_ID = "desktop-backend"
 SHELL_ID = "desktop-shell"
 READY_SECONDS = 120
+# Linux, the tray the supervisor's own: a window hidden this long is released --
+# its shell ended to free its memory -- once its page says nothing would be lost
+# (1.0.5 WS8d); a page that says otherwise is asked again after the retry.
+RELEASE_AFTER_SECONDS = 600
+RELEASE_RETRY_SECONDS = 60
+# A relaunch's own bound (Open after a release), well inside READY_SECONDS.
+RELAUNCH_SECONDS = 20
+# The shell's run-scoped cookie store (DOWNLOADPULSE_COOKIE_STORE): the sign-in
+# outlives a relaunch within one run, never a new run.
+COOKIE_STORE = "shell-cookies"
 QUIT_SECONDS = 60
 SHELL_EXIT_SECONDS = 10
 # How long the backend's shutdown waits for a request still open (an event
@@ -71,7 +81,10 @@ POLL_SECONDS = 3.0
 SHOW_POLL_SECONDS = 0.5
 NATIVE_METHODS = ("os.setTray", "os.showNotification", "window.show", "window.hide", "window.focus",
                   "window.unminimize", "window.minimize", "window.setMainMenu", "os.showSaveDialog", "app.exit",
-                  "window.setFrameTheme")
+                  "window.setFrameTheme",
+                  # The window's geometry, read at a release; a relaunch is started at it
+                  # (``relaunch_arguments``), so nothing sets it afterwards (1.0.5 WS8d).
+                  "window.getSize", "window.isMaximized")
 # How long a Save dialog may stay open: the person's own time.
 DIALOG_SECONDS = 600
 # How long Quit waits for the loop's background work once it is cancelled.
@@ -648,9 +661,12 @@ class Shell:
     """Neutralino, driven over its own loopback WebSocket with the credential
     it exported for this supervisor (never given to the page)."""
 
-    def __init__(self, session):
+    def __init__(self, session, events: asyncio.Queue | None = None, generation: int = 1):
         self.session, self.ws, self.token, self._next = session, None, "", 0
-        self.events: asyncio.Queue = asyncio.Queue()
+        # The window's one event queue (``Window``), shared by every shell it
+        # launches; each shell's own end names its generation.
+        self.events: asyncio.Queue = events if events is not None else asyncio.Queue()
+        self.generation = generation
         self._pending: dict[str, asyncio.Future] = {}
 
     async def connect(self, auth_file: Path, deadline: float, owned) -> None:
@@ -685,7 +701,7 @@ class Shell:
                 future.set_result(value.get("data"))
             elif value.get("event"):
                 await self.events.put((value["event"], value.get("data")))
-        await self.events.put(("shellClosed", None))
+        await self.events.put(("shellClosed", {"generation": self.generation}))
 
     async def call(self, method: str, data: dict | list | None = None, timeout: float = 15):
         """One native call's answer; ``NativeError`` when Neutralino says it
@@ -1555,31 +1571,26 @@ async def _run(paths: dict[str, Path], root: Path, config_path: Path, words: Wor
     try:
         async with aiohttp.ClientSession() as session:
             await _ready(session, port, backend)
-            auth_file = shell_data_home() / APP_ID / ".tmp" / "auth_info.json"
-            private_directory(auth_file.parent)   # before the shell writes its credential; or no shell
-            auth_file.unlink(missing_ok=True)
             # The shell runs under DownloadPulse's own name (its webview keys its
-            # data on it), in the environment shell_environment() gives it.
-            shell_binary = shell_binary_path(paths["shell"])
-            shell = Shell(session)
-            shell.binary = str(shell_binary)
-            shell_process = await processes.spawn(SHELL_ID, [
-                str(shell_binary), f"--path={paths['shell']}", "--load-dir-res",
-                f"--url=http://127.0.0.1:{port}/"], env=shell_environment(root))
+            # data on it), in the environment shell_environment() gives it; its
+            # one owner launches it -- now, and again after a release (Window).
+            clear_cookie_store(root / "desktop-runtime")   # a new run asks for sign-in, as ever
+            logs.append(ChildLog(root / "logs" / "shell.log"))
+            window = Window(session=session, processes=processes, paths=paths, root=root, port=port, log=logs[1])
             try:
-                logs.append(ChildLog(root / "logs" / "shell.log"))
-                drains += [asyncio.ensure_future(_drain(stream, logs[1]))
-                           for stream in (shell_process.process.stdout, shell_process.process.stderr)]
-                await shell.connect(auth_file, time.monotonic() + READY_SECONDS, shell_process)
+                await window.spawn(time.monotonic() + READY_SECONDS)
                 if sys.platform.startswith("linux"):
-                    bus = await SessionBus.open(shell.events, paths["shell"] / "resources" / "icons")
-                signals.serving(shell.events)
-                return await _serve(shell, channel, words, backend, bus or shell)
+                    bus = await SessionBus.open(window.events, paths["shell"] / "resources" / "icons")
+                signals.serving(window.events)
+                # Linux, whose tray is the supervisor's own: a hidden window may be released.
+                return await _serve(channel, words, backend, bus or window.shell, window, release_allowed=bus is not None)
             finally:
                 # Quit, in order: the shell and its page first, so no request
                 # of the page is left open to hold the backend's shutdown.
                 signals.quitting()
-                await _end_shell(shell, shell_process, processes)
+                await window.end()
+                drains += window.drains
+                clear_cookie_store(root / "desktop-runtime")
     finally:
         signals.quitting()
         if bus is not None:
@@ -1600,9 +1611,154 @@ async def _run(paths: dict[str, Path], root: Path, config_path: Path, words: Wor
             log.close()
 
 
-async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) -> int:
+def clear_cookie_store(runtime: Path) -> None:
+    """The run-scoped cookie store and its SQLite sidecars, gone (every start,
+    Quit, a failed relaunch): a new run asks for sign-in as before."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        (runtime / f"{COOKIE_STORE}{suffix}").unlink(missing_ok=True)
+
+
+def relaunch_arguments(geometry: dict | None) -> list[str]:
+    """A relaunched shell's window (Neutralino 6.10.0 ``--window-*``, which
+    override its configuration): hidden until its relauncher shows it, so it
+    never appears at another size first; at the size the window had
+    (``window.getSize`` and ``--window-width`` are the same, unscaled pixels)
+    and maximized if it was. Neutralino's own saved window state is set aside
+    (``useSavedState`` defaults to on, and a saved file would override the
+    size given here)."""
+    arguments = ["--window-hidden=true", "--window-use-saved-state=false"]
+    if geometry:
+        arguments += [f"--window-width={geometry['width']}", f"--window-height={geometry['height']}"]
+        if geometry.get("maximized"):
+            arguments.append("--window-maximize=true")
+    return arguments
+
+
+class Window:
+    """The native window's one owner (1.0.5 WS8d): its shell -- the credential
+    prepared before every spawn, the spawn, its log, the connection, its end --
+    and what the window is: hidden (by this loop), minimized, hidden since,
+    released (its shell ended to free its memory) and the geometry it is
+    brought back to. Every shell it launches shares one event queue; only the
+    current one's end can mean Quit."""
+
+    def __init__(self, *, session=None, processes=None, paths=None, root: Path | None = None, port: int = 0,
+                 events: asyncio.Queue | None = None, log: "ChildLog | None" = None):
+        self.session, self.processes, self.paths, self.root, self.port = session, processes, paths, root, port
+        self.events: asyncio.Queue = events if events is not None else asyncio.Queue()
+        self.log, self.drains = log, []
+        self.shell: Shell | None = None
+        self.owned = None
+        self.generation = 0
+        self.hidden = False
+        self.minimized = False
+        self.hidden_since: float | None = None
+        self.released = False
+        self.geometry: dict | None = None
+
+    async def spawn(self, deadline: float, *, relaunch: bool = False) -> None:
+        """One shell, in order: a leftover group ended first, the credential's
+        private directory made (or no shell), then the spawn and connection.
+        A relaunch's shell starts hidden at the geometry the window had
+        (``relaunch_arguments``); its relauncher shows it."""
+        if self.processes.alive(SHELL_ID):
+            await self.processes.terminate(None, SHELL_ID, grace=5)
+        if self.processes.alive(SHELL_ID):
+            raise RuntimeError("a previous native shell is not proven gone")
+        self.processes.forget(SHELL_ID)
+        auth_file = shell_data_home() / APP_ID / ".tmp" / "auth_info.json"
+        private_directory(auth_file.parent)
+        auth_file.unlink(missing_ok=True)
+        binary = shell_binary_path(self.paths["shell"])
+        shell = Shell(self.session, self.events, generation=self.generation + 1)
+        shell.binary = str(binary)
+        env = shell_environment(self.root)
+        if sys.platform.startswith("linux"):
+            runtime = self.root / "desktop-runtime"
+            private_directory(runtime)
+            env["DOWNLOADPULSE_COOKIE_STORE"] = str(runtime / COOKIE_STORE)
+        argv = [str(binary), f"--path={self.paths['shell']}", "--load-dir-res",
+                f"--url=http://127.0.0.1:{self.port}/"]
+        if relaunch:
+            argv += relaunch_arguments(self.geometry)
+        owned = await self.processes.spawn(SHELL_ID, argv, env=env)
+        if self.log is not None:
+            self.drains += [asyncio.ensure_future(_drain(stream, self.log))
+                            for stream in (owned.process.stdout, owned.process.stderr)]
+        # Owned from its spawn: whatever happens next, Quit ends it (``end``).
+        self.shell, self.owned, self.generation = shell, owned, shell.generation
+        await shell.connect(auth_file, deadline, owned)
+
+    async def call(self, method: str, data: dict | list | None = None) -> None:
+        if self.shell is not None:
+            await _window(self.shell, method, data)
+
+    async def release(self) -> bool:
+        """End the hidden window's shell to free its memory, keeping its
+        geometry; whether its process group is proven gone (if not, the next
+        relaunch ends it first, or says why it cannot)."""
+        try:
+            size = await self.shell.call("window.getSize")
+            maximized = await self.shell.call("window.isMaximized")
+            self.geometry = {"width": int(size["width"]), "height": int(size["height"]),
+                             "maximized": bool(maximized.get("returnValue") if isinstance(maximized, dict) else maximized)}
+        except (NativeError, TimeoutError, KeyError, TypeError, ValueError, OSError) as exc:
+            logger.warning("the window's size was not read before its release: %s", exc)
+        self.released = True                     # before the shell ends: its close is no Quit
+        shell, owned, self.shell, self.owned = self.shell, self.owned, None, None
+        try:
+            if shell.ws is not None:
+                await shell.ws.close()
+        except (OSError, RuntimeError):
+            pass
+        await _end_shell(shell, owned, self.processes)
+        gone = not self.processes.alive(SHELL_ID)
+        if gone:
+            self.processes.forget(SHELL_ID)
+        logger.info("the window was released after %ss hidden (its shell %s)", RELEASE_AFTER_SECONDS,
+                    "ended" if gone else "is NOT proven gone")
+        return gone
+
+    async def relaunch(self, *, minimized: bool = False) -> bool:
+        """Open after a release: a new shell, started hidden at the geometry
+        the window had, then shown (or minimized), all within
+        RELAUNCH_SECONDS. Any failure on the way -- the spawn, its
+        connection, a shell that dies or does not answer its first calls --
+        keeps the run: the shell that started is ended, the window stays
+        released, the tray works, and the next Open tries again."""
+        async def reopen() -> None:
+            await self.spawn(time.monotonic() + RELAUNCH_SECONDS, relaunch=True)
+            await self.shell.call("window.show")
+            if minimized:
+                await self.shell.call("window.minimize")
+        try:
+            await asyncio.wait_for(reopen(), RELAUNCH_SECONDS)
+        except Exception as exc:  # noqa: BLE001 -- any failure is the same answer: not reopened
+            logger.error("the window could not be opened again: %s", exc or type(exc).__name__)
+            await self.end()                     # a shell that started and failed is ended, as at Quit
+            self.shell, self.owned = None, None
+            clear_cookie_store(self.root / "desktop-runtime")
+            return False
+        self.released, self.hidden, self.hidden_since, self.minimized = False, False, None, minimized
+        logger.info("the window was opened again (shell generation %s)", self.generation)
+        return True
+
+    async def end(self) -> None:
+        """Quit: the current shell, if there is one (a released window has none)."""
+        if self.shell is not None and self.owned is not None:
+            await _end_shell(self.shell, self.owned, self.processes)
+
+
+async def _serve(channel: Channel, words: Words, backend, native, window: Window, *,
+                 release_allowed: bool = False) -> int:
     """One run's loop. ``native`` shows the tray and the notices (the shell,
-    or Linux's ``SessionBus``); the window is always the shell's."""
+    or Linux's ``SessionBus``); the window is ``window``'s (``Window``).
+    ``release_allowed`` (the run's fact: Linux, whose tray is the
+    supervisor's): a window hidden for RELEASE_AFTER_SECONDS is released once
+    its page answers that nothing would be lost (1.0.5 WS8d), and Open
+    brings it back."""
+    asked_release: float | None = None          # when the page was asked (release_prompt); its answer comes with show
+    next_release = 0.0
     cursor = (await channel.ask("events"))["cursor"]
     status = (await channel.ask("status")).get("status")
     words.choose((await channel.ask("locale")).get("locale"))       # the interface's language from the first draw
@@ -1613,10 +1769,8 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
     if sys.platform == "darwin":
         # The application menu: its Quit (Cmd+Q) is this loop's Quit, never
         # the shell's own termination (_end_shell).
-        await _window(shell, "window.setMainMenu", main_menu(words))
-    hidden = False                              # this loop hid the window (close-to-tray)
+        await window.call("window.setMainMenu", main_menu(words))
     applied_frame = None                        # the frame last given to the window (apply_frame)
-    minimized = False                           # the shell says it is minimized (its own events)
     next_poll = time.monotonic() + POLL_SECONDS
     next_show = time.monotonic() + SHOW_POLL_SECONDS
     # Work this loop starts and does not wait for (a Show in folder, a save's
@@ -1636,32 +1790,41 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
         task.add_done_callback(ended)
 
     async def bring_forward(why: str) -> None:
-        # What Open can do depends on what the window is: a window this
-        # loop hid is shown again (the shell maps it); a minimized one
-        # is asked to come back, which on Wayland is the compositor's
-        # to grant (the taskbar always can); a shown one is raised.
-        nonlocal hidden
-        methods = open_methods(hidden=hidden, minimized=minimized)
-        logger.info("%s: the window was %s; %s", why, "hidden" if hidden else "minimized" if minimized
+        # What Open can do depends on what the window is: a released one is
+        # launched again (it opens shown); a window this loop hid is shown
+        # again (the shell maps it); a minimized one is asked to come back,
+        # which on Wayland is the compositor's to grant (the taskbar always
+        # can); a shown one is raised.
+        nonlocal applied_frame, asked_release
+        asked_release = None                    # shown again: a late answer to an earlier prompt is no answer
+        if window.released:
+            logger.info("%s: the window was released; opening it again", why)
+            if await window.relaunch():
+                applied_frame = None            # the new window takes the page's frame again
+            else:
+                await native.notice(words("desktop.error.reopen_failed_title"), words("desktop.error.reopen_failed_body"))
+            return
+        methods = open_methods(hidden=window.hidden, minimized=window.minimized)
+        logger.info("%s: the window was %s; %s", why, "hidden" if window.hidden else "minimized" if window.minimized
                     else "shown", ", ".join(methods))
-        hidden = False
+        window.hidden, window.hidden_since = False, None
         for method in methods:
-            await _window(shell, method)
+            await window.call(method)
 
     try:
         while backend.process.returncode is None:
             try:
-                event, data = await asyncio.wait_for(shell.events.get(),
+                event, data = await asyncio.wait_for(window.events.get(),
                                                      max(0.1, min(next_poll, next_show) - time.monotonic()))
             except TimeoutError:
                 event, data = None, None
             if event in {"windowMinimize", "windowRestore"}:
-                minimized = event == "windowMinimize"
+                window.minimized = event == "windowMinimize"
             elif event == "windowClose":
                 if native.tray_shown:
                     # Hidden where the tray can open it again.
-                    hidden = True
-                    await _window(shell, "window.hide")
+                    window.hidden, window.hidden_since = True, time.monotonic()
+                    await window.call("window.hide")
                 elif sys.platform.startswith("linux") and (await channel.ask("quit_prompt")).get("prompted"):
                     # No tray to open it again (a desktop without one: stock
                     # GNOME): closing is Quit, once the person confirms it in the
@@ -1672,15 +1835,26 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
                     # No page can ask (none loaded, signed out), or Windows and
                     # macOS: the window stays one click away, minimized, and
                     # DownloadPulse keeps running.
-                    await _window(shell, "window.minimize")
-                    minimized = True
-            elif event == "trayAvailability" and not (data or {}).get("shown") and hidden:
+                    await window.call("window.minimize")
+                    window.minimized = True
+            elif event == "trayAvailability" and not (data or {}).get("shown") and window.released:
+                # The tray went away while the released window had only it: the
+                # window is launched again, minimized, where the desktop can open it.
+                logger.warning("the tray went away while the window was released; opening it minimized")
+                if await window.relaunch(minimized=True):
+                    applied_frame = None
+                else:
+                    # No tray and no window: the notice says so; the tray's
+                    # return (or a connected browser's Open) tries again.
+                    await native.notice(words("desktop.error.reopen_failed_title"),
+                                        words("desktop.error.reopen_failed_body"))
+            elif event == "trayAvailability" and not (data or {}).get("shown") and window.hidden:
                 # The tray went away while it was the only way back: the window
                 # returns, minimized, where the desktop can still open it.
                 logger.warning("the tray went away while the window was hidden; showing it minimized")
-                hidden, minimized = False, True
+                window.hidden, window.hidden_since, window.minimized = False, None, True
                 for method in ("window.show", "window.minimize"):
-                    await _window(shell, method)
+                    await window.call(method)
             elif event == "mainMenuItemClicked" and (data or {}).get("id") == "quit":
                 logger.info("Quit (the application menu, Cmd+Q)")
                 return 0
@@ -1698,6 +1872,8 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
                 logger.info("Quit (%s)", (data or {}).get("signal"))
                 return 0
             elif event == "shellClosed":
+                if window.released or (data or {}).get("generation", window.generation) != window.generation:
+                    continue                    # a shell this loop retired (a release): no Quit
                 # The shell ended by itself (macOS: its own termination, the Dock's
                 # Quit); its exit status is recorded where it ends (_end_shell).
                 logger.info("the native shell ended by itself")
@@ -1714,7 +1890,31 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
                 # Show in folder, asked in the window: the file manager, on its own.
                 if asked.get("reveal"):
                     in_background(show_in_folder(asked["reveal"]), "Show in folder")
+                # The page's answer to a release prompt: released only if it says
+                # nothing would be lost, the window is still hidden -- and has
+                # been for RELEASE_AFTER_SECONDS -- and no desktop save waits;
+                # ``released`` keeps the state it handed (sent before the shell
+                # ends: a refused hand-over leaves the window as it is).
+                answer = asked.get("release")
+                if answer and asked_release is not None:
+                    asked_release = None
+                    if (answer.get("releasable") and window.hidden and not window.released
+                            and window.hidden_since is not None
+                            and time.monotonic() - window.hidden_since >= RELEASE_AFTER_SECONDS
+                            and not (await channel.ask("saves")).get("saves")
+                            and (await channel.ask("released", nonce=answer.get("nonce"))).get("ok")):
+                        await window.release()
                 next_show = time.monotonic() + SHOW_POLL_SECONDS
+            now = time.monotonic()
+            if asked_release is not None and now - asked_release >= RELEASE_RETRY_SECONDS:
+                asked_release = None                # unanswered (its page did not run, or its answer failed): asked again
+            if (release_allowed and window.hidden and not window.released and asked_release is None
+                    and window.hidden_since is not None and now - window.hidden_since >= RELEASE_AFTER_SECONDS
+                    and now >= next_release):
+                # Hidden long enough: its own page is asked whether it may be released.
+                if (await channel.ask("release_prompt")).get("prompted"):
+                    asked_release = now
+                next_release = now + RELEASE_RETRY_SECONDS
             if time.monotonic() >= next_poll:
                 batch = await channel.ask("events", after=cursor)
                 cursor = batch.get("cursor", cursor)
@@ -1728,12 +1928,12 @@ async def _serve(shell: Shell, channel: Channel, words: Words, backend, native) 
                     await native.tray(tray_menu(status, words))
                 if relabel and sys.platform == "darwin":
                     # macOS: the application menu (its Quit) speaks the new language too.
-                    await _window(shell, "window.setMainMenu", main_menu(words))
+                    await window.call("window.setMainMenu", main_menu(words))
                 # The window frame in the page's theme, whenever the page says a new one.
                 frame = (await channel.ask("frame")).get("frame")
-                if frame and frame != applied_frame:
+                if frame and frame != applied_frame and window.shell is not None:
                     applied_frame = frame
-                    await apply_frame(shell, frame)
+                    await apply_frame(window.shell, frame)
                 # Desktop saves waiting for a destination: each in its own task, so
                 # the window and tray stay live while its dialog is open.
                 for waiting in (await channel.ask("saves")).get("saves") or []:
@@ -1914,30 +2114,53 @@ def portal_open_directory(path: str) -> bool:
     """Linux: the OpenURI portal's OpenDirectory for one file -- its folder in
     the file manager, the file selected -- handed over as an open descriptor
     (a connection of its own: descriptors travel only on one that allows
-    them). Whether the portal accepted it."""
+    them). Whether the portal SAID it opened it: its request's Response is 0.
+
+    The descriptor is opened ``O_RDONLY`` (never ``O_PATH``): the portal
+    refuses an ``O_PATH`` one opened ``O_NOFOLLOW``, and judges an ``O_PATH``
+    one by the sandbox mount's writability, refusing a sandboxed caller's
+    writable one -- a refusal it says only in that Response (2), after
+    accepting the call (1.0.5 WS2). ``O_NOFOLLOW`` still refuses a final
+    symlink; ``O_NONBLOCK`` keeps a FIFO from holding the reveal (a regular
+    file opens as ever)."""
+    import secrets
     try:
-        from jeepney import DBusAddress, new_method_call
+        from jeepney import DBusAddress, MatchRule, message_bus, new_method_call
         from jeepney.io.blocking import open_dbus_connection
     except ImportError:
         return False
     try:
-        fd = os.open(path, getattr(os, "O_PATH", os.O_RDONLY) | os.O_CLOEXEC | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
         logger.error("Show in folder: the file could not be opened for the portal: %s", exc)
         return False
+    token = "dp" + secrets.token_hex(8)
     try:
         with open_dbus_connection("SESSION", enable_fds=True) as connection:
-            reply = connection.send_and_get_reply(new_method_call(
-                DBusAddress("/org/freedesktop/portal/desktop", bus_name="org.freedesktop.portal.Desktop",
-                            interface="org.freedesktop.portal.OpenURI"),
-                "OpenDirectory", "sha{sv}", ("", fd, {})), timeout=REVEAL_SECONDS)
+            sender = (connection.unique_name or "").lstrip(":").replace(".", "_")
+            request = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
+            # The answer is the request's Response signal: listened for before
+            # asking, so it cannot come first.
+            rule = MatchRule(type="signal", interface="org.freedesktop.portal.Request", member="Response",
+                             path=request)
+            with connection.filter(rule) as answers:
+                connection.send_and_get_reply(message_bus.AddMatch(rule), timeout=REVEAL_SECONDS)
+                reply = connection.send_and_get_reply(new_method_call(
+                    DBusAddress("/org/freedesktop/portal/desktop", bus_name="org.freedesktop.portal.Desktop",
+                                interface="org.freedesktop.portal.OpenURI"),
+                    "OpenDirectory", "sha{sv}", ("", fd, {"handle_token": ("s", token)})), timeout=REVEAL_SECONDS)
+                if reply.header.message_type.name == "error":
+                    logger.warning("Show in folder: the portal refused: %s", reply.body)
+                    return False
+                answer = connection.recv_until_filtered(answers, timeout=REVEAL_SECONDS)
     except (OSError, KeyError, ValueError, TimeoutError) as exc:
         logger.warning("Show in folder: the portal could not be asked: %s", exc)
         return False
     finally:
         os.close(fd)
-    if reply.header.message_type.name == "error":
-        logger.warning("Show in folder: the portal refused: %s", reply.body)
+    response = answer.body[0] if answer.body else 2
+    if response != 0:
+        logger.warning("Show in folder: the portal did not open it (response %s)", response)
         return False
     return True
 

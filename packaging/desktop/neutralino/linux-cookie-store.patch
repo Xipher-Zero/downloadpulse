@@ -1,0 +1,37 @@
+diff --git a/lib/webview/webview.h b/lib/webview/webview.h
+index 0d95254..01d263e 100755
+--- a/lib/webview/webview.h
++++ b/lib/webview/webview.h
+@@ -107,6 +107,7 @@ struct WindowMenuItem {
+ #include <gdk/gdkscreen.h>
+ #include <cairo/cairo.h>
+ #include <dlfcn.h>
++#include <cstdlib>
+ 
+ 
+ // webkit2gtk definitions
+@@ -295,6 +296,24 @@ public:
+     webkit_navigation_action_get_navigation_type = (webkit_navigation_action_get_navigation_type_func)(dlsym(dlib, "webkit_navigation_action_get_navigation_type"));
+     webkit_policy_decision_ignore = (webkit_policy_decision_ignore_func)(dlsym(dlib, "webkit_policy_decision_ignore"));
+ 
++    // DownloadPulse: a run-scoped cookie store the supervisor names
++    // (DOWNLOADPULSE_COOKIE_STORE), so the sign-in outlives a relaunch of the
++    // window within one run; the supervisor deletes it at every start and at
++    // Quit. Set on the default context before any view loads. Unset (or a
++    // WebKit without these functions): WebKit's default, in memory, as before.
++    if(const char *store = std::getenv("DOWNLOADPULSE_COOKIE_STORE")) {
++      using get_default_context_func = void*(*)();
++      using get_cookie_manager_func = void*(*)(void*);
++      using set_persistent_storage_func = void(*)(void*, const char*, int);
++      auto get_default_context = (get_default_context_func)(dlsym(dlib, "webkit_web_context_get_default"));
++      auto get_cookie_manager = (get_cookie_manager_func)(dlsym(dlib, "webkit_web_context_get_cookie_manager"));
++      auto set_persistent_storage = (set_persistent_storage_func)(dlsym(dlib, "webkit_cookie_manager_set_persistent_storage"));
++      if(*store && get_default_context && get_cookie_manager && set_persistent_storage) {
++        set_persistent_storage(get_cookie_manager(get_default_context()), store,
++                               1 /* WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE */);
++      }
++    }
++
+     // Initialize webview widget
+     m_webview = webkit_web_view_new();
+ 

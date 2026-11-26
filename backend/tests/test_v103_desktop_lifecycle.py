@@ -110,8 +110,17 @@ async def _until(predicate, timeout: float = 5) -> bool:
     return predicate()
 
 
+def window_of(shell):
+    """The loop's one window owner (``supervisor.Window``) around a recorded
+    shell. These runs do not release (``release_allowed`` is off), so it
+    never relaunches."""
+    window = supervisor.Window(events=shell.events)
+    window.shell, window.generation = shell, getattr(shell, "generation", 0)
+    return window
+
+
 def _loop(shell, channel, native):
-    return asyncio.ensure_future(supervisor._serve(shell, channel, Words(), Running(), native))
+    return asyncio.ensure_future(supervisor._serve(channel, Words(), Running(), native, window_of(shell)))
 
 
 async def _stop(task):

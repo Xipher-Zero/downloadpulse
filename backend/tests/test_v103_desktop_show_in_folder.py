@@ -364,7 +364,8 @@ async def _serve_one_reveal(monkeypatch, show):
             returncode = None
 
     monkeypatch.setattr(supervisor, "show_in_folder", show)
-    task = asyncio.ensure_future(supervisor._serve(Shell(), Channel(), Words(), Running(), Native()))
+    from test_v103_desktop_lifecycle import window_of
+    task = asyncio.ensure_future(supervisor._serve(Channel(), Words(), Running(), Native(), window_of(Shell())))
     try:
         await asyncio.sleep(supervisor.SHOW_POLL_SECONDS * 3)
     finally:
@@ -417,3 +418,68 @@ def test_the_page_offers_show_in_folder_only_where_the_backend_says():
     assert "status" not in offered.split("offered:")[1] and "dpCan" not in offered
     downloads = (ROOT / "frontend" / "static" / "ui-downloads.js").read_text(encoding="utf-8")
     assert "window.DPDesktopReveal?.offered(t)" in downloads and "DPDesktopReveal.offered(t)" in app
+
+
+class _PortalConnection:
+    """A blocking session-bus connection, as jeepney's, that records what is
+    sent and answers OpenDirectory's request with ``response``."""
+
+    def __init__(self, response):
+        self.unique_name, self.response, self.sent = ":1.42", response, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def filter(self, rule):
+        import contextlib
+        self.rule = rule
+        return contextlib.nullcontext("answers")
+
+    def send_and_get_reply(self, message, timeout=None):
+        from types import SimpleNamespace
+        self.sent.append(message)
+        return SimpleNamespace(header=SimpleNamespace(message_type=SimpleNamespace(name="method_return")), body=())
+
+    def recv_until_filtered(self, _queue, timeout=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(body=(self.response, {}))
+
+
+@pytest.mark.parametrize(("response", "shown"), [(0, True), (2, False), (1, False)])
+def test_the_portal_is_given_a_readable_descriptor_and_only_its_answer_says_shown(monkeypatch, tmp_path, response, shown):
+    """1.0.5 WS2: the portal refuses an O_PATH descriptor opened O_NOFOLLOW (and
+    a sandboxed caller's writable one) -- after accepting the call, in its
+    request's Response. So the file is opened O_RDONLY, the call names its
+    request (handle_token), and only Response 0 is shown; any other falls back."""
+    import os
+
+    import jeepney.io.blocking as blocking
+    film = tmp_path / "film.mkv"
+    film.write_bytes(b"x")
+    opened, connection = [], _PortalConnection(response)
+    real_open = os.open
+    monkeypatch.setattr(os, "open", lambda path, flags, *a: opened.append(flags) or real_open(path, flags, *a))
+    monkeypatch.setattr(blocking, "open_dbus_connection", lambda *_a, **_k: connection)
+    assert supervisor.portal_open_directory(str(film)) is shown
+    assert opened and not opened[0] & getattr(os, "O_PATH", 0) and opened[0] & os.O_ACCMODE == os.O_RDONLY
+    # Never a final symlink, never inherited by a child, never held by a FIFO.
+    assert opened[0] & os.O_NOFOLLOW and opened[0] & os.O_CLOEXEC and opened[0] & os.O_NONBLOCK
+    from jeepney.low_level import HeaderFields
+    # The answer is listened for (AddMatch) before the call that makes it.
+    assert [m.header.fields[HeaderFields.member] for m in connection.sent] == ["AddMatch", "OpenDirectory"]
+    call = connection.sent[-1]
+    assert call.header.fields[HeaderFields.member] == "OpenDirectory"
+    options = call.body[2]
+    assert options["handle_token"][0] == "s" and connection.rule.header_fields["path"].endswith(options["handle_token"][1])
+
+
+def test_the_portal_is_never_handed_a_symlink(monkeypatch, tmp_path):
+    """O_NOFOLLOW: a final symlink is refused before the bus is asked anything."""
+    import jeepney.io.blocking as blocking
+    (tmp_path / "real.mkv").write_bytes(b"x")
+    (tmp_path / "film.mkv").symlink_to(tmp_path / "real.mkv")
+    monkeypatch.setattr(blocking, "open_dbus_connection", lambda *_a, **_k: pytest.fail("no bus call"))
+    assert supervisor.portal_open_directory(str(tmp_path / "film.mkv")) is False
