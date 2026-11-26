@@ -76,7 +76,10 @@ def test_no_integration_stages_or_reclaims_input_or_converges_durable_rows():
 
 def test_integrations_are_lent_grants_and_a_reader_never_the_repository_or_the_service():
     composition = (BACKEND / "application" / "composition.py").read_text(encoding="utf-8")
-    assert "IntegrationEnvironment(ExecutionGrants(application.repository)" in composition
+    # 1.0.5 WS9: the grants also lend core's two read-only facts (observed and waiting work).
+    assert ("grants = ExecutionGrants(application.repository, observed=application.engine.executors_with_observed_work,\n"
+            "                             waiting=application.engine.executors_with_waiting_work)") in composition
+    assert "IntegrationEnvironment(grants," in composition
     assert "commands=IntegrationCommands(application)" in composition
     assert "staged_input=StagedInputReader(" in composition
     definition = (BACKEND / "integrations" / "definition.py").read_text(encoding="utf-8")
