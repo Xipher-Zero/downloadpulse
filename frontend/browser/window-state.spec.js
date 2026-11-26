@@ -203,8 +203,49 @@ test('W10: a restored scroll the page cannot hold yet never lands on a page the 
   expect(await page.evaluate(() => document.getElementById('content').scrollTop)).toBe(0);
 });
 
+// The Downloads and Activity Log cases need more than one page of transfers and
+// of events, and a journal that is not still being written while they compare
+// the page with the API. This file brings its own, through the real API: each
+// direct link to an `.invalid` host is admitted and routed (`routing` events),
+// its first attempt fails to resolve without any network, and it is then paused,
+// so it journals nothing more. Only what is missing is added, so a server that
+// already holds them (a second run, or another spec file's data) is used as it
+// is; the cases read what they expect from the API, never from these seeds.
+const TRANSFERS = 41;
+// What this file added, removed again afterwards so no later spec file in the
+// shard finds them (paused, they would show as Resume Paused).
+const added = [];
+test.beforeAll(async ({request}) => {
+  test.setTimeout(240000);
+  const add = async link => {
+    const response = await request.post('/api/links/add', {data: {links: [link]}});
+    expect(response.ok(), `the real admission path rejected ${link}`).toBeTruthy();
+    added.push((await response.json()).id);
+  };
+  // One link per submission: links submitted together become one transfer.
+  const host = `window-state-${Date.now().toString(36)}.invalid`;
+  const total = (await (await request.get('/api/torrents?limit=1')).json()).total;
+  for (let n = 1; n <= TRANSFERS - total; n += 1) await add(`https://${host}/file-${n}.bin`);
+  // D02 searches for `file-1`.
+  if (!(await (await request.get('/api/torrents?search=file-1&limit=1')).json()).items.length) await add(`https://${host}/file-1.bin`);
+  const statuses = async () => Promise.all(added.map(async id => (await (await request.get(`/api/torrents/${id}`)).json()).status));
+  // Routed (no longer pending), then held still: paused, unless already failed.
+  await expect.poll(async () => (await statuses()).every(status => status !== 'pending'),
+    {timeout: 120000, message: 'the admitted transfers were never routed'}).toBe(true);
+  for (const id of added) await request.post(`/api/torrents/${id}/pause`);
+  await expect.poll(async () => (await statuses()).every(status => status === 'paused' || status === 'error'),
+    {timeout: 60000, message: 'the admitted transfers never came to rest'}).toBe(true);
+  // More events than one page holds, at the page size the Activity Log reads (and
+  // at the 100 A01 pages by), as the engine journals them.
+  const size = Number((await (await request.get('/api/settings')).json()).activity_log_page_size) || 100;
+  await expect.poll(async () => (await (await request.get(`/api/events?limit=${Math.max(size, 100)}`)).json()).has_more,
+    {timeout: 90000, message: 'the admitted transfers never journalled more than one page of events'}).toBe(true);
+});
+test.afterAll(async ({request}) => {
+  for (const id of added.splice(0)) await request.delete(`/api/torrents/${id}`);
+});
+
 // ── WS8b2: Downloads and Quick Add ──────────────────────────────────────
-// Needs transfers on the server (the scratch server is seeded with 41).
 // What the person sees on Downloads (its owner keeps its state private).
 const downloads = page => page.evaluate(() => ({
   page: Number(document.querySelector('#torrent-page-btns [aria-current="page"]')?.textContent || 1),
@@ -213,6 +254,17 @@ const downloads = page => page.evaluate(() => ({
   checked: [...document.querySelectorAll('.t-chk:checked')].map(box => Number(box.dataset.id)).sort((a, b) => a - b),
   search: document.getElementById('torrent-search').value}));
 const rowIds = page => page.evaluate(() => [...document.querySelectorAll('#t-tbody tr[data-torrent-id]')].map(row => Number(row.dataset.torrentId)));
+// A restore that turns pages (page 1 first, which measures the page size, then
+// the page it comes back to) is read once the interface says it is ready: the
+// relaunched interface is not shown before every owner's restore has settled.
+async function loadRestored(page) {
+  await page.addInitScript(() => {
+    window.__ready = false;
+    document.addEventListener('downloadpulse:interface-ready', () => { window.__ready = true; }, {once: true});
+  });
+  await load(page, '/');
+  await expect.poll(() => page.evaluate(() => window.__ready), {timeout: 20000}).toBe(true);
+}
 
 test('D01: Downloads comes back at the row it showed, in its order, with its selection reconciled', async ({page, request}) => {
   // Independent of the page: the newest-first list as the API orders it.
@@ -220,7 +272,7 @@ test('D01: Downloads comes back at the row it showed, in its order, with its sel
   const offset = 10;
   await asDesktop(page, {restore: {state: {route: '/downloads', owners: {downloads: {
     shown: true, filter: '', order: 'newest', offset, search: '', selection: [all[offset], 999999], scroll: 0}}}, since: 1}});
-  await load(page, '/');
+  await loadRestored(page);
   await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
   await expect.poll(async () => (await rowIds(page)).includes(all[offset])).toBe(true);
   const shown = await rowIds(page);
@@ -237,7 +289,8 @@ test('D02: the filter and search come back; a place past the end shows the last 
   const matching = (await (await request.get('/api/torrents?search=file-1&limit=100')).json()).items.map(item => item.id);
   await asDesktop(page, {restore: {state: {route: '/downloads', owners: {downloads: {
     shown: true, filter: '', order: 'queue', offset: 5000, search: 'file-1', selection: [], scroll: 0}}}, since: 1}});
-  await load(page, '/');
+  // On its way to the last page the restore shows page 1 (which measures the page size).
+  await loadRestored(page);
   await expect(page.locator('#view-torrents .ftab[data-dp-status=""]')).toHaveClass(/\bactive\b/);
   const state = await downloads(page);
   expect(state.filter).toBe('');

@@ -138,7 +138,7 @@ async def test_t3_2_t3_6_the_setting_persists_immediately_and_each_rebuild_reads
 async def test_t3_7_existing_torbox_options_are_unchanged():
     defaults = TorBoxOptions().model_dump()
     assert {key: value for key, value in defaults.items()
-            if key not in {"prepare_backup_torrents", "max_active_torrents"}} == {
+            if key not in {"prepare_backup_torrents", "max_active_torrents", "import_account_downloads"}} == {
         "api_token": "", "use_before_usenet": False, "rate_limit_per_minute": 240,
         "request_timeout_seconds": 30, "upload_timeout_seconds": 120, "host_refresh_interval_hours": 24}
     stored = {"api_token": TOKEN, "use_before_usenet": True, "rate_limit_per_minute": 100,
@@ -146,6 +146,7 @@ async def test_t3_7_existing_torbox_options_are_unchanged():
     loaded = canonical_options(SimpleNamespace(integrations={"torbox": SimpleNamespace(options=dict(stored))}))
     assert {key: getattr(loaded, key) for key in stored} == stored    # a pre-existing save reads back unchanged
     assert loaded.prepare_backup_torrents is False
+    assert loaded.import_account_downloads is True                     # 1.0.5: a save without it imports, as before
     # A stated on is never rewritten either (1.0.13).
     stated = canonical_options(SimpleNamespace(integrations={"torbox": SimpleNamespace(
         options={**stored, "prepare_backup_torrents": True})}))
