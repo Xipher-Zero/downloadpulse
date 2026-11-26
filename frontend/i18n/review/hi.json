@@ -1635,6 +1635,46 @@
     "ai-review"
    ]
   },
+  "desktop.away.title": {
+   "source": "f55eaca07cdde997",
+   "translation": "218bfad84c86f941",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.completed": {
+   "source": "5f1612d474b19f29",
+   "translation": "c36780f08f73af4b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.failed": {
+   "source": "98c318fcd1ddda38",
+   "translation": "d98c171175eb553a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.attention": {
+   "source": "ee83489c0da278fb",
+   "translation": "993c333d10775807",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.see": {
+   "source": "18fc413c2063352e",
+   "translation": "e2577d24b2687e1b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.notice.accepted": {
    "source": "03b24f0469eb45de",
    "translation": "7673937ac155a7ce",

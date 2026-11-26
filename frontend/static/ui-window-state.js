@@ -58,6 +58,13 @@ const DPWindowState = (() => {
   // The route the released window showed, and where the journal stood at the release.
   const route = () => (restored && typeof restored.state.route === 'string' ? restored.state.route : null);
   const since = () => (restored && Number.isInteger(restored.since) ? restored.since : null);
+  // What happened while it was released, counted by the backend from that position (1.0.5 WS8g).
+  const away = () => {
+    const counts = restored && restored.away;
+    if (!counts || typeof counts !== 'object') return null;
+    const count = value => (Number.isInteger(value) && value > 0 ? value : 0);
+    return {completed: count(counts.completed), failed: count(counts.failed), attention: count(counts.attention)};
+  };
 
   // Whether nothing would be lost: no change in flight, nothing open that the
   // state does not bring back, and every owner agrees.
@@ -109,6 +116,6 @@ const DPWindowState = (() => {
     } catch (_) {}
   }
 
-  return Object.freeze({active, ready, register, take, hold, settled, route, since, releasable, answer});
+  return Object.freeze({active, ready, register, take, hold, settled, route, since, away, releasable, answer});
 })();
 window.DPWindowState = DPWindowState;

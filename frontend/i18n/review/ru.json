@@ -1671,6 +1671,46 @@
     "ai-review"
    ]
   },
+  "desktop.away.title": {
+   "source": "f55eaca07cdde997",
+   "translation": "2263993694cfc139",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.completed": {
+   "source": "5f1612d474b19f29",
+   "translation": "f52ae1346706123a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.failed": {
+   "source": "98c318fcd1ddda38",
+   "translation": "12cbe6e7bc8adb14",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.attention": {
+   "source": "ee83489c0da278fb",
+   "translation": "b25c806311ca2c95",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "desktop.away.see": {
+   "source": "18fc413c2063352e",
+   "translation": "4b825b4bef426a1c",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "desktop.notice.accepted": {
    "source": "03b24f0469eb45de",
    "translation": "a89e70c2c5d5c382",

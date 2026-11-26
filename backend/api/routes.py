@@ -1534,7 +1534,14 @@ async def desktop_window_state(body: DesktopWindowState, request: Request):
 async def desktop_window_restore(request: Request):
     _require_window(request)
     from application.desktop_control import take_restore
-    return {"restore": take_restore()}
+    restore = take_restore()
+    if restore is not None:
+        # What happened while it was released, from the journal position at the release (1.0.5 WS8g).
+        from db import event_journal
+        from db.database import get_db
+        async with get_db() as db:
+            restore = {**restore, "away": await event_journal.away_summary(db, restore["since"])}
+    return {"restore": restore}
 
 
 # ── Show in folder: a completed download in the desktop's file manager ─────

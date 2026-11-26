@@ -597,6 +597,52 @@ async def latest_id(db) -> int:
     return int(row["id"]) if row else 0
 
 
+# The journal categories whose occurrences a transfer's completion resolves:
+# its delivery (and the questions on the way). Every other category's error --
+# post-processing, provider resource cleanup, storage, consolidation -- outlives
+# the completion (``away_summary``).
+HEALED_BY_COMPLETION = ("execution", "routing", "recovery", "selection", "input", "transfer")
+
+
+async def away_summary(db, since: int) -> dict:
+    """What happened after journal id ``since`` (a released desktop window's
+    position at its release), for the summary its relaunched window shows:
+
+    - ``completed``/``failed``: the transfers that completed / failed, each once;
+    - ``attention``: what waits on the operator or went wrong and is not yet
+      said by those -- each transfer that asked for input (``input.requested``,
+      ``transfer.input_required``), whose recovery waits for the operator
+      (``recovery.decided`` ``wait_for_operator``) or that recorded an error;
+      and each other error, once per subject. A failure says all of its
+      transfer's own (its causes are that failure, said once). A completion
+      says only what it heals -- delivery (``HEALED_BY_COMPLETION``: execution,
+      routing, recovery, selection, input, the lifecycle) -- so an error that
+      outlives it (post-processing, provider cleanup, storage, ...) still counts;
+    - ``through``: the newest id read.
+
+    One range read of the primary key from ``since``."""
+    healed = ", ".join(f"'{category}'" for category in HEALED_BY_COMPLETION)
+    row = await db.fetchone(f"""WITH r AS (SELECT * FROM event_journal WHERE id > ?),
+        failed AS (SELECT DISTINCT transfer_id FROM r WHERE transfer_id IS NOT NULL AND event_type = 'transfer.failed'),
+        completed AS (SELECT DISTINCT transfer_id FROM r WHERE transfer_id IS NOT NULL AND event_type = 'transfer.completed')
+        SELECT
+          (SELECT COUNT(DISTINCT transfer_id) FROM r WHERE event_type = 'transfer.completed') AS completed,
+          (SELECT COUNT(DISTINCT transfer_id) FROM r WHERE event_type = 'transfer.failed') AS failed,
+          (SELECT COUNT(*) FROM (SELECT DISTINCT CASE WHEN transfer_id IS NOT NULL THEN 't:' || transfer_id
+                                   ELSE 's:' || event_type || ':' || subject_kind || ':' || COALESCE(subject_id, '') END
+                                 FROM r
+                                 WHERE (severity = 'error'
+                                        OR event_type IN ('input.requested', 'transfer.input_required')
+                                        OR (event_type = 'recovery.decided' AND outcome = 'wait_for_operator'))
+                                   AND (transfer_id IS NULL
+                                        OR (transfer_id NOT IN (SELECT transfer_id FROM failed)
+                                            AND NOT (transfer_id IN (SELECT transfer_id FROM completed)
+                                                     AND category IN ({healed}))))))
+            AS attention,
+          COALESCE((SELECT MAX(id) FROM r), ?) AS through""", (int(since), int(since)))
+    return {key: int(row[key] or 0) for key in ("completed", "failed", "attention", "through")}
+
+
 async def recorded_count(db) -> int:
     """Every committed journal record -- the whole retained history, not a
     page, a search, the index watermark or one transfer's share. One scan of

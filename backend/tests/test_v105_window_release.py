@@ -93,6 +93,7 @@ async def test_a_hidden_window_is_released_only_on_its_own_pages_answer_and_its_
         assert (await ask("released", nonce=second["nonce"]))["ok"] is True
         status, body = await take()
         assert status == 200 and body["restore"]["state"] == STATE and isinstance(body["restore"]["since"], int)
+        assert set(body["restore"]["away"]) == {"completed", "failed", "attention", "through"}   # WS8g
         assert await take() == (200, {"restore": None})                     # taken once
         assert "error" in await ask("released", nonce=second["nonce"])      # and released once
     finally:
@@ -148,3 +149,78 @@ async def test_an_answer_sent_while_the_release_is_recorded_is_never_kept_in_pla
 
 async def _prompted(_nonce):
     return True
+
+
+@pytest.mark.asyncio
+async def test_what_happened_while_released_is_counted_from_the_position_at_the_release(tmp_path, monkeypatch):
+    """1.0.5 WS8g: after the journal id recorded at the release -- never
+    before it -- the transfers completed and failed, each once, and what needs
+    attention by meaning: a transfer waiting on the operator or with an error
+    (a failure's own causes are that failure, said once; a completion heals only
+    its delivery, so a failed post-processing or an abandoned provider cleanup
+    still counts), and each other error once per subject. The events are the
+    journal's own builders (transfers.journal_events)."""
+    from db import database, event_journal
+    from db.event_journal import JournalEvent
+    from transfers import journal_events as je
+    from types import SimpleNamespace
+
+    from transfers.errors import Category, Domain, NormalizedError, Stage
+    from transfers.models import TransferState
+    unpack = NormalizedError(Domain.POST_PROCESSING, Category.EXTRACTION_FAILED, Stage.POST_PROCESSING)
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "journal.sqlite")
+    await database.init_db()
+
+    def done(transfer):
+        return je.lifecycle(transfer, "verifying", TransferState.COMPLETED)
+
+    def failed(transfer):
+        return je.lifecycle(transfer, "transferring", TransferState.FAILED)
+
+    def plain(kind, severity, *, transfer=None, category="transfer", subject=None, outcome=None):
+        return JournalEvent(category, kind, severity, kind, "transfer" if transfer else "service",
+                            subject_id=subject if subject is not None else transfer, transfer_id=transfer, outcome=outcome)
+
+    async def record(*events):
+        async with database.get_db() as db:
+            for item in events:
+                assert await event_journal.record(db, item)
+            await db.commit()
+            return await event_journal.latest_id(db)
+
+    async def summary(since):
+        async with database.get_db() as db:
+            return await event_journal.away_summary(db, since)
+
+    # Before the release: none of this is counted.
+    since = await record(plain("transfer.completed", "info", transfer=1), plain("transfer.failed", "error", transfer=2),
+                         plain("storage.unavailable", "error", category="storage", subject="downloads"))
+    assert await summary(since) == {"completed": 0, "failed": 0, "attention": 0, "through": since}
+    through = await record(
+        done(3), done(4), done(4),                                                          # the same transfer again: once
+        # One failure and its own causes: said once, as the failure.
+        je.recovery_quiesced(transfer_id=5, artifact_id=50, reason="recovery_exhausted"),
+        je.recovery_decided(transfer_id=5, artifact_id=50, decision_id=1, action="fail_permanently", reason="exhausted"),
+        plain("execution.file_failed", "error", transfer=5, category="execution"),
+        failed(5),
+        # A transfer waiting for the operator's input (a warning): attention, once however often it asks.
+        je.input_requested(transfer_id=6, challenge_id=60, generation=1, integration_id="usenet", message="Password needed"),
+        je.input_requested(transfer_id=6, challenge_id=60, generation=2, integration_id="usenet", message="Password needed"),
+        # A recovery that waits for the operator: attention.
+        je.recovery_decided(transfer_id=7, artifact_id=70, decision_id=2, action="wait_for_operator", reason="input"),
+        # An error on a transfer that then completed: said by the completion.
+        plain("execution.file_failed", "error", transfer=8, category="execution"), done(8),
+        # A transfer that entered input-required (its lifecycle, info): attention.
+        je.lifecycle(10, "resolving", TransferState.INPUT_REQUIRED),
+        # Errors a completion does not heal: post-processing that failed before it, and a
+        # provider cleanup abandoned after it -- each its transfer, once.
+        je.extraction("finished", transfer_id=11, processor_id="extract", outcome=SimpleNamespace(error=unpack, kind="failed")),
+        done(11),
+        done(12),
+        je.resource_cleanup_abandoned(transfer_id=12, binding_id=120, provider_id="realdebrid", error=unpack, token="t"),
+        # A routine retry (a warning, no operator action): not counted.
+        je.recovery_decided(transfer_id=9, artifact_id=90, decision_id=3, action="retry_same_candidate", reason="timeout"),
+        # Another error, twice for the same subject: once.
+        plain("storage.unavailable", "error", category="storage", subject="downloads"),
+        plain("storage.unavailable", "error", category="storage", subject="downloads"))
+    assert await summary(since) == {"completed": 5, "failed": 1, "attention": 6, "through": through}

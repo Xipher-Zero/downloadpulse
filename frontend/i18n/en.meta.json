@@ -1232,6 +1232,45 @@
     "queued": "number: transfers waiting in the queue"
    }
   },
+  "desktop.away.title": {
+   "category": "toast",
+   "context": "Title of the one notice the desktop app shows when its window opens again after DownloadPulse ended it while it sat hidden in the tray (to save memory): what happened meanwhile follows in the body. Says, warmly, 'while you were away'.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal"
+  },
+  "desktop.away.completed": {
+   "category": "toast",
+   "context": "Part of that notice's body: how many transfers completed while the window was away. Shown only when count is at least 1; parts are joined by ' · '.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal",
+   "args": {
+    "count": "plural: how many transfers completed"
+   }
+  },
+  "desktop.away.failed": {
+   "category": "toast",
+   "context": "Part of that notice's body: how many transfers failed while the window was away. Shown only when count is at least 1; parts are joined by ' · '.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal",
+   "args": {
+    "count": "plural: how many transfers failed"
+   }
+  },
+  "desktop.away.attention": {
+   "category": "toast",
+   "context": "Part of that notice's body: how many things need the operator after the window was away -- a transfer waiting for input (a password or captcha) or for a recovery decision, a transfer with an error its outcome does not resolve (for example an archive that failed to unpack, even though the download completed), or another error (storage, a service). Each counts once. 'Item' stays neutral: it may be a transfer or a service. Shown only when count is at least 1; parts are joined by ' · '.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal",
+   "args": {
+    "count": "plural: how many things need attention"
+   }
+  },
+  "desktop.away.see": {
+   "category": "toast",
+   "context": "Last part of that notice's body: where the full detail is. 'Activity Log' is the page's name (shell.nav.activity_log) and must read exactly as it does there.",
+   "owner": "frontend/static/app.js",
+   "criticality": "normal"
+  },
   "desktop.notice.accepted": {
    "category": "toast",
    "context": "Desktop notification title when DownloadPulse accepted a new transfer; the body is the transfer's name.",

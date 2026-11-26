@@ -216,6 +216,21 @@ const dpAddressedPageShown = new Promise(resolve => document.addEventListener('D
     return DPWindowState.settled();
   }).finally(resolve);
 }));
+/* What happened while a released desktop window was away (DPWindowState.away:
+ * the backend's count from the journal position at the release): said once,
+ * as the interface is shown -- the transfers that completed, those that
+ * failed and the items that need attention, each only where there were any,
+ * and where the rest is (the Activity Log). Nothing happened: nothing is said. */
+document.addEventListener('downloadpulse:interface-ready', () => {
+  const away = DPWindowState.away();
+  if (!away) return;
+  const parts = ['completed', 'failed', 'attention'].filter(kind => away[kind] > 0)
+    .map(kind => DPI18n.t(`desktop.away.${kind}`, {count: away[kind]}));
+  if (!parts.length) return;
+  toast({title: DPI18n.t('desktop.away.title'), body: [...parts, DPI18n.t('desktop.away.see')].join(' · ')},
+    away.failed || away.attention ? 'warn' : 'info');
+}, {once: true});
+
 /* The outer scroll a released window had: applied to the restored page as soon
  * as it has drawn tall enough to hold it, within RESTORE_SCROLL_MS (then as far
  * as it goes). Only to that page: a person scrolling, or going to any page,

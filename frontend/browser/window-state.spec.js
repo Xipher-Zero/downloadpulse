@@ -729,19 +729,21 @@ const wallNow = p => p.evaluate(() => ({wall: performance.timeOrigin + performan
 const clock = (W, shape, over = {}) => ({at: W - 2000, bpm: BPM, phase: 0.5, advancedAt: W - 50000, earliest: 0, bytesPerSecond: 0, sustainedPeak: 0,
   beats: [], ...over});
 
-test('P01: a released window\'s heartbeat goes on at the cadence its clock was keeping, motion allowed from the first instant', async ({page}) => {
+for (const [label, hidden] of [['hidden 50 s', 50000], ['hidden 12 s, a heartbeat due on the strip', 12000]])
+test(`P01: a released window's heartbeat goes on at the cadence its clock was keeping, motion allowed from the first instant (${label})`, async ({page}) => {
   await asDesktop(page);
   await load(page, '/');
   const {wall: W, shape} = await wallNow(page);
-  // Hidden 50 s ago half way to its next heartbeat, at 3.5 BPM: due at W-50000+PERIOD/2, then every PERIOD.
-  const again = await relaunchMoving(page, {route: '/', owners: {heartbeat: clock(W, shape)}});
+  // Hidden `hidden` ms ago half way to its next heartbeat, at 3.5 BPM: due at W-hidden+PERIOD/2, then every PERIOD.
+  const again = await relaunchMoving(page, {route: '/', owners: {heartbeat: clock(W, shape, {advancedAt: W - hidden})}});
   const state = await heartbeatWall(again);
   const due = [];
-  for (let t = W - 50000 + PERIOD / 2; t < state.origin + 60000; t += PERIOD) due.push(t);
+  for (let t = W - hidden + PERIOD / 2; t < state.origin + 60000; t += PERIOD) due.push(t);
   const born = due.filter(t => t < state.origin);
   expect(Math.abs(state.nextAt - due.find(t => t > W))).toBeLessThan(3);
   // Every heartbeat due while it was away that can still be on the strip, at its own instant; nothing else before this page.
   const expected = born.filter(t => t >= state.kept - 5);
+  if (hidden === 12000) expect(expected.length).toBeGreaterThan(0);   // this case does put one on the strip
   const before = state.beats.filter(t => t < state.origin);
   expect(before.length).toBe(expected.length);
   expected.forEach((t, k) => expect(Math.abs(before[k] - t)).toBeLessThan(3));
@@ -803,5 +805,44 @@ test('P05: a server page asks for no window state and restores no clock', async 
   const again = await relaunchMoving(page, null, {desktop: false});
   expect(asked).toBe(0);
   expect(await again.evaluate(() => window.DPWindowState.active)).toBe(false);
-  expect((await heartbeatWall(again)).beats.filter(t => t < (performance.timeOrigin || 0))).toEqual([]);
+  const state = await heartbeatWall(again);
+  expect(state.beats.filter(t => t < state.origin)).toEqual([]);
+});
+
+// ── WS8g: what happened while it was away ───────────────────────────────
+const awayToast = p => p.evaluate(() => [...document.querySelectorAll('.toast')].map(node => ({
+  tone: node.className, title: node.querySelector('.dp-toast-title')?.textContent || '', body: node.querySelector('.dp-toast-body')?.textContent || ''})));
+
+test('G01: the reopened window says what completed, failed and needs attention while it was away, once', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/', owners: {}}, since: 1, away: {completed: 3, failed: 1, attention: 0, through: 9}}});
+  await load(page, '/');
+  const words = await page.evaluate(() => ({title: DPI18n.t('desktop.away.title'),
+    body: [DPI18n.t('desktop.away.completed', {count: 3}), DPI18n.t('desktop.away.failed', {count: 1}), DPI18n.t('desktop.away.see')].join(' · ')}));
+  expect(words.title).toBe('While you were away');
+  expect(words.body).toBe('3 transfers completed · 1 transfer failed · Details are in the Activity Log');
+  await expect.poll(() => awayToast(page).then(toasts => toasts.filter(t => t.title === words.title))).toEqual([
+    {tone: expect.stringMatching(/\bwarn\b/), title: words.title, body: words.body}]);
+});
+
+test('G02: nothing happened while it was away: nothing is said', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/', owners: {}}, since: 1, away: {completed: 0, failed: 0, attention: 0, through: 1}}});
+  await load(page, '/');
+  await page.waitForTimeout(1500);
+  const title = await page.evaluate(() => DPI18n.t('desktop.away.title'));
+  expect((await awayToast(page)).filter(t => t.title === title)).toEqual([]);
+});
+
+test('G03: only completions is good news, not a warning', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/', owners: {}}, since: 1, away: {completed: 1, failed: 0, attention: 0, through: 2}}});
+  await load(page, '/');
+  await expect.poll(() => awayToast(page).then(toasts => toasts.find(t => t.title === 'While you were away')?.body))
+    .toBe('1 transfer completed · Details are in the Activity Log');
+  expect((await awayToast(page)).find(t => t.title === 'While you were away').tone).not.toMatch(/\bwarn\b/);
+});
+
+test('G04: what needs attention is said as items, with the warning tone', async ({page}) => {
+  await asDesktop(page, {restore: {state: {route: '/', owners: {}}, since: 1, away: {completed: 0, failed: 0, attention: 2, through: 5}}});
+  await load(page, '/');
+  await expect.poll(() => awayToast(page).then(toasts => toasts.find(t => t.title === 'While you were away')))
+    .toEqual({tone: expect.stringMatching(/\bwarn\b/), title: 'While you were away', body: '2 items need attention · Details are in the Activity Log'});
 });
