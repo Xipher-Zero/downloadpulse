@@ -25,6 +25,12 @@
   The check now compares the file DownloadPulse planned with the file aria2 wrote by their real
   names. This also stopped the in-app update on Windows: on 1.0.7 or older, install 1.0.8 once
   from downloadpulse.net; later updates work from inside the app.
+- **Windows: a download into a folder that already exists with different capitals is kept.**
+  The final check now compares file locations the way Windows does, without regard to case,
+  for every kind of download.
+- **Usenet: a finished job can never move other jobs' files.** If the Usenet service ever
+  reported a finished job's file directly in its shared completed folder, DownloadPulse now
+  waits instead of taking that whole folder.
 - **Turning off update checks now turns off everything that talks to GitHub about releases.**
   The changelog endpoint (`/api/changelog`) serves only the copy shipped with DownloadPulse,
   and the desktop app no longer downloads an update it learned about before checks were

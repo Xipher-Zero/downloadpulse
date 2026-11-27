@@ -604,7 +604,12 @@ async def verify_materialization(
             return None
         entry = result.entries[0]
         relative = _relative(entry.relative_path)
-        if relative is None or os.path.normpath(str(Path(plan.root) / relative)) != os.path.normpath(plan.target):
+        # The same file by the platform's own rule for paths: on Windows names
+        # compare without case (an executor reports what the disk says, and a
+        # folder that already exists keeps its own case); elsewhere exactly.
+        # The payload checked below is the plan's own target (1.0.8, WS-A10).
+        if relative is None or (os.path.normcase(os.path.normpath(str(Path(plan.root) / relative)))
+                                != os.path.normcase(os.path.normpath(plan.target))):
             return None
         size = await stable_material_size(
             plan.target, reported_bytes, observed_total, recorded_bytes=recorded_bytes, sidecars=transient,
