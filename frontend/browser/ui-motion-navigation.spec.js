@@ -793,71 +793,101 @@ async function openAdvanced(page) {
   return {writes, lan: page.locator('#dp-settings-field-private-lan-connections'), skip: page.locator('#dp-settings-field-skip-private-lan-confirmation')};
 }
 const cell = page => page.locator('#dp-settings-field-skip-private-lan-confirmation').locator('xpath=ancestor::div[contains(@class,"dp-settings-field")][1]');
-/* Every frame, from now until the cell's opacity has settled for 80 ms (at
- * most 1.5 s): its opacity and whether its control is disabled. */
-const fade = page => page.evaluate(() => new Promise(resolve => {
+/* The cell's next opacity fade, caught the moment it is created
+ * (``transitionrun``) and held there: its declared duration, the opacity it
+ * starts from, and the control's state at that moment. A held fade waits for
+ * the test, never for the runner's frame rate (1.0.8, WS-T: counting sampled
+ * frames failed on a loaded runner with the fade right). */
+const nextFade = page => page.evaluate(() => new Promise(resolve => {
   const control = document.getElementById('dp-settings-field-skip-private-lan-confirmation');
   const field = control.closest('.dp-settings-field');
-  const frames = [], end = performance.now() + 1500;
-  let still = null;
-  const sample = () => {
-    const now = performance.now(), opacity = Number(getComputedStyle(field).opacity);
-    frames.push({t: now, opacity, disabled: control.disabled, unavailable: field.classList.contains('is-disabled')});
-    const last = frames.at(-2);
-    still = last && Math.abs(last.opacity - opacity) < 0.001 ? (still ?? now) : null;
-    const moved = frames.some(frame => Math.abs(frame.opacity - frames[0].opacity) > 0.01);
-    if ((moved && still && now - still > 80) || now > end) resolve(frames); else requestAnimationFrame(sample);
+  const caught = event => {
+    if (event.target !== field || event.propertyName !== 'opacity') return;
+    field.removeEventListener('transitionrun', caught);
+    const fade = field.getAnimations().find(item => item.transitionProperty === 'opacity');
+    fade.pause();
+    const [first, last] = fade.effect.getKeyframes();
+    resolve({duration: fade.effect.getTiming().duration, from: Number(first.opacity), to: Number(last.opacity),
+             disabled: control.disabled, unavailable: field.classList.contains('is-disabled')});
   };
-  requestAnimationFrame(sample);
+  field.addEventListener('transitionrun', caught);
 }));
+/* The held fade: its drawn opacity at ``ms`` into it, and then let it run on. */
+const heldAt = (page, ms) => page.evaluate(at => {
+  const field = document.getElementById('dp-settings-field-skip-private-lan-confirmation').closest('.dp-settings-field');
+  const fade = field.getAnimations().find(item => item.transitionProperty === 'opacity');
+  fade.currentTime = at;
+  return Number(getComputedStyle(field).opacity);
+}, ms);
+const release = page => page.evaluate(() => {
+  const field = document.getElementById('dp-settings-field-skip-private-lan-confirmation').closest('.dp-settings-field');
+  field.getAnimations().forEach(item => item.play());
+});
 const lanSwitch = page => page.locator('label[for="dp-settings-field-private-lan-connections"].dp-settings-engine-tuning-toggle-control');
 
 test('Skip Local Connection Confirmation fades with Local Network Connections, both ways, as its state changes', async ({page}) => {
   await boot(page);
+  // The page's own timers are held while the On fade is held: a control that waited out the
+  // fade on a timer would still be disabled (WS-T review).
+  await page.clock.install();
   await page.goto('/');
   const {writes, lan, skip} = await openAdvanced(page);
   if (await lan.isChecked()) { await lanSwitch(page).click(); await expect(skip).toBeDisabled(); }
   const stored = await skip.isChecked();
   await expect.poll(() => cell(page).evaluate(node => Number(getComputedStyle(node).opacity))).toBeCloseTo(0.45, 2);
 
-  // On: the control is available from the first frame the fade begins, and the fade is 150-220 ms.
-  const up = fade(page);
+  // On: a 150-220 ms fade from the unavailable appearance, and the control is available while it
+  // is still fading (the fade is held part-way: the control never waits for it to end).
+  let fade = nextFade(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
   await lanSwitch(page).click();
-  let frames = await up;
+  let held = await fade;
+  expect(held.duration).toBeGreaterThanOrEqual(150);
+  expect(held.duration).toBeLessThanOrEqual(220);
+  expect(held.from).toBeCloseTo(0.45, 2);
+  expect(held.to).toBeCloseTo(1, 2);
+  expect(held.unavailable).toBe(false);
   await expect(lan).toBeChecked();
   expect(writes.at(-1)).toEqual({private_lan_connections: true});
-  const rising = frames.filter(frame => frame.opacity > 0.46 && frame.opacity < 0.99);
-  expect(rising.length).toBeGreaterThanOrEqual(3);
-  expect(rising.every(frame => frame.disabled === false && frame.unavailable === false)).toBe(true);
-  const firstMove = frames.find(frame => frame.opacity > 0.46), arrived = frames.find(frame => frame.opacity >= 0.999);
-  expect(arrived.t - firstMove.t).toBeGreaterThan(120);
-  expect(arrived.t - firstMove.t).toBeLessThan(260);
   await expect(skip).toBeEnabled();
+  await page.clock.resume();
+  const midway = await heldAt(page, held.duration / 2);
+  expect(midway).toBeGreaterThan(0.46);
+  expect(midway).toBeLessThan(0.99);
+  await release(page);
+  await expect.poll(() => cell(page).evaluate(node => Number(getComputedStyle(node).opacity))).toBeCloseTo(1, 2);
   expect(await skip.isChecked()).toBe(stored);                   // its own stored choice is untouched
 
-  // Off: back to the same unavailable appearance, just as smoothly.
-  const down = fade(page);
+  // Off: back to the same unavailable appearance, just as smoothly, unavailable from its start.
+  fade = nextFade(page);
   await lanSwitch(page).click();
-  frames = await down;
+  held = await fade;
+  expect(held.duration).toBeGreaterThanOrEqual(150);
+  expect(held.duration).toBeLessThanOrEqual(220);
+  expect(held.from).toBeCloseTo(1, 2);
+  expect(held.to).toBeCloseTo(0.45, 2);
+  expect(held.disabled).toBe(true);
+  await release(page);
   await expect(lan).not.toBeChecked();
-  const falling = frames.filter(frame => frame.opacity > 0.46 && frame.opacity < 0.99);
-  expect(falling.length).toBeGreaterThanOrEqual(3);
-  expect(falling.every(frame => frame.disabled === true)).toBe(true);
-  expect(frames.at(-1).opacity).toBeCloseTo(0.45, 2);
+  await expect.poll(() => cell(page).evaluate(node => Number(getComputedStyle(node).opacity))).toBeCloseTo(0.45, 2);
   await expect(skip).toBeDisabled();
   expect(await skip.isChecked()).toBe(stored);
 
-  // A rapid reversal ends in the right state, without a jump in the drawn opacity.
-  const reversal = fade(page);
+  // A rapid reversal ends in the right state, turning back from where the fade was drawn (no jump).
+  fade = nextFade(page);
   await lanSwitch(page).click();
-  await page.waitForTimeout(60);
+  held = await fade;
+  const drawn = await heldAt(page, 60);
+  expect(drawn).toBeGreaterThan(0.46);
+  const back = nextFade(page);
   await lanSwitch(page).click();
-  frames = await reversal;
+  const reversed = await back;
+  expect(Math.abs(reversed.from - drawn)).toBeLessThan(0.02);
+  expect(reversed.to).toBeCloseTo(0.45, 2);
+  await release(page);
   await expect(lan).not.toBeChecked();
   await expect(skip).toBeDisabled();
   await expect.poll(() => cell(page).evaluate(node => Number(getComputedStyle(node).opacity))).toBeCloseTo(0.45, 2);
-  const steps = frames.slice(1).map((frame, index) => Math.abs(frame.opacity - frames[index].opacity));
-  expect(Math.max(...steps)).toBeLessThan(0.3);                  // it turns back from where it was drawn
   expect(writes.slice(-2)).toEqual([{private_lan_connections: true}, {private_lan_connections: false}]);
 });
 
