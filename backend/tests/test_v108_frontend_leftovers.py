@@ -20,21 +20,27 @@ GONE = ("setFilter", "onTorrentOrderChange", "onDownloadRowClick", "reaffirmQueu
 # A text search sees only explicit ``window.X =`` exports: a top-level declaration in a classic
 # script (app.js's ``downloadTransferTrace``, among its other implicit globals) is a page global
 # without one. The browser spec settings-services-batch2.spec.js checks GONE at runtime.
-# Still exported, for the browser specs alone (recorded debt): never more.
-TEST_HOOKS = ("goToTorrentPage", "clearSelection", "onCheckboxChange", "deleteT")
+# Still exported, for one browser spec alone (recorded debt): ui-fix-ws2-p1.spec.js awaits a
+# single-row removal to prove it resolves only once its focus has settled, which no control
+# exposes. Never more. The specs drive the pager, Clear Selections and the row checkboxes
+# instead of the former hooks below, which are gone like GONE (checked at runtime too).
+TEST_HOOKS = ("deleteT",)
+RETIRED_HOOKS = ("goToTorrentPage", "clearSelection", "onCheckboxChange")
+# Unreachable since 1.0.0 (no control, no action-table entry, no caller): deleted outright.
+DELETED = ("onPageSizeChange", "setLabel")
 
 
 def test_the_former_page_wide_functions_are_not_exported_or_called_as_globals():
     for path in STATIC.glob("*.js"):
         source = path.read_text(encoding="utf-8")
-        for name in GONE:
+        for name in GONE + RETIRED_HOOKS:
             assert not re.search(rf"window\.{name}\b", source), (path.name, name)
 
 
 def test_only_the_recorded_test_hooks_remain_and_no_production_code_calls_them():
     downloads = (STATIC / "ui-downloads.js").read_text(encoding="utf-8")
-    exported = set(re.findall(r"^window\.(\w+) = \1;$", downloads, flags=re.M))
-    assert exported <= set(TEST_HOOKS) | {"downloadsDateMarkup", "downloadsDayMarkup", "downloadsDateLabel",
+    exported = set(re.findall(r"^window\.(\w+) = \w+;$", downloads, flags=re.M))
+    assert exported == set(TEST_HOOKS) | {"downloadsDateMarkup", "downloadsDayMarkup", "downloadsDateLabel",
                                           "downloadsCalendarLabel", "downloadsDayLabel",
                                           "updateDownloadsTrackedCopy", "loadTorrents"}, exported
     for path in STATIC.glob("*.js"):
@@ -62,3 +68,17 @@ def test_no_stylesheet_is_injected_at_runtime():
         source = path.read_text(encoding="utf-8")
         assert not re.search(r"createElement\(\s*['\"]link['\"]\s*\)", source), path.name
     assert "@import url('/ui-storage-health.css?v=1');" in (STATIC / "style.css").read_text(encoding="utf-8")
+
+
+def test_the_unreachable_page_size_and_label_functions_are_deleted():
+    downloads = (STATIC / "ui-downloads.js").read_text(encoding="utf-8")
+    for name in DELETED:
+        assert not re.search(rf"\b{name}\b", downloads), name
+
+
+def test_no_browser_spec_reaches_for_a_retired_hook():
+    browser = STATIC.parent / "browser"
+    for path in browser.glob("*.spec.js"):
+        source = path.read_text(encoding="utf-8")
+        for name in RETIRED_HOOKS:
+            assert not re.search(rf"(?<![\w.'\"]){name}\(", source), (path.name, name)

@@ -137,7 +137,7 @@ function expectSlide(slide, {scope, axis, direction, step}) {
 }
 
 // ── Downloads ──────────────────────────────────────────────────────────────
-async function tenPagesOfDownloads(page, {short = 0} = {}) {
+async function tenPagesOfDownloads(page, {short = 0, members = () => false} = {}) {
   const requests = [];
   await page.route('**/api/torrents**', route => {
     const url = new URL(route.request().url());
@@ -150,7 +150,8 @@ async function tenPagesOfDownloads(page, {short = 0} = {}) {
       const id = offset + index + 1;
       return {id, name: `Transfer ${id}`, hash: `hash-${id}`, status: 'downloading', progress: 10, size_bytes: 1024,
               created_at: '2026-10-01T12:00:00Z', source: 'direct_link', label: null, current_provider_id: 'general_http',
-              current_provider_name: 'HTTP & HTTPS', provider_provenance_status: 'known', extraction_status: null, source_failure_count: 0};
+              current_provider_name: 'HTTP & HTTPS', provider_provenance_status: 'known', extraction_status: null, source_failure_count: 0,
+              queue_member: members()};
     });
     return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({items, total})});
   });
@@ -159,7 +160,13 @@ async function tenPagesOfDownloads(page, {short = 0} = {}) {
 
 test('Downloads: a page turn slides only the list, across, by direction and distance; nothing else slides', async ({page}) => {
   await boot(page);
-  const requests = await tenPagesOfDownloads(page);
+  let members = false;
+  const requests = await tenPagesOfDownloads(page, {members: () => members});
+  const tops = [];
+  await page.route('**/api/torrents/move-to-top', route => {
+    tops.push(route.request().postDataJSON());
+    return route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({outcome: 'moved', moved: 1})});
+  });
   await page.goto('/');
   await page.evaluate(() => nav(document.querySelector('[data-view="torrents"]')));
   const pager = page.locator('#torrent-page-btns'), current = pager.locator('.dp-pager-current');
@@ -192,13 +199,26 @@ test('Downloads: a page turn slides only the list, across, by direction and dist
   await expect(current).toHaveText('1');
   expectSlide(await lastSlide(page), {scope: 'downloads', axis: 'x', direction: 'backward', step: 'long'});
 
-  // A filter, a refresh and a programmatic page change render in place.
+  // A filter, a refresh and a page change the pager did not ask for render in place.
   await clear(page);
   await page.locator('#view-torrents .ftab[data-dp-status="downloading"]').click();
   await expect.poll(() => requests.at(-1).status).toBe('downloading');
   await page.evaluate(() => loadTorrents());
-  await page.evaluate(() => goToTorrentPage(4));
-  await expect(current).toHaveText('4');
+  await noSlide(page);
+  // That page change: Move to Top from a later page of the unfiltered Priority
+  // view returns it to page 1, where the new top is shown.
+  members = true;
+  await page.locator('#view-torrents .ftab[data-dp-status=""]').click();
+  await expect.poll(() => requests.at(-1).status).toBe('');
+  await pager.locator('[aria-label="Last page"]').click();
+  await expect(current).toHaveText('10');
+  await settled(page);
+  await clear(page);
+  await rows.first().locator('.t-chk').check();
+  await page.locator('#bulk-bar .dp-downloads-bulk-action--top').click();
+  await expect.poll(() => tops.length).toBe(1);
+  await expect(current).toHaveText('1');
+  await expect(rows.first()).toHaveAttribute('data-torrent-id', '1');
   await noSlide(page);
 });
 

@@ -203,7 +203,7 @@ test('a selection keeps its page: a smaller viewport scrolls it rather than repa
   const held = await table(page);
   expect(gets.length, 'no page fetched while the selection holds it').toBe(asked);
   expect(held.ids).toEqual(before.ids);
-  await page.evaluate(() => clearSelection());
+  await page.locator('.dp-downloads-bulk-action--clear').click();
   await steady(page);
   const cleared = await table(page);
   expect(gets.length).toBeGreaterThan(asked);

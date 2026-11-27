@@ -308,10 +308,12 @@ test('WS2-P1 bulk Remove captures its stable targets once, rejects double-confir
   await page.evaluate(() => {
     const alpha = document.querySelector('.t-chk[data-id="1"]');
     const beta = document.querySelector('.t-chk[data-id="2"]');
+    // The dialog is modal, so no pointer or key reaches the rows: each checkbox is set and
+    // fires its own change event, through the rows' delegated action (a click's path).
     alpha.checked = false;
-    onCheckboxChange(alpha);
+    alpha.dispatchEvent(new Event('change', {bubbles: true}));
     beta.checked = true;
-    onCheckboxChange(beta);
+    beta.dispatchEvent(new Event('change', {bubbles: true}));
   });
   expect(await selectedIds(page)).toEqual([2]);
 

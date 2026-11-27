@@ -56,7 +56,8 @@ test('the unfiltered footer counts Retained Items: none, one, many and a later p
   const info = page.locator('#torrent-page-info');
   await page.evaluate(() => nav(document.querySelector('[data-view="torrents"]')));
   await expect(info).toHaveText('Showing 153 Retained Items');
-  await page.evaluate(() => goToTorrentPage(2));
+  await page.locator('#torrent-page-btns [aria-label="Next page"]').click();
+  await expect(page.locator('#torrent-page-btns .dp-pager-current')).toHaveText('2');
   await expect(info).toHaveText('Showing 153 Retained Items');
   // The historical KPI subtitle keeps its own count, only its wording changed.
   await page.evaluate(() => updateDownloadsTrackedCopy(9000));

@@ -145,7 +145,7 @@ test('Session 3 Browser Runtime keeps a 1,000-item historical collection bounded
   const lastCount = fixture.total - lastOffset;
   const beforeLast = fixture.listRequests.length;
 
-  await page.evaluate(pageNumber => goToTorrentPage(pageNumber), lastPage);
+  await page.locator('#torrent-page-btns button[aria-label="Last page"]').click();
   await expect.poll(() => fixture.listRequests.length).toBeGreaterThan(beforeLast);
   const lastRequest = await waitForDownloadsListToSettle(rows, fixture);
 

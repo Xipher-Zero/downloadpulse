@@ -283,10 +283,12 @@ test('WS2-P2 integrated UI boundary keeps all six remediation contracts coherent
   await page.evaluate(() => {
     const currentAlpha = document.querySelector('.t-chk[data-id="1"]');
     const currentBeta = document.querySelector('.t-chk[data-id="2"]');
+    // The dialog is modal, so no pointer or key reaches the rows: each checkbox is set and
+    // fires its own change event, through the rows' delegated action (a click's path).
     currentAlpha.checked = false;
-    onCheckboxChange(currentAlpha);
+    currentAlpha.dispatchEvent(new Event('change', {bubbles: true}));
     currentBeta.checked = true;
-    onCheckboxChange(currentBeta);
+    currentBeta.dispatchEvent(new Event('change', {bubbles: true}));
   });
   expect(await selectedIds(page)).toEqual([2]);
   await page.screenshot({path: 'test-results/checkpoint-ui-fix-ws2-p2-integrated-remove-light.png', fullPage: true});

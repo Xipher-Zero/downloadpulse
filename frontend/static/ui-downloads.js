@@ -659,15 +659,6 @@ function turnToPage(p, {turn = false} = {}) {
   window.DPPager?.pending(document.getElementById('torrent-page-btns'), true);
   return loadTorrents();
 }
-function onPageSizeChange(v) {
-  restoring++;
-  const nextSize = Math.min(Math.max(parseInt(v) || 25, 1), 100);
-  if (nextSize !== torrentPageSize || torrentPage !== 1) clearSelection();
-  torrentPageSize = nextSize;
-  torrentPage = 1;
-  searchControl().invalidate();
-  loadTorrents();
-}
 
 // ── Selection ────────────────────────────────────────────────────────────
 function stableDownloadId(value) {
@@ -1593,23 +1584,6 @@ async function bulkAction(action, button) {
     document.dispatchEvent(new CustomEvent('downloadpulse:downloads-bulk-action-settled', {detail: {action}}));
   }
 }
-async function setLabel(id) {
-  // The canonical application dialog owner, never a browser-native prompt.
-  // Semantics are unchanged: cancel is a no-op, blank clears the label.
-  const label = await window.DPSettingsModal.prompt({
-    title: window.DPI18n.t('downloads.label.title'),
-    label: window.DPI18n.t('downloads.label.field'),
-    hint: window.DPI18n.t('downloads.label.hint'),
-    acceptLabel: window.DPI18n.t('common.save'),
-  });
-  if (label === null) return;
-  try {
-    // A label edit never carries a priority: the queue position stays.
-    await api('PUT', `/torrents/${id}/label`, {label: label.trim()});
-    toast(window.DPI18n.t('downloads.label.updated'), 'success');
-    loadTorrents();
-  } catch (e) { toast(e.message, 'error'); }
-}
 
 // ── Language changes ────────────────────────────────────────────────────
 // The page on screen is painted again from the answer it already holds (no
@@ -1706,12 +1680,11 @@ window.downloadsCalendarLabel = formatCalendar;
 // The same, for one instant's day (a premium account's expiry).
 window.downloadsDayLabel = formatDownloadsDay;
 window.updateDownloadsTrackedCopy = updateDownloadsTrackedCopy;
-// Test hooks only (recorded debt, 1.0.8 WS-A12): the browser specs page and
-// select through these; no production code calls them. The list can only
-// shrink (backend/tests/test_v108_frontend_leftovers.py).
-window.goToTorrentPage = goToTorrentPage;
-window.clearSelection = clearSelection;
-window.onCheckboxChange = onCheckboxChange;
+// Test hook only (recorded debt, 1.0.8 WS-A12): a browser spec awaits a
+// single-row removal through it to prove the removal resolves only once its
+// focus has settled -- an ordering no control exposes (the row's Remove does
+// not await it). No production code calls it, and nothing joins it
+// (backend/tests/test_v108_frontend_leftovers.py).
 window.deleteT = deleteT;
 // scheduleCapacityCheck is a real production consumer
 // (ui-processing-presentation.js's syncPauseUi() re-measures capacity after

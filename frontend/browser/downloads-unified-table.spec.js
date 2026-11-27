@@ -469,7 +469,7 @@ test('a page turn draws its placeholder in the table\'s own columns, and a resiz
     // Turn to page 2 while its answer is held: the placeholder stands in the same columns.
     let release;
     held = new Promise(resolve => { release = resolve; });
-    await page.evaluate(() => goToTorrentPage(2, {turn: true}));
+    await page.locator('#torrent-page-btns [aria-label="Next page"]').click();
     await expect(page.locator('#t-tbody tr.dp-page-placeholder-row').first()).toBeVisible();
     const match = await page.evaluate(() => {
       // The table's own headings -- not those of the inert copy the page turn's slide draws beside it.
@@ -488,7 +488,7 @@ test('a page turn draws its placeholder in the table\'s own columns, and a resiz
     await expect(page.locator('#t-tbody tr.dp-page-placeholder-row')).toHaveCount(0);
     await expect(page.locator('#torrent-page-btns [aria-current="page"]')).toHaveText('2');
     await expect(page.locator('#torrent-page-info')).toHaveText('Showing 60 Retained Items');
-    await page.evaluate(() => goToTorrentPage(1));
+    await page.locator('#torrent-page-btns [aria-label="Previous page"]').click();
     await expect(page.locator('#t-tbody tr[data-torrent-id="9800"]')).toBeVisible();
   }
 });
@@ -522,7 +522,7 @@ test('a viewer who cannot operate gets no Actions or selection column: headings,
   const held = new Promise(resolve => { release = resolve; });
   await page.route(url => url.pathname === '/api/torrents' && Number(url.searchParams.get('offset')) > 0,
     async route => { await held; return route.fallback(); });
-  await page.evaluate(() => goToTorrentPage(2, {turn: true}));
+  await page.locator('#torrent-page-btns [aria-label="Next page"]').click();
   await expect(page.locator('#t-tbody tr.dp-page-placeholder-row').first()).toBeVisible();
   expect(await page.evaluate(() => {
     // The table's own headings -- not those of the inert copy the page turn's slide draws beside it.
@@ -535,7 +535,7 @@ test('a viewer who cannot operate gets no Actions or selection column: headings,
   await expect(page.locator('#t-tbody tr.dp-page-placeholder-row')).toHaveCount(0);
   // The empty state spans the five.
   items = [];
-  await page.evaluate(() => goToTorrentPage(1));
+  await page.locator('#torrent-page-btns [aria-label="Previous page"]').click();
   await expect(page.locator('#t-tbody td[colspan="5"] .empty')).toHaveCount(1);
 });
 

@@ -95,10 +95,13 @@ def test_server_rename_uses_the_canonical_dialog_and_keeps_its_persistence_bound
     assert "api(" not in block
 
 
-def test_downloads_label_prompt_uses_the_canonical_dialog():
-    block = DOWNLOADS_JS[DOWNLOADS_JS.index("async function setLabel("):]
+def test_downloads_asks_only_through_the_canonical_dialog():
+    # 1.0.8 (WS-A12): the label prompt had no control since 1.0.0 and is gone; Downloads'
+    # one question, its removal confirmation, is the canonical owner's.
+    assert "function setLabel(" not in DOWNLOADS_JS and "/label`" not in DOWNLOADS_JS
+    block = DOWNLOADS_JS[DOWNLOADS_JS.index("async function confirmDownloadRemoval("):]
     block = block[:block.index("\n}") + 2]
-    assert "DPSettingsModal.prompt" in block
+    assert "const modal = window.DPSettingsModal;" in block and "await modal.confirm({" in block
 
 
 # --- C: one canonical disclosure component --------------------------------

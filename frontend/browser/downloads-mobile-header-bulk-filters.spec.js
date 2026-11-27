@@ -212,7 +212,7 @@ test('Status opens the filters\' own choices; a choice is the filter transition,
   const before = (await header(page)).trigger.box;
   // A selection and a later page: the filter transition clears and resets both.
   await page.locator('#t-tbody tr[data-torrent-id="9801"] .t-chk').check();
-  await page.evaluate(() => goToTorrentPage(2));
+  await page.locator('#torrent-page-btns [aria-label="Next page"]').click();
   await expect.poll(() => state.requests.at(-1)?.offset).not.toBe('0');
   await page.locator('#t-tbody tr[data-torrent-id] .t-chk').first().check();
 
@@ -458,7 +458,11 @@ test('every toolbar button changes together at one width, whichever actions are 
     await barAt(page, width);
     const glyphs = width < 648;
     for (const ids of [[9801], [9803], [9804], [9805], [9801]]) {
-      await page.evaluate(() => clearSelection());
+      // Clear Selections, where there is a selection to clear (the toolbar is shown only then).
+      if (await page.locator('#bulk-bar').evaluate(bar => bar.classList.contains('visible'))) {
+        await page.locator('.dp-downloads-bulk-action--clear').click();
+        await expect(page.locator('#bulk-bar')).not.toHaveClass(/\bvisible\b/);
+      }
       for (const id of ids) await page.locator(`#t-tbody tr[data-torrent-id="${id}"] .t-chk`).check();
       state = await toolbar(page);
       const expectedOrder = {9801: SIX, 9803: ['Pause', 'Resume', 'Reset', '|', 'Delete', 'Clear Selections'],

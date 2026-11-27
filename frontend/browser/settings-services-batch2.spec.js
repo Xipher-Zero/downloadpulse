@@ -319,7 +319,9 @@ test('the inline-handler era\'s page-wide Downloads functions are gone from the 
   await page.goto('/');
   await page.waitForFunction(() => window.DPDownloads && typeof window.DPDownloads.showStatus === 'function');
   const present = await page.evaluate(() => ['setFilter', 'onTorrentOrderChange', 'onDownloadRowClick', 'reaffirmQueue',
-    'moveSelectionToTop', 'onPageSizeChange', 'toggleAllCheckboxes', 'bulkAction', 'setLabel', 'retryT']
+    'moveSelectionToTop', 'onPageSizeChange', 'toggleAllCheckboxes', 'bulkAction', 'setLabel', 'retryT',
+    // The former test hooks the specs no longer need (they drive the pager, Clear Selections and the row checkboxes).
+    'goToTorrentPage', 'clearSelection', 'onCheckboxChange']
     .filter(name => typeof window[name] !== 'undefined'));
   expect(present).toEqual([]);
 });

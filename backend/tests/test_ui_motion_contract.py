@@ -216,8 +216,12 @@ def test_a_page_turn_slides_at_once_to_a_placeholder_that_its_answer_crossfades_
     downloads = read("ui-downloads.js")
     assert "lead" not in downloads.replace("leads the queue", "")
     assert downloads.count("window.DPMotion.slide(") == 1 and downloads.count("window.DPMotion.resolve(") == 1
-    go = downloads[downloads.index("function goToTorrentPage("):downloads.index("function onPageSizeChange(")]
-    assert go.index("beginTorrentTurn(nextPage)") < go.index("loadTorrents();")
+    # The pager's actions turn with motion (turn: true); the turn itself begins before the fetch.
+    pager = downloads[downloads.index("function renderTorrentPagination("):downloads.index("function showFilter(")]
+    assert pager.count("goToTorrentPage(") == 4 and pager.count("{turn: true}") == 4
+    go = downloads[downloads.index("function turnToPage("):]
+    go = go[:go.index("\n}\n")]
+    assert go.index("beginTorrentTurn(nextPage)") < go.index("return loadTorrents();")
     assert "const expected = Math.max(1, Math.min(limit, torrentTotal - (page - 1) * limit));" in downloads
     assert "<input" not in downloads[downloads.index("function paintTorrentPlaceholder("):downloads.index("function replaceTorrentRows(")]
     activity = read("ui-activity-log-runtime.js")

@@ -37,6 +37,14 @@ async function tenPagesOfDownloads(page) {
 
 const downloadsPager = page => page.locator('#torrent-page-btns');
 const activityPager = page => page.locator('#dp-activity-page-btns');
+// A person walking the pager to `target`, a page at a time (each turn answered before the next).
+async function turnTo(pager, target) {
+  const current = pager.locator('.dp-pager-current');
+  for (let now = Number(await current.textContent()); now !== target; now += now < target ? 1 : -1) {
+    await pager.locator(`[aria-label="${now < target ? 'Next' : 'Previous'} page"]`).click();
+    await expect(current).toHaveText(String(now < target ? now + 1 : now - 1));
+  }
+}
 
 /* The five positions, left to right: each the label of the control shown
  * there, '.' for an empty reserved slot, or the current page number. */
@@ -92,7 +100,7 @@ test('Downloads: one five-slot pager, contextual controls, a fixed centre, and F
     expect(await slots(pager)).toEqual(EXPECTED[9]);
     const glyphs = await boundaryGlyphs(pager);
     expect(glyphs.first).toContain('M7 6v12');                       // Lucide chevron-first
-    await page.evaluate(() => goToTorrentPage(5));
+    await turnTo(pager, 5);
     await expect(pager.locator('.dp-pager-current')).toHaveText('5');
     expect(await slots(pager)).toEqual(EXPECTED[5]);
     expect(glyphs.last ?? (await boundaryGlyphs(pager)).last).toContain('M17 6v12');  // Lucide chevron-last
@@ -100,7 +108,7 @@ test('Downloads: one five-slot pager, contextual controls, a fixed centre, and F
     await pager.locator('[aria-label="First page"]').click();
     await expect(pager.locator('.dp-pager-current')).toHaveText('1');
     expect(requests.at(-1).offset).toBe(0);
-    await page.evaluate(() => goToTorrentPage(2));
+    await pager.locator('[aria-label="Next page"]').click();
     await expect(pager.locator('.dp-pager-current')).toHaveText('2');
     expect(await slots(pager)).toEqual(EXPECTED[2]);
     // A status badge on these rows is the DP 6px rounded rectangle.
@@ -231,15 +239,15 @@ test('every sidebar entry opens Downloads page 1, Settings Services and Help Qui
 
     await nav('torrents').click();
     // The sidebar commits its view as its slide begins: Downloads is entered
-    // (on page 1) before the page is changed from code.
+    // (on page 1) before its pager is used.
     await expect(page.locator('#view-torrents')).toHaveClass(/\bactive\b/);
-    await page.evaluate(() => goToTorrentPage(4));
+    await turnTo(downloadsPager(page), 4);
     await expect(current).toHaveText('4');
     await page.evaluate(() => loadTorrents());                               // an ordinary refresh
     await expect(current).toHaveText('4');
     await nav('torrents').click();                                            // reselected
     await expect(current).toHaveText('1');
-    await page.evaluate(() => goToTorrentPage(4));
+    await turnTo(downloadsPager(page), 4);
     await expect(current).toHaveText('4');
     await nav('dashboard').click();
     await nav('torrents').click();                                            // re-entered
