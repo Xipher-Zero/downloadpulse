@@ -9,8 +9,8 @@
   by any program on it, for any file your account can read; and the key that controls the
   window went to the first program that asked for it. On Windows, macOS and Linux, that server
   now holds only the window's own settings and icons, and DownloadPulse takes the key itself
-  as soon as the window starts. On macOS and Linux, the server also answers only requests made
-  to it by its own address, so a web page cannot reach it.
+  as soon as the window starts. The server also answers only requests made to it by its own
+  address, so a web page cannot reach it.
 - **Two sign-in loose ends are closed.** A live update stream opened with a username and
   password now ends when Username & Password is turned off, as signed-in sessions already did.
   And another website can no longer include DownloadPulse's own interface files (for example

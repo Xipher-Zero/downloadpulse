@@ -24,7 +24,7 @@ sha256sum -c - <<SUMS
 SUMS
 cp "$here/linux-gtk-main-thread.patch" "$here/linux-cookie-store.patch" "$here/linux-background.patch" "$here/macos-main-thread-shutdown.patch" \
    "$here/macos-frame-theme.patch" "$here/shell-server-boundary.patch" \
-   "$here/build-macos.sh" "$out/"
+   "$here/build-macos.sh" "$here/build-windows.ps1" "$out/"
 cat > "$out/BUILD.md" <<EOF
 # The DownloadPulse desktop shell: Neutralino 6.10.0 (MIT, LICENSE)
 
@@ -41,10 +41,15 @@ Source: \`neutralinojs-6.10.0-$COMMIT.tar.gz\`, the tree of tag $TAG at commit $
 - **macOS (the DMG):** \`build-macos.sh\` -- \`macos-main-thread-shutdown.patch\`,
   \`macos-frame-theme.patch\` then \`shell-server-boundary.patch\` applied, CMake Release build with
   Apple's clang for the Mac's architecture.
-- **Windows:** the released \`neutralino-win_x64.exe\` of $TAG, unmodified.
+- **Windows (the installer):** \`build-windows.ps1\` -- \`shell-server-boundary.patch\` applied
+  (\`git apply\`; the Linux and macOS patches change only their own systems' code), then, in the
+  x64 environment of Visual Studio's \`vcvars64.bat\` (MSVC): \`cmake -S . -B build -G Ninja
+  -DCMAKE_BUILD_TYPE=Release\`, \`ninja -C build\`; \`bin/neutralino-win_x64.exe\` is installed as
+  the shell. Its PROVENANCE.json (in the installer's BUILD-INFO.json) names the compiler, the
+  Windows SDK, CMake and Ninja it was built with.
 - **Every system:** the shell runs on its \`resources.neu\` bundle (its configuration and icons,
   packaging/desktop/assemble.py), never on its folder (\`--load-dir-res\`).
-  \`shell-server-boundary.patch\` (Linux, macOS): the shell's loopback server serves only paths
+  \`shell-server-boundary.patch\` (Linux, macOS, Windows): the shell's loopback server serves only paths
   inside its document root, answers only a Host of 127.0.0.1 or localhost at its own port, and
   refuses a WebSocket that carries an Origin (a web page's).
 EOF

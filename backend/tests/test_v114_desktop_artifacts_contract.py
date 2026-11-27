@@ -15,8 +15,10 @@ workflow, the installer script and the recipes as committed.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -374,11 +376,162 @@ def test_each_patch_is_the_one_its_recipes_pin_and_each_recipe_verifies_the_comm
 def test_the_macos_shell_is_built_and_installed_with_its_provenance_and_the_handover_carries_its_source():
     workflow = (ROOT / ".github/workflows/desktop-artifacts.yml").read_text(encoding="utf-8")
     assert 'run: bash packaging/desktop/neutralino/build-macos.sh "$RUNNER_TEMP/shell"' in workflow
-    assert 'if [ "$RUNNER_OS" = "macOS" ]; then extra+=(--shell "$RUNNER_TEMP/shell"); fi' in workflow
+    assert 'if [ "$RUNNER_OS" != "Linux" ]; then extra+=(--shell "$RUNNER_TEMP/shell"); fi' in workflow
     assert 'bash packaging/desktop/neutralino/source.sh "$src/neutralino"' in workflow
     assemble = (ROOT / "packaging/desktop/assemble.py").read_text(encoding="utf-8")
-    assert 'if hashlib.sha256(target.read_bytes()).hexdigest() != shell["binary_sha256"]:' in assemble
+    assert 'if hashlib.sha256(target.read_bytes()).hexdigest() != shell.get("binary_sha256"):' in assemble
     assert '"shell": shell,' in assemble
+
+
+# ── 1.0.8 WS-A1b: Windows builds its shell from the same source, with the server patch ──
+
+WINDOWS_SHELL = ROOT / "packaging/desktop/neutralino/build-windows.ps1"
+
+
+def _assemble():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("assemble_ws_a1b", ROOT / "packaging/desktop/assemble.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _desktop_step(name_start: str) -> dict:
+    return next(step for step in _steps("desktop") if step.get("name", "").startswith(name_start))
+
+
+def test_the_windows_job_builds_the_shell_from_the_verified_commit_with_the_checked_server_patch():
+    import hashlib
+    script = WINDOWS_SHELL.read_text(encoding="utf-8")
+    patch = ROOT / "packaging/desktop/neutralino/shell-server-boundary.patch"
+    # The tag's tree, verified to be the pinned commit, before anything is applied.
+    assert f"$Commit = '{NEUTRALINO_COMMIT}'" in script and "$Tag = 'v6.10.0'" in script
+    assert ("git -c core.autocrlf=false clone -q --depth 1 --branch $Tag "
+            "https://github.com/neutralinojs/neutralinojs.git $src") in script
+    assert 'if ($head -ne $Commit) { throw' in script
+    # The patch's digest checked, then that one patch applied: the Linux and macOS ones never.
+    assert f"$ServerPatchSha256 = '{hashlib.sha256(patch.read_bytes()).hexdigest()}'" in script
+    assert script.index("if ($digest -ne $ServerPatchSha256) { throw") < script.index("git -C $src apply $patch")
+    assert script.count("git -C $src apply") == 1
+    assert not re.search(r"(linux|macos)-[a-z-]+\.patch", script)
+    # MSVC from the runner's own Visual Studio (vswhere, vcvars64.bat), Neutralino's own Release build.
+    assert "Microsoft Visual Studio\\Installer\\vswhere.exe" in script and "VC\\Auxiliary\\Build\\vcvars64.bat" in script
+    assert "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" in script
+    assert "cmake -S $src -B $build -G Ninja '-DCMAKE_BUILD_TYPE=Release'" in script and "ninja -C $build" in script
+    assert "$binary = Join-Path $src 'bin\\neutralino-win_x64.exe'" in script
+    # Every native step's exit is checked; a failure stops the build (no fallback).
+    assert "$ErrorActionPreference = 'Stop'" in script
+    for what in ("git clone of Neutralino $Tag", "git apply $ServerPatch", "vcvars64.bat", "cmake (configure)",
+                 "ninja (build)"):
+        assert f"Assert-Exit \"{what}\"" in script or f"Assert-Exit '{what}'" in script, what
+    # The workflow: that script on the Windows runner, before the layout is assembled, which takes it.
+    step = _desktop_step("The Windows native shell")
+    assert step["if"] == "runner.os == 'Windows'" and step["shell"] == "pwsh"
+    assert ('& "$env:GITHUB_WORKSPACE\\packaging\\desktop\\neutralino\\build-windows.ps1" "$env:RUNNER_TEMP\\shell"'
+            in step["run"])
+    names = [s.get("name", "") for s in _steps("desktop")]
+    assert names.index(step["name"]) < next(i for i, n in enumerate(names) if n.startswith("Assemble the desktop layout"))
+    assert 'if [ "$RUNNER_OS" != "Linux" ]; then extra+=(--shell "$RUNNER_TEMP/shell"); fi' in \
+        _desktop_step("Assemble the desktop layout")["run"]
+    # No third-party action sets the compiler up: every action stays SHA-pinned, none is an MSVC one.
+    workflow = (ROOT / ".github/workflows/desktop-artifacts.yml").read_text(encoding="utf-8")
+    assert "msvc-dev-cmd" not in workflow
+    for uses in re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)", workflow):
+        assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", uses), uses
+
+
+def test_no_stock_windows_shell_is_downloaded_and_the_assembler_refuses_windows_without_the_built_one(
+        tmp_path, monkeypatch):
+    assemble = _assemble()
+    source = (ROOT / "packaging/desktop/assemble.py").read_text(encoding="utf-8")
+    # The release's binary is Linux's alone (the Flatpak replaces it); nothing names a Windows or macOS one.
+    assert assemble.RELEASED_SHELLS == {("Linux", "x86_64"): "neutralino-linux_x64"}
+    assert "neutralino-win_x64" not in source and "neutralino-mac_" not in source
+    workflow = (ROOT / ".github/workflows/desktop-artifacts.yml").read_text(encoding="utf-8")
+    assert "neutralinojs/neutralinojs/releases" not in workflow
+    assert "neutralinojs/releases" not in WINDOWS_SHELL.read_text(encoding="utf-8")
+
+    def no_download(*_args, **_kwargs):
+        raise AssertionError("nothing may be downloaded")
+
+    monkeypatch.setattr(assemble, "fetch", no_download)
+    for system, machine in (("Windows", "AMD64"), ("Darwin", "arm64")):
+        # Without --shell: refused at once, before any download or install.
+        monkeypatch.setattr(assemble.platform, "system", lambda system=system: system)
+        monkeypatch.setattr(assemble.platform, "machine", lambda machine=machine: machine)
+        monkeypatch.setattr(sys, "argv", ["assemble.py", "--out", str(tmp_path / "layout")])
+        with pytest.raises(SystemExit, match="needs --shell"):
+            assemble.main()
+        with pytest.raises(SystemExit, match="ships only the shell DownloadPulse builds"):
+            assemble.install_shell(tmp_path / "shell.exe", None, (system, machine), tmp_path)
+
+
+def _built_shell(directory: Path, name: str, **provenance) -> dict:
+    import hashlib
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_bytes(b"MZ built from source")
+    record = {"neutralino": "v6.10.0", "commit": NEUTRALINO_COMMIT,
+              "patches": {"shell-server-boundary.patch": hashlib.sha256(
+                  (ROOT / "packaging/desktop/neutralino/shell-server-boundary.patch").read_bytes()).hexdigest()},
+              "architecture": "x64", "cmake": "cmake version 3.31.6", "ninja": "1.12.1",
+              "compiler": "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35217 for x64",
+              "sdk": "10.0.26100.0", "binary_sha256": hashlib.sha256(b"MZ built from source").hexdigest()}
+    record.update(provenance)
+    import json
+    (directory / "PROVENANCE.json").write_text(json.dumps(record), encoding="utf-8")
+    return record
+
+
+def test_the_assembler_installs_the_built_windows_shell_only_as_its_provenance_names_it(tmp_path):
+    assemble = _assemble()
+    key = ("Windows", "AMD64")
+    target = tmp_path / "layout" / "downloadpulse-shell.exe"
+    target.parent.mkdir()
+    record = _built_shell(tmp_path / "built", "downloadpulse-shell.exe")
+    # The .exe beside its provenance, recorded whole (the toolchain included) for BUILD-INFO.json.
+    assert assemble.install_shell(target, tmp_path / "built", key, tmp_path) == record
+    assert target.read_bytes() == b"MZ built from source"
+    # A directory without the .exe, another binary, another commit, or no server patch: refused.
+    _built_shell(tmp_path / "unix-name", "downloadpulse-shell")
+    with pytest.raises(SystemExit, match="no downloadpulse-shell.exe"):
+        assemble.install_shell(target, tmp_path / "unix-name", key, tmp_path)
+    _built_shell(tmp_path / "other", "downloadpulse-shell.exe", binary_sha256="0" * 64)
+    with pytest.raises(SystemExit, match="not the one its provenance names"):
+        assemble.install_shell(target, tmp_path / "other", key, tmp_path)
+    _built_shell(tmp_path / "commit", "downloadpulse-shell.exe", commit="0" * 40)
+    with pytest.raises(SystemExit, match="names commit"):
+        assemble.install_shell(target, tmp_path / "commit", key, tmp_path)
+    _built_shell(tmp_path / "unpatched", "downloadpulse-shell.exe", patches={})
+    with pytest.raises(SystemExit, match="does not name shell-server-boundary.patch"):
+        assemble.install_shell(target, tmp_path / "unpatched", key, tmp_path)
+    _built_shell(tmp_path / "stale", "downloadpulse-shell.exe", patches={"shell-server-boundary.patch": "0" * 64})
+    with pytest.raises(SystemExit, match="does not name shell-server-boundary.patch"):
+        assemble.install_shell(target, tmp_path / "stale", key, tmp_path)
+
+
+def test_the_windows_shell_records_its_provenance_and_the_handover_carries_its_recipe():
+    script = WINDOWS_SHELL.read_text(encoding="utf-8")
+    provenance = script[script.index("$provenance = [ordered]@{"):script.index("$json = $provenance")]
+    for field in ("neutralino", "commit", "patches", "architecture", "cmake", "ninja", "compiler", "msvc_toolset",
+                  "visual_studio", "sdk", "binary_sha256"):
+        assert re.search(rf"(?m)^\s+{field}\s+= ", provenance), field
+    assert "patches       = [ordered]@{ $ServerPatch = $ServerPatchSha256 }" in provenance
+    assert "compiler      = $banner.Line.Trim()" in provenance and "sdk           = $env:WindowsSDKVersion" in provenance
+    assert "$target = Join-Path $outDir 'downloadpulse-shell.exe'" in script
+    # Written without a byte-order mark (assemble.py json.loads it as UTF-8).
+    assert "[Text.UTF8Encoding]::new($false)" in script and "Join-Path $outDir 'PROVENANCE.json'" in script
+    # The provenance reaches the installer's BUILD-INFO.json, which the handover carries.
+    assemble = (ROOT / "packaging/desktop/assemble.py").read_text(encoding="utf-8")
+    assert 'shell = install_shell(target, args.shell, key, args.cache)' in assemble and '"shell": shell,' in assemble
+    workflow = (ROOT / ".github/workflows/desktop-artifacts.yml").read_text(encoding="utf-8")
+    assert 'cp "$RUNNER_TEMP/layout/BUILD-INFO.json" desktop-build/windows/' in workflow
+    assert 'cp "$dir/BUILD-INFO.json" "$h/BUILD-INFO-$os.json"' in workflow
+    # The corresponding source names how Windows builds it, and carries the recipe.
+    source = (ROOT / "packaging/desktop/neutralino/source.sh").read_text(encoding="utf-8")
+    assert '"$here/build-windows.ps1" "$out/"' in source
+    assert "- **Windows (the installer):** \\`build-windows.ps1\\` -- \\`shell-server-boundary.patch\\` applied" in source
+    assert "released" not in source and "unmodified" not in source
+    assert '"$src/neutralino/build-windows.ps1"' in workflow
 
 
 def test_any_change_to_what_the_installers_ship_builds_them():

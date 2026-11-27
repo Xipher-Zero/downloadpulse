@@ -6,8 +6,8 @@
 # Writes <out-dir>/downloadpulse-shell and <out-dir>/PROVENANCE.json (source
 # commit, patch digest, toolchain, binary SHA-256), which
 # packaging/desktop/assemble.py --shell installs and records. Linux builds the
-# same source with its own patch in the Flatpak recipe; Windows keeps the
-# released binary.
+# same source with its own patches in the Flatpak recipe; Windows builds it
+# with build-windows.ps1.
 #
 # macos-main-thread-shutdown.patch: every macOS shutdown path -- app.exit (the
 # supervisor's Quit, for the tray and Cmd+Q), SIGINT/SIGTERM, and the
@@ -19,7 +19,7 @@
 # the title bar drawn transparent over the window background, set to the
 # theme's frame colour, in its dark or light appearance (the supervisor calls
 # it with the page's theme); the traffic lights and dragging stay the system's.
-# shell-server-boundary.patch (Linux's too): the shell's loopback server serves
+# shell-server-boundary.patch (Linux's and Windows' too): the shell's loopback server serves
 # only paths inside its document root, answers only a Host of 127.0.0.1 or
 # localhost at its own port, and refuses a WebSocket carrying an Origin.
 set -euo pipefail

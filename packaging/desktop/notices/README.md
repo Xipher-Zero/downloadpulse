@@ -45,8 +45,10 @@ apply to which platform's runtime is recorded in that release's `PYTHON.json`.
 
 ## Neutralino v6.10.0 (the native shell, `desktop/shell/`)
 
-The release zip DownloadPulse installs (`neutralinojs-v6.10.0.zip`) carries no
-licence file. These are Neutralino's own licence and those of the libraries
+Every installer's shell is built from this source with DownloadPulse's patches
+(`packaging/desktop/neutralino/`); Neutralino's release zip
+(`neutralinojs-v6.10.0.zip`, whose Linux binary the Linux layout holds until the
+Flatpak replaces it) carries no licence file. These are Neutralino's own licence and those of the libraries
 built into its executable, from the source at tag `v6.10.0` (commit
 `4361b63eb1157fc7dedb29b92815a08ec0002767`). Where a library states its licence only in its source header, that
 header block is reproduced; where the bundled copy states none, the licence of

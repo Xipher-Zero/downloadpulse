@@ -56,7 +56,7 @@ modules:
   # names, so the sign-in outlives a relaunch of the window within one run) and
   # linux-background.patch (1.0.5: the view's background before its page paints
   # is the interface's mode, black or white, never the GTK theme's white frame)
-  # and shell-server-boundary.patch (1.0.8, macOS's too: the loopback server keeps
+  # and shell-server-boundary.patch (1.0.8, macOS's and Windows' too: the loopback server keeps
   # to its document root, its own Host and no web page's WebSocket),
   # against this runtime. The downloadpulse module installs it as the shell.
   - name: neutralino

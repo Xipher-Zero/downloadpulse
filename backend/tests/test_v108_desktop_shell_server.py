@@ -14,7 +14,7 @@ system:
   exported credential and before its own native connection (so before a
   relaunched window is shown); a key someone else took, a shell not serving
   its bundle, or no answer at all ends the start;
-* the shells DownloadPulse builds (Linux, macOS) carry
+* the shells DownloadPulse builds (Linux, macOS and, since WS-A1b, Windows) carry
   shell-server-boundary.patch: only paths inside the document root, only a
   Host of 127.0.0.1 or localhost at its port, no WebSocket with an Origin.
 """

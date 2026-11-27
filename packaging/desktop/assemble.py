@@ -8,9 +8,13 @@ any Python 3.12; it builds the one layout every desktop package carries:
                             (DESKTOP_LOCKS, else backend/requirements.txt; the lock
                             used is recorded in BUILD-INFO.json)
     <out>/backend/ <out>/frontend/static/   the application, unchanged
-    <out>/desktop/          the supervisor + the Neutralino shell (pinned v6.10.0,
-                            hash-checked) + its derived icons; the shell's
-                            configuration and icons in its resources.neu bundle
+    <out>/desktop/          the supervisor + the Neutralino shell (v6.10.0: on
+                            Windows and macOS the one --shell built from its
+                            pinned source with DownloadPulse's patches, checked
+                            against its PROVENANCE.json; on Linux the release's,
+                            hash-checked, which the Flatpak replaces) + its
+                            derived icons; the shell's configuration and icons
+                            in its resources.neu bundle
     <out>/tools/            the bundled native tools (``--tools``: the WS3/WS4
                             recipe outputs, copied as built)
     <out>/backend/usenet/   the bundled Usenet service (``--usenet``): SABnzbd's
@@ -24,7 +28,7 @@ any Python 3.12; it builds the one layout every desktop package carries:
 ``--wheels`` names a directory of locally built wheels (for example Windows'
 sabctools from packaging/sabctools) that stand in for the lock's sdists;
 each is installed --no-deps and recorded with its hash in BUILD-INFO.json.
-Usage: python assemble.py --out DIR [--tools DIR] [--wheels DIR] [--icons DIR] [--usenet]
+Usage: python assemble.py --out DIR [--shell DIR] [--tools DIR] [--wheels DIR] [--icons DIR] [--usenet]
 """
 from __future__ import annotations
 
@@ -55,8 +59,14 @@ RUNTIMES = {   # python-build-standalone install_only_stripped, from its SHA256S
     ("Linux", "x86_64"): ("x86_64-unknown-linux-gnu", "72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c"),
 }
 NEUTRALINO = ("v6.10.0", "e633f480737f229f582d8ec6165a52d789340950aef062560702122389f08329")
-SHELLS = {("Windows", "AMD64"): "neutralino-win_x64.exe", ("Darwin", "arm64"): "neutralino-mac_arm64",
-          ("Darwin", "x86_64"): "neutralino-mac_x64", ("Linux", "x86_64"): "neutralino-linux_x64"}
+NEUTRALINO_COMMIT = "4361b63eb1157fc7dedb29b92815a08ec0002767"   # the tag's commit, as every recipe verifies it
+# Windows and macOS ship only the shell DownloadPulse builds from that source
+# with its patches (--shell, from these recipes); Linux's layout carries the
+# release's binary until the Flatpak replaces it with the shell it builds.
+SHELL_RECIPES = {"Windows": "packaging/desktop/neutralino/build-windows.ps1",
+                 "Darwin": "packaging/desktop/neutralino/build-macos.sh"}
+RELEASED_SHELLS = {("Linux", "x86_64"): "neutralino-linux_x64"}
+SERVER_PATCH = ROOT / "packaging" / "desktop" / "neutralino" / "shell-server-boundary.patch"
 # The desktop runtime lock each system installs (others: the canonical lock).
 DESKTOP_LOCKS = {"Windows": "packaging/desktop/windows/requirements.txt",
                  "Darwin": "packaging/desktop/macos/requirements.txt",
@@ -156,6 +166,44 @@ def apply_usenet_patch(version: str, into: Path) -> dict:
 def copytree(source: Path, target: Path) -> None:
     shutil.copytree(source, target, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "tests", "node_modules"))
+
+
+def install_shell(target: Path, built: Path | None, key: tuple[str, str], cache: Path) -> dict:
+    """The native shell installed at ``target``, and its record for BUILD-INFO.json.
+
+    ``built`` (``--shell``): the shell DownloadPulse built from Neutralino's pinned
+    source, ``<built>/<target's name>`` beside its PROVENANCE.json. It is taken only
+    when it is the binary its provenance names, built from the pinned commit with
+    shell-server-boundary.patch as committed here. Windows and macOS ship nothing
+    else: without it they refuse, never falling back to Neutralino's released
+    binary. Linux alone takes the release's binary of the pinned tag
+    (hash-checked), which its Flatpak replaces with the shell it builds."""
+    if built is not None:
+        source = built / target.name
+        if not source.is_file():
+            raise SystemExit(f"--shell {built}: no {target.name} in it")
+        target.write_bytes(source.read_bytes())
+        shell = json.loads((built / "PROVENANCE.json").read_text(encoding="utf-8"))
+        if hashlib.sha256(target.read_bytes()).hexdigest() != shell.get("binary_sha256"):
+            raise SystemExit("the built shell is not the one its provenance names")
+        if shell.get("commit") != NEUTRALINO_COMMIT:
+            raise SystemExit(f"the built shell names commit {shell.get('commit')!r}, not {NEUTRALINO_COMMIT}")
+        server_patch = hashlib.sha256(SERVER_PATCH.read_bytes()).hexdigest()
+        if (shell.get("patches") or {}).get(SERVER_PATCH.name) != server_patch:
+            raise SystemExit(f"the built shell's provenance does not name {SERVER_PATCH.name} at {server_patch}")
+    elif key in RELEASED_SHELLS:
+        tag, digest = NEUTRALINO
+        zipped = fetch(f"https://github.com/neutralinojs/neutralinojs/releases/download/{tag}/neutralinojs-{tag}.zip",
+                       digest, cache / f"neutralinojs-{tag}.zip")
+        with zipfile.ZipFile(zipped) as bundle:
+            target.write_bytes(bundle.read(RELEASED_SHELLS[key]))
+        shell = {"neutralino": tag, "released_zip_sha256": digest, "binary": RELEASED_SHELLS[key],
+                 "binary_sha256": hashlib.sha256(target.read_bytes()).hexdigest()}
+    else:
+        raise SystemExit(f"{key[0]} ships only the shell DownloadPulse builds from Neutralino's source: build it "
+                         f"({SHELL_RECIPES.get(key[0], 'no recipe for this system')}) and pass its directory as --shell")
+    target.chmod(0o755)
+    return shell
 
 
 def shell_bundle(shell: Path) -> Path:
@@ -347,8 +395,9 @@ def main() -> int:
     parser.add_argument("--requirements", type=Path, help="another hash lock (an interim test system only, "
                                                           "e.g. the Intel mac-vm's cryptography substitution; "
                                                           "recorded in BUILD-INFO.json)")
-    parser.add_argument("--shell", type=Path, help="a native shell DownloadPulse built (downloadpulse-shell and "
-                        "PROVENANCE.json: packaging/desktop/neutralino/build-macos.sh), in place of the released one")
+    parser.add_argument("--shell", type=Path, help="the native shell DownloadPulse built (downloadpulse-shell[.exe] "
+                        "and PROVENANCE.json: packaging/desktop/neutralino/build-windows.ps1, build-macos.sh); "
+                        "required on Windows and macOS")
     parser.add_argument("--icons", type=Path, help="icons already derived by this script elsewhere "
                                                    "(a system without ImageMagick)")
     parser.add_argument("--usenet", action="store_true", help="bundle the Usenet service (SABnzbd) at the image's pin")
@@ -357,6 +406,8 @@ def main() -> int:
     key = (platform.system(), platform.machine())
     if key not in RUNTIMES:
         raise SystemExit(f"no desktop runtime is pinned for {key}")
+    if key[0] in SHELL_RECIPES and args.shell is None:   # before any download or install
+        raise SystemExit(f"{key[0]} needs --shell: the shell built by {SHELL_RECIPES[key[0]]}")
     out = args.out.resolve()
     if out.exists():
         shutil.rmtree(out)
@@ -417,22 +468,9 @@ def main() -> int:
     (out / "desktop").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "desktop" / "supervisor.py", out / "desktop" / "supervisor.py")
     copytree(ROOT / "desktop" / "shell", out / "desktop" / "shell")
-    tag, neu_digest = NEUTRALINO
-    zipped = fetch(f"https://github.com/neutralinojs/neutralinojs/releases/download/{tag}/neutralinojs-{tag}.zip",
-                   neu_digest, args.cache / f"neutralinojs-{tag}.zip")
     # DownloadPulse's own name: the webview keys its profile on the program name.
     target = out / "desktop" / "shell" / ("downloadpulse-shell.exe" if os.name == "nt" else "downloadpulse-shell")
-    if args.shell:   # built from the pinned source with DownloadPulse's patch (macOS)
-        target.write_bytes((args.shell / "downloadpulse-shell").read_bytes())
-        shell = json.loads((args.shell / "PROVENANCE.json").read_text(encoding="utf-8"))
-        if hashlib.sha256(target.read_bytes()).hexdigest() != shell["binary_sha256"]:
-            raise SystemExit("the built shell is not the one its provenance names")
-    else:            # the released binary of the pinned tag (Windows; Linux, where the Flatpak builds its own)
-        with zipfile.ZipFile(zipped) as bundle:
-            target.write_bytes(bundle.read(SHELLS[key]))
-        shell = {"neutralino": tag, "released_zip_sha256": neu_digest, "binary": SHELLS[key],
-                 "binary_sha256": hashlib.sha256(target.read_bytes()).hexdigest()}
-    target.chmod(0o755)
+    shell = install_shell(target, args.shell, key, args.cache)
     if args.icons:
         copytree(args.icons, out / "desktop" / "shell" / "resources" / "icons")
     else:
@@ -463,7 +501,7 @@ def main() -> int:
     if lost:
         raise SystemExit(f"licence files lost to case folding: {lost}")
     info = {"python": PYTHON, "python_build_standalone": PBS, "runtime": name, "runtime_sha256": digest,
-            "neutralino": tag, "neutralino_zip_sha256": neu_digest, "shell": shell, "platform": list(key), "lock": lock,
+            "neutralino": NEUTRALINO[0], "shell": shell, "platform": list(key), "lock": lock,
             "local_wheels": {wheel.name: hashlib.sha256(wheel.read_bytes()).hexdigest() for wheel in built},
             "licence_files": len(files), "usenet_service": usenet}
     (out / "BUILD-INFO.json").write_text(json.dumps(info, indent=1) + "\n", encoding="utf-8")

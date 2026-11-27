@@ -15,7 +15,11 @@
 #   windows-x64  the layout on the Windows lock WITH the native executors of
 #                the WS3/WS4 Windows recipes (aria2, FFmpeg/ffprobe, par2,
 #                zstd, 7-Zip, UnRAR and the netless launcher built in the
-#                pinned Debian base; rsync in its pinned MSYS2 base) and the
+#                pinned Debian base; rsync in its pinned MSYS2 base), the
+#                native shell built here (Neutralino 6.10.0 from its pinned
+#                source with DownloadPulse's server patch, MSVC from the
+#                runner's Visual Studio: packaging/desktop/neutralino/
+#                build-windows.ps1; never Neutralino's released binary) and the
 #                Usenet service with its Windows helpers, the desktop tests and
 #                the Usenet check on its runtime; then, ON THE SAME RUNNER, the
 #                per-user NSIS installer (packaging/desktop/windows/
@@ -345,11 +349,22 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: bash packaging/desktop/neutralino/build-macos.sh "$RUNNER_TEMP/shell"
-      - name: Assemble the desktop layout (pinned CPython 3.12.14, hash locks, pinned Neutralino, the Usenet service)
+      # The same source and the same server patch as macOS and the Flatpak, built with the MSVC
+      # environment of the runner's own Visual Studio (vswhere, vcvars64.bat: no third-party action).
+      # The script stops on any failed step; assemble.py refuses Windows without this shell.
+      - name: The Windows native shell (Neutralino 6.10.0 from its pinned source with DownloadPulse's server patch; MSVC, CMake, Ninja)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\packaging\desktop\neutralino\build-windows.ps1" "$env:RUNNER_TEMP\shell"
+          Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\shell\downloadpulse-shell.exe" | Format-List Algorithm, Hash, Path
+      - name: Assemble the desktop layout (pinned CPython 3.12.14, hash locks, the native shell, the Usenet service)
         shell: bash
         run: |
           extra=(--usenet)
-          if [ "$RUNNER_OS" = "macOS" ]; then extra+=(--shell "$RUNNER_TEMP/shell"); fi
+          # Windows and macOS: the shell built above (assemble.py refuses them without it); Linux: the
+          # release's binary, which the Flatpak replaces with the shell it builds from the same source.
+          if [ "$RUNNER_OS" != "Linux" ]; then extra+=(--shell "$RUNNER_TEMP/shell"); fi
           if [ "$RUNNER_OS" != "Linux" ]; then extra+=(--tools "$RUNNER_TEMP/tools"); fi
           if [ "$RUNNER_OS" = "Windows" ]; then extra+=(--wheels desktop-inputs/wheels); fi
           python packaging/desktop/assemble.py --out "$RUNNER_TEMP/layout" --cache "$RUNNER_TEMP/cache" \
@@ -744,7 +759,8 @@ jobs:
           for required in $windows_sources "$src/macos-and-flatpak-tools/7z2501-src.tar.xz" \
                           "$src/neutralino/BUILD.md" "$src/neutralino/linux-gtk-main-thread.patch" "$src/neutralino/linux-cookie-store.patch" "$src/neutralino/linux-background.patch" \
                           "$src/neutralino/macos-main-thread-shutdown.patch" \
-                          "$src/neutralino/macos-frame-theme.patch" "$src/neutralino/shell-server-boundary.patch"; do
+                          "$src/neutralino/macos-frame-theme.patch" "$src/neutralino/shell-server-boundary.patch" \
+                          "$src/neutralino/build-macos.sh" "$src/neutralino/build-windows.ps1"; do
             [ -s "$required" ] || { echo "missing from the corresponding source: $required"; exit 1; }
           done
           [ -z "$windows_sources" ] || tail -n +2 "$windows_sources" | while read -r package pkgver url; do
