@@ -405,7 +405,7 @@ ACTIONS: dict[str, Capability] = {
 }
 
 # Served paths that are not routed actions.
-_DOCUMENTATION_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+_DOCUMENTATION_PATHS = frozenset({"/openapi.json"})
 
 
 def action_name(endpoint) -> str:

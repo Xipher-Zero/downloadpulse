@@ -292,11 +292,14 @@ app = FastAPI(
         "| Prefix | Description |\n"
         "|--------|-------------|\n"
         f"| `/api/` | Native {APP_SHORT_NAME} REST API |\n\n"
-        "Interactive docs: `/docs` (Swagger UI) · `/redoc` (ReDoc) · `/openapi.json`"
+        "The API's OpenAPI description: `/openapi.json` (Admin), for any OpenAPI viewer."
     ),
     version=read_version(),
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # No interactive documentation pages (1.0.8, WS-A8): FastAPI's Swagger UI and
+    # ReDoc load floating CDN scripts with no integrity, same-origin with an
+    # Admin's session. The description itself stays at /openapi.json.
+    docs_url=None,
+    redoc_url=None,
     openapi_url="/openapi.json",
     lifespan=lifespan,
     # The one authorization policy, applied to every routed action.
@@ -575,17 +578,6 @@ SHELL_SURFACE_PATHS = tuple(path for path in PAGE_ADDRESSES.values() if path != 
 # ``setdefault``: a page that states its own policy keeps it (the sign-in
 # pages, the OIDC verification-complete page, the setup-from-internet refusal).
 APPLICATION_CONTENT_SECURITY_POLICY = "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-# FastAPI's interactive documentation pages (Swagger UI, its OAuth2 redirect,
-# ReDoc) load their scripts from cdn.jsdelivr.net and start with an inline
-# bootstrap built from this application's URLs; at exactly those paths that is
-# allowed (ReDoc's search runs in a blob worker).
-DOCUMENTATION_CONTENT_SECURITY_POLICY = (
-    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; worker-src 'self' blob:; "
-    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-)
-DOCUMENTATION_PAGE_PATHS = frozenset(
-    path for path in (app.docs_url, app.swagger_ui_oauth2_redirect_url, app.redoc_url) if path
-)
 
 
 @app.middleware("http")
@@ -609,11 +601,7 @@ async def request_id_middleware(request: Request, call_next):
     # which this header does not govern, so it is left as it was.
     if not path.startswith("/api/"):
         response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        DOCUMENTATION_CONTENT_SECURITY_POLICY if path in DOCUMENTATION_PAGE_PATHS
-        else APPLICATION_CONTENT_SECURITY_POLICY,
-    )
+    response.headers.setdefault("Content-Security-Policy", APPLICATION_CONTENT_SECURITY_POLICY)
 
     # Frontend assets never rely on manually bumped ?v= values as their
     # coherence boundary. By default executable/presentation resources keep

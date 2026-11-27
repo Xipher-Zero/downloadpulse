@@ -21,8 +21,7 @@ import pytest
 from fastapi import Request, Response
 
 import main
-from main import (APPLICATION_CONTENT_SECURITY_POLICY, DOCUMENTATION_CONTENT_SECURITY_POLICY,
-                  DOCUMENTATION_PAGE_PATHS, request_id_middleware)
+from main import APPLICATION_CONTENT_SECURITY_POLICY, request_id_middleware
 
 BACKEND = Path(__file__).resolve().parents[1]
 FRONTEND = BACKEND.parent / "frontend"
@@ -149,8 +148,6 @@ def test_the_application_policy_restricts_script_only() -> None:
     assert APPLICATION_CONTENT_SECURITY_POLICY == (
         "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
     assert "unsafe" not in APPLICATION_CONTENT_SECURITY_POLICY
-    assert DOCUMENTATION_PAGE_PATHS == {"/docs", "/docs/oauth2-redirect", "/redoc"}
-    assert "'unsafe-inline' https://cdn.jsdelivr.net" in DOCUMENTATION_CONTENT_SECURITY_POLICY
 
 
 @pytest.mark.asyncio
@@ -164,14 +161,14 @@ async def test_every_application_response_carries_the_policy(path: str) -> None:
     assert response.headers["Content-Security-Policy"] == APPLICATION_CONTENT_SECURITY_POLICY
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["/docs", "/docs/oauth2-redirect", "/redoc"])
-async def test_documentation_pages_have_their_own_policy(path: str) -> None:
-    async def call_next(_request):
-        return Response(content="<html></html>", media_type="text/html")
-
-    response = await request_id_middleware(_request(path), call_next)
-    assert response.headers["Content-Security-Policy"] == DOCUMENTATION_CONTENT_SECURITY_POLICY
+def test_no_interactive_documentation_pages_and_no_cdn_exception() -> None:
+    """1.0.8 (WS-A8): FastAPI's Swagger UI and ReDoc loaded floating CDN scripts with
+    no integrity, same-origin with an Admin's session; they are gone, and with them
+    the policy exception they needed. The OpenAPI description stays."""
+    assert main.app.docs_url is None and main.app.redoc_url is None
+    assert main.app.openapi_url == "/openapi.json"
+    source = (BACKEND / "main.py").read_text(encoding="utf-8")
+    assert "cdn.jsdelivr.net" not in source and "unsafe-inline" not in source
 
 
 @pytest.mark.asyncio
@@ -292,5 +289,4 @@ def test_main_wires_the_policy_in_the_outermost_middleware() -> None:
     source = (BACKEND / "main.py").read_text(encoding="utf-8")
     middleware = source[source.index("async def request_id_middleware"):]
     middleware = middleware[:middleware.index("\n    return response")]
-    assert 'response.headers.setdefault(\n        "Content-Security-Policy",' in middleware
-    assert main.app.docs_url in DOCUMENTATION_PAGE_PATHS and main.app.redoc_url in DOCUMENTATION_PAGE_PATHS
+    assert 'response.headers.setdefault("Content-Security-Policy", APPLICATION_CONTENT_SECURITY_POLICY)' in middleware

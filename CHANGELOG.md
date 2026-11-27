@@ -11,6 +11,9 @@
   now holds only the window's own settings and icons, and DownloadPulse takes the key itself
   as soon as the window starts. The server also answers only requests made to it by its own
   address, so a web page cannot reach it.
+- **The interactive API pages `/docs` and `/redoc` are gone.** They loaded their scripts from a
+  public CDN at whatever version it served, with an Admin's sign-in. The API's description is
+  still at `/openapi.json` (Admin), which any OpenAPI viewer can open.
 - **Two sign-in loose ends are closed.** A live update stream opened with a username and
   password now ends when Username & Password is turned off, as signed-in sessions already did.
   And another website can no longer include DownloadPulse's own interface files (for example

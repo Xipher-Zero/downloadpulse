@@ -159,7 +159,7 @@ PROBES = [
     ("PATCH", "/api/execution/runtime-limits", {Role.USER: 403, Role.READONLY: 403, Role.INTEGRATION: 403}),
     ("POST", "/api/executor-work/a/cancel", {Role.USER: 403, Role.READONLY: 403, Role.INTEGRATION: 403}),
     ("GET", "/api/accounts", {Role.USER: 403, Role.READONLY: 403, Role.INTEGRATION: 403, Role.ADMIN: None}),
-    ("GET", "/docs", {Role.USER: 403, Role.READONLY: 403, Role.INTEGRATION: 403}),
+    ("GET", "/openapi.json", {Role.USER: 403, Role.READONLY: 403, Role.INTEGRATION: 403}),
     ("GET", "/", {Role.INTEGRATION: 403}),
     ("GET", "/api/events/stream", {Role.INTEGRATION: 403}),
     ("GET", "/api/torrents", {Role.INTEGRATION: 403, Role.USER: None, Role.READONLY: None}),
