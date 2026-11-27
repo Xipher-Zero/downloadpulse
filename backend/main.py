@@ -601,6 +601,14 @@ async def request_id_middleware(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
     path = request.url.path
+    # The interface's own files (pages, scripts such as /ui-theme-bootstrap.js
+    # and /i18n/*, styles, images) are this origin's alone: another site cannot
+    # include them as a script or image and read what they reveal (1.0.8,
+    # WS-A7: in open mode the theme bootstrap carries the account and the
+    # desktop flags). The API answers credentialed clients and CORS fetches,
+    # which this header does not govern, so it is left as it was.
+    if not path.startswith("/api/"):
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
     response.headers.setdefault(
         "Content-Security-Policy",
         DOCUMENTATION_CONTENT_SECURITY_POLICY if path in DOCUMENTATION_PAGE_PATHS

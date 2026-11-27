@@ -56,7 +56,7 @@ from core.version import read_version
 from auth import accounts
 from auth.middleware import session_record_valid
 from auth.models import AuthMechanism, Principal
-from auth.policy import interactive_auth_enabled
+from auth.policy import interactive_auth_enabled, password_auth_enabled
 from auth.permissions import ACTIONS, Capability, destruction_precondition, permits, require_destruction, transfer_access
 from auth.oidc_version import oidc_configuration_version
 from auth.passwords import basic_verification_cache
@@ -3094,13 +3094,18 @@ session_store.on_revocation(_sse_sessions_ended)
 
 def _sse_still_authorized(subscriber: _SseSubscriber) -> bool:
     """Re-checked at every event and heartbeat: a connection outlives neither
-    its session, nor the standalone installation it opened in."""
+    its session, nor the standalone installation it opened in, nor -- opened
+    with HTTP Basic -- Username & Password being turned off."""
     settings = get_settings()
     if subscriber.session_token:
         record = session_store.resolve(subscriber.session_token)
         return record is not None and session_record_valid(record, settings)
     if not subscriber.principal.authenticated:
         return not interactive_auth_enabled(settings)
+    if subscriber.principal.mechanism == AuthMechanism.HTTP_BASIC:
+        # Username & Password admitted it, request by request: turned off, the
+        # stream it opened ends with it (1.0.8, WS-A7), as a session would.
+        return password_auth_enabled(settings)
     return True
 
 

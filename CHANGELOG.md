@@ -11,6 +11,10 @@
   now holds only the window's own settings and icons, and DownloadPulse takes the key itself
   as soon as the window starts. On macOS and Linux, the server also answers only requests made
   to it by its own address, so a web page cannot reach it.
+- **Two sign-in loose ends are closed.** A live update stream opened with a username and
+  password now ends when Username & Password is turned off, as signed-in sessions already did.
+  And another website can no longer include DownloadPulse's own interface files (for example
+  the script that sets up its appearance) and read what they say about your installation.
 
 ### Fixed
 
