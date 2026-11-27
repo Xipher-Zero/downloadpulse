@@ -344,7 +344,7 @@ def test_downloads_pagination_filtering_are_owned_by_the_canonical_downloads_own
     assert "function renderTorrentPagination(" in downloads
     assert "function setFilter(" in downloads
     assert "function loadTorrents(" in downloads
-    assert "window.setFilter = setFilter" in downloads
+    assert "window.setFilter" not in downloads and "showStatus" in downloads
     assert "window.loadTorrents = loadTorrents" in downloads
     assert not (STATIC / "ui-downloads-runtime.js").exists()
     assert not (STATIC / "ui-downloads-presentation.js").exists()

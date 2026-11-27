@@ -4413,7 +4413,6 @@ async function downloadTransferTrace(button) {
     setButtonPending(button, false);
   }
 }
-window.downloadTransferTrace = downloadTransferTrace;
 
 // The #overlay backdrop and close-button entry (the shell's closeDetails*
 // actions). The shared modal coordinator owns the actual close decision and
@@ -4438,7 +4437,7 @@ window.DPActions.delegate(document.body, 'click', {
   navDownloads: () => nav(document.querySelector('[data-view=torrents]')),
   showErrorDownloads: () => {
     nav(document.querySelector('[data-view=torrents]'));
-    setTimeout(() => window.setFilter(document.querySelector('.ftab[data-dp-status="error"]'), 'error'), 100);
+    setTimeout(() => window.DPDownloads.showStatus('error'), 100);
   },
   toggleSidebarOverlay: () => toggleSidebarOverlay(),
   toggleTheme: () => toggleTheme(),

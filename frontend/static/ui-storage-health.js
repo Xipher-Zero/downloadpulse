@@ -99,15 +99,6 @@
     observed.set(definition.key, {state, identity});
   }
 
-  function ensureStylesheet() {
-    if (document.querySelector('link[data-dp-storage-health-style]')) return;
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = '/ui-storage-health.css?v=1';
-    link.dataset.dpStorageHealthStyle = '1';
-    document.head.appendChild(link);
-  }
-
   function ensureRegion() {
     let region = document.getElementById('dp-storage-health');
     if (region) return region;
@@ -230,7 +221,6 @@
   function start() {
     if (started) return;
     started = true;
-    ensureStylesheet();
     ensureRegion();
     refresh().catch(() => {});
     pollTimer = window.setInterval(() => {

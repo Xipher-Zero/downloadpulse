@@ -301,13 +301,25 @@ for (const [name, reply, expected] of [
   test(`a trace download refused with ${name} reads as a sentence`, async ({ page }) => {
     await page.route(url => /\/api\/torrents\/\d+\/trace$/.test(url.pathname), route => route.fulfill(reply));
     await page.goto('/');
-    await page.waitForFunction(() => typeof window.downloadTransferTrace === 'function');
+    // Through the shell's own action (index.html's Details trace button).
     await page.evaluate(() => {
       const button = document.createElement('button');
       button.dataset.dpTransferId = '41';
+      button.dataset.dpClick = 'downloadTransferTrace';
       document.body.append(button);
-      return window.downloadTransferTrace(button);
+      button.click();
     });
     await expect(page.locator('.toast.error').last()).toHaveText(expected);
   });
 }
+
+test('the inline-handler era\'s page-wide Downloads functions are gone from the page', async ({ page }) => {
+  // 1.0.8 (WS-A12): checked where they lived, at runtime -- a text search cannot see a global a
+  // top-level declaration makes. Mirrors GONE in backend/tests/test_v108_frontend_leftovers.py.
+  await page.goto('/');
+  await page.waitForFunction(() => window.DPDownloads && typeof window.DPDownloads.showStatus === 'function');
+  const present = await page.evaluate(() => ['setFilter', 'onTorrentOrderChange', 'onDownloadRowClick', 'reaffirmQueue',
+    'moveSelectionToTop', 'onPageSizeChange', 'toggleAllCheckboxes', 'bulkAction', 'setLabel', 'retryT']
+    .filter(name => typeof window[name] !== 'undefined'));
+  expect(present).toEqual([]);
+});

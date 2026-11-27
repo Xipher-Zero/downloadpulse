@@ -1706,26 +1706,25 @@ window.downloadsCalendarLabel = formatCalendar;
 // The same, for one instant's day (a premium account's expiry).
 window.downloadsDayLabel = formatDownloadsDay;
 window.updateDownloadsTrackedCopy = updateDownloadsTrackedCopy;
-window.setFilter = setFilter;
-window.onTorrentOrderChange = onTorrentOrderChange;
-window.onDownloadRowClick = onDownloadRowClick;
-window.reaffirmQueue = reaffirmQueue;
-window.moveSelectionToTop = moveSelectionToTop;
+// Test hooks only (recorded debt, 1.0.8 WS-A12): the browser specs page and
+// select through these; no production code calls them. The list can only
+// shrink (backend/tests/test_v108_frontend_leftovers.py).
 window.goToTorrentPage = goToTorrentPage;
-window.onPageSizeChange = onPageSizeChange;
-window.toggleAllCheckboxes = toggleAllCheckboxes;
-window.onCheckboxChange = onCheckboxChange;
 window.clearSelection = clearSelection;
-window.bulkAction = bulkAction;
-window.setLabel = setLabel;
+window.onCheckboxChange = onCheckboxChange;
 window.deleteT = deleteT;
-window.retryT = retryT;
 // scheduleCapacityCheck is a real production consumer
 // (ui-processing-presentation.js's syncPauseUi() re-measures capacity after
 // the pause shim toggles); contextMenu is the row menu the application's one
-// context-menu policy (app.js) offers. No other member is exposed here --
-// there is no other real runtime consumer of Downloads' internal state.
-window.DPDownloads = Object.freeze({scheduleCapacityCheck, contextMenu, enter: enterDownloads});
+// context-menu policy (app.js) offers; showStatus is the Dashboard's "show the
+// failed downloads" (app.js). No other member is exposed here -- there is no
+// other real runtime consumer of Downloads' internal state, and the list's
+// and toolbar's own controls dispatch through this owner's action table
+// (1.0.8: the inline-handler era's page-wide functions are gone).
+function showStatus(status) {
+  setFilter(statusFilters().find(tab => (tab.dataset.dpStatus || '') === status) || null, status);
+}
+window.DPDownloads = Object.freeze({scheduleCapacityCheck, contextMenu, enter: enterDownloads, showStatus});
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, {once: true});
 else init();
