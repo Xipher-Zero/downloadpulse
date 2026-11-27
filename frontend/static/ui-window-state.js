@@ -3,7 +3,8 @@
  *
  * The installed desktop application may release its window after it has been
  * hidden in the tray for a while -- the native shell ended to free its memory
- * (Linux) -- but only when this page says nothing would be lost, and only to
+ * (Linux), or this page let go for the parked page while the shell stays
+ * (Windows and macOS: park) -- but only when this page says nothing would be lost, and only to
  * come back exactly as it was. The supervisor asks this page alone (event
  * desktop_release_prompt, a single-use nonce); the page answers with whether
  * it is releasable and the state it would come back to (PUT
@@ -116,6 +117,15 @@ const DPWindowState = (() => {
     } catch (_) {}
   }
 
-  return Object.freeze({active, ready, register, take, hold, settled, route, since, away, releasable, answer});
+  // Parked (Windows and macOS, event desktop_park): the window was released on
+  // this page's answer but keeps its shell, so this page leaves for the parked
+  // page, in the mode it shows; Open brings the application back to the kept state.
+  function park() {
+    if (!active) return;
+    const light = document.body && document.body.classList.contains('light');
+    window.location.replace('/desktop-parked.html' + (light ? '#light' : '#dark'));
+  }
+
+  return Object.freeze({active, ready, register, take, hold, settled, route, since, away, releasable, answer, park});
 })();
 window.DPWindowState = DPWindowState;

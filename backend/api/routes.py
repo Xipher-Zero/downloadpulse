@@ -11,6 +11,7 @@ import ipaddress
 import json as _json
 import logging
 import os
+import secrets
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -1544,6 +1545,17 @@ async def desktop_window_restore(request: Request):
     return {"restore": restore}
 
 
+@router.get("/desktop/parked")
+async def desktop_window_parked(request: Request):
+    """The parked page's wait (Windows and macOS: a released window keeps its
+    shell and lets its page go): ``open`` once Open asks for the application
+    again (the page then goes back to it), else after a bounded wait (the page
+    asks again). The window's own page alone."""
+    _require_window(request)
+    from application.desktop_control import wait_unparked
+    return {"open": await wait_unparked()}
+
+
 # ── Show in folder: a completed download in the desktop's file manager ─────
 # Classified ``transfers.operate``. Asked by the desktop window's own page
 # (``desktop_listener.window_request``) -- never through Local Port, so no
@@ -3069,7 +3081,14 @@ async def _sse_prompt_release(nonce: str) -> bool:
 
 
 bind_publisher(_sse_broadcast)
-bind_desktop_edge(prompt_window=_sse_prompt_window, prompt_release=_sse_prompt_release, stats=get_stats)
+async def _sse_park_window() -> bool:
+    """A released window whose shell stays (``application.desktop_control`` op
+    ``park``): its own page alone is told to leave for the parked page."""
+    return await _sse_window_only("desktop_park", secrets.token_urlsafe(16), ACTIONS["api.routes.desktop_window_parked"])
+
+
+bind_desktop_edge(prompt_window=_sse_prompt_window, prompt_release=_sse_prompt_release,
+                  park_window=_sse_park_window, stats=get_stats)
 session_store.on_revocation(_sse_sessions_ended)
 
 

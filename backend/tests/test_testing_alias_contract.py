@@ -1,6 +1,6 @@
-"""1.0.5-testing is a rolling development alias that follows Image.
+"""1.0.6-testing is a rolling development alias that follows Image.
 
-It moves to the immutable ``sha-<commit>`` index that a 1.0.5 commit's
+It moves to the immutable ``sha-<commit>`` index that a 1.0.6 commit's
 Image run has just published, when that commit is still the branch tip -- one
 writer at a time, verified by what the registry holds. It is no qualification
 or release target: no required gate gates it, and nothing it does changes a
@@ -66,7 +66,7 @@ def test_the_tips_published_image_moves_the_alias_to_that_exact_index():
     assert (decision["commit"], decision["digest"], decision["platforms"]) == (TIP, DIGEST, {"amd64": AMD64,
                                                                                              "arm64": ARM64})
     assert decision["source_tag"] == f"ghcr.io/xipher-zero/downloadpulse:sha-{TIP}"
-    assert decision["alias"] == "ghcr.io/xipher-zero/downloadpulse:1.0.5-testing"
+    assert decision["alias"] == "ghcr.io/xipher-zero/downloadpulse:1.0.6-testing"
     assert published(alias_digest=None)["action"] == "advance"           # the very first publication
     assert published(alias_digest=DIGEST)["action"] == "current"         # a repeat: no write
 
@@ -83,7 +83,7 @@ def test_no_qualification_gate_or_attestation_decides_it():
 def test_a_commit_that_is_no_longer_the_tip_never_moves_it():
     decision = published(sha=OLDER, index=index_for(OLDER))
     assert decision["action"] == "superseded" and decision["digest"] is None
-    assert alias.outcome(decision) == ("pending", f"1.0.5-testing not moved: 1.0.5 is now {TIP[:12]}; "
+    assert alias.outcome(decision) == ("pending", f"1.0.6-testing not moved: 1.0.6 is now {TIP[:12]}; "
                                                   "no write was made.")
 
 
@@ -129,7 +129,7 @@ def test_every_failure_status_fits_the_limit_with_its_recovery_action_whole():
         assert state == "failure", name
         assert len(description) <= alias.STATUS_LIMIT, (name, len(description), description)
         assert description.endswith(RETRY) or description.endswith(RECONCILE), (name, description)
-        assert description.startswith("1.0.5-testing "), name
+        assert description.startswith("1.0.6-testing "), name
     for state, description in (alias.outcome(published(sha=OLDER, index=index_for(OLDER))),
                                alias.outcome(published(), write="not_attempted"),
                                alias.outcome(published(), write="advanced")):
@@ -149,8 +149,8 @@ def test_a_failure_never_claims_the_alias_unchanged_without_observing_it():
 
 def test_success_is_reported_only_for_an_alias_observed_at_this_commits_image():
     advance = published()
-    assert alias.outcome(advance, write="advanced") == ("success", "1.0.5-testing is this commit's image.")
-    assert alias.outcome(published(alias_digest=DIGEST)) == ("success", "1.0.5-testing is this commit's image.")
+    assert alias.outcome(advance, write="advanced") == ("success", "1.0.6-testing is this commit's image.")
+    assert alias.outcome(published(alias_digest=DIGEST)) == ("success", "1.0.6-testing is this commit's image.")
     for write in ("unchanged", "unknown", None, "bogus"):
         assert alias.outcome(advance, write=write)[0] == "failure", write
     assert alias.outcome(advance, write="not_attempted")[0] == "pending"
@@ -233,7 +233,7 @@ def _run_move(tmp_path, *, create, previous=PREVIOUS, registry="up", tip=TIP):
     output = tmp_path / "output"
     output.write_text("")
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "GITHUB_OUTPUT": str(output), "GITHUB_REPOSITORY": "o/r",
-           "IMAGE_NAME": "ghcr.io/xipher-zero/downloadpulse", "ALIAS_TAG": "1.0.5-testing", "BRANCH": "1.0.5",
+           "IMAGE_NAME": "ghcr.io/xipher-zero/downloadpulse", "ALIAS_TAG": "1.0.6-testing", "BRANCH": "1.0.6",
            "TIP": TIP, "DIGEST": DIGEST, "PREVIOUS": previous or "", "GH_TOKEN": "t", "FAKE_DIR": str(tmp_path),
            "FAKE_CREATE": create, "FAKE_DIGEST": DIGEST, "FAKE_REGISTRY": registry, "FAKE_TIP": tip}
     completed = subprocess.run(["bash", "move.sh"], cwd=work, env=env, capture_output=True, text=True, timeout=60)
@@ -319,20 +319,20 @@ def test_only_image_calls_it_after_its_own_publication():
     assert jobs["testing-alias"] == {
         "name": "Testing alias",
         "needs": "publish",
-        "if": "github.event_name == 'push' && github.ref == 'refs/heads/1.0.5'",
+        "if": "github.event_name == 'push' && github.ref == 'refs/heads/1.0.6'",
         "permissions": {"contents": "read", "packages": "write", "statuses": "write"},
         "uses": "./.github/workflows/testing-alias.yml",
     }
     # Nothing in Image depends on it, and the builder still publishes
     # only its write-once sha-<commit> tag.
     assert not any("testing-alias" in (job.get("needs") or []) for key, job in jobs.items() if key != "testing-alias")
-    assert "1.0.5-testing" not in json.dumps({key: job for key, job in jobs.items() if key != "testing-alias"})
+    assert "1.0.6-testing" not in json.dumps({key: job for key, job in jobs.items() if key != "testing-alias"})
 
 
 def test_no_qualification_gate_carries_or_awaits_the_alias():
     for name in QUALIFIERS:
         text = _text(name)
-        assert "testing-alias" not in text and "1.0.5-testing" not in text and "statuses: write" not in text, name
+        assert "testing-alias" not in text and "1.0.6-testing" not in text and "statuses: write" not in text, name
 
 
 def test_testing_alias_is_only_callable_and_never_changes_image_workflows_verdict():
@@ -343,10 +343,10 @@ def test_testing_alias_is_only_callable_and_never_changes_image_workflows_verdic
     job = workflow["jobs"]["alias"]
     assert job["permissions"] == {"contents": "read", "packages": "write", "statuses": "write"}
     assert job["timeout-minutes"] <= 15
-    assert "github.event_name == 'push'" in job["if"] and "github.ref == 'refs/heads/1.0.5'" in job["if"]
+    assert "github.event_name == 'push'" in job["if"] and "github.ref == 'refs/heads/1.0.6'" in job["if"]
     assert "github.repository == 'Xipher-Zero/downloadpulse'" in job["if"]
     assert all(step.get("continue-on-error") is True for step in job["steps"])
-    assert workflow["env"]["ALIAS_TAG"] == "1.0.5-testing" and workflow["env"]["BRANCH"] == "1.0.5"
+    assert workflow["env"]["ALIAS_TAG"] == "1.0.6-testing" and workflow["env"]["BRANCH"] == "1.0.6"
     text = _text("testing-alias.yml")
     for retired in ("attestation verify", "actions/runs?", "--jobs", "--runs", "PREDICATE"):
         assert retired not in text, retired
@@ -354,7 +354,7 @@ def test_testing_alias_is_only_callable_and_never_changes_image_workflows_verdic
 
 def test_every_evaluation_and_write_runs_in_one_queued_never_cancelled_writer_group():
     job = _yaml("testing-alias.yml")["jobs"]["alias"]
-    assert job["concurrency"] == {"group": "dp-1.0.5-testing-alias-writer", "cancel-in-progress": False,
+    assert job["concurrency"] == {"group": "dp-1.0.6-testing-alias-writer", "cancel-in-progress": False,
                                   "queue": "max"}
     names = [step["name"] for step in job["steps"]]
     for read in ("Read the current tip", "Resolve this commit's image and the alias", "Decide"):
@@ -391,5 +391,5 @@ def test_the_outcome_is_a_bounded_commit_status_on_the_published_commit_and_no_t
 
 def test_release_promotion_and_its_tags_are_untouched():
     promotion = _text("release-promotion.yml")
-    assert "1.0.5-testing" not in promotion and "testing-alias" not in promotion
+    assert "1.0.6-testing" not in promotion and "testing-alias" not in promotion
     assert 'target_tag="latest"' in promotion

@@ -15,7 +15,8 @@
   "logging": {"enabled": false, "writeToLogFile": false},
   "nativeAllowList": ["os.setTray", "os.showNotification", "window.show", "window.hide", "window.focus",
                       "window.unminimize", "window.minimize", "window.setMainMenu", "os.showSaveDialog", "app.exit",
-                      "window.setFrameTheme", "window.getSize", "window.isMaximized"],
+                      "window.setFrameTheme", "window.getSize", "window.isMaximized",
+                      "window.isVisible"],
   "modes": {
     "window": {
       "title": "DownloadPulse",

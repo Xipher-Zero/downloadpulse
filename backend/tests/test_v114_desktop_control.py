@@ -584,7 +584,8 @@ def test_the_control_channel_imports_no_api_and_the_edge_binds_what_only_it_hold
     imported = [node.module for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ImportFrom)]
     assert not [module for module in imported if module and module.split(".")[0] == "api"]
     assert desktop_control._edge == {"prompt_window": routes._sse_prompt_window,
-                                     "prompt_release": routes._sse_prompt_release, "stats": routes.get_stats}
+                                     "prompt_release": routes._sse_prompt_release,
+                                     "park_window": routes._sse_park_window, "stats": routes.get_stats}
 
 
 @pytest.mark.asyncio

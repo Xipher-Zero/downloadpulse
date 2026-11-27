@@ -3,7 +3,7 @@ name: WS3 Adversarial
 on:
   push:
     branches:
-      - '1.0.5'
+      - '1.0.6'
   workflow_dispatch:
 
 permissions:

@@ -5076,6 +5076,12 @@ document.addEventListener('DOMContentLoaded', () => {
           DPWindowState.answer(payload.nonce);
         });
 
+        // The window was released on that answer but keeps its shell (Windows
+        // and macOS): this page lets go for the parked page (DPWindowState.park).
+        es.addEventListener('desktop_park', function() {
+          DPWindowState.park();
+        });
+
         // The account's role changed: its session continues under the new
         // authority, so start over from what the server now allows.
         es.addEventListener('account_changed', function() {

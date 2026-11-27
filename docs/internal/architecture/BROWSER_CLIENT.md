@@ -133,7 +133,7 @@ nothing would be lost; Open then launches it again within about a second, back
 at its size, its page, the state it held and still signed in (a run-scoped
 cookie store), with a note of what happened while it was away. A relaunch that
 fails says so in a notification and leaves DownloadPulse running; the next Open
-tries again. Windows and macOS keep the hidden window, as before. The request is a flag on the backend's private control
+tries again. On Windows and macOS, whose tray is the native shell's own, the shell stays: the released window's page leaves for an empty parked page instead (freeing what the application's page held), and Open sends it back to the same state, with the same note. The request is a flag on the backend's private control
 channel (`application.desktop_control`, op `show`), which the supervisor reads
 every half second; asked twice before it looks is shown once. Whether the
 window may take the focus is the operating system's decision (Windows and some

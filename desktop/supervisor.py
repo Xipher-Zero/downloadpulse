@@ -86,7 +86,9 @@ NATIVE_METHODS = ("os.setTray", "os.showNotification", "window.show", "window.hi
                   "window.setFrameTheme",
                   # The window's geometry, read at a release; a relaunch is started at it
                   # (``relaunch_arguments``), so nothing sets it afterwards (1.0.5 WS8d).
-                  "window.getSize", "window.isMaximized")
+                  "window.getSize", "window.isMaximized",
+                  # Whether a parked window was shown by the system itself (macOS: the Dock).
+                  "window.isVisible")
 # How long a Save dialog may stay open: the person's own time.
 DIALOG_SECONDS = 600
 # How long Quit waits for the loop's background work once it is cancelled.
@@ -1604,8 +1606,12 @@ async def _run(paths: dict[str, Path], root: Path, config_path: Path, words: Wor
                 if sys.platform.startswith("linux"):
                     bus = await SessionBus.open(window.events, paths["shell"] / "resources" / "icons")
                 signals.serving(window.events)
-                # Linux, whose tray is the supervisor's own: a hidden window may be released.
-                return await _serve(channel, words, backend, bus or window.shell, window, release_allowed=bus is not None)
+                # A hidden window may be released everywhere: on Linux, whose tray is the
+                # supervisor's own, its shell ends; on Windows and macOS, whose tray is the
+                # shell's, the shell stays and its page is parked instead.
+                park = not sys.platform.startswith("linux")
+                return await _serve(channel, words, backend, bus or window.shell, window,
+                                    release_allowed=bus is not None or park, park=park)
             finally:
                 # Quit, in order: the shell and its page first, so no request
                 # of the page is left open to hold the backend's shutdown.
@@ -1678,6 +1684,9 @@ class Window:
         self.minimized = False
         self.hidden_since: float | None = None
         self.released = False
+        # Released by parking its page (Windows and macOS): the shell stays, so
+        # its end is still Quit.
+        self.parked = False
         self.geometry: dict | None = None
 
     async def spawn(self, deadline: float, *, relaunch: bool = False) -> None:
@@ -1784,6 +1793,24 @@ class Window:
         logger.info("the window was opened again (shell generation %s)", self.generation)
         return True
 
+    async def park(self, channel: "Channel") -> bool:
+        """Release a hidden window whose shell must stay (Windows and macOS:
+        the tray is the shell's own): its page is told to leave for the parked
+        page, freeing what the application's page held; Open brings it back
+        (``unpark``). Whether a page was told (if not, nothing changed)."""
+        self.parked = bool((await channel.ask("park")).get("parked"))
+        logger.info("the window was released after %ss hidden (%s)", RELEASE_AFTER_SECONDS,
+                    "its page parked" if self.parked else "NOT parked: no window page to tell")
+        return self.parked
+
+    async def unpark(self, channel: "Channel") -> None:
+        """Open on a parked window: its page goes back to the application,
+        which takes the kept state; the window is then shown as a hidden one is."""
+        arrived = (await channel.ask("unpark")).get("parked")
+        self.parked = False
+        logger.info("the parked window's page goes back to the application%s",
+                    "" if arrived else " (it had not left: nothing to restore)")
+
     async def end(self) -> None:
         """Quit: the current shell, if there is one (a released window has none)."""
         if self.shell is not None and self.owned is not None:
@@ -1791,13 +1818,14 @@ class Window:
 
 
 async def _serve(channel: Channel, words: Words, backend, native, window: Window, *,
-                 release_allowed: bool = False) -> int:
+                 release_allowed: bool = False, park: bool = False) -> int:
     """One run's loop. ``native`` shows the tray and the notices (the shell,
     or Linux's ``SessionBus``); the window is ``window``'s (``Window``).
-    ``release_allowed`` (the run's fact: Linux, whose tray is the
-    supervisor's): a window hidden for RELEASE_AFTER_SECONDS is released once
-    its page answers that nothing would be lost (1.0.5 WS8d), and Open
-    brings it back."""
+    ``release_allowed``: a window hidden for RELEASE_AFTER_SECONDS is released
+    once its page answers that nothing would be lost (1.0.5 WS8d), and Open
+    brings it back. ``park`` (the run's fact: Windows and macOS, whose tray is
+    the shell's own): released by parking its page, the shell kept
+    (``Window.park``); otherwise (Linux) its shell ends (``Window.release``)."""
     asked_release: float | None = None          # when the page was asked (release_prompt); its answer comes with show
     next_release = 0.0
     cursor = (await channel.ask("events"))["cursor"]
@@ -1838,6 +1866,9 @@ async def _serve(channel: Channel, words: Words, backend, native, window: Window
         # can); a shown one is raised.
         nonlocal applied_frame, asked_release
         asked_release = None                    # shown again: a late answer to an earlier prompt is no answer
+        if window.parked:
+            # Its page goes back to the application; the window is shown as a hidden one is.
+            await window.unpark(channel)
         if window.released:
             logger.info("%s: the window was released; opening it again", why)
             if await window.relaunch():
@@ -1939,17 +1970,27 @@ async def _serve(channel: Channel, words: Words, backend, native, window: Window
                 answer = asked.get("release")
                 if answer and asked_release is not None:
                     asked_release = None
-                    if (answer.get("releasable") and window.hidden and not window.released
+                    if (answer.get("releasable") and window.hidden and not window.released and not window.parked
                             and window.hidden_since is not None
                             and time.monotonic() - window.hidden_since >= RELEASE_AFTER_SECONDS
                             and not (await channel.ask("saves")).get("saves")
                             and (await channel.ask("released", nonce=answer.get("nonce"))).get("ok")):
-                        await window.release()
+                        await (window.park(channel) if park else window.release())
+                if window.parked and window.shell is not None and sys.platform == "darwin":
+                    # Shown by the system itself while parked (macOS: the Dock): the application comes back.
+                    try:
+                        visible = await window.shell.call("window.isVisible")
+                    except (NativeError, TimeoutError, OSError) as exc:
+                        logger.warning("whether the parked window is shown was not read: %s", exc)
+                    else:
+                        if (visible.get("returnValue") if isinstance(visible, dict) else visible) is True:
+                            await bring_forward("Shown by the system")
                 next_show = time.monotonic() + SHOW_POLL_SECONDS
             now = time.monotonic()
             if asked_release is not None and now - asked_release >= RELEASE_RETRY_SECONDS:
                 asked_release = None                # unanswered (its page did not run, or its answer failed): asked again
-            if (release_allowed and window.hidden and not window.released and asked_release is None
+            if (release_allowed and window.hidden and not window.released and not window.parked
+                    and asked_release is None
                     and window.hidden_since is not None and now - window.hidden_since >= RELEASE_AFTER_SECONDS
                     and now >= next_release):
                 # Hidden long enough: its own page is asked whether it may be released.

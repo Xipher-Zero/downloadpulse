@@ -48,6 +48,17 @@ The tray asks four things, each answered by its existing owner:
   state is kept here, in this process only, with the activity journal's
   position at that moment, for the relaunched page to take once
   (GET /desktop/window-state, ``take_restore``). Nothing is written anywhere.
+* ``park`` -- where the window's process must stay (Windows and macOS: their
+  tray is the shell's own), the window released on that answer keeps its shell
+  and lets its page go instead: the window's own page alone is told
+  (``desktop_park``) to leave for the parked page, which waits here
+  (GET /desktop/parked, ``wait_unparked``) until Open; ``parked`` says whether
+  any such page was told. None told: the kept state is dropped (no page will
+  take it) and the window stays as it was;
+* ``unpark`` -- Open on a parked window: the parked page is answered and goes
+  back to the application, which takes the kept state as a relaunched page
+  does; ``parked`` says whether the parked page had arrived. If it never did,
+  the application's page never left and the kept state is dropped.
 
 The two save operations are how a desktop save reaches the Save dialog only
 the supervisor can show (a page and this backend have no window of their
@@ -88,7 +99,8 @@ _FIELDS = {"status": {"id", "op"}, "events": {"id", "op", "after", "limit"},
            "pause": {"id", "op"}, "resume": {"id", "op"},
            "saves": {"id", "op"}, "saved": {"id", "op", "save", "path"}, "frame": {"id", "op"},
            "locale": {"id", "op"}, "appearance": {"id", "op"}, "show": {"id", "op"}, "quit_prompt": {"id", "op"},
-           "release_prompt": {"id", "op"}, "released": {"id", "op", "nonce"}}
+           "release_prompt": {"id", "op"}, "released": {"id", "op", "nonce"},
+           "park": {"id", "op"}, "unpark": {"id", "op"}}
 # How long a desktop save waits for its destination: the supervisor's next
 # look (its loop) and the person's own time in the dialog.
 DESTINATION_WAIT_SECONDS = 600
@@ -99,11 +111,11 @@ MAX_PATH = 4096
 # ``services.event_bus.bind_publisher``): this module never imports the API.
 # ``prompt_window(nonce) -> bool``: the quit prompt, sent to the window's own
 # page alone; ``stats(application) -> dict``: the ``/api/stats`` counters.
-_edge: dict = {"prompt_window": None, "prompt_release": None, "stats": None}
+_edge: dict = {"prompt_window": None, "prompt_release": None, "park_window": None, "stats": None}
 
 
-def bind_edge(*, prompt_window, prompt_release, stats) -> None:
-    _edge.update(prompt_window=prompt_window, prompt_release=prompt_release, stats=stats)
+def bind_edge(*, prompt_window, prompt_release, park_window, stats) -> None:
+    _edge.update(prompt_window=prompt_window, prompt_release=prompt_release, park_window=park_window, stats=stats)
 
 
 # The window frame in the page's theme (``set_frame``, from PUT /desktop/frame):
@@ -246,6 +258,43 @@ def take_restore() -> dict | None:
     return restore
 
 
+# A parked window (op ``park``): None, "asked" (its page was told to leave) or
+# "arrived" (the parked page is waiting, ``wait_unparked``); and the Open the
+# parked page waits for (op ``unpark``).
+PARKED_WAIT_SECONDS = 25.0
+_parked: str | None = None
+_unparked: asyncio.Event | None = None
+
+
+def parked() -> bool:
+    """Whether the window's page is parked (asked to leave, or waiting)."""
+    return _parked is not None
+
+
+async def wait_unparked() -> bool:
+    """The parked page's wait (GET /desktop/parked): True once Open asks for
+    the application again -- or at once when nothing is parked (the page goes
+    back) -- False after PARKED_WAIT_SECONDS, when the page asks again."""
+    global _parked
+    if _parked is None or _unparked is None:
+        return True
+    _parked, event = "arrived", _unparked
+    try:
+        await asyncio.wait_for(event.wait(), PARKED_WAIT_SECONDS)
+    except TimeoutError:
+        return False
+    return True
+
+
+def end_park() -> None:
+    """The run ends (the supervisor's pipe closed): a parked page's wait is
+    answered now, so no request is left open to hold this backend's shutdown."""
+    global _parked, _unparked
+    event, _parked, _unparked = _unparked, None, None
+    if event is not None:
+        event.set()
+
+
 class ChannelRefused(RuntimeError):
     """The desktop backend's control channel is absent or not two private pipes."""
 
@@ -304,7 +353,7 @@ def _project_event(item: dict) -> dict:
 async def answer(application, request) -> dict:
     """The answer to one request; a refusal for anything outside its operations (``_FIELDS``)."""
     global _show_requested, _quit_requested, _reveal, _quit_nonce
-    global _release_nonce, _release_answer, _release_handed, _restore
+    global _release_nonce, _release_answer, _release_handed, _restore, _parked, _unparked
     if not isinstance(request, dict) or not isinstance(request.get("id"), int) or isinstance(request.get("id"), bool):
         return {"id": None, "error": "refused"}
     ident, op = request["id"], request.get("op")
@@ -352,6 +401,28 @@ async def answer(application, request) -> dict:
         _restore = {"state": _release_answer["state"], "since": since}
         _release_nonce, _release_answer = None, None
         return {"id": ident, "ok": True}
+    if op == "park":
+        # Only a window just released on its page's answer (its state kept) is parked.
+        try:
+            told = _restore is not None and _edge["park_window"] is not None and await _edge["park_window"]()
+        except Exception:  # noqa: BLE001 -- a failed telling is no page told
+            logger.exception("the window's page could not be told to park")
+            told = False
+        if not told:
+            _restore = None                         # no page to take it: the window stays as it was
+            return {"id": ident, "parked": False}
+        _parked, _unparked = "asked", asyncio.Event()
+        return {"id": ident, "parked": True}
+    if op == "unpark":
+        state, event = _parked, _unparked
+        _parked, _unparked = None, None
+        if state == "asked":
+            # The parked page had not arrived: the application's page never left, or was
+            # still on its way (it then comes back without the kept state, as a cold start).
+            _restore = None
+        if event is not None:
+            event.set()
+        return {"id": ident, "parked": state == "arrived"}
     if op == "frame":
         return {"id": ident, "frame": dict(_frame) if _frame else None}
     if op == "locale":
@@ -434,6 +505,7 @@ def serve(application, loop: asyncio.AbstractEventLoop, channel) -> threading.Th
                 except OSError:
                     pass
             logger.info("Desktop supervisor channel closed; stopping")
+            loop.call_soon_threadsafe(end_park)
             loop.call_soon_threadsafe(signal.raise_signal, signal.SIGINT)
 
     thread = threading.Thread(target=run, name="desktop-control", daemon=True)

@@ -1,0 +1,4 @@
+/* The parked desktop window (desktop-parked.js): nothing drawn but the
+ * background of the mode the application showed, as the shell's first frame. */
+html, body { margin: 0; height: 100%; background: #000000; }
+html.light, html.light body { background: #ffffff; }

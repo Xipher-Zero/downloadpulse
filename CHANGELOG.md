@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.6] — Development
+
+### Changed
+
+- **The Windows and macOS desktop let go of the window's page while it sits in the tray.** As on
+  Linux, a window hidden for 10 minutes gives up what the application's page holds, and Open
+  brings it back as it was: the same page, filters, place in the list, open Details, Settings or
+  Help section, Quick Add draft and dashboard pulse, with a note of what happened while it was
+  away. There the tray belongs to the window itself, so the window stays and only its page goes;
+  the tray, the Dock icon and Cmd+Q are unchanged. A window that would lose something is kept as
+  it is.
+
 ## [1.0.5] — A lighter desktop that comes back as you left it, and Usenet only when it is needed
 
 ### Added
