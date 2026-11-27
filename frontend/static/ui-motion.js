@@ -311,8 +311,15 @@
           hold(node, 'display', display);
           hold(node, 'position', 'absolute');
           hold(node, 'box-sizing', 'border-box');
+          // Exactly the box it had: out of flow, a percentage extent of its
+          // own (a view at least as tall as #content) would resolve against
+          // the surface's padding box instead and outgrow it.
           hold(node, 'width', `${box.width}px`);
           hold(node, 'height', `${box.height}px`);
+          hold(node, 'min-width', '0px');
+          hold(node, 'max-width', 'none');
+          hold(node, 'min-height', '0px');
+          hold(node, 'max-height', 'none');
           hold(node, 'margin', '0px');
           hold(node, 'pointer-events', 'none');
           place(node, box);
