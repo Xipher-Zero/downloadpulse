@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.8] — Development
+## [1.0.8] — A safer desktop, and Windows downloads that keep their names
 
 ### Security
 
