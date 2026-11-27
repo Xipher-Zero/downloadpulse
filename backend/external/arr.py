@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 from core.settings_constraints import path_within
-from external.intake import MAX_NZB_BYTES, MAX_TORRENT_BYTES
+from external.intake import MAX_METALINK_BYTES, MAX_NZB_BYTES, MAX_TORRENT_BYTES
 from external.profiles import client_flavor
 from external.service import ExternalClients, ExternalRefused
 
@@ -42,9 +42,17 @@ NATIVE_JOBS_PATH = "/api/external/v1/jobs"
 # uploaded file: the native external upload ceiling of its kind plus room for
 # its framing -- multipart for a dialect, base64 inside JSON for the native
 # submission (which carries the largest inline kind, a .torrent).
+# The browser extension's submission (``/api/browser/v1/jobs``) is the same
+# owner's (``ExternalClients``) with a browser token, carrying a .torrent, NZB
+# or Metalink base64 inside JSON, beside a link's bounded sign-in and referrer:
+# without its own ceiling it met the 20 MiB default, so a file above ~15.7 MB
+# never fit (1.0.8, WS-A11). Its ceiling is the largest inline kind's plus room.
+BROWSER_JOBS_PATH = "/api/browser/v1/jobs"
 UPLOAD_CEILINGS = {**{path: MAX_NZB_BYTES + 64 * 1024 for path in SABNZBD_API_PATHS},
                    **{path: MAX_TORRENT_BYTES + 64 * 1024 for path in QBITTORRENT_ADD_PATHS},
-                   NATIVE_JOBS_PATH: (MAX_TORRENT_BYTES * 4) // 3 + 64 * 1024}
+                   NATIVE_JOBS_PATH: (MAX_TORRENT_BYTES * 4) // 3 + 64 * 1024,
+                   BROWSER_JOBS_PATH: (max(MAX_TORRENT_BYTES, MAX_METALINK_BYTES, MAX_NZB_BYTES) * 4) // 3
+                   + 128 * 1024}
 
 
 def adapter_of(path: str) -> str | None:

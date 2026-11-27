@@ -28,6 +28,9 @@
 - **Windows: a download into a folder that already exists with different capitals is kept.**
   The final check now compares file locations the way Windows does, without regard to case,
   for every kind of download.
+- **The browser extension can send a .torrent, NZB or Metalink file up to DownloadPulse's own
+  16 MB limit.** Files above about 15.7 MB were refused before DownloadPulse could read them, and
+  the extension only said the send failed.
 - **Usenet: a finished job can never move other jobs' files.** If the Usenet service ever
   reported a finished job's file directly in its shared completed folder, DownloadPulse now
   waits instead of taking that whole folder.
