@@ -21,10 +21,13 @@ import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "image.yml"
 SMOKE = ["Checkout", "Read application version", "Log in to Docker Hub", "Set up Docker Buildx",
-         "Generate test image metadata", "Build test image", "Smoke test image"]
+         "Generate test image metadata", "Build test image", "Log out of Docker Hub", "Smoke test image"]
 PUBLICATION = ["Log in to GHCR", "Generate immutable SHA tag", "Verify generated image metadata and immutable tag policy",
-               "Check for an existing candidate for this source SHA", "Build and publish",
-               "Select the immutable candidate digest", "Verify candidate digest and OCI identity"]
+               "Check for an existing candidate for this source SHA",
+               "Log in to Docker Hub for the multi-architecture build", "Build and publish",
+               "Log out of Docker Hub after the multi-architecture build", "Attest candidate build provenance",
+               "Select the immutable candidate digest", "Verify candidate build provenance",
+               "Verify candidate digest and OCI identity"]
 
 
 def _workflow() -> dict:
@@ -106,7 +109,8 @@ def test_publication_runs_the_same_smoke_qualification_first_on_its_own_runner()
     jobs = _jobs()
     publish = jobs["publish"]
     assert "needs" not in publish                                    # no handoff to wait for
-    assert publish["permissions"] == {"contents": "read", "packages": "write"}
+    assert publish["permissions"] == {"contents": "read", "packages": "write", "id-token": "write",
+                                      "attestations": "write"}
     assert set(publish["outputs"]) == {"candidate_ref", "candidate_digest", "candidate_reused"}
     names = [step["name"] for step in publish["steps"]]
     smoke_steps = [step for step in publish["steps"] if step["name"] in SMOKE]
@@ -124,6 +128,7 @@ def test_the_smoke_steps_exist_once_as_text_and_are_reused_by_alias():
     for anchor, name in (("checkout", "Checkout"), ("read-version", "Read application version"),
                          ("docker-hub-login", "Log in to Docker Hub"), ("setup-buildx", "Set up Docker Buildx"),
                          ("test-image-metadata", "Generate test image metadata"), ("build-test-image", "Build test image"),
+                         ("docker-hub-logout", "Log out of Docker Hub"),
                          ("smoke-test-image", "Smoke test image")):
         assert text.count(f"- &{anchor}\n        name: {name}\n") == 1, anchor
         assert text.count(f"- *{anchor}\n") == 1, anchor

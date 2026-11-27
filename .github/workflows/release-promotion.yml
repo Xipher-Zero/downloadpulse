@@ -34,6 +34,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   SECURITY_PREDICATE_TYPE: https://github.com/Xipher-Zero/downloadpulse/attestations/container-security/v1
   RUNTIME_PREDICATE_TYPE: https://github.com/Xipher-Zero/downloadpulse/attestations/candidate-runtime/v1
+  BUILD_PROVENANCE_PREDICATE_TYPE: https://slsa.dev/provenance/v1
+  # The refs whose runs and signatures may qualify a candidate; spelled
+  # identically in image.yml, container-security.yml and
+  # candidate-runtime-qualification.yml. A release-ops/* one-shot branch, a
+  # pull request or any other ref never qualifies (docs/SUPPLY_CHAIN_POLICY.md 1).
+  QUALIFYING_REFS: 'refs/(heads/main|heads/1\.0\.[0-9]+|heads/staging/.+|tags/v.+|tags/internal-v.+)'
+  # The same set as a run's head_branch (a branch name, or the tag name of a tag push).
+  QUALIFYING_HEAD_BRANCHES: '(main|1\.0\.[0-9]+|staging/.+|v.+|internal-v.+)'
 
 jobs:
   promote:
@@ -104,32 +112,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          required=(
-            "Tests"
-            "Browser Runtime"
-            "CodeQL"
-            "Container Security"
-            "Candidate Runtime Qualification"
-            "Image"
+          # Each required workflow by its NAME and its workflow FILE: a run
+          # counts only if it is that file's run (a one-shot or any other
+          # workflow calling itself "Image" never does), for a push, on a
+          # qualifying branch or tag, for the exact SHA. Every page of runs.
+          declare -A required=(
+            ["Tests"]=".github/workflows/tests.yml"
+            ["Browser Runtime"]=".github/workflows/browser-runtime.yml"
+            ["CodeQL"]=".github/workflows/codeql.yml"
+            ["Container Security"]=".github/workflows/container-security.yml"
+            ["Candidate Runtime Qualification"]=".github/workflows/candidate-runtime-qualification.yml"
+            ["Image"]=".github/workflows/image.yml"
           )
 
-          api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${CANDIDATE_SHA}&per_page=100"
+          endpoint="repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${CANDIDATE_SHA}&event=push&per_page=100"
           missing=()
           for attempt in $(seq 1 120); do
-            payload="$(curl --fail --silent --show-error \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "$api")"
+            payload="$(gh api --paginate "$endpoint" --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}')"
 
             missing=()
-            for workflow in "${required[@]}"; do
+            for workflow in "${!required[@]}"; do
               if jq -e \
                 --arg name "$workflow" \
+                --arg path "${required[$workflow]}" \
                 --arg sha "$CANDIDATE_SHA" \
-                '.workflow_runs[] | select(.name == $name and .head_sha == $sha and .status == "completed" and .conclusion == "success")' \
+                --arg branches "^${QUALIFYING_HEAD_BRANCHES}$" \
+                '.workflow_runs[] | select(.name == $name and .path == $path and .event == "push" and ((.head_branch // "") | test($branches)) and .head_sha == $sha and .status == "completed" and .conclusion == "success")' \
                 <<< "$payload" >/dev/null; then
-                echo "QUALIFIED: $workflow @ $CANDIDATE_SHA"
+                echo "QUALIFIED: $workflow (${required[$workflow]}) @ $CANDIDATE_SHA"
               else
                 missing+=("$workflow")
               fi
@@ -219,15 +229,50 @@ jobs:
           set -euo pipefail
           subject="oci://${IMAGE_NAME}@${SOURCE_DIGEST}"
 
-          gh attestation verify "$subject" \
-            -R "$GITHUB_REPOSITORY" \
-            --predicate-type "$SECURITY_PREDICATE_TYPE" \
-            --format json > security-attestations.json
+          # verify_signed <escaped workflow file> <predicate type> <output>:
+          # the attestation must be signed by that exact workflow of this
+          # repository, on a GitHub-hosted runner, for this exact commit
+          # (source and workflow digest), from a qualifying ref.
+          verify_signed() {
+            local workflow="$1" predicate="$2" output="$3"
+            local signer="^https://github\.com/Xipher-Zero/downloadpulse/\.github/workflows/${workflow}@(${QUALIFYING_REFS})$"
+            gh attestation verify "$subject" \
+              -R "$GITHUB_REPOSITORY" \
+              --predicate-type "$predicate" \
+              --cert-identity-regex "$signer" \
+              --source-digest "$CANDIDATE_SHA" \
+              --deny-self-hosted-runners \
+              --limit 100 \
+              --format json > "$output.all" || return 1
+            # Keep only the attestations whose certificate itself satisfies the
+            # policy, so the predicate checks below never read any other one.
+            jq \
+              --arg sha "$CANDIDATE_SHA" \
+              --arg signer "$signer" \
+              --arg refs "^(${QUALIFYING_REFS})$" \
+              '[.[] | select(.verificationResult.signature.certificate as $c |
+                (($c.subjectAlternativeName // "") | test($signer)) and
+                (($c.buildSignerURI // "") | test($signer)) and
+                (($c.sourceRepositoryRef // "") | test($refs)) and
+                $c.sourceRepositoryURI == "https://github.com/Xipher-Zero/downloadpulse" and
+                $c.sourceRepositoryDigest == $sha and
+                $c.buildSignerDigest == $sha and
+                $c.runnerEnvironment == "github-hosted")]' "$output.all" > "$output"
+            jq -e 'length > 0' "$output" >/dev/null
+          }
 
-          gh attestation verify "$subject" \
-            -R "$GITHUB_REPOSITORY" \
-            --predicate-type "$RUNTIME_PREDICATE_TYPE" \
-            --format json > runtime-attestations.json
+          if ! verify_signed 'image\.yml' "$BUILD_PROVENANCE_PREDICATE_TYPE" build-provenance.json; then
+            echo "::error::$subject carries no build provenance signed by image.yml for $CANDIDATE_SHA from a qualifying ref. A candidate published before build provenance existed can never be promoted: release from a new source commit."
+            exit 1
+          fi
+          if ! verify_signed 'container-security\.yml' "$SECURITY_PREDICATE_TYPE" security-attestations.json; then
+            echo "::error::$subject has no container-security/v1 attestation signed by container-security.yml for $CANDIDATE_SHA from a qualifying ref"
+            exit 1
+          fi
+          if ! verify_signed 'candidate-runtime-qualification\.yml' "$RUNTIME_PREDICATE_TYPE" runtime-attestations.json; then
+            echo "::error::$subject has no candidate-runtime/v1 attestation signed by candidate-runtime-qualification.yml for $CANDIDATE_SHA from a qualifying ref"
+            exit 1
+          fi
 
           jq -e \
             --arg sha "$CANDIDATE_SHA" \

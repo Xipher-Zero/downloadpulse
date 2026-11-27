@@ -10,6 +10,8 @@ docs/SUPPLY_CHAIN_POLICY.md).
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 
 _DOCKERFILE = (ROOT / "Dockerfile").read_text()
@@ -273,3 +275,200 @@ def test_release_promotion_remains_digest_preserving_no_rebuild():
     workflow = (ROOT / ".github" / "workflows" / "release-promotion.yml").read_text()
     assert "imagetools create" in workflow
     assert re.search(r"docker\s+build\b(?!x)", workflow) is None
+
+
+# -- Signed build provenance and least privilege on the candidate chain --------------------------
+#
+# Signed build provenance and least privilege on the candidate image chain.
+#
+# ``Image`` signs SLSA build provenance for the digest it pushes; ``Image``
+# (before any reuse), ``Container Security``, ``Candidate Runtime
+# Qualification`` and ``Release Promotion`` accept a candidate only once that
+# provenance verifies as signed by ``image.yml`` for the exact commit from a
+# qualifying ref, and each qualification attestation only as signed by its own
+# workflow. Promotion matches required runs by workflow file and push event,
+# across every page. The qualifiers run read-only except for the one job that
+# signs; the Docker Hub token leaves the runner before any test code runs
+# (docs/SUPPLY_CHAIN_POLICY.md 1). Source-level checks only: nothing is fetched.
+
+WORKFLOWS = ROOT / ".github" / "workflows"
+CANDIDATE_CHAIN = ("image.yml", "container-security.yml", "candidate-runtime-qualification.yml",
+                   "release-promotion.yml")
+QUALIFIERS = ("container-security.yml", "candidate-runtime-qualification.yml")
+PROVENANCE_ACTION = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2"
+
+
+def _text(name: str) -> str:
+    return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def _yaml(name: str) -> dict:
+    return yaml.safe_load(_text(name))
+
+
+def _steps(name: str, job: str) -> dict:
+    return {step["name"]: step for step in _yaml(name)["jobs"][job]["steps"]}
+
+
+def _qualifying(pattern: str, ref: str) -> bool:
+    return re.fullmatch(f"({pattern})", ref) is not None
+
+
+def test_one_qualifying_ref_set_is_spelled_identically_across_the_chain():
+    patterns = {name: _yaml(name)["env"]["QUALIFYING_REFS"] for name in CANDIDATE_CHAIN}
+    assert len(set(patterns.values())) == 1, patterns
+    pattern = patterns["image.yml"]
+    for ref in ("refs/heads/main", "refs/heads/1.0.8", "refs/heads/1.0.14", "refs/heads/staging/1.0.8",
+                "refs/tags/v1.0.8", "refs/tags/internal-v1.0.8-rc1"):
+        assert _qualifying(pattern, ref), ref
+    for ref in ("refs/heads/release-ops/v1.0.8", "refs/heads/feature/x", "refs/heads/fix/x", "refs/heads/chore/x",
+                "refs/pull/7/merge", "refs/heads/main2", "refs/heads/1.0.8x", "refs/heads/1.1.0",
+                "refs/heads/audit/x", "refs/tags/release-ops", "refs/heads/v1.0.8"):
+        assert not _qualifying(pattern, ref), ref
+    for name in CANDIDATE_CHAIN:
+        assert _yaml(name)["env"]["BUILD_PROVENANCE_PREDICATE_TYPE"] == "https://slsa.dev/provenance/v1", name
+
+
+def test_image_signs_build_provenance_for_exactly_the_digest_it_pushes():
+    text = _text("image.yml")
+    assert text.count("actions/attest-build-provenance@") == 1
+    assert PROVENANCE_ACTION in text
+    attest = _steps("image.yml", "publish")["Attest candidate build provenance"]
+    assert attest["if"] == "steps.existing.outputs.exists != 'true'"
+    assert attest["with"]["subject-name"] == "${{ env.IMAGE_NAME }}"
+    assert attest["with"]["subject-digest"] == "${{ steps.publish.outputs.digest }}"
+    assert attest["with"]["push-to-registry"] is True
+    # Only the publish job may sign; the pull-request path holds no such scope.
+    jobs = _yaml("image.yml")["jobs"]
+    assert jobs["publish"]["permissions"]["id-token"] == "write"
+    assert jobs["publish"]["permissions"]["attestations"] == "write"
+    assert "permissions" not in jobs["build-and-smoke-test"]
+
+
+def test_image_requires_verified_provenance_before_any_reuse_or_consumer():
+    steps = _yaml("image.yml")["jobs"]["publish"]["steps"]
+    names = [step["name"] for step in steps]
+    verify = names.index("Verify candidate build provenance")
+    assert names.index("Attest candidate build provenance") < names.index("Select the immutable candidate digest") < verify
+    assert verify < names.index("Verify candidate digest and OCI identity")
+    step = steps[verify]
+    assert "if" not in step, "both the reuse path and the fresh path must verify provenance"
+    run = step["run"]
+    assert "steps.candidate.outputs.digest" in step["env"]["CANDIDATE_DIGEST"]
+    for flag in ('--cert-identity-regex "$signer"', '--source-digest "$GITHUB_SHA"', "--deny-self-hosted-runners",
+                 '--predicate-type "$BUILD_PROVENANCE_PREDICATE_TYPE"'):
+        assert flag in run, flag
+    assert 'signer="^https://github\\.com/Xipher-Zero/downloadpulse/\\.github/workflows/image\\.yml@(${accepted})$"' in run
+    assert "$c.sourceRepositoryDigest == $sha" in run and "$c.buildSignerDigest == $sha" in run
+    assert "test($refs)" in run and 'runnerEnvironment == "github-hosted"' in run
+    # A pre-provenance candidate fails closed with a message saying so; nothing rebuilds over it.
+    assert "can never be reused, qualified or promoted" in run and "exit 1" in run
+    assert "build-push-action" not in str(step) and "imagetools create" not in run
+
+
+def test_each_qualifier_verifies_build_provenance_before_publishing_its_identity():
+    for name in QUALIFIERS:
+        run = _steps(name, "identity")["Wait for and resolve exact published candidate"]["run"]
+        assert 'signer="^https://github\\.com/Xipher-Zero/downloadpulse/\\.github/workflows/image\\.yml@(${QUALIFYING_REFS})$"' in run
+        for flag in ('--cert-identity-regex "$signer"', '--source-digest "$GITHUB_SHA"', "--deny-self-hosted-runners"):
+            assert flag in run, (name, flag)
+        assert run.index("gh attestation verify") < run.index('echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"')
+        assert "cannot be qualified" in run, name
+
+
+def test_qualifiers_are_read_only_except_the_job_that_signs():
+    for name in QUALIFIERS:
+        workflow = _yaml(name)
+        assert workflow["permissions"] == {"contents": "read", "actions": "read", "packages": "read"}, name
+        for key, job in workflow["jobs"].items():
+            granted = job.get("permissions", workflow["permissions"])
+            writes = {scope for scope, level in granted.items() if level == "write"}
+            if key == "evidence":
+                assert writes == {"packages", "id-token", "attestations"}, name
+                assert any("actions/attest@" in str(step.get("uses", "")) for step in job["steps"]), name
+            else:
+                assert not writes, (name, key, writes)
+        assert workflow["jobs"]["identity"]["permissions"]["attestations"] == "read", name
+
+
+def test_promotion_counts_only_each_required_workflow_files_push_runs_on_every_page():
+    run = _steps("release-promotion.yml", "promote")["Verify all qualification workflows succeeded for exact SHA"]["run"]
+    for name, path in (("Tests", "tests.yml"), ("Browser Runtime", "browser-runtime.yml"), ("CodeQL", "codeql.yml"),
+                       ("Container Security", "container-security.yml"),
+                       ("Candidate Runtime Qualification", "candidate-runtime-qualification.yml"),
+                       ("Image", "image.yml")):
+        assert f'["{name}"]=".github/workflows/{path}"' in run
+    assert "gh api --paginate" in run and "&event=push&per_page=100" in run
+    assert ".path == $path" in run and '.event == "push"' in run and "test($branches)" in run
+    branches = _yaml("release-promotion.yml")["env"]["QUALIFYING_HEAD_BRANCHES"]
+    for branch in ("main", "1.0.8", "staging/1.0.8", "v1.0.8", "internal-v1.0.8"):
+        assert re.fullmatch(branches, branch), branch
+    for branch in ("release-ops/v1.0.8", "feature/x", "main2", "dependabot/npm/x"):
+        assert not re.fullmatch(branches, branch), branch
+
+
+def test_promotion_pins_every_attestation_to_its_own_signer_workflow():
+    run = _steps("release-promotion.yml", "promote")[
+        "Verify signed security and runtime attestations target exact source digest"]["run"]
+    assert 'local signer="^https://github\\.com/Xipher-Zero/downloadpulse/\\.github/workflows/${workflow}@(${QUALIFYING_REFS})$"' in run
+    for flag in ('--cert-identity-regex "$signer"', '--source-digest "$CANDIDATE_SHA"', "--deny-self-hosted-runners"):
+        assert flag in run, flag
+    for signer, predicate, output in (
+        ("image\\.yml", "BUILD_PROVENANCE_PREDICATE_TYPE", "build-provenance.json"),
+        ("container-security\\.yml", "SECURITY_PREDICATE_TYPE", "security-attestations.json"),
+        ("candidate-runtime-qualification\\.yml", "RUNTIME_PREDICATE_TYPE", "runtime-attestations.json"),
+    ):
+        assert f"verify_signed '{signer}' \"${predicate}\" {output}" in run
+    # The predicate checks read only attestations whose certificate met the policy.
+    assert run.index("verify_signed 'candidate-runtime-qualification") < run.index("security-attestations.json >/dev/null")
+    assert "can never be promoted" in run
+
+
+def test_docker_hub_token_leaves_the_runner_before_any_test_code():
+    browser = [step["name"] for step in _yaml("browser-runtime.yml")["jobs"]["browser-runtime"]["steps"]]
+    logout = browser.index("Log out of Docker Hub")
+    assert browser.index("Log in to Docker Hub") < browser.index("Build exact candidate container") < logout
+    assert logout == browser.index("Build exact candidate container") + 1
+    steps = _yaml("browser-runtime.yml")["jobs"]["browser-runtime"]["steps"]
+    first_test_code = min(i for i, step in enumerate(steps) if re.search(r"\bnpm\b|npx|playwright", step.get("run", "")))
+    assert logout < first_test_code
+    for name in ("image.yml", "browser-runtime.yml"):
+        assert _text(name).count("docker logout docker.io") >= 1, name
+
+    image = [step["name"] for step in _yaml("image.yml")["jobs"]["publish"]["steps"]]
+    assert image.index("Build test image") < image.index("Log out of Docker Hub") < image.index("Smoke test image")
+    assert (image.index("Log in to Docker Hub for the multi-architecture build") < image.index("Build and publish")
+            < image.index("Log out of Docker Hub after the multi-architecture build"))
+    after = _steps("image.yml", "publish")["Log out of Docker Hub after the multi-architecture build"]
+    assert after["if"] == "always()"
+
+
+def test_every_action_in_the_candidate_chain_is_sha_pinned():
+    for name in CANDIDATE_CHAIN + ("browser-runtime.yml",):
+        for match in re.finditer(r"^\s*(?:-\s+)?uses:\s*([^\s#]+)", _text(name), re.MULTILINE):
+            ref = match.group(1)
+            if ref.startswith("./"):
+                continue
+            assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", ref), (name, ref)
+
+
+def test_dependabot_covers_every_dependency_ecosystem_the_repository_ships():
+    config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    updates = {entry["package-ecosystem"]: entry for entry in config["updates"]}
+    assert set(updates) == {"pip", "github-actions", "npm", "docker"}
+    assert updates["npm"]["directory"] == "/frontend/browser"
+    assert (ROOT / "frontend" / "browser" / "package-lock.json").is_file()
+    docker = updates["docker"]["directories"]
+    for directory in ("/", "/packaging/aria2", "/packaging/ffmpeg"):
+        assert directory in docker
+        assert any((ROOT / directory.lstrip("/")).glob("Dockerfile*")), directory
+    # The SABnzbd-pinned pip closure stays ignored, and its minor/patch group stays.
+    assert {"dependency-name": "sabctools"} in updates["pip"]["ignore"]
+    assert "minor-and-patch" in updates["pip"]["groups"]
+
+
+def test_policy_documents_build_provenance_and_the_real_publishing_branches():
+    assert "**Build provenance.**" in _POLICY
+    assert "release-ops/*" in _POLICY and "--cert-identity-regex" in _POLICY and "--source-digest" in _POLICY
+    assert "`main` or `1.0.0`" not in _POLICY
+    assert "`staging/*` branch" in _POLICY

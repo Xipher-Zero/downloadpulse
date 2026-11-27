@@ -28,6 +28,17 @@
   program. Setup and the uninstaller also no longer delete an `app` folder there that
   DownloadPulse did not create. The desktop build now checks Microsoft's signature on the
   WebView2 installer it carries, as it already did for the Visual C++ Redistributable.
+- **Every DownloadPulse image now carries a signed record of where it was built, and a release
+  can only be made from an image that has one.** The build now signs a record (build provenance)
+  saying that DownloadPulse's own image workflow built that exact image from that exact commit.
+  Before an image is reused, security-scanned, runtime-tested or published as a release, that
+  record is checked, and so are the scan and test results, each of which must be signed by the
+  workflow that produced it. Before, these checks trusted a label the image gave about itself.
+  Images built before this change have no such record and can never become a release. The
+  workflows that scan and test images now have only read access, except for the one step that
+  signs their result. The Docker Hub sign-in used for downloading base images is removed before
+  any test code runs. Dependabot now also proposes updates for the browser test tools and the
+  Docker base images.
 
 ### Fixed
 

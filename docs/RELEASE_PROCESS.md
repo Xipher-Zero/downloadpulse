@@ -129,7 +129,7 @@ Use the established one-shot remote Actions pattern.
 
 A tag or ref created with the repository `GITHUB_TOKEN` does **not** reliably trigger another workflow from that generated event. Therefore, a one-shot release runner must not assume that creating `vX.Y.Z` will cause the normal tag-publish workflow to run.
 
-If the release image must be published in the same operation, explicitly build/publish the versioned image in the one-shot runner from the exact release commit, or use another authenticated mechanism whose events are intentionally allowed to trigger the normal workflow.
+If the release image tag must be moved in the same operation, the one-shot runner dispatches Release Promotion for the exact release commit (`gh workflow run release-promotion.yml -f candidate_sha=<FULL_RELEASE_SHA> -f target_tag=vX.Y.Z -f dry_run=false`, which needs `actions: write`; a `workflow_dispatch` made with `GITHUB_TOKEN` does start the workflow), or uses another authenticated mechanism whose events are intentionally allowed to trigger the normal workflow. A one-shot runner never builds or pushes an application image itself: a release image is only ever the already-qualified `sha-<full-git-sha>` digest, whose build provenance must be signed by `image.yml` from a qualifying ref (`docs/SUPPLY_CHAIN_POLICY.md` §1, "Build provenance"). A `release-ops/*` branch is never a qualifying ref, and none of its runs or signatures counts toward qualification.
 
 Never create a branch named like a tag as a substitute for a real tag.
 

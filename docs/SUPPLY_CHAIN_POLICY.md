@@ -29,12 +29,15 @@ The rule, exactly as implemented:
   anything to publish it checks whether that tag already exists:
   - **absent** — the job builds and pushes the multi-architecture image once;
   - **present, recorded `org.opencontainers.image.revision` equals the exact
-    `GITHUB_SHA`, both linux platform children present** — the job reuses the
-    existing candidate: it builds nothing, pushes nothing, and carries the
-    existing digest into verification;
-  - **present but the recorded revision is anything else, or the registry
-    check cannot be answered conclusively** — the job fails closed. It never
-    overwrites the tag and never guesses.
+    `GITHUB_SHA`, both linux platform children present, and its build
+    provenance verifies (below)** — the job reuses the existing candidate: it
+    builds nothing, pushes nothing, and carries the existing digest into
+    verification;
+  - **present but the recorded revision is anything else, its build
+    provenance does not verify, or the registry check cannot be answered
+    conclusively** — the job fails closed. It never overwrites the tag and
+    never guesses. The recorded revision is a self-declared annotation, so it
+    is never trusted on its own.
 
   The check happens *before* publication; the job does not push first and
   detect replacement afterwards.
@@ -71,11 +74,52 @@ The rule, exactly as implemented:
   (`container-security/v1`, `candidate-runtime/v1`) bound to the exact
   digest they qualified. `release-promotion.yml` re-verifies both
   attestations target that same digest before promoting.
+- **Build provenance.** `Image`'s `publish` job signs SLSA build provenance
+  (`actions/attest-build-provenance`, predicate
+  `https://slsa.dev/provenance/v1`) for exactly the digest it pushes, stored
+  with GitHub's attestations and in the registry. A candidate is reused by
+  `Image`, qualified by `Container Security` and `Candidate Runtime
+  Qualification`, and promoted by `Release Promotion` only once that
+  provenance verifies with `gh attestation verify`:
+  - signed by `Xipher-Zero/downloadpulse/.github/workflows/image.yml` itself
+    (`--cert-identity-regex`, anchored at both ends), on a GitHub-hosted
+    runner (`--deny-self-hosted-runners`);
+  - for this exact commit: the certificate's source digest
+    (`--source-digest`) and the signing workflow's own digest both equal the
+    candidate SHA;
+  - from a **qualifying ref** — `refs/heads/main`, `refs/heads/1.0.<n>`,
+    `refs/heads/staging/*`, `refs/tags/v*`, `refs/tags/internal-v*` —
+    checked in the signer identity and again, with `jq`, on the
+    certificate's source ref. A `release-ops/*` one-shot branch, a pull
+    request or any other ref never qualifies. (An authorized publishing
+    dispatch from `feature/`, `fix/` or `chore/` verifies its own test image
+    in `Image`; that provenance qualifies nowhere else.)
+
+  The qualification attestations are pinned the same way to their own
+  signer: `container-security/v1` to `container-security.yml`,
+  `candidate-runtime/v1` to `candidate-runtime-qualification.yml`. A
+  candidate published before build provenance existed (1.0.7 and earlier
+  `sha-` tags) carries none, so it can never be reused, qualified or
+  promoted; its write-once tag is not overwritten either — qualify a new
+  source commit. Likewise a candidate first published by a `feature/`,
+  `fix/` or `chore/` dispatch never qualifies: land such work as a new
+  commit, not by fast-forwarding to the dispatched SHA.
+- **Least privilege.** `Container Security` and `Candidate Runtime
+  Qualification` run read-only (`contents`, `actions`, `packages` read);
+  only their `evidence` job, which signs and pushes the attestation, holds
+  `packages`/`id-token`/`attestations` write. In `Image` only the `publish`
+  job does. The Docker Hub login (for authenticated base-image pulls) is
+  removed with `docker logout docker.io` right after the build that needs it,
+  before any test, npm or Playwright code runs.
 - **Mutable release tags only point to previously qualified digests.**
-  `release-promotion.yml` requires a full 40-character `candidate_sha`,
-  derives `source_tag=sha-<candidate_sha>`, resolves the immutable source
-  digest, verifies the recorded revision, verifies both attestations against
-  that digest, and only then runs `docker buildx imagetools create` to move
+  `release-promotion.yml` requires a full 40-character `candidate_sha` and a
+  successful run of each required workflow, matched by workflow file
+  (`.path`), `push` event, qualifying branch or tag and exact `head_sha`
+  across every page of runs; it derives `source_tag=sha-<candidate_sha>`,
+  resolves the immutable source digest, verifies the recorded revision,
+  verifies the build provenance and both qualification attestations against
+  that digest, each pinned to its signer workflow, and only then runs
+  `docker buildx imagetools create` to move
   `latest` (or a `v*`/`internal-v*` tag) onto it. Promotion never triggers a
   build. A fix needed at promotion time is a new source commit and therefore
   a new candidate that must independently clear every required gate first.
@@ -122,6 +166,9 @@ docker buildx imagetools inspect python:3.12.14-slim-trixie
 ```
 
 or an equivalent registry API query. Never hand-type or guess a digest.
+Dependabot (`.github/dependabot.yml`, `docker` ecosystem) proposes patch and
+digest refreshes of this base for the application and package Dockerfiles in
+one grouped pull request; it is reviewed like any other base refresh.
 
 **Base-image digest refresh procedure:**
 
@@ -129,7 +176,8 @@ or an equivalent registry API query. Never hand-type or guess a digest.
    (`python:3.12.14-slim-trixie`, or a newer patch/minor tag when
    deliberately upgrading Python).
 2. Update the `FROM` line's digest.
-3. Push to a branch the `Image` workflow publishes (`main` or `1.0.0`).
+3. Push to a branch the `Image` workflow publishes (`main`, the current
+   release branch such as `1.0.8`, or a `staging/*` branch).
    This produces a new source SHA and therefore a new
    candidate, which must clear every required qualification gate (§1) before
    any promotion.

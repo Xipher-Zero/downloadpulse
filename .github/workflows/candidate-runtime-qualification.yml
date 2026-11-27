@@ -14,22 +14,33 @@ on:
       - 'internal-v*'
   workflow_dispatch:
 
+# Read-only by default: only the evidence job, which signs and pushes the
+# qualification attestation, holds packages/id-token/attestations write.
 permissions:
   contents: read
   actions: read
-  packages: write
-  id-token: write
-  attestations: write
+  packages: read
 
 env:
   IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # The candidate must carry build provenance signed by Image (image.yml) for
+  # this exact commit from a qualifying ref before it is qualified at all
+  # (docs/SUPPLY_CHAIN_POLICY.md 1, "Build provenance"); spelled identically in
+  # image.yml and release-promotion.yml.
+  BUILD_PROVENANCE_PREDICATE_TYPE: https://slsa.dev/provenance/v1
+  QUALIFYING_REFS: 'refs/(heads/main|heads/1\.0\.[0-9]+|heads/staging/.+|tags/v.+|tags/internal-v.+)'
   RUNTIME_PREDICATE_TYPE: https://github.com/Xipher-Zero/downloadpulse/attestations/candidate-runtime/v1
 
 jobs:
   identity:
     name: Resolve immutable candidate identity
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      attestations: read
     outputs:
       app_version: ${{ steps.revision.outputs.app_version }}
       manifest_digest: ${{ steps.identity.outputs.manifest_digest }}
@@ -104,6 +115,46 @@ jobs:
             echo "Platform child digests unexpectedly collapse to the same artifact"
             exit 1
           fi
+
+          # Build provenance: signed by image.yml, GitHub-hosted, for this
+          # exact commit (source and workflow digest), from a qualifying ref.
+          # The index can land a moment before Image's attestation does, so
+          # this is retried, bounded; a candidate without it (one published
+          # before build provenance existed, or by anything else) is never
+          # qualified.
+          signer="^https://github\.com/Xipher-Zero/downloadpulse/\.github/workflows/image\.yml@(${QUALIFYING_REFS})$"
+          provenance=0
+          for attempt in $(seq 1 30); do
+            if gh attestation verify "oci://${IMAGE_NAME}@${manifest_digest}" \
+                --repo "$GITHUB_REPOSITORY" \
+                --predicate-type "$BUILD_PROVENANCE_PREDICATE_TYPE" \
+                --cert-identity-regex "$signer" \
+                --source-digest "$GITHUB_SHA" \
+                --deny-self-hosted-runners \
+                --limit 100 \
+                --format json > build-provenance.json && jq -e \
+                --arg sha "$GITHUB_SHA" \
+                --arg signer "$signer" \
+                --arg refs "^(${QUALIFYING_REFS})$" \
+                'any(.[]; .verificationResult.signature.certificate as $c |
+                  (($c.subjectAlternativeName // "") | test($signer)) and
+                  (($c.buildSignerURI // "") | test($signer)) and
+                  (($c.sourceRepositoryRef // "") | test($refs)) and
+                  $c.sourceRepositoryURI == "https://github.com/Xipher-Zero/downloadpulse" and
+                  $c.sourceRepositoryDigest == $sha and
+                  $c.buildSignerDigest == $sha and
+                  $c.runnerEnvironment == "github-hosted")' build-provenance.json >/dev/null; then
+              provenance=1
+              break
+            fi
+            echo "Build provenance for $source_ref not verified on attempt ${attempt}/30"
+            if [ "$attempt" -lt 30 ]; then sleep 10; fi
+          done
+          if [ "$provenance" -ne 1 ]; then
+            echo "::error::Candidate $source_ref ($manifest_digest) carries no build provenance signed by image.yml for $GITHUB_SHA from a qualifying ref; it cannot be qualified. A candidate published before build provenance existed is never qualified: qualify a new source commit."
+            exit 1
+          fi
+          echo "Build provenance verified for ${IMAGE_NAME}@${manifest_digest}"
 
           echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
           echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"
@@ -232,6 +283,13 @@ jobs:
     name: Attest exact candidate runtime qualification
     needs: [identity, runtime]
     runs-on: ubuntu-24.04
+    # The one job that writes: it signs the qualification predicate (id-token,
+    # attestations) and pushes it beside the candidate (packages).
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Write machine-verifiable runtime predicate
         shell: bash

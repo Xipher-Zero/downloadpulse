@@ -2,6 +2,10 @@
 # - Python (pip): weekly check for backend/requirements*.{in,txt}
 #   (runtime, dev, and the qa lint/security tooling set)
 # - GitHub Actions: weekly check for workflow action versions
+# - npm: weekly check for the Playwright contract suite (frontend/browser)
+# - Docker: weekly check for the digest-pinned base images of the application
+#   Dockerfile and the package Dockerfiles under packaging/ (one grouped PR, so
+#   the shared python base digest moves everywhere at once)
 version: 2
 updates:
 
@@ -65,3 +69,53 @@ updates:
     labels:
       - dependencies
       - github-actions
+
+  - package-ecosystem: npm
+    directory: /frontend/browser
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - javascript
+    groups:
+      # @playwright/test, playwright and playwright-core move together.
+      playwright:
+        patterns:
+          - "@playwright/*"
+          - "playwright"
+          - "playwright-core"
+
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /packaging/aria2
+      - /packaging/ffmpeg
+      - /packaging/sabctools
+      - /packaging/windows-tools
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
+    ignore:
+      # The product targets Python 3.12: only patch and digest refreshes of the base.
+      - dependency-name: "python"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      # DownloadPulse's own package images move only with a rebuild by their
+      # package workflow (docs/SUPPLY_CHAIN_POLICY.md 4a/4b), never on their own.
+      - dependency-name: "ghcr.io/xipher-zero/downloadpulse-aria2"
+      - dependency-name: "ghcr.io/xipher-zero/downloadpulse-ffmpeg"
+    groups:
+      base-images:
+        patterns:
+          - "*"

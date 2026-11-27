@@ -140,6 +140,21 @@ jobs:
             --build-arg VCS_REF="$GITHUB_SHA" \
             -t "$IMAGE" .
 
+      # The Docker Hub token served the build above alone: it leaves the runner
+      # before any npm, Playwright or test code runs. (An anchor image built by
+      # the classifier below pulls anonymously; it normally shares the
+      # candidate's base image, already in the local image store.)
+      - name: Log out of Docker Hub
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout docker.io || true
+          config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if [ -f "$config" ] && jq -e '(.auths // {}) | keys | any(test("docker\\.io"))' "$config" >/dev/null; then
+            echo "Docker Hub credentials are still present in $config"
+            exit 1
+          fi
+
       - name: Start open and password-authenticated candidates
         run: |
           set -euo pipefail
