@@ -120,7 +120,7 @@ def test_every_tray_and_notice_word_is_in_the_catalog():
         "desktop.tray.status", "desktop.tray.open", "desktop.tray.quit", "processing.pause_all",
         "processing.resume_all", "transfer.action.paused_toast", "transfer.action.resumed_toast",
         "desktop.notice.paused_many", "desktop.notice.resumed_many",
-        "desktop.error.start_failed_title", "desktop.error.start_failed"}
+        "desktop.error.start_failed_title", "desktop.error.start_failed", "desktop.error.privileged"}
     assert used <= set(english)
 
 

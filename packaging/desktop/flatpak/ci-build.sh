@@ -82,12 +82,20 @@ flatpak run --filesystem="$PWD/build:ro" --env=PATH="$tools:/app/bin:/usr/bin" \
   "$PWD/build/usenet-start.py" 2>&1 | tee -a "$results"
 test "${PIPESTATUS[0]}" -eq 0
 
+export XDG_RUNTIME_DIR=/tmp/xdg-runtime; mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+# This container's only account is root, which DownloadPulse refuses
+# (desktop/supervisor.py privileged): it ends at once, saying why, with no data root.
+rm -rf "$HOME/.var/app/net.downloadpulse.desktop"
+set +e; timeout 60 flatpak run net.downloadpulse.desktop > /tmp/flatpak-root.out 2>&1; code=$?; set -e
+echo "launch as root: exit $code; $(grep -m1 -o 'DownloadPulse does not run as root' /tmp/flatpak-root.out)" | tee -a "$results"
+[ "$code" -eq 4 ] && grep -q 'DownloadPulse does not run as root' /tmp/flatpak-root.out \
+  && [ ! -e "$HOME/.var/app/net.downloadpulse.desktop/data/downloadpulse" ] || { cat /tmp/flatpak-root.out; exit 1; }
 # The application itself, launched as installed (first run: no data root) on a
 # virtual display and session bus; no desktop portal or tray host exists here.
+# Root, allowed for this disposable container only (DOWNLOADPULSE_DESKTOP_ALLOW_PRIVILEGED).
 rm -rf "$HOME/.var/app/net.downloadpulse.desktop"
-export XDG_RUNTIME_DIR=/tmp/xdg-runtime; mkdir -p -m 700 "$XDG_RUNTIME_DIR"
 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- sh -c '
-  flatpak run net.downloadpulse.desktop > /tmp/flatpak-launch.out 2>&1 &
+  flatpak run --env=DOWNLOADPULSE_DESKTOP_ALLOW_PRIVILEGED=1 net.downloadpulse.desktop > /tmp/flatpak-launch.out 2>&1 &
   logs="$HOME/.var/app/net.downloadpulse.desktop/data/downloadpulse/logs"; ready=no
   for i in $(seq 1 120); do
     sleep 1; grep -qs "Scheduler started" "$logs/backend.log" && pgrep -f downloadpulse-shell >/dev/null && { ready=yes; break; }

@@ -33534,6 +33534,14 @@
     "ai-review"
    ]
   },
+  "desktop.error.privileged": {
+   "source": "b994a4d0d86e1662",
+   "translation": "61e60bd51f1dc266",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "error.desktop.quit_only": {
    "source": "d36e575db3e7300b",
    "translation": "37b1b6969ef108ac",

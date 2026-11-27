@@ -33161,6 +33161,14 @@
     }
    ]
   },
+  "desktop.error.privileged": {
+   "source": "b994a4d0d86e1662",
+   "translation": "e30777f7f265838b",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "error.desktop.quit_only": {
    "source": "d36e575db3e7300b",
    "translation": "c3bcb93cae10baf7",

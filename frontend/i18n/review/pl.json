@@ -34221,6 +34221,14 @@
     "ai-review"
    ]
   },
+  "desktop.error.privileged": {
+   "source": "b994a4d0d86e1662",
+   "translation": "8f8000eac7ea33b4",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "error.desktop.quit_only": {
    "source": "d36e575db3e7300b",
    "translation": "3c566109bd7db7c0",

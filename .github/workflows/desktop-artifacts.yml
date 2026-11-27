@@ -492,17 +492,21 @@ jobs:
           python -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$RUNNER_TEMP/$name" "$RUNNER_TEMP/nsis"
           export MAKENSIS="$RUNNER_TEMP/nsis/nsis-3.11/makensis.exe"
           mkdir -p "$RUNNER_TEMP/prerequisites" desktop-build/windows
+          # Microsoft's Evergreen WebView2 bootstrapper, carried unmodified: refused unless Microsoft's valid
+          # signature is on it, as the Redistributable below is.
           curl -sSfL -o "$RUNNER_TEMP/prerequisites/MicrosoftEdgeWebview2Setup.exe" https://go.microsoft.com/fwlink/p/?LinkId=2124703
           # Microsoft's Visual C++ x64 Redistributable installer, carried unmodified (Distributable Code under the
           # maintainer's Visual Studio licence): refused unless Microsoft's valid signature is on it and it is 14.51+.
           curl -sSfL -o "$RUNNER_TEMP/prerequisites/vc_redist.x64.exe" https://aka.ms/vc14/vc_redist.x64.exe
           pwsh -NoProfile -Command '
-            $f = Join-Path $env:RUNNER_TEMP "prerequisites\vc_redist.x64.exe"
-            $s = Get-AuthenticodeSignature $f
-            if ($s.Status -ne "Valid" -or $s.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") { "vc_redist.x64.exe: signature $($s.Status), $($s.SignerCertificate.Subject)"; exit 1 }
-            $v = [version](Get-Item $f).VersionInfo.ProductVersion
-            if ($v -lt [version]"14.51") { "vc_redist.x64.exe $v is older than 14.51"; exit 1 }
-            "vc_redist.x64.exe $v, signed by $($s.SignerCertificate.Subject)"' | tee "$RUNNER_TEMP/vc_redist.txt"
+            foreach ($name in "MicrosoftEdgeWebview2Setup.exe", "vc_redist.x64.exe") {
+              $f = Join-Path $env:RUNNER_TEMP "prerequisites\$name"
+              $s = Get-AuthenticodeSignature $f
+              if ($s.Status -ne "Valid" -or $s.SignerCertificate.Subject -notmatch "O=Microsoft Corporation") { "${name}: signature $($s.Status), $($s.SignerCertificate.Subject)"; exit 1 }
+              $v = (Get-Item $f).VersionInfo.ProductVersion
+              if ($name -eq "vc_redist.x64.exe" -and [version]$v -lt [version]"14.51") { "vc_redist.x64.exe $v is older than 14.51"; exit 1 }
+              "$name $v, signed by $($s.SignerCertificate.Subject)"
+            }' | tee "$RUNNER_TEMP/vc_redist.txt"
           bash packaging/desktop/windows/build-installer.sh "$RUNNER_TEMP/layout" "$RUNNER_TEMP/prerequisites" desktop-build/windows
           { echo "NSIS: $name sha256 $digest ($url)"; echo "makensis -VERSION: $("$MAKENSIS" -VERSION)"; } > desktop-build/windows/TOOLCHAIN.txt
           cat "$RUNNER_TEMP/vc_redist.txt" >> desktop-build/windows/PREREQUISITES.txt

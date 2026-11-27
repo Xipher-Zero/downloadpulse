@@ -15,6 +15,16 @@
   password now ends when Username & Password is turned off, as signed-in sessions already did.
   And another website can no longer include DownloadPulse's own interface files (for example
   the script that sets up its appearance) and read what they say about your installation.
+- **The desktop app no longer runs with administrator or root rights, and the Windows installer
+  keeps to its own folder.** On Windows, an installer started with "Run as administrator" also
+  started DownloadPulse as administrator. It now starts DownloadPulse with your account's
+  ordinary rights. On Windows, macOS and Linux, DownloadPulse now refuses to start as
+  administrator or as root, and a notice says why. Before, such a run could create files that
+  later stopped DownloadPulse from starting normally. The installer now installs only inside
+  your own `AppData\Local` folder, where other accounts on the computer cannot change the
+  program. Setup and the uninstaller also no longer delete an `app` folder there that
+  DownloadPulse did not create. The desktop build now checks Microsoft's signature on the
+  WebView2 installer it carries, as it already did for the Visual C++ Redistributable.
 
 ### Fixed
 
@@ -28,6 +38,9 @@
 - **Windows: a download into a folder that already exists with different capitals is kept.**
   The final check now compares file locations the way Windows does, without regard to case,
   for every kind of download.
+- **Show in folder no longer follows a linked folder inside the download folder.** A file
+  reached that way is reported as no longer there (and an update reached that way downloads
+  again), as DownloadPulse's other checks of finished files already did.
 - **The browser extension can send a .torrent, NZB or Metalink file up to DownloadPulse's own
   16 MB limit.** Files above about 15.7 MB were refused before DownloadPulse could read them, and
   the extension only said the send failed.

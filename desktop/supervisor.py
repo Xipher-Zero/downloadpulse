@@ -34,7 +34,8 @@ It owns, and only owns, what a desktop process needs and DownloadPulse does not:
   SIGHUP on POSIX) or -- where no tray can open the window again (Linux) --
   closing the window, once its own page has asked and the person confirmed;
 * a start that fails: logged with its cause, and said in a notice where one
-  can be shown (``start_failure_notice``).
+  can be shown (``start_failure_notice``); a run with administrator or root
+  rights is refused before it touches the data root (``privileged``).
 
 It reads no attempt marker, keeps no transfer state of its own, and calls no
 DownloadPulse HTTP API but the public health check: the tray's status, events
@@ -499,6 +500,19 @@ def _win32_api():
             k32.CloseHandle(handle)
         return sid_text(ctypes.c_void_p(ctypes.c_void_p.from_buffer(user).value))
 
+    def elevation_type() -> int:
+        """This process's TokenElevationType: 1 default (no split token: UAC
+        off, the built-in Administrator, or a standard account), 2 full (a
+        split token, elevated), 3 limited (a split token, not elevated)."""
+        handle, value = token(), wintypes.DWORD()
+        try:
+            if not adv.GetTokenInformation(handle, 18, ctypes.byref(value), 4,     # TokenElevationType
+                                           ctypes.byref(wintypes.DWORD())):
+                raise PermissionError("this process's elevation cannot be read")
+        finally:
+            k32.CloseHandle(handle)
+        return value.value
+
     def known_folders() -> tuple[str, str]:
         """(this account's profile directory, its Roaming AppData folder)."""
         handle, size = token(), wintypes.DWORD(32768)
@@ -527,6 +541,7 @@ def _win32_api():
         return buffer.value
 
     api.open, api.sid_text, api.account_sid, api.known_folders = open, sid_text, account_sid, known_folders
+    api.elevation_type = elevation_type
     api.profiles_directory = profiles_directory
     return api
 
@@ -1632,24 +1647,77 @@ class Signals:
             self.events.put_nowait(("quitRequested", {"signal": name}))
 
 
-async def start_failure_notice(words: "Words | None", platform: str = sys.platform) -> None:
+async def start_failure_notice(words: "Words | None", platform: str = sys.platform, *,
+                               body: str = "desktop.error.start_failed") -> None:
     """A start that failed, said where the person sees it: Linux, a portal
     notice on a connection of its own (``SessionBus.notice_once``: the run's
     bus may never have opened); Windows, its toast (``windows_notice``). macOS
     logs only: its notices are the native shell's, which is what failed or
     never started. Without its words (they could not be read) only the log
-    says it."""
+    says it. ``body`` is the catalog key of what it says beneath the title."""
     if words is None:
         return
-    title, body = words("desktop.error.start_failed_title"), words("desktop.error.start_failed")
+    title, body = words("desktop.error.start_failed_title"), words(body)
     if platform.startswith("linux"):
         await SessionBus.notice_once(title, body)
     elif platform == "win32":
         await windows_notice(title, body)
 
 
+# A run with administrator or root rights is refused (``privileged``) unless
+# this is set to 1: for a disposable machine or container whose only account
+# is root (the Flatpak's launch check, packaging/desktop/flatpak/ci-build.sh).
+PRIVILEGED_OVERRIDE = "DOWNLOADPULSE_DESKTOP_ALLOW_PRIVILEGED"
+PRIVILEGED_EXIT = 4
+
+
+def privileged(platform: str = sys.platform) -> str | None:
+    """What makes this run privileged, or None. DownloadPulse runs with its
+    account's own rights, never more: Windows, a token UAC elevated (Run as
+    administrator, or an installer started that way that starts DownloadPulse
+    again) -- the same account has an unelevated one, so an elevated run
+    would only hand the backend and every helper administrator rights, and
+    create files in the account's own folders that an ordinary run then
+    refuses as not its own (``private_directory``, ``read_credential``);
+    POSIX (Linux, macOS), root. A Windows token without a split (UAC off, or
+    the built-in Administrator) has no lesser token to run with and is not
+    refused; one whose elevation cannot be read is."""
+    if platform == "win32":
+        try:
+            kind = _win32_api().elevation_type()
+        except (OSError, AttributeError) as exc:
+            return f"a token whose elevation cannot be read ({exc})"
+        return "an elevated (administrator) token" if kind == 2 else None          # TokenElevationTypeFull
+    return "root" if os.geteuid() == 0 else None
+
+
+async def refuse_privileged(paths: dict[str, Path], what: str) -> int:
+    """A privileged run, refused before it opens, creates or locks anything
+    in the data root (a file it created there would be owned by
+    Administrators or root, and refused by the next ordinary run; and root
+    must not write through a path its user controls): the reason goes to
+    standard error and, where one can be shown, a notice in the
+    installation's language (``start_failure_notice``)."""
+    logger.error("DownloadPulse does not run as %s: start it again as this account itself (on Windows, not with "
+                 "Run as administrator; elsewhere, not with sudo or as root). Nothing was started or written. "
+                 "(%s=1 allows it on a disposable test system.)", what, PRIVILEGED_OVERRIDE)
+    words = None
+    try:
+        sys.dont_write_bytecode = True                 # not even a cache file beside the program
+        sys.path.insert(0, str(paths["backend"]))
+        os.environ["STATIC_DIR"] = str(paths["static"])
+        words = Words(data_root() / "config" / "config.json")
+    except Exception:
+        logger.exception("the refusal's notice has no words")
+    await start_failure_notice(words, body="desktop.error.privileged")
+    return PRIVILEGED_EXIT
+
+
 async def run() -> int:
     paths = layout()
+    elevated = privileged()
+    if elevated is not None and os.environ.get(PRIVILEGED_OVERRIDE) != "1":
+        return await refuse_privileged(paths, elevated)
     root = data_root()
     lock = single_instance(root)
     # The log, before anything else is said: whatever happens from here on --
@@ -1661,6 +1729,8 @@ async def run() -> int:
             return 0      # the running instance opens its window
         logger.error("DownloadPulse is already running for this account")
         return 3
+    if elevated is not None:
+        logger.warning("DownloadPulse runs as %s: allowed by %s=1", elevated, PRIVILEGED_OVERRIDE)
     loop = asyncio.get_running_loop()
     signals = Signals(asyncio.current_task())
     signals.install(loop)

@@ -3670,6 +3670,7 @@
   "desktop.error.reopen_failed_body": "Choose Open DownloadPulse in the tray to try again. The reason is recorded in logs/desktop.log in DownloadPulse's data folder.",
   "desktop.error.start_failed_title": "DownloadPulse could not start",
   "desktop.error.start_failed": "The reason is recorded in logs/desktop.log in DownloadPulse's data folder.",
+  "desktop.error.privileged": "DownloadPulse does not run with administrator or root rights. Start it again normally, without them.",
   "help.topic.heading.local_port": "Local Port",
   "help.topic.deployment_type.local_port.what": "<b>Local Port</b> is where external applications such as Sonarr or Radarr reach DownloadPulse: its SABnzbd and qBittorrent download-client connections and its external API, each with an Integration account's token. Give them the address its hint shows.",
   "help.topic.deployment_type.local_port.this_computer": "Only programs on this computer can use it; other computers on the network cannot.",

@@ -2,11 +2,15 @@
 ; Debian package; built by packaging/desktop/windows/build-installer.sh).
 ;
 ; * Per-user: no elevation for DownloadPulse itself; the program goes to
-;   %LOCALAPPDATA%\Programs\DownloadPulse, its data stays in
+;   %LOCALAPPDATA%\Programs\DownloadPulse (another folder may be chosen,
+;   inside %LOCALAPPDATA% only: .onVerifyInstDir), its data stays in
 ;   %LOCALAPPDATA%\DownloadPulse (the supervisor's data root), whose content
 ;   neither an upgrade nor the uninstaller changes (they only hold its
 ;   desktop.lock, below). No configuration file is written, so the first run
-;   is always the setup wizard.
+;   is always the setup wizard. An installer started "as administrator"
+;   starts DownloadPulse through the desktop's own Explorer, with the
+;   account's ordinary rights (LaunchDownloadPulse); DownloadPulse itself
+;   refuses an elevated run (desktop/supervisor.py privileged).
 ; * Silent: /S installs or uninstalls without a page.
 ; * Prerequisites, before any DownloadPulse file is written:
 ;     - Microsoft Visual C++ x64 Redistributable >= VCREDIST_MIN, read where
@@ -29,7 +33,8 @@
 ;   and the Media Downloads helpers' AppContainer profile -- never the data
 ;   root or any download. Program files that cannot be removed or replaced
 ;   (in use) are reported, and the uninstall entry stays, so the user can
-;   run the uninstaller or this installer again.
+;   run the uninstaller or this installer again. A folder named app that is
+;   not DownloadPulse's is never removed or replaced (ProgramFilesOurs).
 
 Unicode true
 !include "MUI2.nsh"
@@ -104,6 +109,11 @@ VIAddVersionKey "LegalCopyright" "GPL-2.0-or-later"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${STAGE}\LICENSE"
+; The folder: inside this account's own local application data, which only
+; the account, SYSTEM and Administrators can change -- a folder elsewhere (say
+; C:\X) inherits rights that let other accounts replace the program files
+; DownloadPulse runs. Next stays disabled for any other (.onVerifyInstDir).
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Setup will install DownloadPulse in the following folder. It must be inside $LOCALAPPDATA, which only this account can change, outside DownloadPulse's data folder ($LOCALAPPDATA\DownloadPulse), and hold no app folder of another program. $_CLICK"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -112,7 +122,46 @@ VIAddVersionKey "LegalCopyright" "GPL-2.0-or-later"
 !insertmacro MUI_UNPAGE_FINISH
 !insertmacro MUI_LANGUAGE "English"
 
+Var dpElevated
+Var dpOurs
+Var dpInstDirOk
+
+; Whether this installer runs with a token UAC elevated (Run as administrator):
+; $dpElevated 1 for TokenElevationType 2 (TokenElevationTypeFull), the same
+; test desktop/supervisor.py privileged refuses a run by.
+Function DpElevated
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $dpElevated 0
+  System::Call 'kernel32::GetCurrentProcess() p .r1'
+  System::Call 'advapi32::OpenProcessToken(p r1, i 0x8, *p 0 r1) i .r2'      ; TOKEN_QUERY
+  ${If} $2 != 0
+    System::Call 'advapi32::GetTokenInformation(p r1, i 18, *i 0 r2, i 4, *i 0) i .r3'   ; TokenElevationType
+    System::Call 'kernel32::CloseHandle(p r1)'
+    ${If} $3 != 0
+    ${AndIf} $2 == 2
+      StrCpy $dpElevated 1
+    ${EndIf}
+  ${EndIf}
+  Pop $3
+  Pop $2
+  Pop $1
+FunctionEnd
+
 Function LaunchDownloadPulse
+  Call DpElevated
+  ${If} $dpElevated == 1
+    ; Started "as administrator": never with this installer's elevated token.
+    ; The desktop's own Explorer -- already running as this account, without
+    ; elevation -- opens the Start-menu shortcut, the same command as below.
+    ${If} ${FileExists} "$SMPROGRAMS\DownloadPulse.lnk"
+      Exec '"$WINDIR\explorer.exe" "$SMPROGRAMS\DownloadPulse.lnk"'
+    ${Else}
+      MessageBox MB_ICONINFORMATION|MB_OK "Start DownloadPulse from the Start menu." /SD IDOK
+    ${EndIf}
+    Return
+  ${EndIf}
   ; The Start-menu shortcut's own command.
   Exec '"$INSTDIR\app\runtime\python\pythonw.exe" -I "$INSTDIR\app\desktop\supervisor.py"'
 FunctionEnd
@@ -236,8 +285,38 @@ FunctionEnd
 ; ends -- holding them open for that moment. Removal is retried while that
 ; lasts (10 s); files still present after that are in use by something else,
 ; and the caller reports it.
+; Whether $INSTDIR\app is DownloadPulse's own ($dpOurs 1), so that removing it
+; removes nothing else: absent (nothing to remove); named by the uninstall
+; entry, which an installation writes before its first program file; or
+; holding DownloadPulse's own interpreter and supervisor. Any other app
+; folder is someone else's, and is neither removed nor replaced.
+!macro DP_PROGRAM_FILES_OURS UN
+Function ${UN}ProgramFilesOurs
+  Push $0
+  StrCpy $dpOurs 1
+  ${If} ${FileExists} "$INSTDIR\app\*.*"
+    StrCpy $dpOurs 0
+    ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+    ${If} $0 != ""
+    ${AndIf} $0 == $INSTDIR
+      StrCpy $dpOurs 1
+    ${ElseIf} ${FileExists} "$INSTDIR\app\desktop\supervisor.py"
+    ${AndIf} ${FileExists} "$INSTDIR\app\runtime\python\pythonw.exe"
+      StrCpy $dpOurs 1
+    ${EndIf}
+  ${EndIf}
+  Pop $0
+FunctionEnd
+!macroend
+!insertmacro DP_PROGRAM_FILES_OURS ""
+!insertmacro DP_PROGRAM_FILES_OURS "un."
+
 !macro DP_REMOVE_PROGRAM_FILES UN
 Function ${UN}RemoveProgramFiles
+  Call ${UN}ProgramFilesOurs
+  ${If} $dpOurs != 1
+    Return                          ; the caller refused it already: never removed
+  ${EndIf}
   StrCpy $R9 0
   dp_remove:
   RMDir /r "$INSTDIR\app"
@@ -255,12 +334,83 @@ FunctionEnd
 !insertmacro DP_REMOVE_PROGRAM_FILES ""
 !insertmacro DP_REMOVE_PROGRAM_FILES "un."
 
+; Whether $INSTDIR is a folder DownloadPulse installs into ($dpInstDirOk): 1
+; inside this account's own local application data ($LOCALAPPDATA) -- never
+; that folder itself, nor the data root (%LOCALAPPDATA%\DownloadPulse) or
+; anything in it -- with no app folder that is not DownloadPulse's; 0 outside
+; it; 2 with someone else's app folder. Compared once made absolute
+; (GetFullPathNameW: "..", "." and "/" resolved), ignoring case.
+Function DpInstDirAllowed
+  Push $0
+  Push $1
+  Push $2
+  StrCpy $dpInstDirOk 0
+  System::Call 'kernel32::GetFullPathNameW(w "$INSTDIR", i ${NSIS_MAX_STRLEN}, w .r0, p 0) i .r1'
+  ${If} $LOCALAPPDATA != ""
+  ${AndIf} $1 > 0
+  ${AndIf} $1 < ${NSIS_MAX_STRLEN}
+    StrLen $1 "$LOCALAPPDATA\"
+    StrCpy $2 $0 $1
+    ${If} $2 == "$LOCALAPPDATA\"
+      StrCpy $2 $0 "" $1
+      ${If} $2 != ""
+        StrCpy $dpInstDirOk 1
+        StrLen $1 "$LOCALAPPDATA\DownloadPulse\"
+        StrCpy $2 "$0\" $1
+        ${If} $2 == "$LOCALAPPDATA\DownloadPulse\"
+          StrCpy $dpInstDirOk 0
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  ${If} $dpInstDirOk == 1
+    Call ProgramFilesOurs
+    ${If} $dpOurs != 1
+      StrCpy $dpInstDirOk 2
+    ${EndIf}
+  ${EndIf}
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function .onVerifyInstDir
+  ; The directory page: Next stays disabled for a folder DownloadPulse does not install into.
+  Call DpInstDirAllowed
+  ${If} $dpInstDirOk != 1
+    Abort
+  ${EndIf}
+FunctionEnd
+
+; The folder refused, said to the person or, silent, to the caller (exit 4); nothing is changed.
+Function RefuseInstDir
+  ${If} $dpInstDirOk == 2
+    StrCpy $4 "$INSTDIR\app is not DownloadPulse's: setup never removes or replaces a folder it did not install. Choose another folder, then run setup again. Nothing was changed."
+  ${Else}
+    StrCpy $4 "DownloadPulse installs only inside $LOCALAPPDATA, which only this account can change, and outside its data folder ($LOCALAPPDATA\DownloadPulse); $INSTDIR is not. Choose a folder there, then run setup again. Nothing was changed."
+  ${EndIf}
+  ${If} ${Silent}
+    StrCpy $4 "DownloadPulse setup: $4$\r$\n"
+    Call TellCaller
+  ${Else}
+    MessageBox MB_ICONSTOP|MB_OK "$4"
+  ${EndIf}
+  SetErrorLevel 4
+  Quit
+FunctionEnd
+
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP|MB_OK "DownloadPulse for Windows needs 64-bit Windows." /SD IDOK
     Abort
   ${EndIf}
   Call RequireVcRedist      ; before the data-root lock and any file: nothing is changed without it
+  ${If} ${Silent}           ; no directory page: the folder (/D, or the installed one) is checked here
+    Call DpInstDirAllowed
+    ${If} $dpInstDirOk != 1
+      Call RefuseInstDir
+    ${EndIf}
+  ${EndIf}
   Call TakeDataRootLock
 FunctionEnd
 Function DpUserAbort
@@ -325,6 +475,25 @@ Function VcRedistSatisfied
   Push $1
 FunctionEnd
 
+; A silent run's refusal ($4), said where the caller can read it: the standard
+; output it gave the installer (a redirect or a pipe), else the console that
+; started it.
+Function TellCaller
+  StrLen $5 $4
+  System::Call 'kernel32::GetStdHandle(i -11) p .r6'
+  System::Call 'kernel32::GetFileType(p r6) i .r7'
+  ${If} $7 != 0     ; FILE_TYPE_UNKNOWN: no usable standard output
+    System::Call 'kernel32::WriteFile(p r6, m r4, i r5, *i .r8, p 0)'
+  ${Else}
+    System::Call 'kernel32::AttachConsole(i -1) i .r3'
+    ${If} $3 != 0
+      FileOpen $3 "CONOUT$$" w
+      FileWrite $3 $4
+      FileClose $3
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
 Function RequireVcRedist
   Call VcRedistSatisfied
   Pop $0
@@ -341,19 +510,7 @@ Function RequireVcRedist
     ; gave the installer (a redirect or a pipe), else the console that started
     ; it -- and fail with a distinct code before anything is changed.
     StrCpy $4 "DownloadPulse setup: the Microsoft Visual C++ x64 Redistributable ${VCREDIST_MIN_MAJOR}.${VCREDIST_MIN_MINOR} or newer is required (found: $2). Install it from Microsoft (${VCREDIST_DOWNLOAD}) and run setup again. Nothing was changed.$\r$\n"
-    StrLen $5 $4
-    System::Call 'kernel32::GetStdHandle(i -11) p .r6'
-    System::Call 'kernel32::GetFileType(p r6) i .r7'
-    ${If} $7 != 0     ; FILE_TYPE_UNKNOWN: no usable standard output
-      System::Call 'kernel32::WriteFile(p r6, m r4, i r5, *i .r8, p 0)'
-    ${Else}
-      System::Call 'kernel32::AttachConsole(i -1) i .r3'
-      ${If} $3 != 0
-        FileOpen $3 "CONOUT$$" w
-        FileWrite $3 $4
-        FileClose $3
-      ${EndIf}
-    ${EndIf}
+    Call TellCaller
     SetErrorLevel 3
     Quit
   ${EndIf}
@@ -395,6 +552,11 @@ FunctionEnd
 
 Section "Prerequisites" SecPrerequisites
   SectionIn RO
+  ; The folder once more, before anything is written (the page and .onInit checked it).
+  Call DpInstDirAllowed
+  ${If} $dpInstDirOk != 1
+    Call RefuseInstDir
+  ${EndIf}
   InitPluginsDir
   ; The Visual C++ Redistributable was required in .onInit (RequireVcRedist).
   Call WebView2Satisfied
@@ -416,6 +578,12 @@ Section "DownloadPulse" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   ; An upgrade replaces the program files in place; the data root is elsewhere.
+  ; Only DownloadPulse's own app folder is ever removed (ProgramFilesOurs).
+  Call ProgramFilesOurs
+  ${If} $dpOurs != 1
+    MessageBox MB_ICONSTOP|MB_OK "$INSTDIR\app is not DownloadPulse's: setup never removes or replaces a folder it did not install. Choose another folder, then run setup again." /SD IDOK
+    Abort "$INSTDIR\app is not DownloadPulse's: nothing was replaced."
+  ${EndIf}
   Call RemoveProgramFiles
   ${If} ${FileExists} "$INSTDIR\app\*.*"
     MessageBox MB_ICONSTOP|MB_OK "The installed DownloadPulse program files could not be replaced: some of them are in use ($INSTDIR\app). Close what is using them, then run this installer again. The existing uninstall entry is kept." /SD IDOK
@@ -452,6 +620,11 @@ FunctionEnd
 
 Section "Uninstall"
   ; The shortcut first: no new launch from it while the files go.
+  Call un.ProgramFilesOurs
+  ${If} $dpOurs != 1
+    MessageBox MB_ICONSTOP|MB_OK "$INSTDIR\app is not DownloadPulse's program folder, so the uninstaller removes nothing. Your settings, database and downloads were not touched." /SD IDOK
+    Abort "$INSTDIR\app is not DownloadPulse's: nothing was removed."
+  ${EndIf}
   Delete "$SMPROGRAMS\DownloadPulse.lnk"
   Call un.RemoveProgramFiles
   ${If} ${FileExists} "$INSTDIR\app\*.*"

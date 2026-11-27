@@ -63,6 +63,9 @@ def test_the_build_carries_only_microsofts_signed_unmodified_redistributable():
     assert 'Get-AuthenticodeSignature' in build and '$s.Status -ne "Valid"' in build
     assert '-notmatch "O=Microsoft Corporation"' in build and '[version]"14.51"' in build
     assert build.index("Get-AuthenticodeSignature") < build.index("bash packaging/desktop/windows/build-installer.sh")
+    # The WebView2 bootstrapper is held to the same signature check before it is embedded (1.0.8 D-5).
+    assert 'foreach ($name in "MicrosoftEdgeWebview2Setup.exe", "vc_redist.x64.exe")' in build
+    assert build.index('MicrosoftEdgeWebview2Setup.exe" https://go.microsoft.com/') < build.index("Get-AuthenticodeSignature")
     licences = (ROOT / "docs" / "DEPENDENCY_LICENSES.md").read_text(encoding="utf-8")
     assert "**Bundled, unmodified, as Distributable Code.**" in licences and "not covered by DownloadPulse's GPL" in licences
 

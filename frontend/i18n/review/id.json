@@ -33163,6 +33163,14 @@
     "ai-review"
    ]
   },
+  "desktop.error.privileged": {
+   "source": "b994a4d0d86e1662",
+   "translation": "2ff73ef63e82b04c",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "error.desktop.quit_only": {
    "source": "d36e575db3e7300b",
    "translation": "10b5b92c08c471ab",

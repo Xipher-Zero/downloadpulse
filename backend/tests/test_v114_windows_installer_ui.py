@@ -40,6 +40,12 @@ def test_launch_on_the_finish_page_is_the_shortcuts_command_after_the_lock_is_re
     launch = re.search(r"Function LaunchDownloadPulse\n(.*?)FunctionEnd", NSI, re.S).group(1)
     shortcut = re.search(r'CreateShortcut "\$SMPROGRAMS\\DownloadPulse\.lnk" "([^"]+)" \'([^\']+)\'', NSI)
     assert f'Exec \'"{shortcut.group(1)}" {shortcut.group(2)}\'' in launch
+    # Run as administrator: the shortcut itself, opened by the desktop's unelevated Explorer, never the
+    # installer's elevated token (DownloadPulse refuses one: desktop/supervisor.py privileged).
+    elevated = launch.split("${If} $dpElevated == 1", 1)[1].split("Return", 1)[0]
+    assert 'Exec \'"$WINDIR\\explorer.exe" "$SMPROGRAMS\\DownloadPulse.lnk"\'' in elevated
+    assert "pythonw.exe" not in elevated
+    assert launch.index("Call DpElevated") < launch.index("${If} $dpElevated == 1") < launch.index("pythonw.exe")
     assert "!define MUI_FINISHPAGE_RUN_FUNCTION LaunchDownloadPulse" in NSI
     released = re.search(r"Function \.onInstSuccess\n(.*?)FunctionEnd", NSI, re.S).group(1)
     assert "Call ReleaseDataRootLock" in released

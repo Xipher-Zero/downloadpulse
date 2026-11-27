@@ -24148,6 +24148,12 @@
    "owner": "desktop/supervisor.py",
    "criticality": "normal"
   },
+  "desktop.error.privileged": {
+   "category": "toast",
+   "context": "Desktop notification body, under desktop.error.start_failed_title, when the desktop application refuses to start because it was started with administrator rights (Windows: Run as administrator, an elevated process) or as root (Linux, macOS: for example with sudo). 'root' is the Unix superuser's name; 'them' is those rights. The person should start it the ordinary way.",
+   "owner": "desktop/supervisor.py",
+   "criticality": "normal"
+  },
   "error.desktop.quit_only": {
    "category": "error",
    "context": "Refusal of a request to quit the desktop application from its window (sent by the page itself, never shown in normal use): a server installation has no window to quit.",
