@@ -28,8 +28,8 @@
   keeps to its own folder.** On Windows, an installer started with "Run as administrator" also
   started DownloadPulse as administrator. It now starts DownloadPulse with your account's
   ordinary rights. On Windows, macOS and Linux, DownloadPulse now refuses to start as
-  administrator or as root. On Windows and Linux a notice says why; on macOS the reason is
-  written to DownloadPulse's log. Before, such a run could create files that
+  administrator or as root. On Windows and Linux a notice says why; on macOS it simply
+  does not open (it writes nothing anywhere as root, its log included). Before, such a run could create files that
   later stopped DownloadPulse from starting normally. The installer now installs only inside
   your own `AppData\Local` folder, where other accounts on the computer cannot change the
   program. Setup and the uninstaller also no longer delete an `app` folder there that
