@@ -1,14 +1,17 @@
 # Changelog
 
-## [1.0.6] — Development
+## [1.0.6] — A lighter tray on every desktop
+
+The desktop applications were not published at 1.0.5: 1.0.6 is their first release since 1.0.4,
+and it includes everything in the [1.0.5 release notes](https://github.com/Xipher-Zero/downloadpulse/releases/tag/v1.0.5).
 
 ### Changed
 
-- **The Windows and macOS desktop let go of the window's page while it sits in the tray.** As on
+- **The Windows and macOS desktop lets go of the window's page while it sits in the tray.** As on
   Linux, a window hidden for 10 minutes gives up what the application's page holds, and Open
-  brings it back as it was: the same page, filters, place in the list, open Details, Settings or
-  Help section, Quick Add draft and dashboard pulse, with a note of what happened while it was
-  away. There the tray belongs to the window itself, so the window stays and only its page goes;
+  brings it back as it was: the same page, filters, search, place in the list, open Details,
+  Settings or Help section, Quick Add draft and dashboard pulse, opening as soon as it is ready,
+  with a note of what happened while it was away. There the tray belongs to the window itself, so the window stays and only its page goes;
   the tray, the Dock icon and Cmd+Q are unchanged. A window that would lose something is kept as
   it is.
 
