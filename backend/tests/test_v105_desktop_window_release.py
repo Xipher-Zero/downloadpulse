@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from desktop import supervisor  # noqa: E402
-from test_v103_desktop_lifecycle import Native, Running, Words, _stop, _until  # noqa: E402
+from test_v103_desktop_lifecycle import Native, Running, Words, _stop, _until, fake_shell_bundle  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 
@@ -379,6 +379,7 @@ async def test_a_linux_shell_is_given_the_run_scoped_cookie_store_and_a_run_clea
     monkeypatch.setattr(supervisor.Shell, "connect", connected)
     monkeypatch.setattr(supervisor, "shell_data_home", lambda: tmp_path / "data-home")
     (tmp_path / "data-home" / supervisor.APP_ID).mkdir(parents=True)      # the shell's data home exists, as installed
+    fake_shell_bundle(tmp_path / "shell")                                 # the shell's resources, as installed
     window = supervisor.Window(processes=Owner(), paths={"shell": tmp_path / "shell"}, root=tmp_path, port=1)
     await window.spawn(0)
     runtime = tmp_path / "desktop-runtime"
@@ -414,6 +415,7 @@ async def test_a_symlinked_credential_folder_on_relaunch_refuses_the_shell_and_k
     monkeypatch.setattr(supervisor, "shell_data_home", lambda: tmp_path / "data-home")
     monkeypatch.setattr(supervisor, "clear_cookie_store", lambda runtime: None)
     (tmp_path / "data-home" / supervisor.APP_ID).mkdir(parents=True)
+    fake_shell_bundle(tmp_path / "shell")                                 # the shell's resources, as installed
     window = supervisor.Window(processes=Owner(), paths={"shell": tmp_path / "shell"}, root=tmp_path, port=1)
     await window.spawn(0)
     assert len(spawned) == 1
@@ -451,6 +453,7 @@ async def test_three_releases_and_relaunches_through_the_real_process_owner_leav
 
     shell_dir = tmp_path / "shell"
     shell_dir.mkdir()
+    fake_shell_bundle(shell_dir)
     binary = supervisor.shell_binary_path(shell_dir)
     binary.write_text(FAKE_SHELL.format(python=sys.executable), encoding="utf-8")
     binary.chmod(0o755)

@@ -592,8 +592,24 @@ def test_the_supervisors_backend_never_takes_a_clients_address_from_a_forwarding
 
 # ── the real supervisor: SIGTERM, and a start that fails ────────────────────
 
+def fake_shell_bundle(shell_dir: Path) -> Path:
+    """The shell's resources.neu, as packaging/desktop/assemble.py builds it,
+    from the repository's configuration and stand-in icons."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dp_assemble", ROOT / "packaging" / "desktop" / "assemble.py")
+    assemble = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(assemble)
+    (shell_dir / "resources" / "icons").mkdir(parents=True, exist_ok=True)
+    (shell_dir / "neutralino.config.json").write_bytes((ROOT / "desktop" / "shell" / "neutralino.config.json").read_bytes())
+    for name in supervisor.SHELL_BUNDLE_FILES:
+        if name.endswith(".png"):
+            (shell_dir / name).write_bytes(b"\x89PNG stand-in " + name.encode())
+    return assemble.shell_bundle(shell_dir)
+
+
 FAKE_SHELL = """#!{python}
-# A stand-in native shell: it exports its credential where Neutralino does and
+# A stand-in native shell: it exports its credential where Neutralino does,
+# gives its access key once (Neutralino's one-time globals, from its bundle) and
 # answers every native call, recording each; SIGTERM ends it (as its handler).
 import asyncio, json, os, sys
 from pathlib import Path
@@ -620,8 +636,17 @@ async def main():
             await sock.send_str(json.dumps({{"id": call["id"], "data": {{"success": True}}}}))
         return sock
 
+    given = []
+
+    async def globals_(request):
+        token = "" if given else "t"
+        given.append(token)
+        return web.Response(text=f"var NL_TOKEN='{{token}}';var NL_RESMODE='bundle';",
+                            content_type="application/javascript")
+
     app = web.Application()
     app.router.add_get("/", native)
+    app.router.add_get("/__neutralino_globals.js", globals_)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -644,6 +669,7 @@ class Supervisor:
         self.tmp, self.mode = tmp_path, mode
         layout = tmp_path / "layout"
         (layout / "desktop" / "shell" / "resources" / "icons").mkdir(parents=True)
+        fake_shell_bundle(layout / "desktop" / "shell")
         (layout / "backend").symlink_to(BACKEND)
         (layout / "frontend").symlink_to(ROOT / "frontend")
         shell = layout / "desktop" / "shell" / "downloadpulse-shell"

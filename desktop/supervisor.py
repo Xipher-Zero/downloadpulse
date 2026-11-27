@@ -13,7 +13,10 @@ It owns, and only owns, what a desktop process needs and DownloadPulse does not:
 * the native window, tray and notices: a Neutralino process whose page is the
   backend's own loopback interface, with no native token or library injected
   into it; the supervisor alone holds Neutralino's exported credential and
-  calls its allow-listed native methods. On Linux the tray and the notices are
+  calls its allow-listed native methods. The shell reads its resources from
+  its bundle only (``shell_bundle``), and the supervisor takes the one-time
+  access key Neutralino would give its first asker (``Shell._take_globals``).
+  On Linux the tray and the notices are
   the desktop's own session-bus interfaces instead (``SessionBus``), and so is
   opening the running instance again;
 * Show in folder: a completed download the window's page asked to see, as the
@@ -49,6 +52,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import signal
 import sys
 import time
@@ -688,11 +692,39 @@ class Shell:
                     raise RuntimeError(f"the native shell ended during start ({owned.process.returncode})") from None
                 if time.monotonic() > deadline:
                     raise TimeoutError("the native shell exported no credential") from None
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.05)   # soon after export: its key is taken next (_take_globals)
         self.token = str(info["nlToken"])
+        await self._take_globals(int(info["nlPort"]), deadline)
         self.ws = await self.session.ws_connect(
             f"ws://127.0.0.1:{int(info['nlPort'])}?connectToken={info['nlConnectToken']}")
         asyncio.ensure_future(self._receive())
+
+    async def _take_globals(self, port: int, deadline: float) -> None:
+        """Neutralino gives its access key (``NL_TOKEN``) once, to whoever
+        first asks for ``/__neutralino_globals.js`` (tokenSecurity
+        ``one-time``). The window never asks (no globals are injected into
+        its page), so the supervisor asks first and discards the answer: no
+        other program, and no web page, can then have the key. The answer
+        must carry the key the shell exported (none: someone else took it)
+        and say the shell serves its resource bundle (``NL_RESMODE``), never
+        its folder. Anything else fails the start (the shell is ended)."""
+        try:
+            async with self.session.get(f"http://127.0.0.1:{port}/__neutralino_globals.js",
+                                        timeout=max(1.0, deadline - time.monotonic())) as response:
+                body = await response.text() if response.status == 200 else ""
+        except Exception as exc:  # noqa: BLE001 -- no answer is the same answer: not taken
+            body = ""
+            logger.error("the native shell's access key could not be taken: %s", exc or type(exc).__name__)
+        token = re.search(r"var NL_TOKEN='([^']*)';", body)
+        mode = re.search(r"var NL_RESMODE='([^']*)';", body)
+        if token is None or token.group(1) != self.token:
+            logger.error("the native shell's access key was %s; the shell is ended",
+                         "taken by another program first" if token is not None else "not taken")
+            raise PermissionError("the native shell's access key was not taken by DownloadPulse")
+        if mode is None or mode.group(1) != "bundle":
+            logger.error("the native shell serves %s, not its resource bundle; the shell is ended",
+                         f"its {mode.group(1)}" if mode is not None else "an unknown resource mode")
+            raise PermissionError("the native shell does not serve its resource bundle")
 
     async def _receive(self) -> None:
         async for message in self.ws:
@@ -1260,6 +1292,54 @@ def shell_binary_path(shell_dir: Path, platform: str = sys.platform) -> Path:
     return shell_dir / "downloadpulse-shell"
 
 
+# The shell's resources: one Neutralino bundle (an asar archive, built by
+# packaging/desktop/assemble.py ``shell_bundle``) holding its configuration and
+# the icons it loads, and nothing else. Neutralino reads a bundle's files only
+# by their names in its header, so its little HTTP server can serve nothing
+# outside it; started on its folder instead (Neutralino's directory mode), it
+# would serve any file the account can read.
+SHELL_BUNDLE = "resources.neu"
+SHELL_BUNDLE_FILES = ("neutralino.config.json", "resources/icons/app.png", "resources/icons/tray.png",
+                      "resources/icons/trayTemplate.png")
+
+
+def shell_bundle(shell_dir: Path) -> Path:
+    """The shell's bundle, once proven whole: a regular file whose asar
+    header names every file of SHELL_BUNDLE_FILES within the file. Neutralino
+    falls back to directory mode, silently, when it cannot read its bundle;
+    so a missing or unreadable one refuses the shell (``RuntimeError``)."""
+    import stat
+    import struct
+    path = shell_dir / SHELL_BUNDLE
+    try:
+        with open(path, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("not a regular file")
+            size = os.fstat(handle.fileno()).st_size
+            four, pickle, _payload, length = struct.unpack("<4I", handle.read(16))
+            if four != 4 or not 0 < length <= pickle - 8 <= size - 16:
+                raise ValueError("not an asar header")
+            tree = json.loads(handle.read(pickle - 8)[:length].decode("utf-8"))
+        for name in SHELL_BUNDLE_FILES:
+            node = tree
+            for part in name.split("/"):
+                node = node["files"][part]
+            if 16 + (pickle - 8) + int(node["offset"]) + int(node["size"]) > size:
+                raise ValueError(f"{name} lies outside the file")
+    except (OSError, ValueError, KeyError, TypeError, struct.error) as exc:
+        raise RuntimeError(f"the native shell's resource bundle {path} is missing or unreadable "
+                           f"({type(exc).__name__}: {exc}); the shell is not started") from None
+    return path
+
+
+def shell_argv(binary: Path, shell_dir: Path, port: int) -> list[str]:
+    """The native shell's command line, the same on every system: its
+    resources from its bundle (``shell_bundle``, checked first), never its
+    folder (``--load-dir-res``); its page, the backend's own interface."""
+    shell_bundle(shell_dir)
+    return [str(binary), f"--path={shell_dir}", "--res-mode=bundle", f"--url=http://127.0.0.1:{port}/"]
+
+
 # What the window's view shows before its page paints, in the interface's mode
 # (op ``appearance``): Linux through linux-background.patch, Windows through
 # WebView2's documented default-background override (AARRGGBB). An unknown
@@ -1766,8 +1846,7 @@ class Window:
             runtime = self.root / "desktop-runtime"
             private_directory(runtime)
             env["DOWNLOADPULSE_COOKIE_STORE"] = str(runtime / COOKIE_STORE)
-        argv = [str(binary), f"--path={self.paths['shell']}", "--load-dir-res",
-                f"--url=http://127.0.0.1:{self.port}/"]
+        argv = shell_argv(binary, self.paths["shell"], self.port)
         if relaunch:
             argv += relaunch_arguments(self.geometry)
         owned = await self.processes.spawn(SHELL_ID, argv, env=env)

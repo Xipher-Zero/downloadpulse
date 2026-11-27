@@ -316,14 +316,18 @@ def test_the_flatpak_builds_the_shell_from_the_pinned_commit_with_the_linux_patc
     assert sources[1] == {"type": "patch", "path": "../neutralino/linux-gtk-main-thread.patch", "options": ["-p1"]}
     assert sources[2] == {"type": "patch", "path": "../neutralino/linux-cookie-store.patch", "options": ["-p1"]}
     assert sources[3] == {"type": "patch", "path": "../neutralino/linux-background.patch", "options": ["-p1"]}
-    assert sources[4] == {"type": "file", "path": "../neutralino/linux-gtk-main-thread.patch"}
-    assert sources[5] == {"type": "file", "path": "../neutralino/linux-cookie-store.patch"}
-    assert sources[6] == {"type": "file", "path": "../neutralino/linux-background.patch"}
+    # 1.0.8: the loopback server's boundary, shared with macOS, applied last.
+    assert sources[4] == {"type": "patch", "path": "../neutralino/shell-server-boundary.patch", "options": ["-p1"]}
+    assert sources[5] == {"type": "file", "path": "../neutralino/linux-gtk-main-thread.patch"}
+    assert sources[6] == {"type": "file", "path": "../neutralino/linux-cookie-store.patch"}
+    assert sources[7] == {"type": "file", "path": "../neutralino/linux-background.patch"}
+    assert sources[8] == {"type": "file", "path": "../neutralino/shell-server-boundary.patch"}
     # Its provenance (build-macos.sh's schema), recorded in the installed BUILD-INFO.json
     # only once the installed executable is the binary it names.
     provenance = modules["neutralino"]["build-commands"][-1]
     assert f'"commit": "{NEUTRALINO_COMMIT}"' in provenance and "sha256sum linux-gtk-main-thread.patch" in provenance
     assert "sha256sum linux-cookie-store.patch" in provenance and "sha256sum linux-background.patch" in provenance
+    assert "sha256sum shell-server-boundary.patch" in provenance
     assert "sha256sum /app/lib/neutralino/downloadpulse-shell" in provenance
     record = next(c for c in modules["downloadpulse"]["build-commands"] if "BUILD-INFO.json" in c)
     commands = modules["downloadpulse"]["build-commands"]
@@ -342,17 +346,19 @@ def test_each_patch_is_the_one_its_recipes_pin_and_each_recipe_verifies_the_comm
     digests = {name: hashlib.sha256((here / name).read_bytes()).hexdigest()
                for name in ("linux-gtk-main-thread.patch", "linux-cookie-store.patch", "linux-background.patch",
                             "macos-main-thread-shutdown.patch",
-                            "macos-frame-theme.patch")}
+                            "macos-frame-theme.patch", "shell-server-boundary.patch")}
     build, source = (here / "build-macos.sh").read_text(encoding="utf-8"), (here / "source.sh").read_text(encoding="utf-8")
     assert f"PATCH_SHA256={digests['macos-main-thread-shutdown.patch']}" in build
     assert f"FRAME_PATCH_SHA256={digests['macos-frame-theme.patch']}" in build
-    assert build.index('git -C "$work/src" apply "$here/$PATCH"') < build.index('git -C "$work/src" apply "$here/$FRAME_PATCH"')
+    assert f"SERVER_PATCH_SHA256={digests['shell-server-boundary.patch']}" in build
+    assert build.index('git -C "$work/src" apply "$here/$PATCH"') < build.index('git -C "$work/src" apply "$here/$FRAME_PATCH"') \
+        < build.index('git -C "$work/src" apply "$here/$SERVER_PATCH"')
     for name, digest in digests.items():
         assert f"{digest}  $here/{name}" in source
     for script in (build, source):
         assert f"COMMIT={NEUTRALINO_COMMIT}" in script and '[ "$(git -C "$work/src" rev-parse HEAD)" = "$COMMIT" ]' in script
     # Each patch keeps to its own system: reviewable apart.
-    linux, cookies, background, macos, frame = ((here / name).read_text(encoding="utf-8") for name in digests)
+    linux, cookies, background, macos, frame, _server = ((here / name).read_text(encoding="utf-8") for name in digests)
     assert "dispatch_sync" not in linux and "pthread_main_np" in macos and "g_main_context_is_owner" not in macos
     # The cookie store: Linux-only (webview.h's GTK path), named by the supervisor, nothing persistent unless named.
     assert 'std::getenv("DOWNLOADPULSE_COOKIE_STORE")' in cookies and "webkit_cookie_manager_set_persistent_storage" in cookies

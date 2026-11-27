@@ -9,7 +9,8 @@ any Python 3.12; it builds the one layout every desktop package carries:
                             used is recorded in BUILD-INFO.json)
     <out>/backend/ <out>/frontend/static/   the application, unchanged
     <out>/desktop/          the supervisor + the Neutralino shell (pinned v6.10.0,
-                            hash-checked) + its derived icons
+                            hash-checked) + its derived icons; the shell's
+                            configuration and icons in its resources.neu bundle
     <out>/tools/            the bundled native tools (``--tools``: the WS3/WS4
                             recipe outputs, copied as built)
     <out>/backend/usenet/   the bundled Usenet service (``--usenet``): SABnzbd's
@@ -35,6 +36,7 @@ import platform
 import re
 import shutil
 import ssl
+import struct
 import subprocess
 import sys
 import tarfile
@@ -154,6 +156,36 @@ def apply_usenet_patch(version: str, into: Path) -> dict:
 def copytree(source: Path, target: Path) -> None:
     shutil.copytree(source, target, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "tests", "node_modules"))
+
+
+def shell_bundle(shell: Path) -> Path:
+    """The native shell's resources as Neutralino's bundle, ``resources.neu``
+    (an asar archive: its header names each file's size and offset), holding
+    the files the supervisor names (desktop/supervisor.py SHELL_BUNDLE_FILES:
+    the shell's configuration and the icons it loads). The loose
+    configuration is then removed, so the shell has nothing to serve from
+    its folder (the supervisor starts it on the bundle only)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dp_supervisor", ROOT / "desktop" / "supervisor.py")
+    supervisor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(supervisor)
+    tree, blobs, offset = {"files": {}}, [], 0
+    for name in supervisor.SHELL_BUNDLE_FILES:
+        data = (shell / name).read_bytes()
+        node = tree
+        *folders, leaf = name.split("/")
+        for folder in folders:
+            node = node["files"].setdefault(folder, {"files": {}})
+        node["files"][leaf] = {"size": len(data), "offset": str(offset)}
+        blobs.append(data)
+        offset += len(data)
+    header = json.dumps(tree, separators=(",", ":")).encode("ascii")
+    header += b" " * (-len(header) % 4)            # asar's 4-byte alignment, as JSON whitespace
+    target = shell / supervisor.SHELL_BUNDLE
+    target.write_bytes(struct.pack("<4I", 4, len(header) + 8, len(header) + 4, len(header)) + header + b"".join(blobs))
+    supervisor.shell_bundle(shell)                 # the bundle the supervisor will accept
+    (shell / "neutralino.config.json").unlink()
+    return target
 
 
 def icons(shell: Path) -> None:
@@ -405,6 +437,7 @@ def main() -> int:
         copytree(args.icons, out / "desktop" / "shell" / "resources" / "icons")
     else:
         icons(out / "desktop" / "shell")
+    shell_bundle(out / "desktop" / "shell")
     if args.tools:
         copytree(args.tools, out / "tools")
     for item in LEGAL:

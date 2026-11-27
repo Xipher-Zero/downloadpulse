@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The macOS native shell: Neutralino 6.10.0 built from its pinned source (the
-# tag's commit, verified) with DownloadPulse's macOS patch (its digest checked),
+# tag's commit, verified) with DownloadPulse's macOS patches (their digests checked),
 # for this Mac's architecture, with Apple's clang and CMake.
 #   build-macos.sh <out-dir>
 # Writes <out-dir>/downloadpulse-shell and <out-dir>/PROVENANCE.json (source
@@ -19,6 +19,9 @@
 # the title bar drawn transparent over the window background, set to the
 # theme's frame colour, in its dark or light appearance (the supervisor calls
 # it with the page's theme); the traffic lights and dragging stay the system's.
+# shell-server-boundary.patch (Linux's too): the shell's loopback server serves
+# only paths inside its document root, answers only a Host of 127.0.0.1 or
+# localhost at its own port, and refuses a WebSocket carrying an Origin.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$1"; out="$(cd "$1" && pwd)"
@@ -28,20 +31,25 @@ PATCH=macos-main-thread-shutdown.patch
 PATCH_SHA256=1a7ccc59b73a080c5f288fd5995071adeec5888318a57af21a5638d3af7c9896
 FRAME_PATCH=macos-frame-theme.patch
 FRAME_PATCH_SHA256=209ba63df784de9344708e4755d3b689ae177a1b1b095222bdf0f588c114430f
+SERVER_PATCH=shell-server-boundary.patch
+SERVER_PATCH_SHA256=73ea8318c48ddfaed2d3782ac9a69f7a6af571cdf8468bf0c7cd178b480e48be
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 git clone -q --depth 1 --branch "$TAG" https://github.com/neutralinojs/neutralinojs.git "$work/src"
 [ "$(git -C "$work/src" rev-parse HEAD)" = "$COMMIT" ] || { echo "$TAG is not $COMMIT"; exit 1; }
 echo "$PATCH_SHA256  $here/$PATCH" | shasum -a 256 -c -
 echo "$FRAME_PATCH_SHA256  $here/$FRAME_PATCH" | shasum -a 256 -c -
+echo "$SERVER_PATCH_SHA256  $here/$SERVER_PATCH" | shasum -a 256 -c -
 git -C "$work/src" apply "$here/$PATCH"
 git -C "$work/src" apply "$here/$FRAME_PATCH"
+git -C "$work/src" apply "$here/$SERVER_PATCH"
 arch="$(uname -m)"; name="neutralino-mac_$([ "$arch" = arm64 ] && echo arm64 || echo x64)"
 cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="$arch" >/dev/null
 cmake --build "$work/build" -j "$(sysctl -n hw.ncpu)" >/dev/null
 install -m 755 "$work/src/bin/$name" "$out/downloadpulse-shell"
 digest="$(shasum -a 256 "$out/downloadpulse-shell" | cut -d' ' -f1)"
 cat > "$out/PROVENANCE.json" <<JSON
-{"neutralino": "$TAG", "commit": "$COMMIT", "patches": {"$PATCH": "$PATCH_SHA256", "$FRAME_PATCH": "$FRAME_PATCH_SHA256"},
+{"neutralino": "$TAG", "commit": "$COMMIT", "patches": {"$PATCH": "$PATCH_SHA256", "$FRAME_PATCH": "$FRAME_PATCH_SHA256",
+              "$SERVER_PATCH": "$SERVER_PATCH_SHA256"},
  "architecture": "$arch", "cmake": "$(cmake --version | head -1)", "compiler": "$(clang --version | head -1)",
  "sdk": "$(xcrun --show-sdk-version)", "binary_sha256": "$digest"}
 JSON

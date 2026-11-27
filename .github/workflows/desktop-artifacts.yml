@@ -734,7 +734,7 @@ jobs:
           mkdir -p "$src/windows-tools/nsis"
           read -r digest nsis url < <(grep -E '^[0-9a-f]{64}  nsis-3\.11-src\.tar\.bz2 ' packaging/desktop/windows/official.sha256)
           curl -sSfL -o "$src/windows-tools/nsis/$nsis" "$url"; echo "$digest  $src/windows-tools/nsis/$nsis" | sha256sum -c -
-          # The native shell: Neutralino 6.10.0 at its pinned commit, DownloadPulse's two patches, how each is built.
+          # The native shell: Neutralino 6.10.0 at its pinned commit, DownloadPulse's patches, how each is built.
           bash packaging/desktop/neutralino/source.sh "$src/neutralino"
           # The Usenet service (SABnzbd) at the image's pin, hash-checked (its macOS patch is in the DownloadPulse archive).
           v="$(sed -n 's/^ARG USENET_SERVICE_VERSION=//p' Dockerfile)"; d="$(sed -n 's/^ARG USENET_SERVICE_SHA256=//p' Dockerfile)"
@@ -744,7 +744,7 @@ jobs:
           for required in $windows_sources "$src/macos-and-flatpak-tools/7z2501-src.tar.xz" \
                           "$src/neutralino/BUILD.md" "$src/neutralino/linux-gtk-main-thread.patch" "$src/neutralino/linux-cookie-store.patch" "$src/neutralino/linux-background.patch" \
                           "$src/neutralino/macos-main-thread-shutdown.patch" \
-                          "$src/neutralino/macos-frame-theme.patch"; do
+                          "$src/neutralino/macos-frame-theme.patch" "$src/neutralino/shell-server-boundary.patch"; do
             [ -s "$required" ] || { echo "missing from the corresponding source: $required"; exit 1; }
           done
           [ -z "$windows_sources" ] || tail -n +2 "$windows_sources" | while read -r package pkgver url; do

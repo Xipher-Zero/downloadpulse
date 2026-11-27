@@ -2,6 +2,16 @@
 
 ## [1.0.8] — Development
 
+### Security
+
+- **The desktop window's local helper no longer serves files from your disk or hands out its
+  access key.** The small server the desktop window runs on your own computer could be asked,
+  by any program on it, for any file your account can read; and the key that controls the
+  window went to the first program that asked for it. On Windows, macOS and Linux, that server
+  now holds only the window's own settings and icons, and DownloadPulse takes the key itself
+  as soon as the window starts. On macOS and Linux, the server also answers only requests made
+  to it by its own address, so a web page cannot reach it.
+
 ### Fixed
 
 - **Windows: downloads whose names contain capital letters are no longer lost when they finish.**

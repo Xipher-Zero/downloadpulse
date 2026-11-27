@@ -1,0 +1,54 @@
+diff --git a/server/neuserver.cpp b/server/neuserver.cpp
+index 519b2c9..7ff238d 100644
+--- a/server/neuserver.cpp
++++ b/server/neuserver.cpp
+@@ -236,6 +236,14 @@ void handleMessage(websocketpp::connection_hdl handler, websocketserver::message
+ 
+ void handleHTTP(websocketpp::connection_hdl handler) {
+     websocketserver::connection_ptr con = server->get_con_from_hdl(handler);
++    // DownloadPulse: answer only requests addressed to this loopback server
++    // itself (a DNS-rebound name is refused).
++    string port = to_string(settings::getOptionForCurrentMode("port").get<int>());
++    string host = con->get_request_header("Host");
++    if(host != "127.0.0.1:" + port && host != "localhost:" + port) {
++        con->set_status(websocketpp::http::status_code::forbidden);
++        return;
++    }
+     string resource = con->get_resource();
+     string documentRoot = neuserver::getDocumentRoot();
+     if(!documentRoot.empty()) {
+@@ -301,6 +309,12 @@ bool handleValidate(websocketpp::connection_hdl handler) {
+         return false;
+     }
+ 
++    // DownloadPulse: no web page may open the native connection (a browser
++    // always sends Origin; the supervisor sends none).
++    if(!con->get_request_header("Origin").empty()) {
++        return false;
++    }
++
+     if(!__hasConnectToken(url)) {
+         return false;
+     }
+diff --git a/server/router.cpp b/server/router.cpp
+index 59f2e97..b96f11b 100644
+--- a/server/router.cpp
++++ b/server/router.cpp
+@@ -448,6 +448,17 @@ router::Response serve(string path, const fs::FileReaderOptions &fileReaderOptio
+     // Ignore query params
+     path = path.substr(0, path.find("?"));
+ 
++    // DownloadPulse: only a path inside the document root is served -- no
++    // ".." segment (encoded or not, it is decoded above), no backslash.
++    string root = neuserver::getDocumentRoot() + "/";
++    bool inside = path.compare(0, root.size(), root) == 0 && path.find('\\') == string::npos;
++    for(const string &segment: helpers::split(path, '/')) {
++        inside = inside && segment != "..";
++    }
++    if(!inside) {
++        return router::Response {websocketpp::http::status_code::forbidden, "text/plain", ""};
++    }
++
+     bool isClientLibrary = regex_match(path, regex(".*neutralino.js$"));
+     bool isGlobalsRequest = regex_match(path, regex(".*__neutralino_globals.js$"));
+ 

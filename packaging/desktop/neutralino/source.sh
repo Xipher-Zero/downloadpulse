@@ -20,9 +20,10 @@ sha256sum -c - <<SUMS
 91f21bdc838dad5df8588ad8d2ad62caff06e17a0b4d00ab370fb24204bae5ed  $here/linux-background.patch
 1a7ccc59b73a080c5f288fd5995071adeec5888318a57af21a5638d3af7c9896  $here/macos-main-thread-shutdown.patch
 209ba63df784de9344708e4755d3b689ae177a1b1b095222bdf0f588c114430f  $here/macos-frame-theme.patch
+73ea8318c48ddfaed2d3782ac9a69f7a6af571cdf8468bf0c7cd178b480e48be  $here/shell-server-boundary.patch
 SUMS
 cp "$here/linux-gtk-main-thread.patch" "$here/linux-cookie-store.patch" "$here/linux-background.patch" "$here/macos-main-thread-shutdown.patch" \
-   "$here/macos-frame-theme.patch" \
+   "$here/macos-frame-theme.patch" "$here/shell-server-boundary.patch" \
    "$here/build-macos.sh" "$out/"
 cat > "$out/BUILD.md" <<EOF
 # The DownloadPulse desktop shell: Neutralino 6.10.0 (MIT, LICENSE)
@@ -30,15 +31,21 @@ cat > "$out/BUILD.md" <<EOF
 Source: \`neutralinojs-6.10.0-$COMMIT.tar.gz\`, the tree of tag $TAG at commit $COMMIT
 (https://github.com/neutralinojs/neutralinojs).
 
-- **Linux (the Flatpak):** \`linux-gtk-main-thread.patch\`, \`linux-cookie-store.patch\` then \`linux-background.patch\` applied
+- **Linux (the Flatpak):** \`linux-gtk-main-thread.patch\`, \`linux-cookie-store.patch\`, \`linux-background.patch\`
+  then \`shell-server-boundary.patch\` applied
   (\`patch -p1\`), then, in the
   GNOME 49 SDK: \`mkdir -p stubs && ar rc stubs/libstdc++fs.a\` (an empty archive for the legacy
   library Neutralino's CMake names), \`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
   -DCMAKE_EXE_LINKER_FLAGS=-L\$PWD/stubs\`, \`cmake --build build\`; \`bin/neutralino-linux_x64\` is
   installed as the shell (packaging/desktop/flatpak/net.downloadpulse.desktop.yml, module neutralino).
-- **macOS (the DMG):** \`build-macos.sh\` -- \`macos-main-thread-shutdown.patch\` then
-  \`macos-frame-theme.patch\` applied, CMake Release build with Apple's clang for the Mac's
-  architecture.
+- **macOS (the DMG):** \`build-macos.sh\` -- \`macos-main-thread-shutdown.patch\`,
+  \`macos-frame-theme.patch\` then \`shell-server-boundary.patch\` applied, CMake Release build with
+  Apple's clang for the Mac's architecture.
 - **Windows:** the released \`neutralino-win_x64.exe\` of $TAG, unmodified.
+- **Every system:** the shell runs on its \`resources.neu\` bundle (its configuration and icons,
+  packaging/desktop/assemble.py), never on its folder (\`--load-dir-res\`).
+  \`shell-server-boundary.patch\` (Linux, macOS): the shell's loopback server serves only paths
+  inside its document root, answers only a Host of 127.0.0.1 or localhost at its own port, and
+  refuses a WebSocket that carries an Origin (a web page's).
 EOF
 ls -la "$out"
