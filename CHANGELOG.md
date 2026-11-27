@@ -2,6 +2,16 @@
 
 ## [1.0.8] — Development
 
+### Fixed
+
+- **Windows: downloads whose names contain capital letters are no longer lost when they finish.**
+  Since 1.0.0, on Windows, a download made through aria2 (HTTP and HTTPS links, debrid links and
+  the update installer) was rejected by DownloadPulse's final check when its file name, or a
+  folder below the download folder, had a capital letter, and the finished file was deleted.
+  The check now compares the file DownloadPulse planned with the file aria2 wrote by their real
+  names. This also stopped the in-app update on Windows: on 1.0.7 or older, install 1.0.8 once
+  from downloadpulse.net; later updates work from inside the app.
+
 ## [1.0.7] — Updates that explain themselves and install over a running app
 
 ### Changed

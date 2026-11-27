@@ -1320,11 +1320,14 @@ class Aria2Executor:
     def _observation(self, handle, native, *, exact_redaction: bool = True):
         if str(native.gid) != self._handle_gid(handle):
             raise self._failure(Category.EXECUTOR_PROTOCOL_VIOLATION)
-        expected = str(self._target(str(handle.correlation["target"])))
+        target = self._target(str(handle.correlation["target"]))
+        expected = str(target)
         reported = {str(item.get("path") or "") for item in (native.files or [])} - {""}
         if os.name == "nt":
             # aria2 on Windows reports its paths with "/" separators, and Windows
             # paths compare without case: the same file, never a ".." resolved.
+            # Only the comparison ignores case; the file reported below keeps
+            # the target's own name (1.0.8: core compares it exactly).
             expected = ntpath.normcase(expected)
             reported = {ntpath.normcase(path.replace("/", "\\")) for path in reported}
         if reported - {expected}:
@@ -1339,7 +1342,7 @@ class Aria2Executor:
             return result
         # The one file this job was authorized to produce, relative to the
         # download root; core verifies it before believing it.
-        relative = Path(expected).relative_to(Path(self.configuration.local_root).resolve()).as_posix()
+        relative = target.relative_to(Path(self.configuration.local_root).resolve()).as_posix()
         return ExecutionObservation(result.handle, result.state, result.progress, result.error, result.activity,
                                     result.controls, MaterializationResult(MaterializationKind.FILE, (
                                         MaterializedEntry(relative, result.progress.total_bytes or None),)))
