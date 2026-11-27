@@ -1358,7 +1358,14 @@ def shell_argv(binary: Path, shell_dir: Path, port: int) -> list[str]:
 # What the window's view shows before its page paints, in the interface's mode
 # (op ``appearance``): Linux through linux-background.patch, Windows through
 # WebView2's documented default-background override (AARRGGBB). An unknown
-# mode, or none, leaves each platform's own.
+# mode, or none, leaves each platform's own. macOS has no such entry: the
+# window's own background is already the frame's colour (window.setFrameTheme,
+# macos-frame-theme.patch), but the WKWebView over it paints its own opaque
+# default until the page draws, and the shell offers no way to set that
+# without a further native patch. A parked window (Windows and macOS) is shown
+# with its parked page already drawn in the mode (bring_forward), so neither
+# platform's default shows there. Windows' value is the mode at the shell's
+# spawn: a parked shell keeps it.
 SHELL_BACKGROUNDS = {"dark": ("#000000", "FF000000"), "light": ("#ffffff", "FFFFFFFF")}
 
 
@@ -2009,8 +2016,8 @@ class Window:
         return self.parked
 
     async def unpark(self, channel: "Channel") -> None:
-        """Open on a parked window: its page goes back to the application,
-        which takes the kept state; the window is then shown as a hidden one is."""
+        """Open on a parked window, once it is shown (``bring_forward``): its
+        page goes back to the application, which takes the kept state."""
         arrived = (await channel.ask("unpark")).get("parked")
         self.parked = False
         logger.info("the parked window's page goes back to the application%s",
@@ -2071,9 +2078,6 @@ async def _serve(channel: Channel, words: Words, backend, native, window: Window
         # can); a shown one is raised.
         nonlocal applied_frame, asked_release
         asked_release = None                    # shown again: a late answer to an earlier prompt is no answer
-        if window.parked:
-            # Its page goes back to the application; the window is shown as a hidden one is.
-            await window.unpark(channel)
         if window.released:
             logger.info("%s: the window was released; opening it again", why)
             if await window.relaunch():
@@ -2087,6 +2091,11 @@ async def _serve(channel: Channel, words: Words, backend, native, window: Window
         window.hidden, window.hidden_since = False, None
         for method in methods:
             await window.call(method)
+        if window.parked:
+            # Shown first, with the parked page still in it (it repaints at the
+            # window's real size, in its mode); only then does that page go back
+            # to the application, which so never loads in a hidden window (1.0.8).
+            await window.unpark(channel)
 
     try:
         while backend.process.returncode is None:

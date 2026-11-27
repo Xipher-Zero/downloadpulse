@@ -213,8 +213,20 @@ class DashboardContractTests(unittest.TestCase):
         # 1.0.14: a handheld limit of 0 draws no row but still asks for one.
         self.assertIn("api('GET',`/torrents?limit=${Math.max(1,recentLimit)}&order=queue`)", owner)
         self.assertIn("items=recentLimit===0?[]:", owner)
-        self.assertIn("#content.dashboard-active {\n  overflow-y: hidden;\n}", dashboard_css)
-        self.assertIn("#view-dashboard:is(.active, [data-dp-motion-outgoing]) {", dashboard_css)
+        # 1.0.8 (WS-D1): one structure block. The view is the content box
+        # (never a 100vh recomputation), Download Activity the flexible member
+        # from 780px (flex basis 0, its 220px floor), so the page scrolls only
+        # below that floor (dashboard-workspace-fit.spec.js).
+        self.assertEqual(dashboard_css.count("#content.dashboard-active {"), 1)
+        self.assertNotIn("#content.dashboard-active {\n  overflow-y: hidden;\n}", dashboard_css)
+        self.assertIn("#content.dashboard-active { overflow-y: auto; }", dashboard_css)
+        self.assertIn("#view-dashboard:is(.active, [data-dp-motion-outgoing]) {\n  display: flex !important;\n"
+                      "  flex-direction: column;\n  height: auto;\n  min-height: 100%;\n  overflow: visible;\n}",
+                      dashboard_css)
+        self.assertNotIn("100vh", dashboard_css)
+        self.assertIn("#view-dashboard #dash-activity-card.dp-dashboard-activity { flex: 1 1 0; min-height: 220px; }",
+                      dashboard_css)
+        self.assertNotIn("#view-dashboard .dp-dashboard-activity { min-height: 315px; }", dashboard_css)
         self.assertIn("#dash-activity-card {", dashboard_css)
 
 if __name__ == "__main__":

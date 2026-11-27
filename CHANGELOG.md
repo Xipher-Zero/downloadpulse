@@ -65,6 +65,17 @@
   The changelog endpoint (`/api/changelog`) serves only the copy shipped with DownloadPulse,
   and the desktop app no longer downloads an update it learned about before checks were
   turned off.
+- **The Dashboard fits its window without a scrollbar.** At many window sizes (the desktop
+  app's default window among them) Download Activity reached below the window and the whole
+  Dashboard scrolled. Download Activity now takes exactly the room the cards and Quick Add
+  leave, at every size, and only its own list scrolls. Only a window too short for even a
+  small Download Activity (under about 680 pixels high) lets the page scroll again, so nothing
+  is cut off. This is the same in the desktop app on every system and in a browser.
+- **Windows and macOS: reopening the desktop window from the tray no longer flashes a dark
+  square.** After the window had been closed to the tray for a while, opening it again could
+  show a black square in its corner for about a second (seen with Dark mode). The window now
+  appears first, filled with your mode's background, and DownloadPulse then loads into it. That
+  background follows the mode you use now, even if you changed it while the window was closed.
 
 ## [1.0.7] — Updates that explain themselves and install over a running app
 

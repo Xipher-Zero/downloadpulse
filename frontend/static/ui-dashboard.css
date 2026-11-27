@@ -1,16 +1,6 @@
-/* DownloadPulse v1.0.11 Dashboard presentation. */
-
-#content.dashboard-active {
-  overflow-y: hidden;
-}
-
-#view-dashboard:is(.active, [data-dp-motion-outgoing]) {
-  display: flex !important;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-}
+/* DownloadPulse v1.0.11 Dashboard presentation. The Dashboard's structure
+   (the view, its sections and Download Activity's share) has one block: the
+   "Dashboard structure" block below. */
 
 /* ── Primary dashboard metrics ─────────────────────────────────────────── */
 #view-dashboard .dash-hero {
@@ -288,8 +278,6 @@ body.light #view-dashboard .t-table thead th { background: #f7f9fd; }
 }
 
 @media (max-width: 1179px) {
-  #content.dashboard-active { overflow-y: auto; }
-  #view-dashboard:is(.active, [data-dp-motion-outgoing]) { height: auto; overflow: visible; }
   #view-dashboard .dash-hero { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
@@ -306,17 +294,34 @@ body.light #view-dashboard .t-table thead th { background: #f7f9fd; }
 /* Canonical Dashboard structural calibration. The rules below previously lived
    in an adjacent migration stylesheet. They remain in the same source order. */
 
+/* ── Dashboard structure (1.0.8) ─────────────────────────────────────────
+   The Dashboard is one workspace, as Downloads is: the view fills the content
+   box #content owns (the shell's remaining height and its inset; on a
+   handheld, above the dock: ui-shell-mobile.css), never a viewport height recomputed
+   here. The KPI strip and Quick Add keep their own heights; from 780px
+   Download Activity, last, is the flexible member: it takes exactly what they
+   leave (flex basis 0, so the rows it holds never size it), its table
+   viewport scrolls inside it, and the rows drawn are the ones that viewport
+   shows (dashboardRecentLimit, app.js). So at every desktop geometry the page
+   itself does not scroll. Its floor is DASHBOARD_ACTIVITY_FLOOR below
+   (220px: the card's header, the table head and two rows); only a window too
+   short for the strip, Quick Add and that floor -- under about 676px of
+   window height (126px of shell and inset, 330px of strip and Quick Add,
+   measured 1024-1920px wide) -- grows the view past the content box, and then the page
+   scrolls (#content), nothing clipped. Below 780px the handheld block below
+   keeps its own composition (Download Activity takes what is left, the view
+   at least the content box). */
 #content.dashboard-active { overflow-y: auto; }
 #view-dashboard:is(.active, [data-dp-motion-outgoing]) {
   display: flex !important;
   flex-direction: column;
   height: auto;
+  min-height: 100%;
   overflow: visible;
 }
-/* At least the window's workspace from 780px; on a handheld, at least the
-   content box #content leaves above the dock (the handheld block below). */
 @media (min-width: 780px) {
-  #view-dashboard:is(.active, [data-dp-motion-outgoing]) { min-height: calc(100vh - var(--dp-shell-header) - 24px); }
+  /* DASHBOARD_ACTIVITY_FLOOR */
+  #view-dashboard #dash-activity-card.dp-dashboard-activity { flex: 1 1 0; min-height: 220px; }
 }
 
 #view-dashboard .dash-hero {
@@ -545,12 +550,12 @@ body.light #view-dashboard #dash-hero.dash-hero--flatline .dp-card-spark { color
   font-weight: 650;
 }
 
+/* Below 780px Download Activity sizes from its content (the handheld block
+   below); from 780px it is the Dashboard's flexible member (the structure
+   block above). */
 #view-dashboard .dp-dashboard-activity {
   flex: 1 0 auto;
   overflow: hidden;
-}
-@media (min-width: 780px) {
-  #view-dashboard .dp-dashboard-activity { min-height: 315px; }
 }
 #view-dashboard .dp-dashboard-activity .card-header {
   min-height: 70px;

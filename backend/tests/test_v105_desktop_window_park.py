@@ -5,13 +5,16 @@ The supervisor's loop (``_serve`` with ``park``): a window hidden for
 RELEASE_AFTER_SECONDS whose page answers that nothing would be lost is
 released by parking its page (op ``park``) -- no shell ends and none is
 started; the current shell's end is still Quit; Open (the tray's, a connected
-browser's, or the system showing the window itself) sends the page back
-(op ``unpark``) and shows the window as a hidden one is; a page that could not
+browser's, or the system showing the window itself) shows the window as a
+hidden one is, with the parked page still in it, and only then sends the page
+back (op ``unpark``, 1.0.8: the application never loads in a hidden window);
+a page that could not
 be told keeps the window as it was, and it is asked again. The backend's half
 (``desktop_control``): only a window just released is parked, the kept state
 is dropped when no page will take it, and the parked page's wait ends on Open,
-at once when nothing is parked, and after its bound otherwise. The page's half
-is pinned in its sources.
+at once when nothing is parked, and after its bound otherwise, an unanswered
+wait carrying the mode in force. The page's half is pinned in its sources: its
+colour on its own root, inline, with its color-scheme.
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ class Channel(ReleaseChannel):
 
     def __init__(self, *args, parks=True, **kwargs):
         super().__init__(*args, **kwargs)
-        self.parks = parks
+        self.parks, self.order = parks, []        # ``order``: unpark and the shell's calls, as they happen
 
     async def ask(self, op, **fields):
         if op == "park":
@@ -45,6 +48,7 @@ class Channel(ReleaseChannel):
             return {"parked": self.parks}
         if op == "unpark":
             self.asked.append((op, fields))
+            self.order.append(op)
             return {"parked": True}
         return await super().ask(op, **fields)
 
@@ -52,8 +56,8 @@ class Channel(ReleaseChannel):
 class VisibleShell:
     """The shell's calls; ``visible``: what window.isVisible answers."""
 
-    def __init__(self, shell):
-        self.inner, self.visible = shell, False
+    def __init__(self, shell, order):
+        self.inner, self.visible, self.order = shell, False, order
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -61,13 +65,14 @@ class VisibleShell:
     async def call(self, method, data=None):
         if method == "window.isVisible":
             return {"returnValue": self.visible}
+        self.order.append(method)
         return await self.inner.call(method, data)
 
 
 async def _serving(channel):
     window = TestWindow()
     await window.spawn(0)
-    window.shell = VisibleShell(window.shell)
+    window.shell = VisibleShell(window.shell, channel.order)
     native = Tray()
     task = asyncio.ensure_future(supervisor._serve(channel, Words(), Running(), native, window,
                                                    release_allowed=True, park=True))
@@ -98,6 +103,50 @@ async def test_a_hidden_window_is_parked_on_its_pages_answer_and_open_brings_its
             [("window.show", None), ("window.focus", None)]
     finally:
         await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_open_shows_a_parked_window_before_its_page_is_sent_back(quick):
+    """1.0.8 (WS-D1): the window is shown first, with the parked page still in
+    it (it repaints at the window's real size), and only then is ``unpark``
+    asked, so the application never loads in a hidden window."""
+    channel = Channel(releasable=True)
+    window, native, task = await _serving(channel)
+    try:
+        await window.events.put(("windowClose", None))
+        assert await _until(lambda: window.parked, 5)
+        del channel.order[:]
+        await window.events.put(("trayMenuItemClicked", {"id": "open"}))
+        assert await _until(lambda: "unpark" in channel.order, 5)
+        assert channel.order == ["window.show", "window.focus", "unpark"]
+        assert not window.parked and not window.hidden
+    finally:
+        await _stop(task)
+
+
+@pytest.mark.asyncio
+async def test_a_parked_window_shown_by_the_system_is_shown_before_its_page_is_sent_back(quick, monkeypatch):
+    monkeypatch.setattr(supervisor.sys, "platform", "darwin")              # the Dock: macOS's alone
+    channel = Channel(releasable=True)
+    window, native, task = await _serving(channel)
+    try:
+        await window.events.put(("windowClose", None))
+        assert await _until(lambda: window.parked, 5)
+        del channel.order[:]
+        window.shell.visible = True
+        assert await _until(lambda: "unpark" in channel.order, 5)
+        assert channel.order.index("window.show") < channel.order.index("unpark")
+    finally:
+        await _stop(task)
+
+
+def test_bring_forward_shows_the_window_before_it_unparks_and_keeps_the_relaunch_path():
+    source = (ROOT / "desktop" / "supervisor.py").read_text(encoding="utf-8")
+    block = source.split("    async def bring_forward(why: str) -> None:", 1)[1].split("\n    try:\n", 1)[0]
+    shown = block.index("for method in methods:\n            await window.call(method)")
+    assert block.index("if window.released:") < shown < block.index("await window.unpark(channel)")
+    assert block.count("await window.unpark(channel)") == 1
+    assert "if await window.relaunch():" in block                          # Linux: released, launched again
 
 
 @pytest.mark.asyncio
@@ -211,10 +260,20 @@ def test_the_parked_page_and_the_route_are_the_windows_alone():
     block = routes.split('@router.get("/desktop/parked")', 1)[1].split("\n\n\n", 1)[0]
     assert "_require_window(request)" in block and "wait_unparked()" in block
     assert '_sse_window_only("desktop_park"' in routes
+    assert "if owner and not opened:" in block and '"mode": mode if mode in {"dark", "light"} else None' in block
     html = (STATIC / "desktop-parked.html").read_text(encoding="utf-8")
     assert '<script src="/desktop-parked.js"></script>' in html and "<script>" not in html and "<style" not in html
+    # Its colour is the page's own, on its root, inline, with the matching color-scheme (dark until
+    # its script, in the head, sets the mode before the body is parsed).
+    assert '<html lang="en" style="background:#000000;color-scheme:dark">' in html
+    assert html.index('<script src="/desktop-parked.js"></script>') < html.index("</head>")
     script = (STATIC / "desktop-parked.js").read_text(encoding="utf-8")
     assert "fetch('/api/desktop/parked'" in script and "window.location.replace('/')" in script
+    assert "BACKGROUNDS = Object.freeze({dark: '#000000', light: '#ffffff'})" in script
+    assert "root.style.background = BACKGROUNDS[mode];" in script and "root.style.colorScheme = mode;" in script
+    assert "show(window.location.hash.slice(1));" in script and "if (body) show(body.mode);" in script
+    css = (STATIC / "desktop-parked.css").read_text(encoding="utf-8")
+    assert "#000" not in css and "#fff" not in css                          # never only the stylesheet's colour
     state = (STATIC / "ui-window-state.js").read_text(encoding="utf-8")
     assert "window.location.replace('/desktop-parked.html' + (light ? '#light' : '#dark'));" in state
     app = (STATIC / "app.js").read_text(encoding="utf-8")

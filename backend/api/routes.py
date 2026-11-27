@@ -1549,10 +1549,23 @@ async def desktop_window_parked(request: Request):
     """The parked page's wait (Windows and macOS: a released window keeps its
     shell and lets its page go): ``open`` once Open asks for the application
     again (the page then goes back to it), else after a bounded wait (the page
-    asks again). The window's own page alone."""
+    asks again). An unanswered wait carries ``mode``: the interface's mode now
+    (the window's account's appearance, its one owner), which the parked page
+    then shows, so on Open the window is shown in the mode in force; null when
+    it cannot be read (and on Open, which never waits for it). The window's
+    own page alone."""
     _require_window(request)
     from application.desktop_control import wait_unparked
-    return {"open": await wait_unparked()}
+    from services import account_appearance
+    opened = await wait_unparked()
+    mode = None
+    owner = account_appearance.appearance_owner(getattr(request.state, "principal", None), get_settings())
+    if owner and not opened:
+        try:
+            mode = (await asyncio.wait_for(account_appearance.load(owner), 2.0))["mode"]
+        except Exception as exc:  # noqa: BLE001 -- the page keeps the mode it shows
+            logger.warning("the parked window's mode is unknown: %s", type(exc).__name__)
+    return {"open": opened, "mode": mode if mode in {"dark", "light"} else None}
 
 
 # ── Show in folder: a completed download in the desktop's file manager ─────
