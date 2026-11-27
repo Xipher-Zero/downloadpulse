@@ -150,8 +150,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker logout docker.io || true
+          # Docker Hub is stored under more than one name (docker.io, index.docker.io and
+          # https://index.docker.io/v1/): log out of each, then drop any entry left behind.
+          for registry in docker.io index.docker.io https://index.docker.io/v1/; do
+            docker logout "$registry" >/dev/null 2>&1 || true
+          done
           config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if [ -f "$config" ]; then
+            jq 'if (.auths | type) == "object" then .auths |= with_entries(select(.key | test("docker\\.io") | not)) else . end' "$config" > "$config.tmp" \
+              && mv "$config.tmp" "$config"
+          fi
           if [ -f "$config" ] && jq -e '(.auths // {}) | keys | any(test("docker\\.io"))' "$config" >/dev/null; then
             echo "Docker Hub credentials are still present in $config"
             exit 1
@@ -506,8 +514,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker logout docker.io || true
+          # Docker Hub is stored under more than one name (docker.io, index.docker.io and
+          # https://index.docker.io/v1/): log out of each, then drop any entry left behind.
+          for registry in docker.io index.docker.io https://index.docker.io/v1/; do
+            docker logout "$registry" >/dev/null 2>&1 || true
+          done
           config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if [ -f "$config" ]; then
+            jq 'if (.auths | type) == "object" then .auths |= with_entries(select(.key | test("docker\\.io") | not)) else . end' "$config" > "$config.tmp" \
+              && mv "$config.tmp" "$config"
+          fi
           if [ -f "$config" ] && jq -e '(.auths // {}) | keys | any(test("docker\\.io"))' "$config" >/dev/null; then
             echo "Docker Hub credentials are still present in $config"
             exit 1

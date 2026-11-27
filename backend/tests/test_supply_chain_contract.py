@@ -433,7 +433,12 @@ def test_docker_hub_token_leaves_the_runner_before_any_test_code():
     first_test_code = min(i for i, step in enumerate(steps) if re.search(r"\bnpm\b|npx|playwright", step.get("run", "")))
     assert logout < first_test_code
     for name in ("image.yml", "browser-runtime.yml"):
-        assert _text(name).count("docker logout docker.io") >= 1, name
+        text = _text(name)
+        # Every name Docker Hub is stored under is logged out, and a leftover entry is dropped
+        # (1.0.8: docker.io alone left https://index.docker.io/v1/ behind on the runners).
+        assert "for registry in docker.io index.docker.io https://index.docker.io/v1/; do" in text, name
+        assert 'docker logout "$registry"' in text, name
+        assert 'if (.auths | type) == "object" then .auths |= with_entries(select(.key | test("docker\\\\.io") | not)) else . end' in text, name
 
     image = [step["name"] for step in _yaml("image.yml")["jobs"]["publish"]["steps"]]
     assert image.index("Build test image") < image.index("Log out of Docker Hub") < image.index("Smoke test image")
