@@ -39,6 +39,14 @@
   signs their result. The Docker Hub sign-in used for downloading base images is removed before
   any test code runs. Dependabot now also proposes updates for the browser test tools and the
   Docker base images.
+- **The browser extension checks that it is talking to your DownloadPulse before it sends its
+  connection key or your sign-in on a site.** Another program listening at DownloadPulse's
+  address on your computer (for example on a shared computer while DownloadPulse is not
+  running) could otherwise receive the extension's connection key and, for a video or a
+  captured download, your sign-in on that site. DownloadPulse now proves to the extension that
+  it is the one that issued its key, without the key being sent. Extension 1.0.8 asks for that
+  proof once DownloadPulse offers it and sends nothing to a server that fails it. Earlier
+  extensions keep working unchanged.
 
 ### Fixed
 

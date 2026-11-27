@@ -141,6 +141,55 @@ Wayland desktops may flash the taskbar instead). A server has no window: it
 answers `{"desktop": false}` and changes nothing, and the extension opens the
 page in a tab, as it does for an older DownloadPulse (`404`).
 
+## 2c. The server's identity (1.0.8)
+
+Whatever listens at the address an extension knows (another program on
+`127.0.0.1:8095` while DownloadPulse is stopped, on a shared computer) would
+otherwise receive the browser token and, for a video or a captured download,
+the person's sign-in on that site. A server that advertises
+`capabilities.identity: 1` in its session answer proves it is the one that
+issued the token, before the extension sends the token again:
+
+`POST /api/browser/v1/identity` `{token_id, nonce, origin}` (no credential) →
+`{protocol, identity: 1, proof}`, where
+
+```
+proof = hex(HMAC-SHA256(key = SHA-256(raw token), message =
+        "downloadpulse.browser/identity/1" "\n" nonce "\n" origin))
+```
+
+- `nonce`: 22-128 characters of `A-Z a-z 0-9 _ -`, fresh for every check (the
+  extension sends 128 random bits). `origin`: the server's address exactly as the
+  extension knows it (`http://127.0.0.1:8095`), no path.
+- **The key** is the token's own digest -- the `verifier` this server already
+  keeps (`accounts.browser_identity_proof`): nothing new is issued at pairing or
+  stored, the pairing answer is unchanged, and a browser connected before 1.0.8
+  can be proven too. The verifier never leaves the server; the token is never
+  sent for the check.
+- **Answers.** `404 browser.identity.unknown` for no such browser token (an
+  Integration token's ID too). A revoked browser token is still proven: the
+  extension then sends the token and hears its own `401`, as before.
+  `422 browser.identity.invalid` for a malformed nonce or origin.
+- **Limits** (`429 browser.identity.rate_limited`). Proofs: 600 per browser token
+  per 10 minutes, counted for that token alone. Refusals (malformed, unknown token
+  ID): 60 per peer and 6000 installation-wide per 10 minutes. Behind a reverse
+  proxy, or through the desktop's Local Port, every browser shares one peer, so a
+  stranger's flood is never counted against a real browser's proofs: refusing one
+  needs its token ID, a random UUID.
+- **What the extension does** (1.0.8): once a session answer said
+  `identity: 1`, it checks before the first request carrying that token every
+  30 seconds or after any failed request, and again before every send carrying
+  a sign-in. A failed check sends nothing (the server counts as unreachable).
+  It sends a sign-in to DownloadPulse on this computer only once that has
+  proven itself. An extension that does not know the route never calls it; a
+  server that never advertised it keeps working as before, except that no
+  sign-in goes to an unproven loopback address.
+- **What it does not cover.** The origin is the extension's claim: the server
+  does not check it against its own address (a reverse proxy or a container's
+  port mapping would make that wrong). A listener that can itself reach the
+  real server could relay a check. Over HTTPS the certificate already proves
+  the server; the check matters for plain HTTP, above all on this computer.
+
 ## 3. Disconnecting
 
 | Who | Route |

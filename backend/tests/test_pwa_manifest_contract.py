@@ -109,8 +109,9 @@ def test_exactly_the_install_files_become_public():
     assert INSTALL_PATHS <= PUBLIC_PATHS
     assert PUBLIC_PATHS - INSTALL_PATHS == {
         "/api/health", "/api/version", "/api/avatar", "/api/auth/status", "/login", "/auth/oidc/start", "/auth/oidc/callback",
-        # Starting and polling a browser pairing (BROWSER_CLIENT.md): no credential exists yet.
-        "/api/browser/v1/pairings", "/api/browser/v1/pairings/poll"}
+        # Starting and polling a browser pairing (BROWSER_CLIENT.md): no credential exists yet;
+        # a connected browser's identity check of the server, made before it sends its token.
+        "/api/browser/v1/pairings", "/api/browser/v1/pairings/poll", "/api/browser/v1/identity"}
     for path in ("/", "/index.html", "/favicon-32.png", "/icons/dp/manifest.json", "/api/settings", "/api/stats"):
         assert is_public_path(path) is False
 

@@ -16,6 +16,9 @@ PUBLIC_PATHS = frozenset(
         # credential exists yet; the poll's secret device code is the proof.
         "/api/browser/v1/pairings",
         "/api/browser/v1/pairings/poll",
+        # A connected browser's identity check of this server, made before it
+        # sends its token (``api.browser_routes.prove_browser_identity``).
+        "/api/browser/v1/identity",
         "/login",
         "/auth/oidc/start",
         "/auth/oidc/callback",

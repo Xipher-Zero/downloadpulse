@@ -216,6 +216,9 @@ async def test_a_browser_pairs_on_approval_and_collects_its_token_exactly_once(w
         await asyncio.sleep(2.1)   # the poll interval (RFC 8628 ``interval``)
         status, collected = await extension(world, "POST", "/api/browser/v1/pairings/poll", json=poll)
         assert collected["status"] == "approved" and collected["token"].startswith("dp_")
+        # The poll hands over the token and nothing else secret: the identity proof's key is the
+        # token's own digest (1.0.8), so nothing more is issued, and an older extension is unchanged.
+        assert set(collected) == {"status", "token", "token_id", "label"}
         assert (await extension(world, "POST", "/api/browser/v1/pairings/poll", json=poll))[1] == {"status": "expired"}
 
         for origin in (FIREFOX, CHROMIUM):
@@ -225,6 +228,7 @@ async def test_a_browser_pairs_on_approval_and_collects_its_token_exactly_once(w
                 "account": {"display_name": "Administrator"},
                 "capabilities": {"sources": ["links", "magnet", "metalink", "nzb", "nzb_link", "torrent"],
                                  "controls": ["pause", "resume"], "withdraw": True, "estimate": True,
+                                 "identity": 1,
                                  "cookies": {"max_count": 300, "max_bytes": 32768, "sources": ["links"]},
                                  "referrer": {"max_length": MAX_REFERRER, "sources": ["links"]}},
                 "appearance": {"mode": "dark", "dark_palette": "downloadpulse-dark", "light_palette": "downloadpulse-light"}}
@@ -451,6 +455,100 @@ def test_a_person_moved_to_readonly_stops_every_browser_of_theirs_at_once(tmp_pa
                 await owner.close()
 
         asyncio.run(demote())
+    finally:
+        server.stop()
+
+
+def _expected_proof(token: str, nonce: str, origin: str) -> str:
+    """The extension's own computation (src/shared/identity.ts), written out independently."""
+    import hashlib
+    import hmac
+
+    key = hashlib.sha256(token.encode()).digest()
+    return hmac.new(key, f"downloadpulse.browser/identity/1\n{nonce}\n{origin}".encode(), hashlib.sha256).hexdigest()
+
+
+def test_the_server_proves_it_issued_a_browser_token_without_the_token_being_sent(tmp_path):
+    """1.0.8 (WS-A4, EXT-2): ``POST /api/browser/v1/identity`` answers, with no credential, a
+    proof only the server that issued the token can compute -- bound to the browser's nonce and
+    to the address the browser knows. Unknown and Integration tokens get none; a revoked one
+    still does (the extension then hears the token's own refusal); a page cannot ask. Answers are
+    rate-limited per known token, refusals per peer: a flood of refusals never costs a browser its proof. Its own backend: the module's shared one spends its pairing budget."""
+    server = Server(tmp_path)
+    try:
+        server.wait_ready()
+
+        async def scenario():
+            owner = await Person.sign_in(server, "owner")
+            try:
+                token, token_id = await pair(server, owner, "Proving browser")
+                origin = "http://127.0.0.1:8095"
+                nonce = "n0nce-AAAAAAAAAAAAAAAAAAAA"
+                ask = {"token_id": token_id, "nonce": nonce, "origin": origin}
+                status, body = await extension(server, "POST", "/api/browser/v1/identity", json=ask)
+                assert status == 200, body
+                assert body == {"protocol": "downloadpulse.browser/1", "identity": 1,
+                                "proof": _expected_proof(token, nonce, origin)}
+                # Bound to the nonce and to the address: another of either is another proof.
+                other_nonce = (await extension(server, "POST", "/api/browser/v1/identity",
+                                               json={**ask, "nonce": "B" * 22}))[1]["proof"]
+                assert other_nonce == _expected_proof(token, "B" * 22, origin) != body["proof"]
+                elsewhere = (await extension(server, "POST", "/api/browser/v1/identity",
+                                             json={**ask, "origin": "https://dp.example.com"}))[1]["proof"]
+                assert elsewhere == _expected_proof(token, nonce, "https://dp.example.com") != body["proof"]
+                # Neither the token nor its verifier is in the answer, and none was asked for.
+                assert token not in json.dumps(body)
+                # Malformed: a short nonce, a line break smuggled in, an address with a path.
+                for bad in ({**ask, "nonce": "short"}, {**ask, "nonce": nonce + "\nx"},
+                            {**ask, "origin": origin + "/x"}, {**ask, "origin": "javascript:alert(1)"}):
+                    status, refused = await extension(server, "POST", "/api/browser/v1/identity", json=bad)
+                    assert status == 422 and refused["code"] == "browser.identity.invalid", (bad, refused)
+                # No such browser token; an Integration token's ID is not a browser's.
+                status, refused = await extension(server, "POST", "/api/browser/v1/identity",
+                                                  json={**ask, "token_id": "00000000-0000-4000-8000-000000000000"})
+                assert status == 404 and refused["code"] == "browser.identity.unknown"
+                _, integration = await owner.call("POST", f"/api/accounts/{DEFAULT_INTEGRATION_ID}/tokens",
+                                                  json={"label": "readarr"})
+                status, refused = await extension(server, "POST", "/api/browser/v1/identity",
+                                                  json={**ask, "token_id": integration["id"]})
+                assert status == 404 and refused["code"] == "browser.identity.unknown"
+                # A web page cannot ask (extension origins only, as for every browser route).
+                status, _ = await extension(server, "POST", "/api/browser/v1/identity", json=ask,
+                                            origin="https://evil.example")
+                assert status == 403
+                # Revoked: still proven, so the extension sends the token and hears it refused.
+                assert (await extension(server, "DELETE", "/api/browser/v1/session", token))[0] == 200
+                status, body = await extension(server, "POST", "/api/browser/v1/identity", json=ask)
+                assert status == 200 and body["proof"] == _expected_proof(token, nonce, origin)
+                status, body = await extension(server, "GET", "/api/browser/v1/session", token)
+                assert status == 401 and body["code"] == "auth.unauthorized"
+                # Rate limits. One peer (a reverse proxy, the desktop's Local Port: everyone behind it)
+                # floods with unknown token IDs and malformed input: past 60 it is refused, and a
+                # known browser token behind the same peer still gets its proof.
+                other, other_id = await pair(server, owner, "Second browser")
+                async with aiohttp.ClientSession() as http:
+                    async def one(payload):
+                        async with http.post(server.base + "/api/browser/v1/identity", json=payload,
+                                             headers={"Origin": FIREFOX}) as reply:
+                            return reply.status, (await reply.json(content_type=None))
+                    unknown = {**ask, "token_id": "00000000-0000-4000-8000-000000000001"}
+                    flood = [await one(unknown) for _ in range(40)] + [await one({**ask, "nonce": "x"}) for _ in range(40)]
+                    assert {status for status, _ in flood} == {404, 422, 429}
+                    assert flood[-1] == (429, flood[-1][1]) and flood[-1][1]["code"] == "browser.identity.rate_limited"
+                    assert (await one(unknown))[0] == 429 and (await one({**ask, "nonce": "x"}))[0] == 429
+                    status, body = await one({**ask, "token_id": other_id})
+                    assert status == 200 and body["proof"] == _expected_proof(other, nonce, origin)
+                    # A known token's own budget: 600 answers per 10 minutes, for that token alone.
+                    answers = [await one(ask) for _ in range(600)]
+                    limited = [body for status, body in answers if status == 429]
+                    assert limited and all(body["code"] == "browser.identity.rate_limited" for body in limited)
+                    assert {status for status, _ in answers} == {200, 429}
+                    status, body = await one({**ask, "token_id": other_id})
+                    assert status == 200 and body["proof"] == _expected_proof(other, nonce, origin)
+            finally:
+                await owner.close()
+
+        asyncio.run(scenario())
     finally:
         server.stop()
 

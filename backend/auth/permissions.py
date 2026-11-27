@@ -210,6 +210,9 @@ ACTIONS: dict[str, Capability] = {
     # signed-in person; the browser-client API needs a browser token.
     "api.browser_routes.start_browser_pairing": _P,
     "api.browser_routes.poll_browser_pairing": _P,
+    # A connected browser's check that this is the server that issued its token,
+    # made before it sends the token: no credential, the proof is the answer.
+    "api.browser_routes.prove_browser_identity": _P,
     "api.browser_routes.pending_browser_pairing": _BOWN,
     "api.browser_routes.approve_browser_pairing": _BOWN,
     "api.browser_routes.deny_browser_pairing": _BOWN,

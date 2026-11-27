@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -1610,6 +1611,30 @@ async def revoke_token(account_id: str, token_id: str, *, kind: str | None = Non
                  else "A connected browser was disconnected by an Admin"),
                 "account", str(account_id), detail=f"token {row['id']} ({row['label']})"))
         return True
+
+
+# A browser's identity proof (``api.browser_routes.prove_browser_identity``, 1.0.8): what the
+# server signs, in this order, one line each. The nonce and the origin never hold a line break.
+BROWSER_IDENTITY_CONTEXT = "downloadpulse.browser/identity/1"
+
+
+async def browser_identity_proof(token_id: str, nonce: str, origin: str) -> str | None:
+    """Proof that this server is the one that issued browser token ``token_id``:
+    HMAC-SHA256 keyed with that token's verifier (its SHA-256, which the
+    extension computes from the raw token it holds) over the context, the
+    browser's ``nonce`` and the server ``origin`` as the browser knows it. The
+    verifier never leaves here; nothing is stored. Only a browser token is
+    answered for -- a revoked one too, so the extension learns of the
+    revocation from the refusal of the token itself, after the proof. ``None``:
+    no such browser token."""
+    from db.database import get_db
+
+    async with get_db() as db:
+        row = await db.fetchone("SELECT verifier, kind FROM account_tokens WHERE id=?", (str(token_id),))
+    if row is None or str(row["kind"] or "") != TOKEN_KIND_BROWSER:
+        return None
+    message = "\n".join((BROWSER_IDENTITY_CONTEXT, nonce, origin)).encode("utf-8")
+    return hmac.new(bytes.fromhex(str(row["verifier"])), message, hashlib.sha256).hexdigest()
 
 
 async def resolve_token(raw: str) -> tuple[Account, str, str, str] | None:

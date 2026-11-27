@@ -3,7 +3,9 @@
 Three audiences, each fenced by ``auth.permissions``:
 
 - a browser extension with no credential yet: start and poll a pairing
-  (``PUBLIC``; the poll's secret device code is the proof);
+  (``PUBLIC``; the poll's secret device code is the proof); and a connected
+  extension asking this server to prove it is the one that issued its token,
+  before it sends that token (``PUBLIC``: the proof is the answer);
 - a signed-in person: approve or deny a pairing for their OWN account, and
   list or disconnect their own browsers (``BROWSERS_OWN``);
 - a browser token: the browser-client API (``BROWSER_CLIENT``, the only
@@ -17,6 +19,7 @@ routes live under ``/api/account/`` and keep every ordinary protection
 """
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Query, Request
@@ -47,6 +50,21 @@ pairing_start_limiter = DualWindowRateLimiter(per_peer_limit=10, global_limit=64
 # A signed-in person viewing, approving or denying pairings: generous for a
 # person, a ceiling for anything scripted against a session.
 pairing_answer_limiter = DualWindowRateLimiter(per_peer_limit=30, global_limit=600, window_seconds=600)
+
+
+# A connected browser asks for this server's identity proof before it sends its token: about
+# twice a minute while it is in use, and before each send that carries a sign-in. Its answers
+# are counted per browser token, never per peer: behind a reverse proxy, or on the network
+# through the desktop's Local Port, every browser and any stranger share one peer, and a
+# stranger's flood must never refuse a real browser its proof. A stranger who knows no token
+# ID (a random UUID) reaches only the second budget: malformed requests and unknown token IDs,
+# per peer and installation-wide. A real extension sends neither.
+identity_token_limiter = DualWindowRateLimiter(per_peer_limit=600, global_limit=600 * 4096, window_seconds=600,
+                                               max_peers=4096)
+identity_refusal_limiter = DualWindowRateLimiter(per_peer_limit=60, global_limit=6000, window_seconds=600)
+IDENTITY_VERSION = 1
+_IDENTITY_NONCE = re.compile(r"[A-Za-z0-9_-]{22,128}")
+_IDENTITY_ORIGIN = re.compile(r"https?://[A-Za-z0-9.\-\[\]:]{1,2040}")
 
 
 def _pairing_refused(exc: PairingRefused, status: int = 404) -> DisplayError:
@@ -87,6 +105,40 @@ async def poll_browser_pairing(device_code: Annotated[str, Body(embed=True, max_
     """``pending`` | ``slow_down`` | ``denied`` | ``expired`` | ``approved``
     (with the raw token, exactly once)."""
     return await pairing_store.poll(device_code)
+
+
+def _identity_rate_limited() -> DisplayError:
+    return DisplayError(429, "Too many requests; wait a few minutes.",
+                        code="browser.identity.rate_limited", headers={"Retry-After": "60"})
+
+
+@router.post("/browser/v1/identity")
+async def prove_browser_identity(request: Request,
+                                 token_id: Annotated[str, Body(embed=True, max_length=64)] = "",
+                                 nonce: Annotated[str, Body(embed=True, max_length=128)] = "",
+                                 origin: Annotated[str, Body(embed=True, max_length=2048)] = ""):
+    """Prove this server is the one that issued browser token ``token_id``
+    (1.0.8, ``capabilities.identity``), so the extension never hands its token,
+    or a person's sign-in, to something else listening at the address it knows
+    (another program on 127.0.0.1:8095). No credential is sent -- that is the
+    point -- and none is needed: the answer is
+    ``HMAC-SHA256(SHA-256(token), context \\n nonce \\n origin)``
+    (``accounts.browser_identity_proof``), which only a holder of the token or
+    of this server's record of it can compute."""
+    malformed = not _IDENTITY_NONCE.fullmatch(nonce) or not _IDENTITY_ORIGIN.fullmatch(origin)
+    proof = None if malformed else await accounts.browser_identity_proof(token_id, nonce, origin)
+    if proof is None:
+        # Malformed, or no such browser token: counted per peer and installation-wide.
+        if not identity_refusal_limiter.allow(peer_key(request)):
+            raise _identity_rate_limited()
+        if malformed:
+            raise DisplayError(422, "An identity check needs a nonce and the server's address.",
+                               code="browser.identity.invalid")
+        raise DisplayError(404, "Connected browser not found.", code="browser.identity.unknown")
+    # A known browser token's answers: counted for that token alone, whoever else asks.
+    if not identity_token_limiter.allow(token_id):
+        raise _identity_rate_limited()
+    return {"protocol": BROWSER_PROTOCOL, "identity": IDENTITY_VERSION, "proof": proof}
 
 
 @router.get("/account/browser-pairings/{user_code}")
@@ -178,7 +230,10 @@ async def browser_session(request: Request, application: ApplicationService = De
     rows = await accounts.list_tokens(principal.account_id)
     label = next((str(row["label"]) for row in rows if str(row["id"]) == principal.credential_id), "")
     capabilities = {"sources": sorted(BROWSER_SOURCE_KINDS), "controls": ["pause", "resume"],
-                    "withdraw": True, "estimate": True}
+                    "withdraw": True, "estimate": True,
+                    # This server answers ``POST /browser/v1/identity`` (1.0.8): once seen, the
+                    # extension asks for that proof before it sends this token again.
+                    "identity": IDENTITY_VERSION}
     capabilities.update(_request_context_capabilities())
     return {"protocol": BROWSER_PROTOCOL, "token": {"id": principal.credential_id, "label": label},
             "account": {"display_name": principal.display_name},

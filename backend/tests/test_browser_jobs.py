@@ -195,6 +195,7 @@ async def test_the_session_route_names_what_this_server_offers_a_browser(world):
     _, session = await extension(world, "GET", "/api/browser/v1/session", world.tokens["una"])
     assert session["capabilities"] == {"sources": ["links", "magnet", "metalink", "nzb", "nzb_link", "torrent"],
                                        "controls": ["pause", "resume"], "withdraw": True, "estimate": True,
+                                       "identity": 1,
                                        "cookies": {"max_count": 300, "max_bytes": 32768, "sources": ["links"]},
                                        "referrer": {"max_length": 2048, "sources": ["links"]}}
     status, _ = await anonymous(world, "GET", "/api/browser/v1/jobs")
