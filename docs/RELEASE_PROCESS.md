@@ -156,8 +156,10 @@ The image also contains the backend test tree at `/app/tests`: the Dockerfile co
 DownloadPulse's update notice (`backend/application/updates.py`) reads the GitHub release that
 `releases/latest` names — never a draft or a pre-release — and, in the desktop applications,
 offers to download this computer's installer through DownloadPulse, verified against the SHA-256
-GitHub states for that asset. A release therefore carries, attached by the operator (a manual
-step: `release.py` publishes only the release body):
+GitHub states for that asset. The notice shows, in the app, the body of every published release
+newer than the one running (`releases`, at most 10, newest first): each release body is the
+CHANGELOG entry `release.py` publishes, so it is written for the people updating. A release therefore
+carries, attached by the operator (a manual step: `release.py` publishes only the release body):
 
 | Asset | Platform |
 |---|---|
@@ -169,13 +171,17 @@ step: `release.py` publishes only the release body):
 - The names are exact: `X.Y.Z` is the tag without its `v`. A desktop finds its installer by that
   name alone; any other name is not offered.
 - The hash the desktop verifies is the asset's own GitHub `digest` (`sha256:…`), which GitHub
-  computes on upload. An asset without one is not offered (the notice then only links the release);
+  computes on upload. An asset without one is not offered (the notice then only says that the release exists);
   `SHA256SUMS` is never read by the application.
 - The download address is the asset's `browser_download_url` on `github.com` under
   `/Xipher-Zero/downloadpulse/releases/download/`; any other address is refused.
 - An installer is downloaded as an ordinary transfer and is never started by DownloadPulse: once
   verified, the person opens it from Show in folder. A server installation never downloads
   anything; it only says that a newer release exists.
+- The Windows installer updates a running DownloadPulse: it asks, closes it as its own Quit does
+  (the named event `Local\DownloadPulse-Quit`, `desktop/supervisor.py` `QUIT_EVENT`), waits for
+  the data root's lock, replaces the program files and starts it again. A DownloadPulse that does
+  not close (one older than 1.0.7, or one that is stuck) is the person's to Quit: setup offers Retry.
 
 ## Local deployment / acceptance rule
 

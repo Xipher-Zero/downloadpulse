@@ -1445,9 +1445,56 @@ def diagnostics_handler(root: Path, *, rotating: bool = True) -> logging.Handler
     return handler
 
 
+# Windows' own termination request: the installer's (packaging/desktop/windows/
+# installer.nsi) way to close a running DownloadPulse before it replaces its
+# files. A named event in this session's namespace, set by the installer; this
+# process waits on it from a thread of its own.
+QUIT_EVENT = "Local\\DownloadPulse-Quit"
+
+
+class _WindowsQuitEvent:
+    """The named quit event (``QUIT_EVENT``): ``callback`` runs on the loop when
+    it is set. ``close`` lets the waiting thread go and closes both handles."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, callback):
+        import ctypes
+        import threading
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.CreateEventW.restype = wintypes.HANDLE
+        k32.SetEvent.argtypes = [wintypes.HANDLE]
+        k32.ResetEvent.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForMultipleObjects.restype = wintypes.DWORD
+        self.k32 = k32
+        # Manual reset: set once, it stays set until this run ends. A stale set
+        # from an earlier run (the installer set it after that run ended) is cleared.
+        self.quit = k32.CreateEventW(None, True, False, QUIT_EVENT)
+        self.stop = k32.CreateEventW(None, True, False, None)
+        if not self.quit or not self.stop:
+            raise OSError(ctypes.get_last_error(), "CreateEventW")
+        k32.ResetEvent(self.quit)
+        handles = (wintypes.HANDLE * 2)(self.quit, self.stop)
+
+        def wait() -> None:
+            if k32.WaitForMultipleObjects(2, handles, False, 0xFFFFFFFF) == 0:
+                loop.call_soon_threadsafe(callback, "the installer")
+        self.thread = threading.Thread(target=wait, name="windows-quit-event", daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.k32.SetEvent(self.stop)
+        self.thread.join(timeout=2)
+        for handle in (self.quit, self.stop):
+            self.k32.CloseHandle(handle)
+
+
 class Signals:
     """POSIX: SIGTERM, SIGINT and SIGHUP end the run as Quit does, in order,
-    by the run's phase (Windows is unchanged: no handlers):
+    by the run's phase; Windows: the installer's named quit event
+    (``QUIT_EVENT``) does the same:
 
     * ``starting`` -- the first signal cancels the run once, so its own
       ``finally`` ends whatever has started (the shell, then the backend);
@@ -1462,15 +1509,24 @@ class Signals:
     def __init__(self, task: asyncio.Task):
         self.task, self.phase, self.events, self.received = task, "starting", None, None
         self.served = False                         # the run reached its loop: its start succeeded
+        self.windows: _WindowsQuitEvent | None = None
 
     def install(self, loop: asyncio.AbstractEventLoop) -> None:
         if os.name == "nt":
+            try:
+                self.windows = _WindowsQuitEvent(loop, self.signalled)
+            except OSError as exc:
+                # The installer then asks the person to Quit from the tray instead.
+                logger.warning("the installer's quit event is unavailable: %s", exc)
             return
         for name in self.NAMES:
             loop.add_signal_handler(getattr(signal, name), self.signalled, name)
 
     def remove(self, loop: asyncio.AbstractEventLoop) -> None:
         if os.name == "nt":
+            if self.windows is not None:
+                self.windows.close()
+                self.windows = None
             return
         for name in self.NAMES:
             loop.remove_signal_handler(getattr(signal, name))

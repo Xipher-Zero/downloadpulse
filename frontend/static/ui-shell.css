@@ -520,3 +520,92 @@ body.light #runtime-speed-badge {
 @media (max-width: 779px) {
   .view:is(.active, [data-dp-motion-outgoing]) { display: block !important; }
 }
+
+/* The update notice (app.js): "Not now" keeps the footer's far start, the
+   download its far end. The release notes are a title with its chevron (right,
+   closed; down, open), the notes beneath it in their own scrolling area, so the
+   notice never outgrows the window. */
+.dp-modal-dialog.dp-update-dialog {
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+}
+.dp-modal-dialog.dp-update-dialog > :is(.dp-modal-header, .dp-modal-footer) { flex: 0 0 auto; }
+.dp-modal-dialog.dp-update-dialog > .dp-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dp-modal-dialog.dp-update-dialog > .dp-modal-footer:has([data-modal-accept]:not([hidden])) [data-modal-cancel] {
+  order: -1;
+  margin-inline-end: auto;
+}
+.dp-update-notes {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dp-update-notes-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--dp-text-primary, var(--text));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dp-update-notes-toggle:hover .dp-update-notes-title { color: var(--dp-text-primary, var(--text)); }
+.dp-update-notes-toggle:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright, var(--accent));
+  outline-offset: 2px;
+  border-radius: var(--dp-radius-xs, 4px);
+}
+.dp-update-notes-chevron {
+  display: inline-block;
+  font-size: 1.35rem;
+  line-height: 1;
+  color: var(--dp-text-muted, var(--text3));
+  transition: transform .15s ease;
+}
+.dp-update-notes-toggle[aria-expanded="true"] .dp-update-notes-chevron { transform: rotate(90deg); }
+.dp-update-notes-body {
+  min-height: 0;
+  max-height: min(50dvh, 420px);
+  overflow-y: auto;
+  padding: 4px 12px 4px 0;
+  color: var(--dp-text-secondary, var(--text2));
+  font-size: .9rem;
+  line-height: 1.5;
+}
+.dp-update-notes-body[hidden] { display: none !important; }
+.dp-update-notes-body:focus-visible {
+  outline: 2px solid var(--dp-accent-purple-bright, var(--accent));
+  outline-offset: 2px;
+  border-radius: var(--dp-radius-xs, 4px);
+}
+.dp-update-notes-release + .dp-update-notes-release {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--dp-divider, var(--border));
+}
+.dp-update-notes-release :is(h3, h4) {
+  margin: 0 0 6px;
+  color: var(--dp-text-primary, var(--text));
+  font-size: .95rem;
+  font-weight: 700;
+}
+.dp-update-notes-release h4 { margin-top: 10px; font-size: .85rem; }
+.dp-update-notes-release p { margin: 0 0 8px; }
+.dp-update-notes-release ul { margin: 0 0 8px; padding-left: 18px; }
+.dp-update-notes-release li + li { margin-top: 6px; }
+.dp-update-notes-release strong { color: var(--dp-text-primary, var(--text)); }
+@media (prefers-reduced-motion: reduce) {
+  .dp-update-notes-chevron { transition: none; }
+}

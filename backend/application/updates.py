@@ -1,8 +1,10 @@
 """The latest DownloadPulse release: its one fetcher and its one record.
 
 ``refresh`` is the only reader of GitHub's ``releases/latest`` (called by the
-scheduler's one update loop, ``core.scheduler.update_check_loop``); the record
-it keeps lives in this process's memory and nothing else holds a copy. Core
+scheduler's one update loop, ``core.scheduler.update_check_loop``), and, when
+an update is available, of ``releases`` for the notes of every release newer
+than this one (``notes``); what it keeps lives in this process's memory and
+nothing else holds a copy. Core
 never learns what an update is: an update's installer reaches it only as an
 ordinary one-file Metalink4 (``metalink``) that the desktop route submits
 through the canonical submission seam, carrying the release's SHA-256, which
@@ -23,6 +25,7 @@ record, publishes nothing and logs its sanitized reason.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import platform as _platform
@@ -59,8 +62,14 @@ INSTALLERS = {
     "linux": ("DownloadPulse-{version}-linux-x86_64.flatpak", {"x86_64", "amd64"}),
 }
 
+# The notes shown in the update notice: each release newer than this one, up to
+# the latest, newest first, as its Markdown body. Bounded: a notice is not an archive.
+NOTES_RELEASES = 10
+NOTES_CHARS = 20_000
+
 _record: dict | None = None
 _etag = ""
+_notes: list[dict] = []
 # The update download a click started: (version, transfer id). The update's own
 # fact, so a second click returns that transfer while it still serves.
 _download: tuple[str, int] | None = None
@@ -174,6 +183,56 @@ async def _fetch(etag: str) -> tuple[int, str, object]:
             return reply.status, str(reply.headers.get("ETag") or ""), body
 
 
+async def _fetch_releases() -> object:
+    """One GET of ``releases`` (the newest first): the body, or ``None``."""
+    headers = {"Accept": "application/vnd.github+json"}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        async with session.get(f"{REPOSITORY_API_URL}/releases",
+                               params={"per_page": str(NOTES_RELEASES * 2)}, headers=headers) as reply:
+            return await reply.json(content_type=None) if reply.status == 200 else None
+
+
+def _note(version: str, body) -> dict:
+    return {"version": version, "notes": str(body or "").strip()[:NOTES_CHARS]}
+
+
+async def _newer_notes(record: dict, latest_body) -> list[dict]:
+    """The notes of each published release newer than this one and no newer
+    than the latest, newest first. When the list cannot be read, the latest
+    release's own notes."""
+    current, latest = record["current"], record["latest"]
+    fallback = [_note(latest, latest_body)]
+    try:
+        releases = await _fetch_releases()
+    except Exception as exc:
+        logger.warning("Release notes check failed: %s", sanitize_exception(exc))
+        return fallback
+    if not isinstance(releases, list):
+        return fallback
+    found: dict[str, dict] = {}
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+            continue
+        version = normalize_version_tag(release.get("tag_name") or "")
+        if (parse_version(version) is None or not is_version_newer(version, current)
+                or is_version_newer(version, latest) or version in found):
+            continue
+        found[version] = _note(version, release.get("body"))
+    found.setdefault(latest, fallback[0])
+    newest_first = functools.cmp_to_key(
+        lambda a, b: -1 if is_version_newer(a["version"], b["version"])
+        else 1 if is_version_newer(b["version"], a["version"]) else 0)
+    return sorted(found.values(), key=newest_first)[:NOTES_RELEASES]
+
+
+def notes() -> list[dict]:
+    """The kept release notes (empty when no update is available)."""
+    current = record()
+    if current is None or not current.get("update_available"):
+        return []
+    return [dict(item) for item in _notes]
+
+
 def _signal(record: dict | None) -> tuple:
     if record is None:
         return (None,)
@@ -187,7 +246,7 @@ async def refresh() -> tuple[dict, str] | None:
     (304 Not Modified keeps the record as it was), ``None`` on failure. A
     changed record is announced as ``update_status`` (a bare signal: the page
     reads the record again)."""
-    global _record, _etag
+    global _record, _etag, _notes
     try:
         status, etag, body = await _fetch(_etag if _record is not None else "")
         if status == 304 and _record is not None:
@@ -200,7 +259,8 @@ async def refresh() -> tuple[dict, str] | None:
         # The reason stays in the server log; the record keeps the last good check.
         logger.warning("Update check failed: %s", sanitize_exception(exc))
         return None
-    previous, _record, _etag = _record, built, etag
+    kept = await _newer_notes(built, body.get("body")) if built["update_available"] else []
+    previous, _record, _etag, _notes = _record, built, etag, kept
     if _signal(previous) != _signal(built):
         from services.event_bus import publish
         await publish("update_status", {})
@@ -226,6 +286,7 @@ def projection(*, download_offered: bool) -> dict:
         "published_at": current["published_at"],
         "installer": {"name": installer["name"], "size": installer["size"]} if installer else None,
         "download_offered": bool(installer and download_offered and current["update_available"]),
+        "notes": notes(),
     }
 
 

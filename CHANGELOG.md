@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.7] — Updates that explain themselves and install over a running app
+
+### Changed
+
+- **The update notice shows what is new, inside DownloadPulse.** Its **Release notes** title
+  opens, beneath it, the notes of each release newer than yours (up to the last ten), newest
+  first, in their own scrolling area; nothing opens a web page. **Not now** sits at the left of the footer, the
+  download at the right.
+- **The Windows installer updates a running DownloadPulse.** It asks, closes DownloadPulse as its
+  own Quit does, installs the update and starts it again; downloads in progress continue where
+  they left off. A DownloadPulse that does not close is yours to Quit from the tray, and setup
+  offers Retry instead of stopping.
+
+### Known limitations
+
+- **The first update to 1.0.7 on Windows still asks you to Quit.** A DownloadPulse older than
+  1.0.7 cannot be closed by the installer, which asks at once: Quit it from the tray, then
+  choose Retry. Updates after 1.0.7 close it by themselves.
+- **The new notice appears from the next update.** The notice is part of the version you run, so
+  the release notes inside it are shown when you are offered an update after 1.0.7.
+
 ## [1.0.6] — A lighter tray on every desktop
 
 The desktop applications were not published at 1.0.5: 1.0.6 is their first release since 1.0.4,

@@ -73,11 +73,26 @@ class GitHub:
         return answer
 
 
+class Releases:
+    """A fake ``releases`` list (the release notes): its one answer, counting the asks."""
+
+    def __init__(self, answer):
+        self.answer, self.asked = answer, 0
+
+    async def __call__(self):
+        self.asked += 1
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
 @pytest.fixture(autouse=True)
 def fresh(monkeypatch):
     monkeypatch.setattr(updates, "_record", None)
     monkeypatch.setattr(updates, "_etag", "")
     monkeypatch.setattr(updates, "_download", None)
+    monkeypatch.setattr(updates, "_notes", [])
+    monkeypatch.setattr(updates, "_fetch_releases", Releases(None))
     monkeypatch.setattr(updates, "read_version", lambda: "1.0.3")
     monkeypatch.setattr(config, "_settings", config.AppSettings())
     monkeypatch.delenv("DOWNLOADPULSE_DESKTOP", raising=False)

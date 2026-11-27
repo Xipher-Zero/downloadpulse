@@ -10,7 +10,7 @@ on:
   push:
     branches:
       - main
-      - '1.0.6'
+      - '1.0.7'
       - 'staging/**'
     paths:
       - 'packaging/aria2/**'

@@ -94,6 +94,8 @@ VIAddVersionKey "LegalCopyright" "GPL-2.0-or-later"
 !define MUI_HEADERIMAGE_UNBITMAP "${DP_ICONS}\installer-header.bmp"
 !define MUI_ABORTWARNING
 !define MUI_UNABORTWARNING
+; A wizard cancelled after an update closed DownloadPulse starts it again (DpUserAbort).
+!define MUI_CUSTOMFUNCTION_ABORT DpUserAbort
 ; Launch from the Finish page: by then .onInstSuccess has let go of the data
 ; root's lock, so the DownloadPulse it starts can take it.
 !define MUI_FINISHPAGE_RUN
@@ -132,6 +134,43 @@ Var vcBld
 Var dpLock
 Var dpRootCreated
 
+Var dpRelaunch
+
+; Close the running DownloadPulse through its quit event, then wait (up to
+; 60 seconds) for its lock: $1 is the open lock file, $2 becomes nonzero
+; once the lock is ours. A DownloadPulse that does not close -- one older than
+; this event (asked at once: it has no event to set), or one that is stuck --
+; is the person's to Quit: Retry waits for its lock again, Cancel ends setup
+; with nothing changed ($2 stays 0).
+Function CloseRunningDownloadPulse
+  StrCpy $5 1                     ; the first pass
+  dpSignal:
+  ; EVENT_MODIFY_STATE, not inheritable
+  System::Call 'kernel32::OpenEventW(i 0x0002, i 0, w "Local\DownloadPulse-Quit") p .r3'
+  ${If} $3 != 0
+    System::Call 'kernel32::SetEvent(p r3)'
+    System::Call 'kernel32::CloseHandle(p r3)'
+  ${ElseIf} $5 == 1
+    ; No quit event: a DownloadPulse older than 1.0.7, which only its own
+    ; Quit closes. Asked at once, not after a wait with nothing on screen.
+    StrCpy $5 0
+    Goto dpAsk
+  ${EndIf}
+  StrCpy $5 0
+  StrCpy $4 0
+  ${Do}
+    System::Call 'kernel32::LockFile(p r1, i 0, i 0, i 1, i 0) i .r2'
+    ${If} $2 != 0
+      Return
+    ${EndIf}
+    Sleep 500
+    IntOp $4 $4 + 1
+  ${LoopUntil} $4 >= 120          ; 120 x 0.5 s
+  dpAsk:
+  MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "Quit DownloadPulse from its tray menu (Quit), then choose Retry.$\n$\nCancel: quit setup (nothing has been changed)" /SD IDCANCEL IDRETRY dpSignal
+  StrCpy $2 0
+FunctionEnd
+
 !macro DP_DATA_ROOT_LOCK UN
 Function ${UN}TakeDataRootLock
   StrCpy $dpRootCreated 0
@@ -151,9 +190,25 @@ Function ${UN}TakeDataRootLock
   ${EndIf}
   System::Call 'kernel32::LockFile(p r1, i 0, i 0, i 1, i 0) i .r2'
   ${If} $2 == 0
+!if "${UN}" == ""
+    ; DownloadPulse is running: an update closes it (asked first), as its own
+    ; Quit does -- the named event desktop/supervisor.py QUIT_EVENT waits on --
+    ; and starts it again once it is installed (dpRelaunch).
+    MessageBox MB_ICONINFORMATION|MB_OKCANCEL "DownloadPulse is running. Setup will close it, update it and start it again.$\n$\nDownloads in progress continue where they left off." /SD IDOK IDOK dpClose
+    System::Call 'kernel32::CloseHandle(p r1)'
+    Abort
+    dpClose:
+    StrCpy $dpRelaunch 1
+    Call CloseRunningDownloadPulse
+    ${If} $2 == 0
+      System::Call 'kernel32::CloseHandle(p r1)'
+      Abort
+    ${EndIf}
+!else
     System::Call 'kernel32::CloseHandle(p r1)'
     MessageBox MB_ICONSTOP|MB_OK "DownloadPulse is running. Quit it from its tray menu (Quit), then run this again." /SD IDOK
     Abort
+!endif
   ${EndIf}
   StrCpy $dpLock $1
 FunctionEnd
@@ -208,8 +263,23 @@ Function .onInit
   Call RequireVcRedist      ; before the data-root lock and any file: nothing is changed without it
   Call TakeDataRootLock
 FunctionEnd
+Function DpUserAbort
+  ; Cancelled on any page: nothing was changed, and a DownloadPulse this setup
+  ; closed is started again, as the dialog that closed it said.
+  Call ReleaseDataRootLock
+  ${If} $dpRelaunch == 1
+    Call LaunchDownloadPulse
+  ${EndIf}
+FunctionEnd
+
 Function .onInstSuccess
   Call ReleaseDataRootLock
+  ; An update that closed DownloadPulse starts it again: a silent one here, an
+  ; interactive one from the Finish page (its Launch box, checked by default).
+  ${If} ${Silent}
+  ${AndIf} $dpRelaunch == 1
+    Call LaunchDownloadPulse
+  ${EndIf}
 FunctionEnd
 Function .onInstFailed
   Call ReleaseDataRootLock

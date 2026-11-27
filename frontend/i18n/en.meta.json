@@ -24050,7 +24050,7 @@
   },
   "update.release_notes": {
    "category": "action",
-   "context": "The update notice: a dialog an Admin sees when a newer DownloadPulse release exists, once per browser session (on the desktop application: once per launch). Link that opens the release's page on GitHub (its release notes and downloads) in the browser.",
+   "context": "The update notice: a dialog an Admin sees when a newer DownloadPulse release exists. A section title with an expand chevron: selecting it shows, beneath it inside the dialog, the release notes of each newer release (in English).",
    "owner": "frontend/static/app.js",
    "criticality": "normal"
   },
@@ -24095,7 +24095,7 @@
   },
   "update.download_failed": {
    "category": "error",
-   "context": "The update notice: a dialog an Admin sees when a newer DownloadPulse release exists, once per browser session (on the desktop application: once per launch). Shown when the installer could not be downloaded (refused, failed, or its checksum did not match), beneath the reason; a 'Release notes' link follows, where the installer can be downloaded by hand.",
+   "context": "The update notice: a dialog an Admin sees when a newer DownloadPulse release exists, once per browser session (on the desktop application: once per launch). Shown when the installer could not be downloaded (refused, failed, or its checksum did not match), beneath the reason. downloadpulse.net is the product's website, where the installers can be downloaded by hand: keep it exactly as written.",
    "owner": "frontend/static/app.js",
    "criticality": "normal"
   },

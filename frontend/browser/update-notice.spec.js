@@ -11,6 +11,9 @@ const { test, expect } = require('@playwright/test');
  *   - it never opens over another dialog (the setup wizard, browser pairing),
  *     and waits for the last one to close;
  *   - a server has no download, only Close and the release notes;
+ *   - the release notes are a title with its chevron; open, every newer
+ *     release's notes, drawn as text, in their own scrolling area -- nothing
+ *     links out of the app -- and "Not now" keeps the footer's far start;
  *   - the desktop downloads through DownloadPulse, follows the transfer's row
  *     and then offers Show in folder;
  *   - after it is dismissed the badge stays and opens it again: an overlay
@@ -18,9 +21,13 @@ const { test, expect } = require('@playwright/test');
  *     below it, also in en-XA, and not shown on a handheld. */
 
 const RELEASE = 'https://github.com/Xipher-Zero/downloadpulse/releases/tag/v9.9.9';
+const NOTES = [
+  {version: '9.9.9', notes: '## [9.9.9] — The newest\n\n### Changed\n\n- **A lead.** Its words,\n  on two lines, with `code`.\n- See the [1.0.5 release notes](https://example.invalid/).'},
+  {version: '9.9.8', notes: '## [9.9.8] — The one before\n\nA paragraph <img src=x onerror="window.__notesInjected=1">.'},
+];
 const record = (extra = {}) => ({
   checked: true, checked_at: 1, current: '1.0.3', latest: '9.9.9', update_available: true,
-  release_url: RELEASE, published_at: '2026-12-01', installer: null, download_offered: false, ...extra,
+  release_url: RELEASE, published_at: '2026-12-01', installer: null, download_offered: false, notes: NOTES, ...extra,
 });
 const DESKTOP = {installer: {name: 'DownloadPulse-9.9.9-linux-x86_64.flatpak', size: 1234}, download_offered: true};
 
@@ -71,9 +78,60 @@ test('U02: a server only says so -- Close and the release notes, no download', a
   await expect(buttons).toHaveCount(1);
   await expect(buttons).toHaveText(await t(page, 'dialog.close'));
   await expect(notice(page).getByRole('button', {name: await t(page, 'update.download')})).toHaveCount(0);
-  const link = notice(page).getByRole('link', {name: await t(page, 'update.release_notes')});
-  await expect(link).toHaveAttribute('href', RELEASE);
-  await expect(link).toHaveAttribute('rel', /noopener/);
+  await expect(notice(page).locator('.dp-update-notes-toggle')).toHaveText(new RegExp(await t(page, 'update.release_notes')));
+  await expect(notice(page).getByRole('link')).toHaveCount(0);
+});
+
+test('U14: the release notes open beneath their title, as text, in their own scrolling area', async ({page}) => {
+  const long = {version: '9.9.7', notes: '## [9.9.7] — Long\n\n' + Array.from({length: 80}, (_, i) => `- Item ${i}.`).join('\n')};
+  await answer(page, record({...DESKTOP, notes: [...NOTES, long]}));
+  await load(page, {height: 700});
+  await expect(notice(page)).toBeVisible();
+  const toggle = notice(page).locator('.dp-update-notes-toggle');
+  const body = notice(page).locator('.dp-update-notes-body');
+  const chevron = toggle.locator('.dp-update-notes-chevron');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(body).toBeHidden();
+  const angle = () => chevron.evaluate(el => getComputedStyle(el).transform);
+  expect(await angle()).toBe('none');                                  // right: closed
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(body).toBeVisible();
+  expect(await angle()).toMatch(/^matrix\([^,]+, 1, -1, /);         // down: open (rotated 90°)
+  // Each newer release, newest first: headings, sections, bullets, bold and code.
+  const releases = body.locator('.dp-update-notes-release');
+  await expect(releases).toHaveCount(3);
+  await expect(releases.nth(0).locator('h3')).toHaveText('9.9.9 — The newest');
+  await expect(releases.nth(0).locator('h4')).toHaveText('Changed');
+  await expect(releases.nth(0).locator('li').first()).toHaveText('A lead. Its words, on two lines, with code.');
+  await expect(releases.nth(0).locator('li strong')).toHaveText('A lead.');
+  await expect(releases.nth(0).locator('li code')).toHaveText('code');
+  // A link is its words only; markup in a body is text, never markup.
+  await expect(releases.nth(0).locator('li').nth(1)).toHaveText('See the 1.0.5 release notes.');
+  await expect(notice(page).locator('a, img')).toHaveCount(0);
+  await expect(releases.nth(1).locator('p')).toContainText('<img src=x');
+  expect(await page.evaluate(() => window.__notesInjected)).toBeUndefined();
+  // Long notes scroll in their own area; the notice stays inside the window.
+  const sizes = await body.evaluate(el => ({client: el.clientHeight, scroll: el.scrollHeight}));
+  expect(sizes.scroll).toBeGreaterThan(sizes.client);
+  const box = await notice(page).boundingBox();
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(700);
+  // "Not now" keeps the footer's far start, the download its far end.
+  const notNow = await notice(page).getByRole('button', {name: await t(page, 'update.not_now')}).boundingBox();
+  const download = await notice(page).getByRole('button', {name: await t(page, 'update.download')}).boundingBox();
+  const footer = await notice(page).locator('.dp-modal-footer').boundingBox();
+  expect(notNow.x - footer.x).toBeLessThan(40);
+  expect(footer.x + footer.width - (download.x + download.width)).toBeLessThan(40);
+  await toggle.click();
+  await expect(body).toBeHidden();
+});
+
+test('U15: no notes, no title', async ({page}) => {
+  await answer(page, record({notes: []}));
+  await load(page);
+  await expect(notice(page)).toBeVisible();
+  await expect(notice(page).locator('.dp-update-notes')).toHaveCount(0);
 });
 
 test('U03: after Close the badge stays and opens the notice again', async ({page}) => {
@@ -169,7 +227,7 @@ test('U07: the desktop downloads through DownloadPulse, follows the row, then of
   await expect(notice(page)).toHaveCount(0);
 });
 
-test('U08: a refused download says why and points at the release notes', async ({page}) => {
+test('U08: a refused download says why and points at the website', async ({page}) => {
   await answer(page, record(DESKTOP));
   await page.route(url => url.pathname === '/api/desktop/update/download', route => route.fulfill({status: 403,
     contentType: 'application/json', body: JSON.stringify({detail: 'Updates are downloaded only in the DownloadPulse window.',

@@ -935,17 +935,88 @@ const DPUpdateNotice = (() => {
     DPI18n.render(badge);
   }
 
-  function notesLink(address) {
-    const link = said(document.createElement('a'), 'update.release_notes');
-    link.className = 'dp-update-notes';
-    link.href = address;
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.addEventListener('click', event => { event.preventDefault(); openExternalUrl(address); });
-    const line = document.createElement('p');
-    line.className = 'dp-modal-message';
-    line.appendChild(link);
-    return line;
+  // The release notes, in the notice itself: the Markdown of each release
+  // newer than this one (the backend's, from the update check), drawn as text
+  // only -- headings, paragraphs, bullets, bold and code; a link's words alone.
+  // Nothing in a release's body becomes markup, and nothing here leaves the app.
+  function notesInline(parent, text) {
+    const pattern = /\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\([^)\s]*\)/g;
+    let at = 0;
+    for (const match of text.matchAll(pattern)) {
+      if (match.index > at) parent.appendChild(document.createTextNode(text.slice(at, match.index)));
+      if (match[1] !== undefined) parent.appendChild(document.createElement('strong')).textContent = match[1];
+      else if (match[2] !== undefined) parent.appendChild(document.createElement('code')).textContent = match[2];
+      else parent.appendChild(document.createTextNode(match[3]));
+      at = match.index + match[0].length;
+    }
+    if (at < text.length) parent.appendChild(document.createTextNode(text.slice(at)));
+  }
+
+  function notesRelease(container, markdown) {
+    let list = null;
+    let block = null;   // the paragraph or list item later lines continue
+    const end = () => { list = null; block = null; };
+    for (const raw of String(markdown || '').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) { end(); continue; }
+      const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        end();
+        const level = heading[1].length <= 2 ? 'h3' : 'h4';
+        const words = heading[2].replace(/^\[([^\]]+)\](?!\()/, '$1');   // "[1.0.7] — …": a link stays a link's words
+        notesInline(container.appendChild(document.createElement(level)), words);
+        continue;
+      }
+      const bullet = /^[-*]\s+(.*)$/.exec(line);
+      if (bullet) {
+        if (!list) list = container.appendChild(document.createElement('ul'));
+        block = list.appendChild(document.createElement('li'));
+        block.dataset.text = bullet[1];
+        continue;
+      }
+      if (block) { block.dataset.text += ' ' + line; continue; }
+      block = container.appendChild(document.createElement('p'));
+      block.dataset.text = line;
+    }
+    for (const item of container.querySelectorAll('[data-text]')) {
+      notesInline(item, item.dataset.text);
+      delete item.dataset.text;
+    }
+  }
+
+  // "Release notes": a title with its chevron (right, closed; down, open); open,
+  // the notes beneath it in their own scrolling area.
+  function notesDisclosure(notes) {
+    const section = document.createElement('div');
+    section.className = 'dp-update-notes';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'dp-update-notes-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.appendChild(said(document.createElement('span'), 'update.release_notes')).className = 'dp-update-notes-title';
+    const chevron = toggle.appendChild(document.createElement('span'));
+    chevron.className = 'dp-update-notes-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '\u203a';
+    const body = document.createElement('div');
+    body.className = 'dp-update-notes-body';
+    body.id = `dp-update-notes-${Date.now()}`;
+    body.tabIndex = 0;
+    body.hidden = true;
+    toggle.setAttribute('aria-controls', body.id);
+    for (const release of notes) {
+      const entry = body.appendChild(document.createElement('section'));
+      entry.className = 'dp-update-notes-release';
+      entry.lang = 'en';
+      notesRelease(entry, release.notes);
+    }
+    toggle.addEventListener('click', () => {
+      const open = toggle.getAttribute('aria-expanded') !== 'true';
+      toggle.setAttribute('aria-expanded', String(open));
+      body.hidden = !open;
+    });
+    section.append(toggle, body);
+    return section;
   }
 
   // Whether another dialog holds the page: one of the dialog owner's, or the
@@ -977,7 +1048,7 @@ const DPUpdateNotice = (() => {
     };
     // Why it did not download -- a catalog key (the transfer's failure
     // category) or a refusal's words already said in the reader's language --
-    // and that the release notes are the way to get it instead.
+    // and that the website is the way to get it instead.
     const failed = (handle, reason) => {
       stop();
       if (reason && typeof reason === 'object') showStatus(reason.key);
@@ -1041,14 +1112,15 @@ const DPUpdateNotice = (() => {
         const message = said(document.createElement('p'), 'update.body', {current: shownRecord.current});
         message.className = 'dp-modal-message';
         body.appendChild(message);
-        const notes = shownRecord.release_url ? notesLink(shownRecord.release_url) : null;
-        if (notes) body.appendChild(notes);
+        const releases = Array.isArray(shownRecord.notes)
+          ? shownRecord.notes.filter(item => item && typeof item.notes === 'string' && item.notes) : [];
+        if (releases.length) body.appendChild(notesDisclosure(releases));
         status = document.createElement('p');
         status.className = 'dp-modal-message dp-update-status';
         status.setAttribute('role', 'status');
         status.hidden = true;
         body.appendChild(status);
-        // A refused or failed download: the release notes are the way to get it instead.
+        // A refused or failed download: the website is the way to get it instead.
         fallback = said(document.createElement('p'), 'update.download_failed');
         fallback.className = 'dp-modal-message';
         fallback.hidden = true;

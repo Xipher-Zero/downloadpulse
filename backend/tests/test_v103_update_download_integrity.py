@@ -200,7 +200,10 @@ async def window(stage, monkeypatch, tmp_path):
                          "assets": [{"name": NAME, "size": len(GOOD), "digest": f"sha256:{GOOD_SHA256}",
                                      "browser_download_url": URL}]}
 
+    async def no_releases():
+        return None    # the release notes' list: never the network here
     monkeypatch.setattr(updates, "_fetch", fetch)
+    monkeypatch.setattr(updates, "_fetch_releases", no_releases)
     assert (await updates.refresh())[0]["installer"]["sha256"] == GOOD_SHA256
 
     async def click():
