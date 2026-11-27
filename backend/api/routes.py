@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Res
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from core.branding import APP_SHORT_NAME, REPOSITORY_API_URL
+from core.branding import APP_SHORT_NAME
 from core.config import (
     AppSettings,
     apply_settings,
@@ -2108,48 +2108,15 @@ async def resume_processing( application: ApplicationService = Depends(get_appli
 
 # ── Changelog ──────────────────────────────────────────────────────────────────
 
-_changelog_cache: dict = {}
-
-
 @router.get("/changelog")
 async def get_changelog():
-    """Return CHANGELOG.md.
-    Uses local file when it contains the running version entry.
-    Falls back to GitHub Releases API (1h cache) for stale images."""
-    import time, aiohttp as _aiohttp
-    local: str | None = None
-    for c in (Path("/app/CHANGELOG.md"),
-              Path(__file__).resolve().parents[2] / "CHANGELOG.md"):
-        if c.exists():
-            local = c.read_text(encoding="utf-8"); break
-    running = read_version()
-    if local and ("[" + running + "]") in local:
-        return {"content": local, "source": "local"}
-    cache, now = _changelog_cache, time.time()
-    if cache.get("ts", 0) + 3600 > now:
-        return {"content": cache.get("content", local or ""), "source": "github_cache"}
-    sep = "\n\n---\n\n"
-    try:
-        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get(
-                f"{REPOSITORY_API_URL}/releases?per_page=25",
-                headers={"Accept": "application/vnd.github.v3+json"},
-            ) as r:
-                if r.status == 200:
-                    rels = await r.json()
-                    parts = []
-                    for rel in rels:
-                        body = (rel.get("body") or "").strip()
-                        tag  = rel.get("tag_name", "")
-                        date = (rel.get("published_at") or "")[:10]
-                        parts.append(body or "## " + tag + " \u2014 " + date)
-                    combined = sep.join(parts)
-                    cache["content"] = combined
-                    cache["ts"] = now
-                    return {"content": combined, "source": "github"}
-    except Exception as exc:
-        logger.warning("Changelog GitHub fetch failed: %s", exc)
-    return {"content": local or "", "source": "local_fallback"}
+    """Return this release's CHANGELOG.md (shipped in the image and the desktop
+    bundle). Never asks GitHub: ``application.updates`` is the one reader of the
+    releases, and it honours the update-check setting (1.0.8, WS-A8)."""
+    for candidate in (Path("/app/CHANGELOG.md"), Path(__file__).resolve().parents[2] / "CHANGELOG.md"):
+        if candidate.exists():
+            return {"content": candidate.read_text(encoding="utf-8"), "source": "local"}
+    return {"content": "", "source": "local"}
 
 
 # ── Admin ──────────────────────────────────────────────────────────────────────

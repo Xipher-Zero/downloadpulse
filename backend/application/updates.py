@@ -291,9 +291,11 @@ def projection(*, download_offered: bool) -> dict:
 
 
 def installer() -> dict | None:
-    """The installer the record names for this platform, when an update is available."""
+    """The installer the record names for this platform, when an update is
+    available and update checks are on: turned off, no earlier record offers a
+    download either (1.0.8, WS-A8), as the page's projection already shows none."""
     current = record()
-    if current is None or not current.get("update_available"):
+    if current is None or not current.get("update_available") or not checks_enabled():
         return None
     return current.get("installer")
 
