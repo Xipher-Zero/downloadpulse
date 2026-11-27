@@ -131,7 +131,7 @@ class Clock:
 HOSTS2 = [{**HOSTS[0], "domains": ["hoster.example", "mirror.example"]}]
 
 
-def build(tmp_path, http, clock, *, key=KEY, attested=True):
+def build(tmp_path, http, clock, *, key=KEY, attested=True, resolution_concurrency=8):
     repository = TransferRepository()
     registry = IntegrationRegistry()
     provider = DebridLinkProvider(DebridLinkService(key, transport=http))
@@ -144,16 +144,17 @@ def build(tmp_path, http, clock, *, key=KEY, attested=True):
     registry.register_executor(executor)
     engine = TransferEngine(repository, registry, download_root=str(tmp_path / "downloads"),
                             policy=TransferPolicy(adoption_stability_seconds=0, max_active_executions=8,
-                                                  resolution_concurrency=8),
+                                                  resolution_concurrency=resolution_concurrency),
                             clock=clock)
     return engine, repository, executor
 
 
-async def start(tmp_path, monkeypatch, http, *, attested=True):
+async def start(tmp_path, monkeypatch, http, *, attested=True, resolution_concurrency=8):
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "quota.db")
     await database.init_db()
     clock = Clock()
-    engine, repository, executor = build(tmp_path, http, clock, attested=attested)
+    engine, repository, executor = build(tmp_path, http, clock, attested=attested,
+                                         resolution_concurrency=resolution_concurrency)
     await engine.initialize()
     return engine, repository, executor, clock
 
@@ -162,6 +163,15 @@ async def cycle(engine, clock, seconds=10.0):
     clock.now += seconds
     await engine.reconcile_executions()
     await engine.tick()
+
+
+# The sources of one submission resolve concurrently and no candidate order is
+# promised, so under load the mirror can land first and be the one dispatched;
+# then the hoster is never refused and no hold exists. The two cases below are
+# about what a hold does once the hoster is refused, not about concurrent
+# resolution: they resolve one source at a time, so the submission's own order
+# decides (1.0.8, WS-T2; quota_wait_on_debridlink covers either order).
+IN_ORDER = 1
 
 
 async def holds():
@@ -196,7 +206,7 @@ async def test_an_account_quota_skips_the_same_accounts_other_host_and_the_other
     """1279's shape: Debrid-Link's two hosts of one file in one submission,
     the other provider's equivalent arriving in a later one."""
     http = DebridLinkHTTP("maxData", warm={HERE: 1})       # resolution, then the execution's fresh link
-    engine, repository, executor, clock = await start(tmp_path, monkeypatch, http)
+    engine, repository, executor, clock = await start(tmp_path, monkeypatch, http, resolution_concurrency=IN_ORDER)
     first = await engine.submit((TransferRequest("https", HERE, "movie.bin"),
                                  TransferRequest("https", HERE2, "movie.bin")), name="movie", deduplicate=False)
     await engine.tick()
@@ -234,7 +244,7 @@ async def test_an_account_quota_skips_the_same_accounts_other_host_and_the_other
 
 async def test_a_host_quota_leaves_the_same_accounts_other_host_eligible(tmp_path, monkeypatch):
     http = DebridLinkHTTP("maxDataHost", warm={HERE: 1}, hosts={"hoster.example"})
-    engine, repository, executor, clock = await start(tmp_path, monkeypatch, http)
+    engine, repository, executor, clock = await start(tmp_path, monkeypatch, http, resolution_concurrency=IN_ORDER)
     transfer = await engine.submit((TransferRequest("https", HERE, "movie.bin"),
                                     TransferRequest("https", HERE2, "movie.bin")), name="movie", deduplicate=False)
     await engine.tick()
