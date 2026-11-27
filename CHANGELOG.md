@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.0.8] — Development
+
 ## [1.0.7] — Updates that explain themselves and install over a running app
 
 ### Changed

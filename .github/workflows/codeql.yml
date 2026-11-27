@@ -7,7 +7,7 @@ on:
   push:
     branches:
       - main
-      - '1.0.7'
+      - '1.0.8'
       - 'audit/**'
     tags:
       - 'v*'
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches:
       - main
-      - '1.0.7'
+      - '1.0.8'
       - 'staging/**'
   schedule:
     - cron: '17 20 * * 4'   # Thursday 20:17 UTC
