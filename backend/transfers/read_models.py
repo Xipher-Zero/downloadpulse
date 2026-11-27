@@ -24,6 +24,7 @@ from transfers.presentation_repository import (  # noqa: F401 -- re-exported
     _RAW_PRESENTATION as RAW_PRESENTATION,
     _TERMINAL_PRESENTATION as TERMINAL_PRESENTATION,
     _WAIT_PRESENTATION as WAIT_PRESENTATION,
+    WorkStanding,
 )
 
 

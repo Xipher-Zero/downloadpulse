@@ -38,15 +38,14 @@ from core.config import (
 )
 from api.legacy_settings_view import legacy_settings_projection
 from providers.alldebrid.definition import canonical_options as alldebrid_canonical_options
-from providers.multimeta.metalink import MAX_DESCRIPTOR_BYTES
 from transfers.requests import (
-    ALTERNATIVE_SOURCE_DELIMITER, MAX_LINK_FILE_BYTES, MAX_TORRENT_BYTES, direct_link_rows, link_file_entries, normalize_direct_links,
+    ALTERNATIVE_SOURCE_DELIMITER, MAX_LINK_FILE_BYTES, MAX_METALINK_BYTES, MAX_TORRENT_BYTES, direct_link_rows, link_file_entries, normalize_direct_links,
 )
 from core.config_validator import validate_and_sanitise
 from integrations.definition import IntegrationSettings
 from transfers.runtime_limits import ExecutionRuntimeLimits
 from transfers.models import SubmissionDemand
-from transfers.read_models import DemandChanged
+from transfers.read_models import DemandChanged, WorkStanding
 from transfers.manual_queue_move import QueueMoveRefused, RestartConfirmationRequired
 from transfers.manual_route_switch import root_switches
 from transfers.settings import TransferSettings
@@ -1101,8 +1100,8 @@ async def add_multimeta_file(
             if not chunk:
                 return
             read += len(chunk)
-            # The Multimeta reader's own hard bound: nothing larger is staged.
-            if read > MAX_DESCRIPTOR_BYTES:
+            # Core's one Metalink ceiling (the Multimeta reader's too): nothing larger is staged.
+            if read > MAX_METALINK_BYTES:
                 raise CodedValueError("Metalink file exceeds the 16 MB upload limit", code="submit.meta4_too_large")
             yield chunk
 
@@ -1669,25 +1668,17 @@ async def desktop_update_download(request: Request, application: ApplicationServ
     return _submitted(request, result, [demand])
 
 
-# A presentation in which an earlier update download no longer answers a click:
-# it ended, or it waits on the person (the same rule as a failure: a click then
-# starts a new download rather than leaving them on a stuck one).
-_UPDATE_DOWNLOAD_ENDED = frozenset({"failed", "error", "cancelled", "deleted", "consolidated",
-                                    "requires_attention", "input_required"})
-
-
 async def _update_download_serves(application, transfer_id: int) -> bool:
-    """Whether an earlier update download still answers a click: live work, or
-    completed with its file still in the download folder (core's own answer,
-    ``completed_location``). One that ended or waits on the person does not."""
-    item = await application.repository.presentation(transfer_id)
-    if item is None:
-        return False
-    status = str(item.get("presentation_status") or item.get("status") or "")
-    if status in _UPDATE_DOWNLOAD_ENDED:
-        return False
-    if status != "completed":
+    """Whether an earlier update download still answers a click: core's own
+    answer by canonical state (``work_standing``) -- live work, or completed
+    with its file still in the download folder (``completed_location``). One
+    that ended or waits on the person does not (the same rule as a failure: a
+    click then starts a new download rather than leaving them on a stuck one)."""
+    standing = await application.repository.work_standing(transfer_id)
+    if standing is WorkStanding.LIVE:
         return True
+    if standing is not WorkStanding.COMPLETED:
+        return False
     try:
         await application.completed_location(transfer_id)
     except (KeyError, ValueError):

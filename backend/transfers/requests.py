@@ -511,6 +511,10 @@ def direct_link_collection_name(
 MAX_LINK_FILE_BYTES = 1_000_000                # 1 MB, decimal as every size is shown
 # The one ceiling of a .torrent metainfo file, however it is submitted.
 MAX_TORRENT_BYTES = 16_000_000                 # 16 MB, decimal as every size is shown
+# The one ceiling of a Metalink4 descriptor, however it is submitted: the same
+# bound as the other descriptor format DownloadPulse accepts. The Multimeta
+# reader (``providers.multimeta.metalink``) and every edge read it here.
+MAX_METALINK_BYTES = 16_000_000                # 16 MB, decimal as every size is shown
 _MAX_LINK_FILE_VALUE = 64 * 1024
 
 

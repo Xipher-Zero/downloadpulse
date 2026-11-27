@@ -1009,14 +1009,12 @@ class ApplicationService:
         share. Read from core's own records alone -- the transfer, its
         canonical artifacts and the download root -- never from a caller: only
         a completed transfer's completed artifacts, each an existing regular
-        file (not a link) beneath the download root, and a folder beneath it
-        or the root itself. ``KeyError``: no such transfer; otherwise a
+        file beneath the download root with no link on the way, and a folder
+        beneath it or the root itself -- the material lookup is core's own
+        (``transfers.filesystem.completed_location``). ``KeyError``: no such transfer; otherwise a
         ``CodedValueError`` (``transfer.location_not_completed``,
         ``transfer.location_missing``)."""
-        import os
-        from pathlib import Path
-
-        from transfers.filesystem import is_link
+        from transfers.filesystem import completed_location
         transfer = await self.require(int(transfer_id))
         if not self.may_have_completed_location(transfer.state):
             raise CodedValueError("The download is not completed.", code="transfer.location_not_completed")
@@ -1024,32 +1022,7 @@ class ApplicationService:
                    if artifact.state == "completed" and artifact.target]
         collection = (transfer.collection_root
                       if transfer.collection_root and not transfer.collection_root_conflict else None)
-        root = Path(self.engine.root).resolve()
-
-        def beneath(path: Path, *, folder: bool) -> Path | None:
-            # An existing file strictly beneath the root, or a folder beneath it or the root itself.
-            try:
-                if not path.is_absolute() or is_link(path):
-                    return None
-                resolved = path.resolve(strict=True)
-            except (OSError, RuntimeError):
-                return None
-            if not (resolved.is_relative_to(root) and (folder or resolved != root)):
-                return None
-            return resolved if (resolved.is_dir() if folder else resolved.is_file()) else None
-
-        def locate() -> tuple[str, bool] | None:
-            files = [found for target in targets if (found := beneath(Path(target), folder=False)) is not None]
-            if len(targets) == 1 and files:
-                return str(files[0]), False
-            if collection and (found := beneath(root / collection, folder=True)) is not None and found != root:
-                return str(found), True
-            if files and (found := beneath(Path(os.path.commonpath([str(item.parent) for item in files])),
-                                           folder=True)) is not None:
-                return str(found), True
-            return None
-
-        located = await asyncio.to_thread(locate)
+        located = await asyncio.to_thread(completed_location, self.engine.root, targets, collection)
         if located is None:
             raise CodedValueError("This download's files are no longer in the download folder.",
                                   code="transfer.location_missing")

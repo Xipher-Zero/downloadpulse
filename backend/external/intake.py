@@ -17,15 +17,13 @@ import json
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from providers.multimeta.metalink import MAX_DESCRIPTOR_BYTES as MAX_METALINK_BYTES
-from transfers.requests import MAX_TORRENT_BYTES, normalize_direct_links, torrent_identity
+from transfers.requests import MAX_METALINK_BYTES, MAX_TORRENT_BYTES, normalize_direct_links, torrent_identity
 
 MAX_LINKS = 100
 MAX_LINK_LENGTH = 8192
 # Decoded bytes of an inline .torrent and an inline Metalink4 descriptor are
-# held to DownloadPulse's own ceilings for them (MAX_TORRENT_BYTES,
-# transfers.requests; MAX_METALINK_BYTES, the Multimeta reader's), imported
-# above. A torrent's base64 form has a request body ceiling of its own
+# held to DownloadPulse's own ceilings for them (MAX_TORRENT_BYTES and
+# MAX_METALINK_BYTES, both transfers.requests'), imported above. A torrent's base64 form has a request body ceiling of its own
 # (``external.arr``).
 # Decoded bytes of an NZB uploaded by an external client: this surface's own
 # bound. The staged NZB owner's ceiling is larger and still applies to what it

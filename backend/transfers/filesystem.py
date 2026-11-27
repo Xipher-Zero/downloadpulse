@@ -382,6 +382,77 @@ def member_payload(root: str, relative: str) -> str | None:
     return str(Path(root).joinpath(*member.parts))
 
 
+def _directory_beneath(root: Path, relative: PurePosixPath) -> bool:
+    """``_regular_beneath`` for a folder: every component beneath ``root`` is
+    a real directory (never a link). The empty path is ``root`` itself."""
+    current = root
+    try:
+        for part in relative.parts:
+            current = current / part
+            info = os.lstat(current)
+            if _is_link_info(info) or not stat.S_ISDIR(info.st_mode):
+                return False
+        return root.is_dir()
+    except OSError:
+        return False
+
+
+def _beneath_root(bases: tuple[Path, ...], target: str) -> tuple[Path, PurePosixPath] | None:
+    """The base and normalized relative path of an absolute ``target`` that
+    lies beneath one of ``bases`` (the root as resolved, then as named), or
+    ``None``: never a path that climbs out (``..``) or names the root itself."""
+    if not isinstance(target, str) or not target or "\x00" in target:
+        return None
+    path = Path(target)
+    if not path.is_absolute():
+        return None
+    for base in bases:
+        try:
+            relative = _relative(path.relative_to(base).as_posix())
+        except ValueError:
+            continue
+        if relative is not None:
+            return base, relative
+    return None
+
+
+def completed_location(root: str, targets, collection: str | None = None) -> tuple[str, bool] | None:
+    """Where a completed download's material is on disk now, as ``(path,
+    folder)``, or ``None``: the read-only material lookup Show in folder and
+    the update download ask. ``targets`` are its completed artifacts' recorded
+    targets; ``collection`` its collection folder (a name beneath ``root``).
+
+    One file: that file (``folder`` false). Several: the collection folder,
+    else the folder their present files share (the root itself included).
+    Presence and containment are this module's own: a file is an existing
+    regular file beneath ``root`` reached through real directories alone
+    (``_regular_beneath``), a folder a real directory beneath it; a link at
+    any component -- the entry or a parent -- is no location. The path named
+    is beneath the root as resolved."""
+    try:
+        resolved = Path(root).resolve()
+        named = Path(os.path.abspath(root))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    bases = (resolved,) if named == resolved else (resolved, named)
+    targets = [target for target in targets if target]
+    files: list[PurePosixPath] = []
+    for target in targets:
+        found = _beneath_root(bases, str(target))
+        if found is not None and _regular_beneath(*found) is not None:
+            files.append(found[1])
+    if len(targets) == 1 and files:
+        return str(resolved.joinpath(*files[0].parts)), False
+    folder = _relative(collection) if collection else None
+    if folder is not None and _directory_beneath(resolved, folder):
+        return str(resolved.joinpath(*folder.parts)), True
+    if files:
+        shared = os.path.commonprefix([item.parent.parts for item in files])
+        if _directory_beneath(resolved, PurePosixPath(*shared)):
+            return str(resolved.joinpath(*shared)), True
+    return None
+
+
 def observe_path(path: str) -> dict:
     """What is at ``path`` NOW, observed without following, opening, creating
     or repairing anything: one ``lstat``. ``type`` is ``file``, ``directory``,

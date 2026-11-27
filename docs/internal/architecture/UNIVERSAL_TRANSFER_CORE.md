@@ -275,7 +275,12 @@ native transient files and transient trees, both excluded from material. Cleanup
 (`retire_materialization`) deletes nothing without the attempt's durable material
 ownership (`execution_attempts.material_owner_attempt_id`: established when the
 boundary was absent at admission, or inherited from the artifact's preceding owning
-attempt). Durable handles never carry endpoint addresses, headers or other
+attempt). Where a completed transfer's material is now (Show in folder, the update
+download's reuse) is the same owner's read-only lookup
+(`transfers.filesystem.completed_location`: a regular file or real folder beneath
+the download root, no link at any component); whether a transfer's work still
+serves is core's by canonical state (`TransferRepository.work_standing`). Durable
+handles never carry endpoint addresses, headers or other
 capabilities. `cancel` returns observed truth;
 only a positively observed stop releases ownership, cleanup authority or bandwidth
 reservation. A batch observation must account for every requested handle; a failed

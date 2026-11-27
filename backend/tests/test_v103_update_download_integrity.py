@@ -270,18 +270,58 @@ async def test_a_download_whose_source_is_gone_does_not_hold_the_click(window):
     assert second != first
 
 
-@pytest.mark.parametrize("status,serves", [
-    ("downloading", True), ("queued", True), ("paused", True), ("pending", True),
-    ("requires_attention", False), ("input_required", False), ("failed", False), ("cancelled", False),
-    ("consolidated", False), ("deleted", False),
+@pytest.mark.parametrize("state,facts,serves", [
+    ("downloading", {}, True), ("queued", {}, True), ("paused", {}, True), ("pending", {}, True),
+    ("processing", {}, True), ("verifying", {}, True), ("extracting", {}, True),
+    ("queued", {"paused": True}, True),
+    # Waiting on the person: core's own operator attention, an input challenge, or the state itself.
+    ("queued", {"attention_required": True}, False), ("downloading", {"input_required": {"kind": "x"}}, False),
+    ("input_required", {}, False),
+    # A pause is the person's own and wins, as the presentation says "Paused".
+    ("queued", {"paused": True, "attention_required": True}, True),
+    ("error", {}, False), ("cancelled", {}, False), ("consolidated", {}, False), ("deleted", {}, False),
 ])
-async def test_which_earlier_download_still_answers_a_click(status, serves):
-    """A download waiting on the person (requires_attention, input_required)
-    is treated like a failure: the click starts a new download."""
+async def test_which_earlier_download_still_answers_a_click(state, facts, serves):
+    """1.0.8 WS-A9: core answers by canonical state (``work_standing``), never
+    the edge from presentation words. A download waiting on the person
+    (requires attention, input required) is treated like a failure: the click
+    starts a new download."""
     from api.routes import _update_download_serves
+    from transfers.models import TransferState
+    from transfers.presentation_repository import TransferRepository
 
-    class Repository:
-        async def presentation(self, _id):
-            return {"presentation_status": status}
+    transfer = SimpleNamespace(state=TransferState(state), paused=bool(facts.get("paused")))
+    presented = {"attention_required": bool(facts.get("attention_required")),
+                 "input_required": facts.get("input_required")}
 
-    assert await _update_download_serves(SimpleNamespace(repository=Repository()), 7) is serves
+    async def get(_id):
+        return transfer
+
+    async def presentation(_id):
+        return presented
+
+    core = SimpleNamespace(get=get, presentation=presentation)
+    repository = SimpleNamespace(work_standing=lambda transfer_id: TransferRepository.work_standing(core, transfer_id))
+    assert await _update_download_serves(SimpleNamespace(repository=repository), 7) is serves
+
+
+async def test_an_unknown_earlier_download_never_answers_a_click():
+    from api.routes import _update_download_serves
+    from transfers.presentation_repository import TransferRepository
+
+    async def nothing(_id):
+        return None
+
+    core = SimpleNamespace(get=nothing, presentation=nothing)
+    repository = SimpleNamespace(work_standing=lambda transfer_id: TransferRepository.work_standing(core, transfer_id))
+    assert await _update_download_serves(SimpleNamespace(repository=repository), 7) is False
+
+
+async def test_the_update_download_edge_reads_no_presentation_words():
+    """The edge asks core; it holds no list of presentation statuses."""
+    import inspect
+
+    import api.routes as routes
+    source = inspect.getsource(routes._update_download_serves)
+    assert "work_standing" in source and "presentation" not in source.split('"""')[-1]
+    assert not hasattr(routes, "_UPDATE_DOWNLOAD_ENDED")

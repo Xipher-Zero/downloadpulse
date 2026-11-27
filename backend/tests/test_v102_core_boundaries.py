@@ -160,17 +160,101 @@ CORE_TABLES = frozenset({
 # 1.0.2 (operator, 2026-11-22): the direct reads that predated this rule -- the
 # Downloads read model, the statistics routes and the External API's job projection --
 # now live in core (transfers.downloads_read_model, transfers.statistics,
-# transfers.demand_fulfilment). No edge holds any; none may come back.
-CORE_TABLE_DEBT: dict[str, int] = {}
+# transfers.demand_fulfilment). No ``api``/``external``/``auth`` file holds any.
+#
+# 1.0.8 (WS-A9): the rule covers ``services`` and ``application`` too (composition,
+# the one wiring place, aside). Their reads predate 1.0.2 and are recorded here
+# exactly -- per file, the number of statements naming a core table -- so the debt
+# can only shrink: a new read fails, and a read moved into a ``transfers`` read
+# model must lower its file's number in the same change.
+CORE_TABLE_DEBT: dict[str, int] = {
+    "services/stats.py": 10,                    # the statistics snapshots and report
+    "services/duplicates.py": 5,                # the duplicate-submission check
+    "services/transfer_trace.py": 10,           # the per-transfer support trace
+    "application/consolidation_events.py": 7,   # consolidation's journal and notices
+}
+
+# Not debt: ``services.db_maintenance`` is the one owner of the operator-confirmed
+# whole-database wipe. It names every table of the database -- the core's among
+# them -- only to empty it, with the application quiesced (``verified_quiesced``),
+# and derives no core decision from any row. Its statements are pinned all the
+# same, so any other use of a core table there fails.
+DATABASE_WIDE_OWNERS: dict[str, int] = {"services/db_maintenance.py": 17}
+
+
+def _edge_files():
+    """Every edge: ``api``, ``external``, ``auth``, ``services`` and
+    ``application`` -- composition, the one place concrete plugins are wired, aside."""
+    for path in _files("api", "external", "auth", "services", "application"):
+        if _rel(path) != "application/composition.py":
+            yield path
 
 
 def test_no_edge_queries_a_core_table_beyond_its_recorded_debt():
     import re
     statement = re.compile(r"\b(?:FROM|JOIN|UPDATE|INTO)\s+([a-z_][a-z0-9_]*)", re.IGNORECASE)
     found = {}
-    for path in _files("api", "external", "auth"):
+    for path in _edge_files():
         count = sum(1 for table in statement.findall(path.read_text(encoding="utf-8"))
                     if table.lower() in CORE_TABLES)
         if count:
             found[_rel(path)] = count
-    assert {name: count for name, count in found.items() if count > CORE_TABLE_DEBT.get(name, 0)} == {}
+    # Exactly the recorded debt: more is a new crossing; less is debt paid, to be
+    # recorded by lowering (or removing) its entry.
+    assert found == {**CORE_TABLE_DEBT, **DATABASE_WIDE_OWNERS}
+
+
+def _concrete_integration(module: str) -> bool:
+    """A concrete integration's own module: a provider, an executor, a
+    post-processor, or an integration package (``integrations/<name>/``)."""
+    parts = module.split(".")
+    if parts[0] in {"providers", "executors", "postprocessors"}:
+        return True
+    packages = {package.name for package in (BACKEND / "integrations").iterdir()
+                if package.is_dir() and package.name != "__pycache__"}
+    return parts[0] == "integrations" and len(parts) > 1 and parts[1] in packages
+
+
+# 1.0.8 (WS-A9): an edge names no concrete integration -- it reaches one through
+# core and the integration contracts (``integrations.definition``), and core owns
+# every shared limit (e.g. ``transfers.requests.MAX_METALINK_BYTES``, which the
+# Multimeta reader reads too). The imports below predate 1.0.2: integration-specific
+# Settings routes -- AllDebrid's connection test, aria2's downloads and tuning, the
+# Usenet servers, each debrid service's credential check. They are recorded exactly,
+# so the list can only shrink.
+EDGE_INTEGRATION_IMPORT_DEBT: dict[str, frozenset[str]] = {
+    "api/routes.py": frozenset({
+        "executors.aria2.client", "executors.aria2.definition", "executors.aria2.presentation",
+        "executors.aria2.runtime",
+        "integrations.usenet.definition", "integrations.usenet.servers",
+        "providers.alldebrid.admin", "providers.alldebrid.definition",
+    }),
+    "api/settings_validation_routes.py": frozenset({
+        "integrations.usenet.definition", "integrations.usenet.servers",
+        "providers.alldebrid.admin", "providers.alldebrid.client", "providers.alldebrid.definition",
+        "providers.debridlink", "providers.debridlink.definition",
+        "providers.premiumize", "providers.premiumize.definition",
+        "providers.realdebrid", "providers.realdebrid.client", "providers.realdebrid.definition",
+        "providers.torbox", "providers.torbox.client", "providers.torbox.definition",
+    }),
+}
+
+
+def test_no_edge_imports_a_concrete_integration_beyond_its_recorded_debt():
+    found: dict[str, set[str]] = {}
+    for path in _edge_files():
+        for module, _names in _imports(path):
+            if _concrete_integration(module):
+                found.setdefault(_rel(path), set()).add(module)
+    assert {name: frozenset(modules) for name, modules in found.items()} == EDGE_INTEGRATION_IMPORT_DEBT
+
+
+def test_the_edge_import_rule_sees_a_crossing():
+    """The rule's own oracle: each form of a concrete import is caught; core,
+    the integration contracts and the catalog are not."""
+    for module in ("providers.multimeta.metalink", "executors.aria2.runtime", "postprocessors.archive",
+                   "integrations.usenet.definition", "integrations.media"):
+        assert _concrete_integration(module), module
+    for module in ("transfers.requests", "integrations.definition", "integrations.catalog",
+                   "integrations.configuration", "application.service"):
+        assert not _concrete_integration(module), module

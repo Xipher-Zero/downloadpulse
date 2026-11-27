@@ -30,6 +30,15 @@ def test_the_limits_are_decimal():
     assert StagedInputStore("/nonexistent").max_bytes == MAX_STAGED_INPUT_BYTES
 
 
+def test_the_metalink_ceiling_has_one_owner_in_core():
+    """1.0.8 WS-A9: core owns the Metalink ceiling beside the torrent's; the
+    Multimeta reader and the External API's name for it are that one value."""
+    import external.intake as intake
+    from transfers.requests import MAX_METALINK_BYTES, MAX_TORRENT_BYTES
+    assert MAX_METALINK_BYTES == MAX_TORRENT_BYTES == 16_000_000
+    assert MAX_DESCRIPTOR_BYTES == intake.MAX_METALINK_BYTES == MAX_METALINK_BYTES
+
+
 def test_a_link_file_of_exactly_1_mb_is_read_and_one_byte_more_is_refused():
     data = exactly(b"https://a.example/release.bin\n", MAX_LINK_FILE_BYTES, b"#" * 99 + b"\n")
     assert len(link_file_entries(data)) == 1

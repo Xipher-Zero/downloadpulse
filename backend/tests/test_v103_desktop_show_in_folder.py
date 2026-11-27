@@ -183,9 +183,54 @@ async def test_only_a_completed_download_inside_the_download_root_is_shown(deskt
     gone = await _download(desktop.repository, "alice-id", [desktop.root / "deleted.bin"], payload="f")
     status, body = await desktop.reveal("admin", {"transfer_id": gone})
     assert status == 409 and body["code"] == "desktop.reveal_missing"
+    # 1.0.8 WS-A9: a link anywhere on the way -- a parent folder, not only the
+    # file -- is no location, as core's material checks say
+    # (``transfers.filesystem.completed_location``), even when it points back
+    # inside the download root.
+    _file(desktop.root / "real" / "z.bin")
+    (desktop.root / "via").symlink_to(desktop.root / "real", target_is_directory=True)
+    through = await _download(desktop.repository, "alice-id", [desktop.root / "via" / "z.bin"], payload="g")
+    status, body = await desktop.reveal("admin", {"transfer_id": through})
+    assert status == 409 and body["code"] == "desktop.reveal_missing"
+    linked_folder = await _download(desktop.repository, "alice-id",
+                                    [desktop.root / "via" / "z.bin", desktop.root / "missing.bin"],
+                                    collection="via", payload="h")
+    status, body = await desktop.reveal("admin", {"transfer_id": linked_folder})
+    assert status == 409 and body["code"] == "desktop.reveal_missing"
     status, body = await desktop.reveal("admin", {"transfer_id": 999})
     assert status == 404 and body["code"] == "transfer.not_found"
     assert await _handed() is None
+
+
+def test_core_owns_the_completed_location_lookup(tmp_path):
+    """1.0.8 WS-A9: the lookup is ``transfers.filesystem``'s, over its own
+    component-wise checks; the application asks it and checks nothing itself."""
+    import inspect
+
+    from application.service import ApplicationService
+    from transfers.filesystem import completed_location
+
+    real = tmp_path / "real-root"
+    film = _file(real / "film.mkv")
+    first, second = _file(real / "a" / "x.bin"), _file(real / "b" / "y.bin")
+    assert completed_location(str(real), [str(film)]) == (str(film), False)
+    # Files in different folders: the folder they share, the root itself included.
+    assert completed_location(str(real), [str(first), str(second)]) == (str(real), True)
+    assert completed_location(str(real), [str(first), str(real / "a" / "gone.bin")]) == (str(real / "a"), True)
+    # A root named through a link (the root itself is the operator's choice): targets
+    # recorded under either name are found, and named beneath the root as resolved.
+    alias = tmp_path / "alias-root"
+    alias.symlink_to(real, target_is_directory=True)
+    assert completed_location(str(alias), [str(alias / "film.mkv")]) == (str(film), False)
+    assert completed_location(str(alias), [str(film)]) == (str(film), False)
+    # Never the root itself, a relative or climbing target, or a collection that climbs.
+    assert completed_location(str(real), [str(real)]) is None
+    assert completed_location(str(real), ["film.mkv"]) is None
+    assert completed_location(str(real), [str(real / "a" / ".." / "film.mkv")]) is None
+    assert completed_location(str(real), [str(real / "nothing.bin"), str(film)], "..") == (str(real), True)
+    assert completed_location(str(real), []) is None
+    source = inspect.getsource(ApplicationService.completed_location)
+    assert "is_link" not in source and "resolve(" not in source and "commonpath" not in source
 
 
 @pytest.mark.asyncio

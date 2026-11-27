@@ -21,15 +21,16 @@ from urllib.parse import urljoin, urlsplit
 from xml.parsers import expat
 
 from transfers.file_selection import ManifestInvalid, normalize_relative_path
+from transfers.requests import MAX_METALINK_BYTES
 
 NAMESPACE = "urn:ietf:params:xml:ns:metalink"
 # Metalink 3 -- an earlier, different format, never reinterpreted as 4.
 LEGACY_NAMESPACE = "http://www.metalinker.org/"
 
 # Hard safety bounds of one descriptor -- internal, never operator tuning. The
-# document bound is the ceiling DP already applies to an uploaded torrent
-# metafile, the other descriptor format it accepts.
-MAX_DESCRIPTOR_BYTES = 16_000_000             # 16 MB, decimal as every size is shown
+# document bound is core's one Metalink ceiling (``transfers.requests``), the
+# same as the one it applies to an uploaded torrent metafile.
+MAX_DESCRIPTOR_BYTES = MAX_METALINK_BYTES
 MAX_FILES = 10_000
 MAX_SOURCES_PER_FILE = 256
 # Every source becomes one ordinary request: the fan-out is bounded too.

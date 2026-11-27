@@ -8,6 +8,7 @@ used only as retained artifact truth; it never creates another progress store.
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 
 from core.presentation_safety import safe_public_host
 from db.database import get_db
@@ -20,7 +21,7 @@ from transfers._repository_base import (
 from transfers.cohorts import unverified_association_count
 from transfers.display_name import TransferDisplayName, transfer_display_name
 from transfers.manual_failover import switch_eligible
-from transfers.models import BITTORRENT_REQUEST_KINDS, TORRENT_FILE_REQUEST_KINDS, SizeKnowledge
+from transfers.models import BITTORRENT_REQUEST_KINDS, TORRENT_FILE_REQUEST_KINDS, SizeKnowledge, TransferState
 from transfers.repository import TransferRepository as _CanonicalTransferRepository
 
 
@@ -621,8 +622,60 @@ def canonical_file_presentations(files, refs, contributed, associations, *, tran
     return rows
 
 
+class WorkStanding(StrEnum):
+    """Whether a transfer's work still serves the demand that started it,
+    by canonical state (``work_standing``): ``live`` -- it progresses, or is
+    only paused; ``completed`` -- done (whether its material is still present
+    is the material lookup's answer, ``transfers.filesystem.completed_location``);
+    ``ended`` -- it ended (failed, cancelled, deleted, consolidated) or waits on
+    the person (an input challenge, or the operator attention recovery
+    decided)."""
+    LIVE = "live"
+    COMPLETED = "completed"
+    ENDED = "ended"
+
+
+# Canonical states in which a transfer's work no longer serves: it ended, or
+# it waits on the person's input.
+_ENDED_WORK_STATES = frozenset({
+    TransferState.FAILED, TransferState.CANCELLED, TransferState.DELETED, TransferState.CONSOLIDATED,
+    TransferState.INPUT_REQUIRED,
+})
+
+
+def work_standing_of(transfer, *, waits_on_person=False) -> WorkStanding:
+    """``WorkStanding`` of ``transfer`` (a ``Transfer``): completed first, then
+    paused (a pause is the person's own and still serves), then the canonical
+    end states, then ``waits_on_person`` -- an open input challenge or the
+    aggregate operator attention ``recovery_presentation`` decides."""
+    if transfer.state == TransferState.COMPLETED:
+        return WorkStanding.COMPLETED
+    if transfer.paused or transfer.state == TransferState.PAUSED:
+        return WorkStanding.LIVE
+    if transfer.state in _ENDED_WORK_STATES or waits_on_person:
+        return WorkStanding.ENDED
+    return WorkStanding.LIVE
+
+
 class TransferRepository(_CanonicalTransferRepository):
     """Canonical production repository plus safe recovery/source presentation."""
+
+    async def work_standing(self, transfer_id: int) -> WorkStanding | None:
+        """Whether ``transfer_id``'s work still serves (``WorkStanding``), or
+        ``None``: no such transfer. Decided by canonical state; only a live
+        state reads whether it waits on the person (the presentation's own
+        ``input_required`` challenge and ``attention_required``)."""
+        transfer = await self.get(int(transfer_id))
+        if transfer is None:
+            return None
+        standing = work_standing_of(transfer)
+        if standing is not WorkStanding.LIVE or transfer.paused or transfer.state == TransferState.PAUSED:
+            return standing
+        presented = await self.presentation(int(transfer_id))
+        if not presented:
+            return None
+        return work_standing_of(transfer, waits_on_person=bool(
+            presented.get("input_required") or presented.get("attention_required")))
 
     async def display_names(self, transfer_ids) -> dict[int, str]:
         """Each transfer's human-facing title (``transfer_display_names``)."""
