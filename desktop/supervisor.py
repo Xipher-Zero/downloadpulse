@@ -1674,6 +1674,10 @@ async def start_failure_notice(words: "Words | None", platform: str = sys.platfo
 # A run with administrator or root rights is refused (``privileged``) unless
 # this is set to 1: for a disposable machine or container whose only account
 # is root (the Flatpak's launch check, packaging/desktop/flatpak/ci-build.sh).
+# A test-system switch only, never for users: it is not documented to them,
+# no installer, shortcut or launcher sets it, and a run with it keeps every
+# risk the refusal exists for (files the account cannot later change, a
+# DownloadPulse that then stops starting normally).
 PRIVILEGED_OVERRIDE = "DOWNLOADPULSE_DESKTOP_ALLOW_PRIVILEGED"
 PRIVILEGED_EXIT = 4
 
@@ -1706,8 +1710,7 @@ async def refuse_privileged(paths: dict[str, Path], what: str) -> int:
     standard error and, where one can be shown, a notice in the
     installation's language (``start_failure_notice``)."""
     logger.error("DownloadPulse does not run as %s: start it again as this account itself (on Windows, not with "
-                 "Run as administrator; elsewhere, not with sudo or as root). Nothing was started or written. "
-                 "(%s=1 allows it on a disposable test system.)", what, PRIVILEGED_OVERRIDE)
+                 "Run as administrator; elsewhere, not with sudo or as root). Nothing was started or written.", what)
     words = None
     try:
         sys.dont_write_bytecode = True                 # not even a cache file beside the program

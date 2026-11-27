@@ -8,9 +8,11 @@ would come back to (PUT /api/desktop/window-state); the supervisor is handed
 that answer once (op ``show``: ``release``) and, releasing on it, says so (op
 ``released``); the relaunched page takes the state once (GET), with the
 activity journal's position at the release. Never a browser tab or a Local Port
-client, and nothing for an ordinary reload."""
+client, and nothing for an ordinary reload. The window's other own routes (the
+Save dialog's, 1.0.8) are refused the same way."""
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -99,6 +101,50 @@ async def test_a_hidden_window_is_released_only_on_its_own_pages_answer_and_its_
     finally:
         for stream in streams:
             await stream.close()
+        await desktop.stop()
+
+
+@pytest.mark.asyncio
+async def test_only_the_window_opens_a_save_dialog_and_a_local_port_client_is_refused(tmp_path):
+    """1.0.8 (F3): the two Save-dialog routes go through ``_require_window`` as
+    the window-state routes do: through Local Port they are refused before
+    anything is packaged or a dialog is asked for, whatever the client names;
+    from the window's own address the file is saved where the dialog says."""
+    local = free_port()
+    desktop = await _port_backend(tmp_path / "desktop", local).start()
+    try:
+        assert await desktop.ready()
+        ask = desktop.channel.ask
+        assert (await desktop.exchange("POST", "/api/admin/backup"))[0] == 200
+        status, listed = await desktop.exchange("GET", "/api/admin/backups")
+        assert status == 200 and listed["backups"]
+        backup = listed["backups"][0]["id"]
+        saves = (f"/api/admin/backups/{backup}/package/save", "/api/torrents/1/trace/save")
+
+        forged = {"Host": f"127.0.0.1:{desktop.port}"}
+        async with aiohttp.ClientSession() as session:
+            for path in saves:
+                for headers in ({}, forged, {**forged, "X-Forwarded-For": "127.0.0.1"}):
+                    async with session.post(f"http://127.0.0.1:{local}{path}", headers=headers) as reply:
+                        assert (reply.status, (await reply.json())["code"]) == (403, "desktop.window_request_only")
+        assert (await ask("saves"))["saves"] == []                           # no dialog was asked for
+
+        # The window's own page: past the guard (no such transfer is the trace's own answer) ...
+        status, body = await desktop.exchange("POST", saves[1])
+        assert (status, body["code"]) == (404, "transfer.not_found")
+        # ... and the backup is saved where the dialog chose.
+        chosen = tmp_path / "chosen-backup.zip"
+        saving = asyncio.ensure_future(desktop.exchange("POST", saves[0]))
+        for _ in range(200):
+            waiting = (await ask("saves"))["saves"]
+            if waiting:
+                break
+            await asyncio.sleep(0.05)
+        assert len(waiting) == 1
+        assert (await ask("saved", save=waiting[0]["save"], path=str(chosen)))["ok"] is True
+        assert await saving == (200, {"saved": True, "name": "chosen-backup.zip"})
+        assert chosen.stat().st_size > 0
+    finally:
         await desktop.stop()
 
 

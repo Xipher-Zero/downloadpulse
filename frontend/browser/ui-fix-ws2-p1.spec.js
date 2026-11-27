@@ -515,13 +515,17 @@ test('WS2-P1 a removal is complete only once its focus has settled: the caller a
   await accept(page).click();
   await expect.poll(() => page.evaluate(() => window.__dpBulkSettledFocus)).not.toBeNull();
   expect(await page.evaluate(() => window.__dpBulkSettledFocus)).toBe('torrent-search');
-  // Single row: where focus is when the removal's own caller resumes.
+  // Single row, through its real Remove: where focus is when its settled notification is sent.
   await page.evaluate(() => {
-    const button = document.querySelector('.dp-downloads-detail-row[data-torrent-id="1"] button.btn-danger');
-    window.__dpRemovalExit = deleteT(1, null, button).then(() => document.activeElement?.id || document.activeElement?.tagName);
+    window.__dpRemovalExit = null;
+    document.addEventListener('downloadpulse:downloads-delete-settled', event => {
+      window.__dpRemovalExit = {id: event.detail?.id, focus: document.activeElement?.id || document.activeElement?.tagName};
+    }, {once: true});
   });
+  await row(page, 1).locator('button.btn-danger').click();
   await accept(page).click();
-  expect(await page.evaluate(() => window.__dpRemovalExit)).toBe('torrent-search');
+  await expect.poll(() => page.evaluate(() => window.__dpRemovalExit)).not.toBeNull();
+  expect(await page.evaluate(() => window.__dpRemovalExit)).toEqual({id: 1, focus: 'torrent-search'});
 });
 
 test('WS2-P1 repeated open/cancel/confirm cycles settle exactly once, never leak a prior target, and always clear the body modal state', async ({ page }) => {

@@ -605,7 +605,9 @@ async def test_the_first_paint_says_a_released_window_is_opened_again_and_the_ch
     assert desktop_control.restore_pending() is False
     source = (BACKEND / "api" / "auth_routes.py").read_text(encoding="utf-8")
     assert "window.downloadPulseResuming={'true' if resuming else 'false'};" in source
-    assert "resuming = restore_pending() and window_request(request)" in source   # the window's own page only and auth_routes.desktop_installation is not None
+    assert "own_window = window_request(request)" in source                        # the window's own page only
+    assert "resuming = restore_pending() and own_window" in source
+    assert "window.downloadPulseWindow={'true' if own_window else 'false'};" in source   # 1.0.8: saves and frame
     cover = (BACKEND.parent / "frontend" / "static" / "ui-desktop-start.js").read_text(encoding="utf-8")
     assert "const resuming = window.downloadPulseResuming === true;" in cover
     assert "resuming ? 0 : Math.max(0, MIN_SHOWN_MS - performance.now())" in cover

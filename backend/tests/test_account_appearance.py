@@ -97,6 +97,9 @@ def _projection(script: str) -> dict:
     # Then whether it is a released window opened again (1.0.5; never outside the desktop application).
     resuming, _, rest = rest.partition("\n")
     assert resuming == "window.downloadPulseResuming=false;", resuming
+    # Then whether this is the desktop window's own page (1.0.8; never outside the desktop application).
+    own_window, _, rest = rest.partition("\n")
+    assert own_window == "window.downloadPulseWindow=false;", own_window
     match = re.fullmatch(r"window\.downloadPulseAppearance=Object\.freeze\((.*)\);", head)
     assert match, head
     assert rest == BOOTSTRAP.read_text(encoding="utf-8")         # the owner itself, unchanged

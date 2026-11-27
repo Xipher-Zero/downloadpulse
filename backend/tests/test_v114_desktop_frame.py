@@ -5,7 +5,8 @@ on load and on every theme change); the backend keeps the latest (op "frame"
 of the control channel); the supervisor colours the window's own frame with it
 -- macOS through the shell's window.setFrameTheme (our Neutralino patch),
 Windows through DwmSetWindowAttribute on the shell's windows, Linux not at all.
-A server has no frame.
+Only the window's own page says it (``_require_window``), never a client
+through Local Port. A server has no frame.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+import aiohttp
 import pytest
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -21,7 +23,9 @@ sys.path.insert(0, str(ROOT))
 
 from application import desktop_control  # noqa: E402
 from desktop import supervisor  # noqa: E402
+from core.ports import free_port  # noqa: E402
 from test_v114_desktop_control import Backend  # noqa: E402
+from test_v114_desktop_local_port import _port_backend  # noqa: E402
 
 
 def test_only_two_hex_colours_and_a_dark_flag_make_a_frame():
@@ -35,11 +39,20 @@ def test_only_two_hex_colours_and_a_dark_flag_make_a_frame():
 
 @pytest.mark.asyncio
 async def test_the_page_says_its_frame_and_the_supervisor_reads_it_and_a_server_has_none(tmp_path):
-    desktop = await Backend(tmp_path / "desktop", locked=False).start()
+    local = free_port()
+    desktop = await _port_backend(tmp_path / "desktop", local).start()
     server = await Backend(tmp_path / "server", desktop=False, channel=False, locked=False).start()
     try:
         assert await desktop.ready() and await server.ready()
         assert (await desktop.channel.ask("frame"))["frame"] is None              # until the page says
+        # A client through Local Port never colours the window's frame, whatever it names (1.0.8).
+        forged = {"Host": f"127.0.0.1:{desktop.port}"}
+        async with aiohttp.ClientSession() as session:
+            for headers in ({}, forged, {**forged, "X-Forwarded-For": "127.0.0.1"}):
+                async with session.put(f"http://127.0.0.1:{local}/api/desktop/frame", headers=headers,
+                                       json={"caption": "#000000", "text": "#ffffff", "dark": True}) as reply:
+                    assert (reply.status, (await reply.json())["code"]) == (403, "desktop.window_request_only")
+        assert (await desktop.channel.ask("frame"))["frame"] is None
         status, body = await desktop.exchange("PUT", "/api/desktop/frame",
                                               json={"caption": "#f7f7fb", "text": "#111a34", "dark": False})
         assert status == 200 and body == {"caption": "#f7f7fb", "text": "#111a34", "dark": False}
@@ -84,7 +97,7 @@ def test_the_frame_is_wired_from_the_page_to_the_shell():
     assert "if frame and frame != applied_frame and window.shell is not None:" in source
     app = (ROOT / "frontend" / "static" / "app.js").read_text(encoding="utf-8")
     block = app[app.index("(function desktopFrame() {"):app.index("})();", app.index("(function desktopFrame() {"))]
-    assert "if (window.downloadPulseDesktop !== true) return;" in block               # the desktop application only
+    assert "if (window.downloadPulseWindow !== true) return;" in block                # the desktop window's own page only
     assert "document.addEventListener('downloadpulse:theme-changed', say);" in block
     assert "api('PUT', '/desktop/frame', frame)" in block
 

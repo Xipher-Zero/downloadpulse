@@ -756,8 +756,9 @@ function saidRefusal(data, first) {
   return typeof category === 'string' && DPI18n.has(`error.category.${category}`) ? DPI18n.t(`error.category.${category}`) : '';
 }
 
-/* Desktop saves. The installed desktop application (window.downloadPulseDesktop,
- * said by the server before the first paint) has no browser download flow: its
+/* Desktop saves. The installed desktop application's own window
+ * (window.downloadPulseWindow, said by the server before the first paint; never
+ * a browser through Local Port, which keeps its own flow) has no browser download flow: its
  * window would put a download in the Downloads folder unasked. There, a file
  * the interface offers is saved where the person's own Save dialog says --
  * the file's save route (POST, beside its download route) asks the desktop
@@ -768,7 +769,7 @@ function saidRefusal(data, first) {
  * person's own time in the dialog. */
 const DESKTOP_SAVE_TIMEOUT_MS = 660000;
 const DPDesktopSave = Object.freeze({
-  active: window.downloadPulseDesktop === true,
+  active: window.downloadPulseWindow === true,
   async save(path) {
     const result = await api('POST', path, null, DESKTOP_SAVE_TIMEOUT_MS);
     if (result && result.saved) toast(DPI18n.t('desktop.save.saved', {name: result.name}), 'success');
@@ -806,9 +807,10 @@ window.DPDesktopReveal = DPDesktopReveal;
  * canvas and text colours the page is drawn in, dark or light. Said to the
  * backend on load and on every theme change (PUT /desktop/frame); the desktop
  * supervisor colours the frame with it. Only what changed is sent; a refused
- * or failed send is said again with the next change. Nothing elsewhere. */
+ * or failed send is said again with the next change. Only the window's own
+ * page says it (window.downloadPulseWindow); nothing elsewhere. */
 (function desktopFrame() {
-  if (window.downloadPulseDesktop !== true) return;
+  if (window.downloadPulseWindow !== true) return;
   const hex = value => {
     const parts = String(value).match(/\d+(?:\.\d+)?/g);
     return parts && parts.length >= 3

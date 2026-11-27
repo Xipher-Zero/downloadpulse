@@ -37,7 +37,7 @@ env:
   IMAGE_NAME: ghcr.io/xipher-zero/downloadpulse
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Build provenance (docs/SUPPLY_CHAIN_POLICY.md 1, "Build provenance"): the
-  # publish job signs SLSA provenance for the digest it pushes, and a candidate
+  # attest job signs SLSA provenance for the digest publish pushes, and a candidate
   # is only ever reused, qualified or promoted once that provenance verifies as
   # signed by THIS workflow, for this exact commit, from a qualifying ref. A
   # release-ops/* one-shot branch, a pull request or any other ref never
@@ -58,6 +58,10 @@ env:
 #                         runner, only once smoke qualification has passed --
 #                         the immutable publication. A publication therefore
 #                         never waits for a second runner after its smoke test.
+#                         Then attest (the only job holding id-token and
+#                         attestations: it signs the pushed digest's build
+#                         provenance) and provenance (read-only: verifies it
+#                         before the testing alias follows).
 #
 # The two `if:` expressions are exact complements (the condition, and its
 # negation); test_image_job_paths_contract.py holds them to that.
@@ -108,6 +112,10 @@ jobs:
       - &setup-buildx
         name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+        with:
+          # BuildKit by digest, never a floating tag (docs/SUPPLY_CHAIN_POLICY.md 1):
+          # moby/buildkit:v0.35.1 (buildx-stable-1, the action's default), multi-arch index.
+          driver-opts: image=docker.io/moby/buildkit@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - &test-image-metadata
         name: Generate test image metadata
@@ -299,14 +307,15 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # Signing (id-token) and storing (attestations) the build provenance of
-      # the digest this job pushes; nothing else in Image holds them.
-      id-token: write
-      attestations: write
+      # No id-token or attestations: the build provenance of the digest this
+      # job pushes is signed by the attest job alone.
     outputs:
       candidate_ref: ${{ steps.identity.outputs.candidate_ref }}
       candidate_digest: ${{ steps.candidate.outputs.digest }}
       candidate_reused: ${{ steps.candidate.outputs.reused }}
+      # The digest Build and publish pushed (empty when a candidate is reused):
+      # the attest job's one subject.
+      pushed_digest: ${{ steps.publish.outputs.digest }}
 
     steps:
       # The build and smoke qualification of build-and-smoke-test, step for
@@ -318,6 +327,10 @@ jobs:
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+        with:
+          # binfmt by digest, never a floating tag (docs/SUPPLY_CHAIN_POLICY.md 1):
+          # tonistiigi/binfmt:qemu-v10.2.3 (latest, the action's default), multi-arch index.
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
 
       - *setup-buildx
       - *test-image-metadata
@@ -465,7 +478,7 @@ jobs:
           done
 
           # Reuse is decided here; it is only ever acted on after "Verify
-          # candidate build provenance" below has verified this digest's
+          # candidate build provenance" (the provenance job) has verified this digest's
           # signed provenance. A candidate without it -- one published before
           # build provenance existed, or by anything but this workflow from a
           # qualifying ref -- fails there, closed: the tag is write-once, so it
@@ -529,19 +542,6 @@ jobs:
             exit 1
           fi
 
-      # Signed SLSA build provenance for exactly the digest pushed above, stored
-      # with GitHub's attestations and in the registry beside the image. Only a
-      # fresh publication attests; a reused candidate keeps the provenance of
-      # the run that built it.
-      - name: Attest candidate build provenance
-        if: steps.existing.outputs.exists != 'true'
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.publish.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
-
       - name: Select the immutable candidate digest
         id: candidate
         shell: bash
@@ -573,71 +573,6 @@ jobs:
             echo "- digest: \`$digest\`"
             echo "- reused existing candidate: $reused"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # Required for both paths, before anything consumes the candidate (the
-      # job's outputs, the testing alias, every qualifier): the digest's build
-      # provenance must verify as signed by image.yml, on a GitHub-hosted
-      # runner, for this exact commit (source and workflow digest), from a
-      # qualifying ref. An authorized publishing dispatch from feature/, fix/
-      # or chore/ also accepts its own ref, so its test image verifies -- that
-      # provenance never qualifies anywhere else.
-      - name: Verify candidate build provenance
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
-          CANDIDATE_REUSED: ${{ steps.candidate.outputs.reused }}
-        run: |
-          set -euo pipefail
-
-          accepted="$QUALIFYING_REFS"
-          if [[ ! "$GITHUB_REF" =~ ^(${QUALIFYING_REFS})$ ]]; then
-            own_ref="$(printf '%s' "$GITHUB_REF" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
-            accepted="${QUALIFYING_REFS}|${own_ref}"
-          fi
-          signer="^https://github\.com/Xipher-Zero/downloadpulse/\.github/workflows/image\.yml@(${accepted})$"
-          subject="oci://${IMAGE_NAME}@${CANDIDATE_DIGEST}"
-
-          verified=0
-          for attempt in $(seq 1 6); do
-            if gh attestation verify "$subject" \
-              --repo "$GITHUB_REPOSITORY" \
-              --predicate-type "$BUILD_PROVENANCE_PREDICATE_TYPE" \
-              --cert-identity-regex "$signer" \
-              --source-digest "$GITHUB_SHA" \
-              --deny-self-hosted-runners \
-              --limit 100 \
-              --format json > build-provenance.json; then
-              verified=1
-              break
-            fi
-            echo "Build provenance for $subject not verified on attempt ${attempt}/6"
-            if [ "$attempt" -lt 6 ]; then sleep 10; fi
-          done
-
-          if [ "$verified" -ne 1 ] || ! jq -e \
-            --arg sha "$GITHUB_SHA" \
-            --arg signer "$signer" \
-            --arg refs "^(${accepted})$" \
-            'any(.[]; .verificationResult.signature.certificate as $c |
-              (($c.subjectAlternativeName // "") | test($signer)) and
-              (($c.buildSignerURI // "") | test($signer)) and
-              (($c.sourceRepositoryRef // "") | test($refs)) and
-              $c.sourceRepositoryURI == "https://github.com/Xipher-Zero/downloadpulse" and
-              $c.sourceRepositoryDigest == $sha and
-              $c.buildSignerDigest == $sha and
-              $c.runnerEnvironment == "github-hosted")' build-provenance.json >/dev/null; then
-            echo "::error::Candidate ${IMAGE_NAME}@${CANDIDATE_DIGEST} (sha-${GITHUB_SHA}, reused=${CANDIDATE_REUSED}) carries no build provenance signed by image.yml for this commit from a qualifying ref."
-            # Diagnostics only: which image.yml refs (if any) did sign it.
-            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow Xipher-Zero/downloadpulse/.github/workflows/image.yml \
-              --format json --jq '.[].verificationResult.signature.certificate.sourceRepositoryRef' 2>&1 || true
-            echo "A candidate published before build provenance existed, or from a ref that never qualifies, can never be reused, qualified or promoted, and its write-once tag is not overwritten: qualify a new source commit."
-            exit 1
-          fi
-
-          echo "Build provenance verified for ${IMAGE_NAME}@${CANDIDATE_DIGEST}"
-          echo "- build provenance: verified (image.yml, source ${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify candidate digest and OCI identity
         shell: bash
@@ -746,13 +681,136 @@ jobs:
           echo "Candidate digest: $digest"
           printf 'Candidate tags:\n%s\n' "$GENERATED_TAGS"
 
+  # Signed SLSA build provenance for exactly the digest publish pushed, stored
+  # with GitHub's attestations and in the registry beside the image. Its own
+  # small job, so the signing scopes (id-token, attestations) are held by no
+  # step that runs a build tool or a privileged image: only the GHCR sign-in
+  # (packages: write, to push the attestation) and the signing action run
+  # here. Only a fresh publication attests; a reused candidate keeps the
+  # provenance of the run that built it, and this job then runs no step.
+  attest:
+    name: Sign candidate build provenance
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Log in to GHCR
+        if: needs.publish.outputs.candidate_reused != 'true'
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest candidate build provenance
+        if: needs.publish.outputs.candidate_reused != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ needs.publish.outputs.pushed_digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+  # The candidate's build provenance verified (both paths) before anything
+  # consumes it: its outputs are the candidate the testing alias follows.
+  # Read-only.
+  provenance:
+    name: Verify candidate build provenance
+    needs: [publish, attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      candidate_ref: ${{ needs.publish.outputs.candidate_ref }}
+      candidate_digest: ${{ needs.publish.outputs.candidate_digest }}
+      candidate_reused: ${{ needs.publish.outputs.candidate_reused }}
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Required for both paths, before anything consumes the candidate (this
+      # job's outputs, the testing alias): the digest's build
+      # provenance must verify as signed by image.yml, on a GitHub-hosted
+      # runner, for this exact commit (source and workflow digest), from a
+      # qualifying ref. An authorized publishing dispatch from feature/, fix/
+      # or chore/ also accepts its own ref, so its test image verifies -- that
+      # provenance never qualifies anywhere else.
+      - name: Verify candidate build provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_DIGEST: ${{ needs.publish.outputs.candidate_digest }}
+          CANDIDATE_REUSED: ${{ needs.publish.outputs.candidate_reused }}
+        run: |
+          set -euo pipefail
+
+          accepted="$QUALIFYING_REFS"
+          if [[ ! "$GITHUB_REF" =~ ^(${QUALIFYING_REFS})$ ]]; then
+            own_ref="$(printf '%s' "$GITHUB_REF" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
+            accepted="${QUALIFYING_REFS}|${own_ref}"
+          fi
+          signer="^https://github\.com/Xipher-Zero/downloadpulse/\.github/workflows/image\.yml@(${accepted})$"
+          subject="oci://${IMAGE_NAME}@${CANDIDATE_DIGEST}"
+
+          verified=0
+          for attempt in $(seq 1 6); do
+            if gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --predicate-type "$BUILD_PROVENANCE_PREDICATE_TYPE" \
+              --cert-identity-regex "$signer" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners \
+              --limit 100 \
+              --format json > build-provenance.json; then
+              verified=1
+              break
+            fi
+            echo "Build provenance for $subject not verified on attempt ${attempt}/6"
+            if [ "$attempt" -lt 6 ]; then sleep 10; fi
+          done
+
+          if [ "$verified" -ne 1 ] || ! jq -e \
+            --arg sha "$GITHUB_SHA" \
+            --arg signer "$signer" \
+            --arg refs "^(${accepted})$" \
+            'any(.[]; .verificationResult.signature.certificate as $c |
+              (($c.subjectAlternativeName // "") | test($signer)) and
+              (($c.buildSignerURI // "") | test($signer)) and
+              (($c.sourceRepositoryRef // "") | test($refs)) and
+              $c.sourceRepositoryURI == "https://github.com/Xipher-Zero/downloadpulse" and
+              $c.sourceRepositoryDigest == $sha and
+              $c.buildSignerDigest == $sha and
+              $c.runnerEnvironment == "github-hosted")' build-provenance.json >/dev/null; then
+            echo "::error::Candidate ${IMAGE_NAME}@${CANDIDATE_DIGEST} (sha-${GITHUB_SHA}, reused=${CANDIDATE_REUSED}) carries no build provenance signed by image.yml for this commit from a qualifying ref."
+            # Diagnostics only: which image.yml refs (if any) did sign it.
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow Xipher-Zero/downloadpulse/.github/workflows/image.yml \
+              --format json --jq '.[].verificationResult.signature.certificate.sourceRepositoryRef' 2>&1 || true
+            echo "A candidate published before build provenance existed, or from a ref that never qualifies, can never be reused, qualified or promoted, and its write-once tag is not overwritten: qualify a new source commit."
+            exit 1
+          fi
+
+          echo "Build provenance verified for ${IMAGE_NAME}@${CANDIDATE_DIGEST}"
+          echo "- build provenance: verified (image.yml, source ${GITHUB_SHA})" >> "$GITHUB_STEP_SUMMARY"
+
   # This commit's immutable image is published (a re-run included): move the
   # rolling development alias 1.0.8-testing to it, if it is still the 1.0.8
   # tip, one evaluation at a time. Its outcome is the "1.0.8-testing" commit
   # status, never this workflow's verdict.
   testing-alias:
     name: Testing alias
-    needs: publish
+    needs: provenance
     if: github.event_name == 'push' && github.ref == 'refs/heads/1.0.8'
     permissions:
       contents: read

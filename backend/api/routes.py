@@ -1449,7 +1449,9 @@ def _require_desktop(detail: str = "Saving to a chosen location is only availabl
 # ── the desktop application's window frame ─────────────────────────────────
 # The page says the colours of its theme (on load and on every change of
 # theme); the supervisor colours the window's own frame with them
-# (application.desktop_control set_frame / op "frame"). A server has no frame.
+# (application.desktop_control set_frame / op "frame"). Only the window's own
+# page says it (``_require_window``), never a client through Local Port. A
+# server has no frame.
 
 class DesktopFrame(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -1459,8 +1461,9 @@ class DesktopFrame(BaseModel):
 
 
 @router.put("/desktop/frame")
-async def desktop_frame(body: DesktopFrame):
+async def desktop_frame(body: DesktopFrame, request: Request):
     _require_desktop("Only the desktop application has a window frame.", "desktop.frame_only")
+    _require_window(request)
     from application.desktop_control import set_frame
     try:
         return set_frame(body.caption, body.text, body.dark)
@@ -1775,10 +1778,13 @@ async def _save_where_chosen(name: str, write) -> dict:
 
 
 @router.post("/torrents/{torrent_id}/trace/save")
-async def save_transfer_trace(torrent_id: int, application: ApplicationService = Depends(get_application)):
+async def save_transfer_trace(torrent_id: int, request: Request,
+                              application: ApplicationService = Depends(get_application)):
     """Desktop: the Transfer Trace Log (``export_transfer_trace``'s file),
-    saved where the person's Save dialog says."""
+    saved where the person's Save dialog says. The window's own page alone
+    (``_require_window``): a client through Local Port downloads it instead."""
     _require_desktop()
+    _require_window(request)
     exported = await transfer_trace.export(torrent_id, application)
     if exported is None:
         raise DisplayError(404, "Transfer not found", code="transfer.not_found")
@@ -2171,11 +2177,13 @@ async def save_backup(backup_id: str):
 
 
 @router.post("/admin/backups/{backup_id}/package/save")
-async def save_backup_where_chosen(backup_id: str):
+async def save_backup_where_chosen(backup_id: str, request: Request):
     """Desktop: the backup package (``save_backup``'s file), saved where the
-    person's Save dialog says."""
+    person's Save dialog says. The window's own page alone
+    (``_require_window``): a client through Local Port downloads it instead."""
     import shutil
     _require_desktop()
+    _require_window(request)
     try:
         package = await asyncio.to_thread(backup_store.package_restore_point, backup_id)
     except backup_store.BackupRejected as exc:

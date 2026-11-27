@@ -158,6 +158,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+        with:
+          # BuildKit by digest, never a floating tag (docs/SUPPLY_CHAIN_POLICY.md 1):
+          # moby/buildkit:v0.35.1 (buildx-stable-1, the action's default), multi-arch index.
+          driver-opts: image=docker.io/moby/buildkit@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Log in to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121

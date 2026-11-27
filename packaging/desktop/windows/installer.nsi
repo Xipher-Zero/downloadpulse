@@ -382,7 +382,22 @@ Function .onVerifyInstDir
   ${EndIf}
 FunctionEnd
 
+; The folder the installed DownloadPulse runs from (its uninstall entry's
+; InstallLocation), so that a DownloadPulse this setup closed is started again
+; from there when setup ends without installing -- not from a folder chosen
+; meanwhile, which holds no DownloadPulse.
+Function InstalledInstDir
+  Push $0
+  ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+  ${EndIf}
+  Pop $0
+FunctionEnd
+
 ; The folder refused, said to the person or, silent, to the caller (exit 4); nothing is changed.
+; Like a cancel (DpUserAbort), the data-root lock is let go and a DownloadPulse
+; this setup closed (dpRelaunch) is started again before setup quits.
 Function RefuseInstDir
   ${If} $dpInstDirOk == 2
     StrCpy $4 "$INSTDIR\app is not DownloadPulse's: setup never removes or replaces a folder it did not install. Choose another folder, then run setup again. Nothing was changed."
@@ -395,6 +410,11 @@ Function RefuseInstDir
   ${Else}
     MessageBox MB_ICONSTOP|MB_OK "$4"
   ${EndIf}
+  Call ReleaseDataRootLock
+  ${If} $dpRelaunch == 1
+    Call InstalledInstDir
+    Call LaunchDownloadPulse
+  ${EndIf}
   SetErrorLevel 4
   Quit
 FunctionEnd
@@ -405,6 +425,23 @@ Function .onInit
     Abort
   ${EndIf}
   Call RequireVcRedist      ; before the data-root lock and any file: nothing is changed without it
+  ; An installation from before 1.0.8 may be outside $LOCALAPPDATA, where
+  ; this setup never installs: the directory page would open on that folder
+  ; (InstallDirRegKey) with Next disabled. It opens on the default folder
+  ; instead, and says once that the old copy is to be uninstalled first: its
+  ; uninstaller would remove this installation's Start-menu entry and
+  ; uninstall entry, which the two share. (A silent run is refused, exit 4.)
+  ${IfNot} ${Silent}
+    ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
+    ${If} $0 != ""
+    ${AndIf} $0 == $INSTDIR
+      Call DpInstDirAllowed
+      ${If} $dpInstDirOk == 0
+        StrCpy $INSTDIR "$LOCALAPPDATA\Programs\DownloadPulse"
+        MessageBox MB_ICONEXCLAMATION|MB_OK "An older DownloadPulse is installed in $0, outside $LOCALAPPDATA. DownloadPulse now installs only inside $LOCALAPPDATA, which only this account can change.$\n$\nBest: cancel this setup, uninstall the old copy (Settings > Apps > DownloadPulse), then run this setup again. Your downloads and settings are kept.$\n$\nIf you continue, setup installs in $INSTDIR, and uninstalling the old copy later would also remove this installation's Start-menu entry and its entry in Apps." /SD IDOK
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
   ${If} ${Silent}           ; no directory page: the folder (/D, or the installed one) is checked here
     Call DpInstDirAllowed
     ${If} $dpInstDirOk != 1
@@ -418,6 +455,7 @@ Function DpUserAbort
   ; closed is started again, as the dialog that closed it said.
   Call ReleaseDataRootLock
   ${If} $dpRelaunch == 1
+    Call InstalledInstDir
     Call LaunchDownloadPulse
   ${EndIf}
 FunctionEnd

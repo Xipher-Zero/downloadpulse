@@ -333,28 +333,45 @@ def test_image_signs_build_provenance_for_exactly_the_digest_it_pushes():
     text = _text("image.yml")
     assert text.count("actions/attest-build-provenance@") == 1
     assert PROVENANCE_ACTION in text
-    attest = _steps("image.yml", "publish")["Attest candidate build provenance"]
-    assert attest["if"] == "steps.existing.outputs.exists != 'true'"
-    assert attest["with"]["subject-name"] == "${{ env.IMAGE_NAME }}"
-    assert attest["with"]["subject-digest"] == "${{ steps.publish.outputs.digest }}"
-    assert attest["with"]["push-to-registry"] is True
-    # Only the publish job may sign; the pull-request path holds no such scope.
+    # Its own small job (1.0.8), after publish, on the digest publish pushed.
     jobs = _yaml("image.yml")["jobs"]
-    assert jobs["publish"]["permissions"]["id-token"] == "write"
-    assert jobs["publish"]["permissions"]["attestations"] == "write"
+    assert jobs["attest"]["needs"] == "publish"
+    assert jobs["publish"]["outputs"]["pushed_digest"] == "${{ steps.publish.outputs.digest }}"
+    steps = _steps("image.yml", "attest")
+    assert list(steps) == ["Log in to GHCR", "Attest candidate build provenance"]
+    attest = steps["Attest candidate build provenance"]
+    assert attest["if"] == "needs.publish.outputs.candidate_reused != 'true'"
+    assert steps["Log in to GHCR"]["if"] == attest["if"]
+    assert steps["Log in to GHCR"]["uses"].startswith("docker/login-action@")
+    assert attest["with"]["subject-name"] == "${{ env.IMAGE_NAME }}"
+    assert attest["with"]["subject-digest"] == "${{ needs.publish.outputs.pushed_digest }}"
+    assert attest["with"]["push-to-registry"] is True
+    # Only the attest job may sign: no other job in Image holds id-token or attestations write
+    # (the pull-request path holds no scope at all).
+    assert jobs["attest"]["permissions"] == {"contents": "read", "packages": "write", "id-token": "write",
+                                             "attestations": "write"}
+    for key, job in jobs.items():
+        if key != "attest":
+            granted = job.get("permissions", {})
+            assert granted.get("id-token") != "write" and granted.get("attestations") != "write", key
     assert "permissions" not in jobs["build-and-smoke-test"]
 
 
 def test_image_requires_verified_provenance_before_any_reuse_or_consumer():
-    steps = _yaml("image.yml")["jobs"]["publish"]["steps"]
-    names = [step["name"] for step in steps]
-    verify = names.index("Verify candidate build provenance")
-    assert names.index("Attest candidate build provenance") < names.index("Select the immutable candidate digest") < verify
-    assert verify < names.index("Verify candidate digest and OCI identity")
-    step = steps[verify]
+    jobs = _yaml("image.yml")["jobs"]
+    provenance = jobs["provenance"]
+    # After the signing, read-only, and the one source of the candidate the testing alias follows.
+    assert provenance["needs"] == ["publish", "attest"] and "if" not in provenance
+    assert provenance["permissions"] == {"contents": "read", "packages": "read", "attestations": "read"}
+    assert jobs["testing-alias"]["needs"] == "provenance"
+    assert provenance["outputs"] == {key: f"${{{{ needs.publish.outputs.{key} }}}}"
+                                     for key in ("candidate_ref", "candidate_digest", "candidate_reused")}
+    names = [step["name"] for step in jobs["publish"]["steps"]]
+    assert names.index("Select the immutable candidate digest") < names.index("Verify candidate digest and OCI identity")
+    step = _steps("image.yml", "provenance")["Verify candidate build provenance"]
     assert "if" not in step, "both the reuse path and the fresh path must verify provenance"
     run = step["run"]
-    assert "steps.candidate.outputs.digest" in step["env"]["CANDIDATE_DIGEST"]
+    assert "needs.publish.outputs.candidate_digest" in step["env"]["CANDIDATE_DIGEST"]
     for flag in ('--cert-identity-regex "$signer"', '--source-digest "$GITHUB_SHA"', "--deny-self-hosted-runners",
                  '--predicate-type "$BUILD_PROVENANCE_PREDICATE_TYPE"'):
         assert flag in run, flag
@@ -455,6 +472,36 @@ def test_every_action_in_the_candidate_chain_is_sha_pinned():
             if ref.startswith("./"):
                 continue
             assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", ref), (name, ref)
+
+
+def test_the_build_actions_run_their_privileged_images_by_digest_in_every_workflow():
+    """setup-qemu-action runs binfmt privileged and setup-buildx-action starts
+    BuildKit; by default both by floating tag. Every use names a multi-arch
+    index digest instead (1.0.8), with the tag it was resolved from beside it,
+    and the policy says how they are refreshed (Dependabot does not)."""
+    binfmt = re.compile(r"image: docker\.io/tonistiigi/binfmt@sha256:[0-9a-f]{64}\n")
+    buildkit = re.compile(r"driver-opts: image=docker\.io/moby/buildkit@sha256:[0-9a-f]{64}\n")
+    seen = {"qemu": 0, "buildx": 0}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                uses = step.get("uses", "")
+                if uses.startswith("docker/setup-qemu-action@"):
+                    seen["qemu"] += 1
+                    assert binfmt.fullmatch(f"image: {step['with']['image']}\n"), (path.name, step)
+                elif uses.startswith("docker/setup-buildx-action@"):
+                    seen["buildx"] += 1
+                    assert buildkit.fullmatch(f"driver-opts: {step['with']['driver-opts']}\n"), (path.name, step)
+        assert len(binfmt.findall(text)) == text.count("# tonistiigi/binfmt:qemu-v"), path.name
+        assert len(buildkit.findall(text)) == text.count("# moby/buildkit:v"), path.name
+        assert "binfmt:latest" not in text.replace("(latest, the action's default)", ""), path.name
+    assert seen["qemu"] >= 2 and seen["buildx"] >= 8, seen
+    # One digest each across the repository: a refresh moves every use together.
+    everything = "".join(path.read_text(encoding="utf-8") for path in WORKFLOWS.glob("*.yml"))
+    assert len(set(binfmt.findall(everything))) == 1 and len(set(buildkit.findall(everything))) == 1
+    assert "**Build tool images by digest.**" in _POLICY and "refreshed by hand" in _POLICY
 
 
 def test_dependabot_covers_every_dependency_ecosystem_the_repository_ships():

@@ -66,6 +66,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+        with:
+          # BuildKit by digest, never a floating tag (docs/SUPPLY_CHAIN_POLICY.md 1):
+          # moby/buildkit:v0.35.1 (buildx-stable-1, the action's default), multi-arch index.
+          driver-opts: image=docker.io/moby/buildkit@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
 
       - name: Log in to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
@@ -118,13 +122,13 @@ jobs:
 
           # Build provenance: signed by image.yml, GitHub-hosted, for this
           # exact commit (source and workflow digest), from a qualifying ref.
-          # The index can land a moment before Image's attestation does, so
-          # this is retried, bounded; a candidate without it (one published
+          # The index lands before Image's attest job (its own job, after
+          # publish) signs it, so this is retried, bounded (10 min); a candidate without it (one published
           # before build provenance existed, or by anything else) is never
           # qualified.
           signer="^https://github\.com/Xipher-Zero/downloadpulse/\.github/workflows/image\.yml@(${QUALIFYING_REFS})$"
           provenance=0
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 60); do
             if gh attestation verify "oci://${IMAGE_NAME}@${manifest_digest}" \
                 --repo "$GITHUB_REPOSITORY" \
                 --predicate-type "$BUILD_PROVENANCE_PREDICATE_TYPE" \
@@ -147,8 +151,8 @@ jobs:
               provenance=1
               break
             fi
-            echo "Build provenance for $source_ref not verified on attempt ${attempt}/30"
-            if [ "$attempt" -lt 30 ]; then sleep 10; fi
+            echo "Build provenance for $source_ref not verified on attempt ${attempt}/60"
+            if [ "$attempt" -lt 60 ]; then sleep 10; fi
           done
           if [ "$provenance" -ne 1 ]; then
             echo "::error::Candidate $source_ref ($manifest_digest) carries no build provenance signed by image.yml for $GITHUB_SHA from a qualifying ref; it cannot be qualified. A candidate published before build provenance existed is never qualified: qualify a new source commit."
@@ -175,6 +179,10 @@ jobs:
     steps:
       - name: Set up QEMU for cross-platform execution
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+        with:
+          # binfmt by digest, never a floating tag (docs/SUPPLY_CHAIN_POLICY.md 1):
+          # tonistiigi/binfmt:qemu-v10.2.3 (latest, the action's default), multi-arch index.
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
 
       - name: Log in to GHCR
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121

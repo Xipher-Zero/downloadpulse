@@ -279,7 +279,13 @@ attempt). Where a completed transfer's material is now (Show in folder, the upda
 download's reuse) is the same owner's read-only lookup
 (`transfers.filesystem.completed_location`: a regular file or real folder beneath
 the download root, no link at any component); whether a transfer's work still
-serves is core's by canonical state (`TransferRepository.work_standing`). Durable
+serves is answered by the presentation repository
+(`transfers/presentation_repository.py` `TransferRepository.work_standing`, the production
+repository, with `work_standing_of`): canonical state decides completed, paused and the
+end states, and only a live state's "waits on the person" leg reads the presentation
+projection (its `input_required` challenge and the `attention_required` recovery
+presentation decides) -- so that answer's owner is the presentation repository, not the
+canonical repository beneath it. Durable
 handles never carry endpoint addresses, headers or other
 capabilities. `cancel` returns observed truth;
 only a positively observed stop releases ownership, cleanup authority or bandwidth

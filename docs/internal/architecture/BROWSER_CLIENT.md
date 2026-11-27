@@ -186,9 +186,22 @@ proof = hex(HMAC-SHA256(key = SHA-256(raw token), message =
   sign-in goes to an unproven loopback address.
 - **What it does not cover.** The origin is the extension's claim: the server
   does not check it against its own address (a reverse proxy or a container's
-  port mapping would make that wrong). A listener that can itself reach the
-  real server could relay a check. Over HTTPS the certificate already proves
+  port mapping would make that wrong). Over HTTPS the certificate already proves
   the server; the check matters for plain HTTP, above all on this computer.
+- **Known limits** (accepted). *Relay:* a listener on the extension's
+  configured address that can itself reach the real server can pass the
+  extension's `{token_id, nonce, origin}` on and hand back the real server's
+  proof, so the check passes and the extension then sends it the token (and a
+  sign-in). That is not possible against a running desktop installation: the
+  desktop holds its addresses with an exclusive bind, so no other listener can
+  take the extension's address while it runs. It remains for a server whose
+  address can be shadowed, for example a container published on a wildcard bind
+  (`0.0.0.0:8095`) that another program shadows with a more specific loopback
+  bind (`127.0.0.1:8095`) and relays to the container. *Proof budget:* anyone
+  who learns one browser token's ID (it is not secret: it travels with every
+  check) can spend that token's 600 proofs per 10 minutes, so that browser's
+  checks fail -- and it sends nothing -- until the window passes. Other tokens'
+  budgets are untouched, and no proof reveals the token.
 
 ## 3. Disconnecting
 

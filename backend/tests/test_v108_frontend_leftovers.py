@@ -20,12 +20,12 @@ GONE = ("setFilter", "onTorrentOrderChange", "onDownloadRowClick", "reaffirmQueu
 # A text search sees only explicit ``window.X =`` exports: a top-level declaration in a classic
 # script (app.js's ``downloadTransferTrace``, among its other implicit globals) is a page global
 # without one. The browser spec settings-services-batch2.spec.js checks GONE at runtime.
-# Still exported, for one browser spec alone (recorded debt): ui-fix-ws2-p1.spec.js awaits a
-# single-row removal to prove it resolves only once its focus has settled, which no control
-# exposes. Never more. The specs drive the pager, Clear Selections and the row checkboxes
-# instead of the former hooks below, which are gone like GONE (checked at runtime too).
-TEST_HOOKS = ("deleteT",)
-RETIRED_HOOKS = ("goToTorrentPage", "clearSelection", "onCheckboxChange")
+# No test hook remains (1.0.8): ui-fix-ws2-p1.spec.js clicks a row's real Remove and awaits its
+# ``downloadpulse:downloads-delete-settled`` notification, sent once its focus has settled (as
+# bulkAction's ``downloadpulse:downloads-bulk-action-settled``). The specs drive the pager, Clear
+# Selections and the row checkboxes instead of the former hooks below, which are gone like GONE
+# (checked at runtime too).
+RETIRED_HOOKS = ("goToTorrentPage", "clearSelection", "onCheckboxChange", "deleteT")
 # Unreachable since 1.0.0 (no control, no action-table entry, no caller): deleted outright.
 DELETED = ("onPageSizeChange", "setLabel")
 
@@ -37,18 +37,16 @@ def test_the_former_page_wide_functions_are_not_exported_or_called_as_globals():
             assert not re.search(rf"window\.{name}\b", source), (path.name, name)
 
 
-def test_only_the_recorded_test_hooks_remain_and_no_production_code_calls_them():
+def test_no_test_hook_remains_and_a_removal_says_when_it_has_settled():
     downloads = (STATIC / "ui-downloads.js").read_text(encoding="utf-8")
     exported = set(re.findall(r"^window\.(\w+) = \w+;$", downloads, flags=re.M))
-    assert exported == set(TEST_HOOKS) | {"downloadsDateMarkup", "downloadsDayMarkup", "downloadsDateLabel",
-                                          "downloadsCalendarLabel", "downloadsDayLabel",
-                                          "updateDownloadsTrackedCopy", "loadTorrents"}, exported
-    for path in STATIC.glob("*.js"):
-        if path.name == "ui-downloads.js":
-            continue
-        source = path.read_text(encoding="utf-8")
-        for name in TEST_HOOKS:
-            assert not re.search(rf"(?<![\w.]){name}\(", source), (path.name, name)
+    assert exported == {"downloadsDateMarkup", "downloadsDayMarkup", "downloadsDateLabel",
+                        "downloadsCalendarLabel", "downloadsDayLabel",
+                        "updateDownloadsTrackedCopy", "loadTorrents"}, exported
+    # Both removals notify once focus has settled, the single row's as the bulk action's.
+    for event in ("downloadpulse:downloads-delete-settled", "downloadpulse:downloads-bulk-action-settled"):
+        settled = downloads.index(f"new CustomEvent('{event}'")
+        assert downloads.rindex("await settleRemovalFocus(button, restored);", 0, settled) > settled - 300, event
 
 
 def test_the_dashboard_reaches_the_failed_filter_through_the_downloads_owner():

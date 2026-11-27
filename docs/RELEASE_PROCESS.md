@@ -140,7 +140,8 @@ For a public release image:
 - build from the exact merged release commit;
 - publish the versioned tag, e.g. `ghcr.io/xipher-zero/downloadpulse:vX.Y.Z`;
 - include multi-arch targets expected by the permanent release workflow;
-- preserve SBOM/provenance generation;
+- preserve SBOM/provenance generation (Image's `attest` job alone signs the build provenance of the digest `publish` pushed; its `provenance` job verifies it);
+- run the build tools' privileged images by digest: re-resolve the binfmt and BuildKit index digests the workflows pin, and their tag comments, at the release cut (`docs/SUPPLY_CHAIN_POLICY.md` §1, "Build tool images by digest");
 - set OCI labels including:
   - `org.opencontainers.image.version=X.Y.Z`
   - `org.opencontainers.image.revision=<full release commit SHA>`

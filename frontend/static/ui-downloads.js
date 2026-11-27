@@ -1523,7 +1523,12 @@ async function deleteT(id, eventObj, button) {
     await loadTorrents();
     loadStats();
   } catch (e) { toast(sanitizeErrorMsg(e.message), 'error'); }
-  finally { setButtonPending(button, false); await settleRemovalFocus(button, restored); }
+  finally {
+    setButtonPending(button, false);
+    // Settled means focus has settled too: the notification follows it (as bulkAction's).
+    await settleRemovalFocus(button, restored);
+    document.dispatchEvent(new CustomEvent('downloadpulse:downloads-delete-settled', {detail: {id: targetId}}));
+  }
 }
 async function retryT(id, button) {
   setButtonPending(button, true, 'details.route.retrying');
@@ -1680,12 +1685,6 @@ window.downloadsCalendarLabel = formatCalendar;
 // The same, for one instant's day (a premium account's expiry).
 window.downloadsDayLabel = formatDownloadsDay;
 window.updateDownloadsTrackedCopy = updateDownloadsTrackedCopy;
-// Test hook only (recorded debt, 1.0.8 WS-A12): a browser spec awaits a
-// single-row removal through it to prove the removal resolves only once its
-// focus has settled -- an ordering no control exposes (the row's Remove does
-// not await it). No production code calls it, and nothing joins it
-// (backend/tests/test_v108_frontend_leftovers.py).
-window.deleteT = deleteT;
 // scheduleCapacityCheck is a real production consumer
 // (ui-processing-presentation.js's syncPauseUi() re-measures capacity after
 // the pause shim toggles); contextMenu is the row menu the application's one

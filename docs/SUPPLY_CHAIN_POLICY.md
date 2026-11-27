@@ -74,10 +74,15 @@ The rule, exactly as implemented:
   (`container-security/v1`, `candidate-runtime/v1`) bound to the exact
   digest they qualified. `release-promotion.yml` re-verifies both
   attestations target that same digest before promoting.
-- **Build provenance.** `Image`'s `publish` job signs SLSA build provenance
+- **Build provenance.** `Image`'s `attest` job -- its own small job after
+  `publish`, taking the digest `publish` pushed as that job's output
+  (`pushed_digest`) -- signs SLSA build provenance
   (`actions/attest-build-provenance`, predicate
-  `https://slsa.dev/provenance/v1`) for exactly the digest it pushes, stored
-  with GitHub's attestations and in the registry. A candidate is reused by
+  `https://slsa.dev/provenance/v1`) for exactly that digest, stored
+  with GitHub's attestations and in the registry. `Image`'s read-only
+  `provenance` job then verifies it (both the fresh and the reuse path)
+  before the testing alias follows the candidate; the qualifiers wait for it
+  (bounded, 10 minutes) after the index appears. A candidate is reused by
   `Image`, qualified by `Container Security` and `Candidate Runtime
   Qualification`, and promoted by `Release Promotion` only once that
   provenance verifies with `gh attestation verify`:
@@ -107,10 +112,33 @@ The rule, exactly as implemented:
 - **Least privilege.** `Container Security` and `Candidate Runtime
   Qualification` run read-only (`contents`, `actions`, `packages` read);
   only their `evidence` job, which signs and pushes the attestation, holds
-  `packages`/`id-token`/`attestations` write. In `Image` only the `publish`
-  job does. The Docker Hub login (for authenticated base-image pulls) is
-  removed with `docker logout docker.io` right after the build that needs it,
-  before any test, npm or Playwright code runs.
+  `packages`/`id-token`/`attestations` write. In `Image` only the `attest`
+  job holds `id-token`/`attestations` write (with the `packages` write it
+  needs to push the attestation); it runs only the GHCR sign-in and the
+  signing action -- no build tool and no privileged image. `publish` holds
+  `packages` write alone. The Docker Hub login (for authenticated base-image
+  pulls) is removed right after the build that needs it, before any test,
+  npm or Playwright code runs: Docker Hub is stored under three names
+  (`docker.io`, `index.docker.io`, `https://index.docker.io/v1/`), so each is
+  logged out, any `docker.io` entry left in the Docker config is purged with
+  `jq`, and the step fails if one is still there.
+- **Build tool images by digest.** The privileged images the build actions
+  run are pinned by multi-architecture index digest in every workflow, never
+  by floating tag: `docker/setup-qemu-action`'s binfmt image
+  (`image: docker.io/tonistiigi/binfmt@sha256:…`, its default
+  `tonistiigi/binfmt:latest` resolved) and `docker/setup-buildx-action`'s
+  BuildKit (`driver-opts: image=docker.io/moby/buildkit@sha256:…`, its
+  default `moby/buildkit:buildx-stable-1` resolved); a comment beside each
+  names the release tag the digest was resolved from. Dependabot's
+  `github-actions` ecosystem updates the actions' own SHA pins but not these
+  image digests in workflow YAML, and its `docker` ecosystem reads only
+  Dockerfiles, so they are refreshed by hand: re-resolve the index digest of
+  the action's default tag (or the newest stable release tag) with a registry
+  inspection (`docker buildx imagetools inspect moby/buildkit:buildx-stable-1`,
+  `docker buildx imagetools inspect tonistiigi/binfmt:latest`) -- never
+  hand-typed -- update every workflow that names it and its tag comment, when
+  an action pin moves to a release with a new default, and at each release
+  cut.
 - **Mutable release tags only point to previously qualified digests.**
   `release-promotion.yml` requires a full 40-character `candidate_sha` and a
   successful run of each required workflow, matched by workflow file

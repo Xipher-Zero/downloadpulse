@@ -25,9 +25,8 @@ SMOKE = ["Checkout", "Read application version", "Log in to Docker Hub", "Set up
 PUBLICATION = ["Log in to GHCR", "Generate immutable SHA tag", "Verify generated image metadata and immutable tag policy",
                "Check for an existing candidate for this source SHA",
                "Log in to Docker Hub for the multi-architecture build", "Build and publish",
-               "Log out of Docker Hub after the multi-architecture build", "Attest candidate build provenance",
-               "Select the immutable candidate digest", "Verify candidate build provenance",
-               "Verify candidate digest and OCI identity"]
+               "Log out of Docker Hub after the multi-architecture build",
+               "Select the immutable candidate digest", "Verify candidate digest and OCI identity"]
 
 
 def _workflow() -> dict:
@@ -109,9 +108,9 @@ def test_publication_runs_the_same_smoke_qualification_first_on_its_own_runner()
     jobs = _jobs()
     publish = jobs["publish"]
     assert "needs" not in publish                                    # no handoff to wait for
-    assert publish["permissions"] == {"contents": "read", "packages": "write", "id-token": "write",
-                                      "attestations": "write"}
-    assert set(publish["outputs"]) == {"candidate_ref", "candidate_digest", "candidate_reused"}
+    # No signing scope: the attest job alone holds id-token and attestations (1.0.8).
+    assert publish["permissions"] == {"contents": "read", "packages": "write"}
+    assert set(publish["outputs"]) == {"candidate_ref", "candidate_digest", "candidate_reused", "pushed_digest"}
     names = [step["name"] for step in publish["steps"]]
     smoke_steps = [step for step in publish["steps"] if step["name"] in SMOKE]
     # The very same steps, in the same order, with identical bodies.
@@ -137,6 +136,9 @@ def test_the_smoke_steps_exist_once_as_text_and_are_reused_by_alias():
 
 
 def test_the_testing_alias_follows_the_one_publishing_job():
-    alias = _jobs()["testing-alias"]
-    assert alias["needs"] == "publish"
+    jobs = _jobs()
+    alias = jobs["testing-alias"]
+    # Publication, then its signed provenance, then its verification; only then the alias.
+    assert jobs["attest"]["needs"] == "publish" and jobs["provenance"]["needs"] == ["publish", "attest"]
+    assert alias["needs"] == "provenance"
     assert alias["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/1.0.8'"

@@ -11,9 +11,15 @@
   now holds only the window's own settings and icons, and DownloadPulse takes the key itself
   as soon as the window starts. The server also answers only requests made to it by its own
   address, so a web page cannot reach it.
+- **Only the desktop window itself can open a Save dialog or recolour its frame.** A program or
+  browser connected through Local Port could ask DownloadPulse to show the Save dialog for a
+  backup or a Transfer Trace Log on your screen, or to change the colours of the window's frame.
+  These now answer only the desktop window, as closing and releasing the window already did. A
+  browser connected through Local Port downloads those files the usual browser way.
 - **The interactive API pages `/docs` and `/redoc` are gone.** They loaded their scripts from a
   public CDN at whatever version it served, with an Admin's sign-in. The API's description is
-  still at `/openapi.json` (Admin), which any OpenAPI viewer can open.
+  still at `/openapi.json`: an Admin can download it while signed in and open it in any
+  OpenAPI viewer.
 - **Two sign-in loose ends are closed.** A live update stream opened with a username and
   password now ends when Username & Password is turned off, as signed-in sessions already did.
   And another website can no longer include DownloadPulse's own interface files (for example
@@ -22,7 +28,8 @@
   keeps to its own folder.** On Windows, an installer started with "Run as administrator" also
   started DownloadPulse as administrator. It now starts DownloadPulse with your account's
   ordinary rights. On Windows, macOS and Linux, DownloadPulse now refuses to start as
-  administrator or as root, and a notice says why. Before, such a run could create files that
+  administrator or as root. On Windows and Linux a notice says why; on macOS the reason is
+  written to DownloadPulse's log. Before, such a run could create files that
   later stopped DownloadPulse from starting normally. The installer now installs only inside
   your own `AppData\Local` folder, where other accounts on the computer cannot change the
   program. Setup and the uninstaller also no longer delete an `app` folder there that
@@ -34,6 +41,8 @@
   Before an image is reused, security-scanned, runtime-tested or published as a release, that
   record is checked, and so are the scan and test results, each of which must be signed by the
   workflow that produced it. Before, these checks trusted a label the image gave about itself.
+  The signing runs in its own small step after the build, and the build tools the image
+  workflow runs with that access are pinned to exact versions.
   Images built before this change have no such record and can never become a release. The
   workflows that scan and test images now have only read access, except for the one step that
   signs their result. The Docker Hub sign-in used for downloading base images is removed before
@@ -63,9 +72,9 @@
 - **Show in folder no longer follows a linked folder inside the download folder.** A file
   reached that way is reported as no longer there (and an update reached that way downloads
   again), as DownloadPulse's other checks of finished files already did.
-- **The browser extension can send a .torrent, NZB or Metalink file up to DownloadPulse's own
+- **The browser extension can send a .torrent or Metalink file up to DownloadPulse's own
   16 MB limit.** Files above about 15.7 MB were refused before DownloadPulse could read them, and
-  the extension only said the send failed.
+  the extension only said the send failed. An NZB file keeps its 8 MB limit.
 - **Usenet: a finished job can never move other jobs' files.** If the Usenet service ever
   reported a finished job's file directly in its shared completed folder, DownloadPulse now
   waits instead of taking that whole folder.
@@ -77,13 +86,24 @@
   app's default window among them) Download Activity reached below the window and the whole
   Dashboard scrolled. Download Activity now takes exactly the room the cards and Quick Add
   leave, at every size, and only its own list scrolls. Only a window too short for even a
-  small Download Activity (under about 680 pixels high) lets the page scroll again, so nothing
+  small Download Activity (a short window; how short depends on its width) lets the page scroll again, so nothing
   is cut off. This is the same in the desktop app on every system and in a browser.
 - **Windows and macOS: reopening the desktop window from the tray no longer flashes a dark
   square.** After the window had been closed to the tray for a while, opening it again could
   show a black square in its corner for about a second (seen with Dark mode). The window now
   appears first, filled with your mode's background, and DownloadPulse then loads into it. That
   background follows the mode you use now, even if you changed it while the window was closed.
+
+### Upgrading
+
+- **Windows: a DownloadPulse installed outside your `AppData\Local` folder must be uninstalled
+  first.** DownloadPulse now installs only inside `AppData\Local`. If an older copy is installed
+  somewhere else, setup says so and suggests the usual folder instead. Uninstall the old copy
+  first (Settings > Apps > DownloadPulse), then run setup: otherwise uninstalling the old copy
+  later would also remove the new one's Start-menu entry and its entry in Apps. Your downloads
+  and settings are kept either way.
+- **Windows, from 1.0.7 or older: install 1.0.8 once from downloadpulse.net.** The in-app update
+  of those versions cannot finish (see Fixed); from 1.0.8 on it works again.
 
 ## [1.0.7] — Updates that explain themselves and install over a running app
 

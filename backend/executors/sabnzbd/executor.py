@@ -759,7 +759,7 @@ class SabnzbdExecutor:
         # The job's own folder strictly beneath SAB's complete folder, never that
         # folder itself (a ``storage`` reported as a file directly in it would
         # otherwise move every job's output; 1.0.8, WS-A10).
-        complete = str(Path(self.configuration.working_directory) / topology.COMPLETE_DIRECTORY_NAME)
+        complete = self.configuration.complete_directory
         if parent is None or topology.contained(complete, str(parent)) is None:
             return ExecutionObservation(
                 handle, ExecutionState.UNKNOWN,

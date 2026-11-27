@@ -831,7 +831,11 @@ async def theme_bootstrap_script(request: Request):
     (``window.downloadPulseDesktop``): ``ui-desktop-start.js`` shows its starting
     cover from the first paint only there; and whether this page is a released
     window opened again from the tray (``window.downloadPulseResuming``, 1.0.5):
-    its cover then has no minimum and draws only if the page is slow."""
+    its cover then has no minimum and draws only if the page is slow; and
+    whether this page is the desktop window's own (``window.downloadPulseWindow``,
+    ``desktop_listener.window_request``, 1.0.8): only there are a file saved
+    through the Save dialog and the window frame's colours said, never by a
+    browser through Local Port, which keeps the browser's own download."""
     principal = getattr(request.state, "principal", Principal.anonymous())
     appearance = json.dumps(await _appearance(principal), separators=(",", ":"))
     locale = json.dumps(await _locale(principal), separators=(",", ":"))
@@ -842,15 +846,17 @@ async def theme_bootstrap_script(request: Request):
     if desktop:
         from application.desktop_control import restore_pending
         from application.desktop_listener import window_request
-        resuming = restore_pending() and window_request(request)
+        own_window = window_request(request)
+        resuming = restore_pending() and own_window
     else:
-        resuming = False
+        own_window = resuming = False
     response = Response(
         content=(f"window.downloadPulseLogo={logo};\nwindow.downloadPulseSignalField={field};\n"
                  f"window.downloadPulseAppearance=Object.freeze({appearance});\n"
                  f"window.downloadPulseLocale=Object.freeze({locale});\n"
                  f"window.downloadPulseDesktop={'true' if desktop else 'false'};\n"
-                 f"window.downloadPulseResuming={'true' if resuming else 'false'};\n{script}"),
+                 f"window.downloadPulseResuming={'true' if resuming else 'false'};\n"
+                 f"window.downloadPulseWindow={'true' if own_window else 'false'};\n{script}"),
         media_type="application/javascript",
     )
     response.headers["Cache-Control"] = "no-store"

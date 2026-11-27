@@ -249,7 +249,7 @@ async def test_a_low_demand_reservation_no_longer_strands_its_share(tmp_path, mo
         await _run(runtime, samples, 12)
         assert samples.held(5, left + 6, time.monotonic()) == cap
         alone = samples.rate(1, left + 6, time.monotonic())
-        assert cap * SHARED_DELIVERY <= alone <= cap * 1.02, alone
+        assert cap * UTILIZATION <= alone <= cap * 1.02, alone     # alone: the full delivery floor again
         await _retire(runtime, http.id)
     finally:
         await runtime.close()

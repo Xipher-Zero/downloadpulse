@@ -183,6 +183,28 @@ def test_a_silent_install_checks_the_folder_before_the_lock_and_refuses_with_exi
     assert prerequisites.index("Call DpInstDirAllowed") < prerequisites.index("InitPluginsDir")
 
 
+def test_a_refused_folder_lets_go_of_the_lock_and_starts_again_what_setup_closed():
+    refuse = _function("RefuseInstDir")
+    assert refuse.index("Call ReleaseDataRootLock") < refuse.index("${If} $dpRelaunch == 1") \
+        < refuse.index("Call InstalledInstDir") < refuse.index("Call LaunchDownloadPulse") < refuse.index("Quit")
+    # Started again from where it is installed, never from the folder just refused.
+    installed = _function("InstalledInstDir")
+    assert 'ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"' in installed and "StrCpy $INSTDIR $0" in installed
+    abort = _function("DpUserAbort")
+    assert abort.index("Call InstalledInstDir") < abort.index("Call LaunchDownloadPulse")
+
+
+def test_an_old_installation_outside_local_app_data_opens_on_the_default_folder_and_says_so():
+    on_init = _function(".onInit")
+    block = on_init.split("${IfNot} ${Silent}", 1)[1].split("${If} ${Silent}", 1)[0]
+    assert 'ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"' in block and "${AndIf} $0 == $INSTDIR" in block
+    assert block.index("Call DpInstDirAllowed") < block.index("${If} $dpInstDirOk == 0") \
+        < block.index('StrCpy $INSTDIR "$LOCALAPPDATA\\Programs\\DownloadPulse"') < block.index("MessageBox")
+    assert "uninstall the old copy (Settings > Apps > DownloadPulse), then run this setup again" in block and "Start-menu entry" in block
+    assert on_init.index("${IfNot} ${Silent}") < on_init.index("Call TakeDataRootLock")
+    assert 'InstallDir "$LOCALAPPDATA\\Programs\\DownloadPulse"' in NSI       # the same default
+
+
 def test_only_downloadpulse_s_own_app_folder_is_ever_removed():
     ours = NSI.split("Function ${UN}ProgramFilesOurs", 1)[1].split("FunctionEnd", 1)[0]
     assert 'ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"' in ours and "${AndIf} $0 == $INSTDIR" in ours
