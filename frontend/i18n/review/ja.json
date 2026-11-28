@@ -33114,6 +33114,38 @@
     "ai-review"
    ]
   },
+  "error.browser.identity.rate_limited": {
+   "source": "a6b8fef0e98e83b6",
+   "translation": "35828ddbd080e30e",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.identity.invalid": {
+   "source": "ba23d7fd183b7985",
+   "translation": "c5fdd301b4af1239",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ],
+   "findings": [
+    {
+     "kind": "style",
+     "note": "Catalog renders 'identity check' as '身元確認' (input_required, rejected_password_never); 'ID 確認' is not used elsewhere.",
+     "status": "resolved",
+     "resolution": "The independent AI review's correction was applied."
+    }
+   ]
+  },
+  "error.browser.identity.unknown": {
+   "source": "798464198eb54095",
+   "translation": "bed1a2b4deee5008",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "transfer.name.more": {
    "source": "fbdde7f840789ff9",
    "translation": "3bcb3fc60b2a2e98",

@@ -32963,6 +32963,30 @@
     "ai-review"
    ]
   },
+  "error.browser.identity.rate_limited": {
+   "source": "a6b8fef0e98e83b6",
+   "translation": "165c8545063c605a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.identity.invalid": {
+   "source": "ba23d7fd183b7985",
+   "translation": "a75bd352a2264964",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.identity.unknown": {
+   "source": "798464198eb54095",
+   "translation": "45d04c46488b2633",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "transfer.name.more": {
    "source": "fbdde7f840789ff9",
    "translation": "f86df30b67bf103e",

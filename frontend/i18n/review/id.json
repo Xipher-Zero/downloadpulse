@@ -33244,6 +33244,30 @@
     "ai-review"
    ]
   },
+  "error.browser.identity.rate_limited": {
+   "source": "a6b8fef0e98e83b6",
+   "translation": "0284daf416bbf1d0",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.identity.invalid": {
+   "source": "ba23d7fd183b7985",
+   "translation": "ee7e124bc4334ba1",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
+  "error.browser.identity.unknown": {
+   "source": "798464198eb54095",
+   "translation": "dd44f08a59d1749a",
+   "provenance": [
+    "ai-generated",
+    "ai-review"
+   ]
+  },
   "transfer.name.more": {
    "source": "fbdde7f840789ff9",
    "translation": "d86549ead600550a",

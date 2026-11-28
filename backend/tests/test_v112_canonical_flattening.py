@@ -199,7 +199,7 @@ def test_no_test_only_compatibility_globals_survive() -> None:
     assert "DPDownloads.selectedIds" not in downloads
     assert "DPDownloads.pageSize" not in downloads
     # enter: the page's own entry, which the navigation calls (1.0.5 WS8b2) -- no test seam.
-    assert "window.DPDownloads = Object.freeze({scheduleCapacityCheck, contextMenu, enter: enterDownloads});" in downloads
+    assert "window.DPDownloads = Object.freeze({scheduleCapacityCheck, contextMenu, enter: enterDownloads, showStatus});" in downloads
     assert "window.DPDownloads.enter();" in read("app.js")
 
     processing = read("ui-processing-presentation.js")

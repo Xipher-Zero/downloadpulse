@@ -24217,6 +24217,24 @@
    "owner": "backend/api/browser_routes.py",
    "criticality": "normal"
   },
+  "error.browser.identity.rate_limited": {
+   "category": "error",
+   "context": "Connected browsers: the browser extension's check that this is the server that connected it, refused. Shown in the reader's language; API clients receive the English `detail`.",
+   "owner": "backend/api/browser_routes.py",
+   "criticality": "normal"
+  },
+  "error.browser.identity.invalid": {
+   "category": "error",
+   "context": "Connected browsers: the browser extension's check that this is the server that connected it, refused. Shown in the reader's language; API clients receive the English `detail`.",
+   "owner": "backend/api/browser_routes.py",
+   "criticality": "normal"
+  },
+  "error.browser.identity.unknown": {
+   "category": "error",
+   "context": "Connected browsers: the browser extension's check that this is the server that connected it, refused. Shown in the reader's language; API clients receive the English `detail`.",
+   "owner": "backend/api/browser_routes.py",
+   "criticality": "normal"
+  },
   "transfer.name.more": {
    "category": "label",
    "context": "A transfer's title when it has several files or links and none names them all: one file or link name, then how many others there are, e.g. 'SHA256SUMS + 1 more'. Keep the name first and the '+'.",

@@ -16,7 +16,9 @@ def test_downloads_capacity_is_owned_by_canonical_request_path():
 
     assert "torrentPageSize" not in app
     assert "torrentPage" not in app
-    assert "Math.min(Math.max(parseInt(v)||25,1),100)" in downloads.replace(" ", "")
+    # 1.0.8 (WS-A12): the page-size setter onPageSizeChange(v) had no caller and is gone;
+    # the clamp that bounds every request (below) is the one that matters.
+    assert "onPageSizeChange" not in downloads
     assert "Math.min(Math.max(parseInt(torrentPageSize)||25,1),100)" in downloads.replace(" ", "")
     assert "parseInt(v)||25,15" not in downloads
     assert "parseInt(torrentPageSize)||25,15" not in downloads
