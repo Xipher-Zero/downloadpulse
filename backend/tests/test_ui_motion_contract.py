@@ -66,7 +66,12 @@ def test_the_motion_primitive_presents_only() -> None:
     # surface's own keyframes and timing (the same travel, curve and clock).
     assert "const out = other.animate(leave, {...timing, fill: 'forwards'});" in motion
     assert "const back = other.animate(enter, {duration, easing});" in motion
-    assert "if (out.startTime !== null) back.startTime = out.startTime;" in motion
+    # 1.0.8: the heading's halves and midpoint run on the travel's own clock, set once it is ready,
+    # so the heading can never name the destination before the region has begun to move.
+    assert "begin?.();" in motion
+    assert "out.startTime = start;" in motion and "midpoint.startTime = start;" in motion
+    assert "back.startTime = start;" in motion
+    assert "currentTime = duration / 2" not in motion   # the separate-clock fallback stays retired
     assert "out.cancel();" in motion                   # in the same step the arriving half starts
     assert ".concat(flight.accompanied || [])).then(() => flight.end());" in motion
     assert "if (flight.waiting) animation.pause();" in motion

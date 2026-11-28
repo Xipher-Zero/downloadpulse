@@ -89,9 +89,26 @@ async function prepare(page, {connected = false, lifecycle = false} = {}) {
     });
     await page.clock.install();
   }
+  // The Settings entry draws the page from its /api/settings read, then draws
+  // it again, whole, when its /api/auth/config read answers (load()) -- every
+  // card closed, every control replaced. Held behind this gate until the first
+  // drawing is in, then released and its drawing awaited, so no act below can
+  // land on a control that drawing replaces (a click whose press and release
+  // straddle it reaches no button).
+  let releaseAuth;
+  const authHeld = new Promise(resolve => { releaseAuth = resolve; });
+  await page.route(url => url.pathname === '/api/auth/config', async route => {
+    if (route.request().method() === 'GET') await authHeld;
+    return route.fallback();
+  });
   await page.goto('/');
   await page.waitForFunction(() => typeof window.nav === 'function' && typeof window.loadSettings === 'function');
   await page.evaluate(() => window.nav(document.querySelector('#sidebar .nav-item[data-view="settings"]')));
+  const firstDrawing = page.locator('#view-settings [data-panel="sources"]');
+  await expect(firstDrawing).toBeAttached();
+  await firstDrawing.evaluate(panel => { panel.dataset.drawnBeforeAuth = ''; });
+  releaseAuth();
+  await expect(page.locator('#view-settings [data-panel="sources"]:not([data-drawn-before-auth])')).toBeAttached();
   await page.locator('#view-settings .dp-settings-tabs [data-tab="sources"]:not(.dp-motion-still *)').first()
     .dispatchEvent('click');
   await expect(page.locator('#view-settings [data-panel="sources"]')).toBeVisible();
@@ -296,9 +313,13 @@ for (const connected of [false, true]) {
         const lent = ALL.filter(id => state[id].place === 'body');
         expect(lent.length, `${value}px`).toBeGreaterThan(0);
         for (const theme of ['dark', 'light']) {
-          await page.evaluate(light => document.body.classList.toggle('light', light), theme === 'light');
-          // The chips' .15s colour transitions, finished.
-          await page.waitForTimeout(300);
+          // The chips' .15s colour transitions, finished: the ones the theme
+          // change starts, read as they start, each awaited to its end.
+          await page.evaluate(async light => {
+            document.body.classList.toggle('light', light);
+            await Promise.all(document.getAnimations().filter(animation => animation instanceof CSSTransition)
+              .map(animation => animation.finished.catch(() => null)));
+          }, theme === 'light');
           const report = await page.evaluate(ids => ids.map(id => {
             const body = document.querySelector(`#view-settings .dp-settings-provider-card--${id} > .card-body`);
             const chip = body.querySelector('.dp-settings-help-slot > .dp-settings-help-chip');

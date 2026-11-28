@@ -226,6 +226,7 @@
       node.style.setProperty(property, value, 'important');
     };
     let join = () => {};
+    let begin = null;                              // the companion: started once the travel is
     // Whatever the surface gains while it moves joins the motion where it is.
     const observer = new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {
       if (node instanceof Element && node.parentNode === host && !moving.has(node)) join(node);
@@ -381,26 +382,38 @@
       // what the surface showed and what its commit puts there arrives with
       // the destination. Its commit runs at the midpoint, when both of its
       // presentations are far outside its box (the travel is the surface's,
-      // many times the companion's own size), so the change is never seen;
-      // the arriving half is on the same clock as the surface, however late
-      // the engine noticed the midpoint.
+      // many times the companion's own size), so the change is never seen.
+      // Every part of it -- the leaving half, the midpoint and the arriving
+      // half -- is set to the start time the travel itself was given, read
+      // once the travel has started: an engine may start an empty timer on
+      // its main thread before the transforms it starts on its compositor
+      // (Chromium, the later the busier it is), and a midpoint on its own
+      // clock would name the destination over content that has not yet moved.
       const other = companion?.element;
       if (pending && other?.isConnected && typeof other.animate === 'function') {
         const own = getComputedStyle(other);
         if (own.overflowX === 'visible' && own.overflowY === 'visible') hold(other, 'overflow', 'clip');
         other.dataset.dpMotionCompanion = '';
         const out = other.animate(leave, {...timing, fill: 'forwards'});
-        const midpoint = other.animate([], {duration: duration / 2});
-        accompanying.push(out, midpoint);
-        flight.accompanied = midpoint.finished.then(() => {
+        accompanying.push(out);
+        const begun = new Promise(resolve => { begin = resolve; });
+        const clock = () => lead || out;
+        flight.accompanied = begun.then(() => clock().ready).then(() => {
           if (flight.ended) return;
-          follow();
-          const back = other.animate(enter, {duration, easing});
-          if (out.startTime !== null) back.startTime = out.startTime;
-          else back.currentTime = duration / 2;
-          out.cancel();                             // the arriving half draws it from here
-          accompanying.push(back);
-          return back.finished;
+          const start = clock().startTime;
+          out.startTime = start;
+          const midpoint = other.animate([], {duration: duration / 2});
+          midpoint.startTime = start;
+          accompanying.push(midpoint);
+          return midpoint.finished.then(() => {
+            if (flight.ended) return;
+            follow();
+            const back = other.animate(enter, {duration, easing});
+            back.startTime = start;
+            out.cancel();                           // the arriving half draws it from here
+            accompanying.push(back);
+            return back.finished;
+          });
         }).catch(() => {});
       }
       lead = leaving[0] || null;
@@ -427,6 +440,7 @@
         if (flight.ended) return;
         flight.waiting = false;
         [...leaving, ...moving.values(), ...accompanying].forEach(animation => animation.play());
+        begin?.();                                  // the companion reads the travel's start from here
       });
     });
     Promise.all([...leaving, ...moving.values()].map(animation => animation.finished.catch(() => {}))

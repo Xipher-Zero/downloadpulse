@@ -32,6 +32,17 @@ async function start(extension, name) {
   return started.json();
 }
 
+/* A new viewport, as the page then stands: the sidebar's width transition over (the real CSS
+ * transition) and Integration Accounts' fitter (its ResizeObserver: fitIntegrationAccounts,
+ * which also gives a cut name its tooltip and takes it from a whole one) answered in the next
+ * rendering frame. A read before that frame sees the previous width's fit. */
+async function resize(page, width, height = 900) {
+  await page.setViewportSize({width, height});
+  await page.waitForFunction(() =>
+    document.getElementById('sidebar').getAnimations().every((animation) => animation.playState !== 'running'));
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+}
+
 async function poll(extension, deviceCode) {
   const answer = await extension.post('/api/browser/v1/pairings/poll', {data: {device_code: deviceCode}});
   expect(answer.status()).toBe(200);
@@ -197,9 +208,17 @@ test('from 780px every token table in Integration Accounts lines its columns up'
     await admin.page.goto('/');
     await admin.page.locator('#sidebar .nav-item[data-view="settings"]').click();
     await admin.page.locator('#view-settings [data-tab="users"]:not(.dp-motion-still *)').click();
-    await expect(admin.page.locator('.dp-settings-users-integrations-card .dp-settings-users-tokens')).toHaveCount(3);
+    // This run's own tables, found by their accounts and its browser: tables an earlier run on
+    // the same backend left beside them are measured with them, as every token table is.
+    const card = admin.page.locator('.dp-settings-users-integrations-card');
+    const tokenRowsOf = (section) => section.locator('.dp-settings-users-tokens tbody tr');
+    const integration = (name) => card.locator('.dp-settings-users-integration', {
+      has: admin.page.locator('.dp-settings-users-name', {hasText: new RegExp(`^${name}$`)})});
+    await expect(tokenRowsOf(integration(`Short ${run}`))).toHaveCount(1);
+    await expect(tokenRowsOf(integration(`Suite ${run}`))).toHaveCount(3);
+    await expect(tokenRowsOf(card.locator('[data-browser-tokens]')).filter({hasText: `Align ${run} — Administrator`})).toHaveCount(1);
     for (const width of [780, 1024, 1440]) {
-      await admin.page.setViewportSize({width, height: 900});
+      await resize(admin.page, width);
       const columns = await admin.page.evaluate(() => [...document.querySelectorAll(
         '.dp-settings-users-integrations-card .dp-settings-users-tokens')].map((table) =>
         [...table.querySelectorAll('thead th')].map((th) => Math.round(th.getBoundingClientRect().left))));
@@ -220,7 +239,7 @@ test('from 780px every token table in Integration Accounts lines its columns up'
     }
     // Below 780px, where the Issued date moves under the name, the name keeps one line, its end cut, its tooltip whole.
     for (const width of [600, 320]) {
-      await admin.page.setViewportSize({width, height: 900});
+      await resize(admin.page, width);
       await expect.poll(() => admin.page.evaluate(() => [...document.querySelectorAll(
         '.dp-settings-users-integrations-card .dp-settings-users-tokens tbody tr')].map((row) => {
         const name = row.querySelector('.dp-settings-users-token-name');

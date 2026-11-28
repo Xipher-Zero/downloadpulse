@@ -36,39 +36,61 @@ async function boot(page, {width = 1440, height = 900} = {}) {
       .find(node => node.getClientRects().length && !node.classList.contains('dp-motion-still') && !node.hasAttribute('data-dp-motion-outgoing'));
     const style = (el, key) => (el ? getComputedStyle(el)[key] : null);
     const clips = el => !!el && getComputedStyle(el).overflowX !== 'visible' && getComputedStyle(el).overflowY !== 'visible';
+    // What a surface draws now (its slide, if one is running) beside the page heading.
+    const travels = a => a.effect.getKeyframes().some(k => k.transform);
+    const heading = () => document.querySelector('#topbar .dp-page-heading');
+    const headingMotion = () => heading()?.getAnimations().find(a => a.playState !== 'idle' && travels(a)) || null;
+    const bodyMotion = surface => leaving(surface)?.getAnimations().find(travels) || null;
+    const record = surface => {
+      const ghost = outgoing(surface);
+      const within = node => node instanceof Node && (surface.contains(node) || !!ghost?.contains(node));
+      const motion = document.getAnimations().filter(a => within(a.effect?.target) && a.effect.getKeyframes().some(k => k.transform));
+      return {
+        t: performance.now(), scope: scopeOf(surface), axis: surface.dataset.dpMotionAxis,
+        direction: surface.dataset.dpMotionDirection, step: surface.dataset.dpMotionStep,
+        old: style(leaving(surface), 'transform'), new: style(live(surface), 'transform'),
+        size: surface.dataset.dpMotionAxis === 'y' ? surface.getBoundingClientRect().height : surface.getBoundingClientRect().width,
+        oldOpacity: Number(style(leaving(surface), 'opacity') ?? 1),
+        clip: clips(surface) && (!ghost || clips(ghost)),
+        durations: [...new Set(motion.map(a => a.effect.getTiming().duration))],
+        panels: [...document.querySelectorAll('.view.active [data-panel]:not([hidden]):not(.dp-motion-still *), .view.active .dp-help-panel:not([hidden]):not(.dp-motion-still *)')].map(p => p.dataset.panel),
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        topbar: document.getElementById('topbar')?.getBoundingClientRect().top,
+        // The page heading, the main region's companion: what it names and how it is drawn.
+        heading: document.getElementById('page-title')?.textContent.trim(),
+        headingMove: style(heading(), 'transform'),
+        // The two clocks: the leaving content's travel and the heading's own half.
+        bodyClock: bodyMotion(surface)?.currentTime ?? null,
+        headingClock: headingMotion()?.currentTime ?? null,
+        headingHalf: headingMotion()?.effect.getKeyframes()[0].transform === 'none' ? 'out' : 'in',
+        // Where each clock was started, and how long the travel lasts.
+        bodyStart: bodyMotion(surface)?.startTime ?? null,
+        headingStart: headingMotion()?.startTime ?? null,
+        bodyDuration: bodyMotion(surface)?.effect.getTiming().duration ?? null,
+        sidebar: document.getElementById('sidebar')?.getBoundingClientRect().left,
+      };
+    };
     // Every moving surface (a Settings choice can move its panel and its
-    // compact navigator's window together).
+    // compact navigator's window together), at each drawn frame.
     const tick = () => {
-      for (const surface of document.querySelectorAll('.dp-motion-surface')) {
-        const ghost = outgoing(surface);
-        const within = node => node instanceof Node && (surface.contains(node) || !!ghost?.contains(node));
-        const motion = document.getAnimations().filter(a => within(a.effect?.target) && a.effect.getKeyframes().some(k => k.transform));
-        window.__frames.push({
-          t: performance.now(), scope: scopeOf(surface), axis: surface.dataset.dpMotionAxis,
-          direction: surface.dataset.dpMotionDirection, step: surface.dataset.dpMotionStep,
-          old: style(leaving(surface), 'transform'), new: style(live(surface), 'transform'),
-          size: surface.dataset.dpMotionAxis === 'y' ? surface.getBoundingClientRect().height : surface.getBoundingClientRect().width,
-          oldOpacity: Number(style(leaving(surface), 'opacity') ?? 1),
-          clip: clips(surface) && (!ghost || clips(ghost)),
-          durations: [...new Set(motion.map(a => a.effect.getTiming().duration))],
-          panels: [...document.querySelectorAll('.view.active [data-panel]:not([hidden]):not(.dp-motion-still *), .view.active .dp-help-panel:not([hidden]):not(.dp-motion-still *)')].map(p => p.dataset.panel),
-          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          topbar: document.getElementById('topbar')?.getBoundingClientRect().top,
-          // The page heading, the main region's companion: what it names and how it is drawn.
-          heading: document.getElementById('page-title')?.textContent.trim(),
-          headingMove: style(document.querySelector('#topbar .dp-page-heading'), 'transform'),
-          // The two clocks: the leaving content's travel and the heading's own half.
-          bodyClock: leaving(surface)?.getAnimations().find(a => a.effect.getKeyframes().some(k => k.transform))?.currentTime ?? null,
-          headingClock: document.querySelector('#topbar .dp-page-heading')?.getAnimations()
-            .find(a => a.playState !== 'idle')?.currentTime ?? null,
-          headingHalf: document.querySelector('#topbar .dp-page-heading')?.getAnimations()
-            .find(a => a.playState !== 'idle')?.effect.getKeyframes()[0].transform === 'none' ? 'out' : 'in',
-          sidebar: document.getElementById('sidebar')?.getBoundingClientRect().left,
-        });
-      }
+      for (const surface of document.querySelectorAll('.dp-motion-surface')) window.__frames.push(record(surface));
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
+    /* Each change of the page heading, read in the very task its owner makes
+     * it (a mutation record, delivered before anything else runs or is drawn),
+     * beside where the main region's travel stands at that instant. Drawn
+     * frames show what was painted; an engine under load may draw none of a
+     * travel (the compositor moves it while the main thread is busy), so the
+     * ordering of the change against the travel is read here, not sampled. */
+    window.__headings = [];
+    document.addEventListener('DOMContentLoaded', () => {
+      const title = document.getElementById('page-title');
+      const content = document.getElementById('content');
+      if (!title || !content) return;
+      new MutationObserver(() => window.__headings.push({...record(content), sliding: content.classList.contains('dp-motion-surface')}))
+        .observe(title, {childList: true, characterData: true, subtree: true});
+    });
   });
 }
 
@@ -80,7 +102,7 @@ const shift = value => {
   return {x: n[4], y: n[5]};
 };
 
-const clear = page => page.evaluate(() => { window.__frames = []; });
+const clear = page => page.evaluate(() => { window.__frames = []; window.__headings = []; });
 // At rest: no slide in flight and no crossfade's still copy still fading out.
 const settled = page => page.waitForFunction(() => !document.querySelector('.dp-motion-surface, .dp-motion-still'));
 /* The slide that just ran: its scope, direction, step, timing and how far its
@@ -1343,29 +1365,51 @@ test('Sidebar: the page heading moves with the main region and never names a pag
     await entry(to).click();
     await settled(page);
     const frames = (await page.evaluate(() => window.__frames)).filter(frame => frame.scope === 'main');
+    const changes = await page.evaluate(() => window.__headings);
     const destination = (await page.locator('#page-title').textContent()).trim();
     expect(destination).not.toBe(from);
+    const sign = direction === 'forward' ? -1 : 1;
     // Moved: what leaves has left its place (what arrives waits at its start while held).
     const bodyMoved = frame => shift(frame.old).y !== 0;
     const headingY = frame => shift(frame.headingMove).y;
-    // Until the region moves, the heading names the page on screen, unmoved.
+    // The change itself, read in the task that made it: once, to the
+    // destination, while the region slides (never before its travel, never
+    // left to the slide's end), over content that has left its place -- at
+    // or past the travel's midpoint, on the travel's own clock -- with the
+    // heading's arriving half started where the travel started: still
+    // arriving with the region, or, where the engine noticed the midpoint
+    // only once the travel was over (a busy main thread while the compositor
+    // drew it), at rest with it. However many frames the engine drew.
+    expect(changes.map(change => change.heading)).toEqual([destination]);
+    const [change] = changes;
+    expect(change.sliding).toBe(true);
+    expect(change.bodyClock).not.toBeNull();
+    expect(Math.sign(shift(change.old).y)).toBe(sign);
+    expect(change.bodyClock).toBeGreaterThanOrEqual(change.bodyDuration / 2 - 1.5);
+    if (change.bodyClock < change.bodyDuration) {
+      expect(change.headingHalf).toBe('in');
+      expect(Math.abs(change.headingStart - change.bodyStart)).toBeLessThan(1.5);
+      expect(Math.abs(change.headingClock - change.bodyClock)).toBeLessThan(1.5);
+    } else {
+      expect({clock: change.headingClock, move: headingY(change)}).toEqual({clock: null, move: 0});
+    }
+    // Until the region moves, the drawn heading names the page on screen, unmoved.
     const still = frames.filter(frame => !bodyMoved(frame));
     const firstMove = frames.findIndex(bodyMoved);
-    expect(firstMove).toBeGreaterThanOrEqual(0);
-    for (const frame of frames.slice(0, firstMove)) {
+    const untilMove = firstMove < 0 ? frames.length : firstMove;
+    for (const frame of frames.slice(0, untilMove)) {
       expect(frame.heading).toBe(from);
       expect(headingY(frame)).toBe(0);
     }
     // No frame names the destination over content that has not begun to leave.
-    expect(still.filter(frame => frame.heading === destination && frames.indexOf(frame) < firstMove)).toEqual([]);
+    expect(still.filter(frame => frame.heading === destination && frames.indexOf(frame) < untilMove)).toEqual([]);
     // One clock: at every drawn frame of the travel the heading's own time
     // is the region's -- its leaving half up to the midpoint, naming the page
     // that leaves; its arriving half after it, naming the destination; each
     // displaced the region's way (forward: up and in from below; backward,
-    // mirrored). However few frames an engine draws.
-    const sign = direction === 'forward' ? -1 : 1;
+    // mirrored). However few frames an engine draws -- under load, none: the
+    // change's own record above is read whether or not a frame was.
     const travelling = frames.filter(frame => frame.bodyClock !== null && frame.headingClock !== null && frame.bodyClock > 0);
-    expect(travelling.length).toBeGreaterThanOrEqual(1);
     for (const frame of travelling) {
       const leavingHalf = frame.headingHalf === 'out';
       // Both halves run on the travel's own clock (the arriving half starts
