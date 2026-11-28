@@ -1,10 +1,10 @@
-fastapi==0.163.2
+fastapi==0.165.0
 uvicorn==0.54.0
 uvloop==0.23.0; sys_platform != "win32"
 httptools==0.9.0
 aiohttp==3.14.5
 aiosqlite==0.22.1
-pydantic==2.14.3
+pydantic==2.14.4
 bencode2==0.3.38
 google-re2==1.1.20251105
 python-multipart==0.0.34
@@ -14,7 +14,7 @@ asyncssh==2.24.1
 # asyncssh's backend for passphrase-encrypted OpenSSH-format private keys (bcrypt
 # KDF), the default format of ssh-keygen; required by username_private_key.
 bcrypt==5.0.0
-authlib==1.9.9
+authlib==1.9.10
 # The HTTP client Authlib's httpx integration is built on (it falls back to, and
 # deprecates, httpx when this is absent); auth/oidc.py uses the same client.
 httpx2==2.16.2
