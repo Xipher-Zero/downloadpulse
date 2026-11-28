@@ -119,16 +119,22 @@ async def main() -> None:
         await engine.reconcile_executions()
     else:
         await engine.tick()
+    # Artifacts are named by identity, never by position: concurrent
+    # resolution assigns artifact ids in completion order, so the order of
+    # ``repository.artifacts`` is not the order of ``requests``.
+    def named(items, name):
+        return next(item for item in items if item.name == name)
+
     artifacts = await repository.artifacts(transfer.id)
-    artifact = artifacts[0]
+    artifact = named(artifacts, "single")
     if scenario == "completed":
         # The sibling completes before the Cancel: its delivered payload must
         # survive Delete while the cancelled file's partial is reclaimed.
-        delivered = artifacts[1]
+        delivered = named(artifacts, "delivered")
         executor.finish_file(delivered.execution, delivered.target, b"done")
         for _ in range(3):
             await engine.tick()
-        report["sibling before cancel"] = (await repository.artifacts(transfer.id))[1].state
+        report["sibling before cancel"] = named(await repository.artifacts(transfer.id), "delivered").state
     handle = artifact.execution
     target = Path(artifact.target)
     # The ledger executor's declared FILE footprint (``LedgerExecutor.footprint``).
@@ -154,7 +160,7 @@ async def main() -> None:
                               "unrelated": (root / "unrelated.bin").read_bytes() == b"unrelated",
                               "files": files(root)}
     if scenario == "completed":
-        sibling = (await repository.artifacts(transfer.id))[1]
+        sibling = named(await repository.artifacts(transfer.id), "delivered")
         report["after cancel"]["sibling"] = {"state": sibling.state,
                                              "payload": Path(sibling.target).read_bytes()
                                              if Path(sibling.target).exists() else None}
@@ -182,7 +188,7 @@ async def main() -> None:
                               "unrelated": (root / "unrelated.bin").read_bytes() == b"unrelated",
                               "files": files(root)}
     if scenario == "completed":
-        sibling = (await repository.artifacts(transfer.id))[1]
+        sibling = named(await repository.artifacts(transfer.id), "delivered")
         report["after delete"]["sibling"] = {"state": sibling.state,
                                              "payload": Path(sibling.target).read_bytes()
                                              if Path(sibling.target).exists() else None}
