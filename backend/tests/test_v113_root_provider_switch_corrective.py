@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import itertools
 import json
 import time
 from dataclasses import replace
@@ -683,21 +682,19 @@ async def test_the_live_overlay_and_a_fresh_reload_agree_on_running_work(tmp_pat
 
 # -- A: completion verification never occupies the reconcile cycle ------------------------------------------------
 
-class TimedLock(asyncio.Lock):
-    """``_execution_cycle_lock`` that accounts how long it is held."""
+class WatchedLock(asyncio.Lock):
+    """``_execution_cycle_lock`` that records every acquisition made while a
+    completion verification is in flight."""
 
-    def __init__(self):
+    def __init__(self, engine):
         super().__init__()
-        self.held, self._since = 0.0, None
+        self.engine, self.acquired_while_verifying = engine, []
 
     async def acquire(self):
         await super().acquire()
-        self._since = time.monotonic()
+        if self.engine._verifications:
+            self.acquired_while_verifying.append(tuple(self.engine._verifications))
         return True
-
-    def release(self):
-        self.held += time.monotonic() - self._since
-        super().release()
 
 
 async def live_rows(transfer_id):
@@ -715,41 +712,47 @@ async def test_three_succeeded_writers_verify_concurrently_off_the_cycle_lock_wh
     assert len(finished) == 3
     for artifact in finished:
         executor.finish(artifact.execution)
-    lock = engine._execution_cycle_lock = TimedLock()
+    lock = engine._execution_cycle_lock = WatchedLock(engine)
 
-    overlap = []
+    # Each verification parks at the verifier's door until all three are in:
+    # only a concurrent drain lets the third enter while the first two wait (a
+    # serial one never gets past the first, and the deadline below is hit).
+    import transfers._engine_base as engine_base
+    verify = engine_base.verify_materialization
+    entered, all_in, release, locked_at_entry = [], asyncio.Event(), asyncio.Event(), []
 
-    async def watch_lock():                                           # is the lock ever held while verifying?
-        while not cycle.done():
-            if engine._verifications and lock.locked():
-                overlap.append(time.monotonic())
-            await asyncio.sleep(0.01)
+    async def gated_verifier(*args, **kwargs):
+        entered.append(len(entered))
+        locked_at_entry.append(lock.locked())
+        if len(entered) == len(finished):
+            all_in.set()
+        await release.wait()
+        return await verify(*args, **kwargs)                         # the real verifier, stability delay and all
 
-    began = time.monotonic()
+    monkeypatch.setattr(engine_base, "verify_materialization", gated_verifier)
     cycle = asyncio.create_task(engine.reconcile_executions())       # dispatches the next three writers too
-    watcher = asyncio.create_task(watch_lock())
-    samples, moved = [], None
-    while not cycle.done():
-        sampled = time.monotonic()
-        await engine.sample_throughput()                             # the fast observation, at its cadence
-        samples.append((sampled, time.monotonic() - sampled))
-        if moved is None and engine._verifications and not lock.locked():   # verifications in flight
-            executor.transferring(rate=4096)                         # another writer moves bytes mid-verification
-            await moving(engine, executor, 4096, engine.sample_throughput)
-            moved = await live_rows(transfer.id)
-            projected = next(item for item in await repository.active() if item.id == transfer.id)
-            moved = (moved, projected.state.value, engine.throughput.current())
-        await asyncio.sleep(0.5)
-    await cycle
-    await watcher
-    elapsed = time.monotonic() - began
-    gaps = [later[0] - earlier[0] for earlier, later in itertools.pairwise(samples)]
-    print(f"\n[A verification] writers=3 stability=3.25s elapsed={elapsed:.2f}s cycle_lock_held={lock.held:.2f}s "
-          f"samples={len(samples)} max_sample_gap={max(gaps):.2f}s max_sample_cost={max(c for _t, c in samples):.3f}s")
+    try:
+        await asyncio.wait_for(all_in.wait(), 30)
+    except TimeoutError:
+        raise AssertionError(f"three verifications serialized: {len(entered)} of 3 entered") from None
+    assert not cycle.done() and len(engine._verifications) == len(finished)
 
-    assert not overlap, "the reconcile lock was held while a stability interval was being waited out"
-    assert elapsed < lock.held + 3.25 + 1.5, "three verifications serialized"
-    assert max(gaps) <= 0.6 + 0.25 and max(cost for _sampled, cost in samples) < 0.5
+    # All three are held in flight: the cycle lock is free and the fast
+    # observation progresses -- it cannot be waiting on the verifications.
+    assert not lock.locked() and not any(locked_at_entry)
+    await asyncio.wait_for(engine.sample_throughput(), 30)           # the fast observation, unblocked
+    executor.transferring(rate=4096)                                 # another writer moves bytes mid-verification
+    await asyncio.wait_for(moving(engine, executor, 4096, engine.sample_throughput), 30)
+    projected = next(item for item in await repository.active() if item.id == transfer.id)
+    moved = (await live_rows(transfer.id), projected.state.value, engine.throughput.current())
+    assert len(engine._verifications) == len(finished) and not cycle.done()   # all three still held
+
+    release.set()
+    await asyncio.wait_for(cycle, 30)
+    print(f"\n[A verification] writers=3 stability=3.25s entered_concurrently={len(entered)} "
+          f"lock_acquired_while_verifying={len(lock.acquired_while_verifying)}")
+
+    assert not lock.acquired_while_verifying, "the reconcile lock was held while a stability interval was being waited out"
     rows_moved, state, speed = moved
     assert rows_moved and all(row["state"] == "running" and row["status"] == "downloading" for row in rows_moved)
     assert state == "downloading" and speed > 0                      # seen while the others were verifying
